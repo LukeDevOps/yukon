@@ -7,10 +7,10 @@ import net.bytebuddy.jar.asm.MethodVisitor
 import net.bytebuddy.jar.asm.Opcodes
 
 /**
- * Finds every [ConditionalJump] in a class's original bytecode, restricted to methods
- * [methodFilter] accepts. Read-only: this only sizes the probe array and builds manifest
- * metadata ahead of the actual rewrite that [BranchProbeAsmVisitorWrapper] performs later in
- * the same class transform.
+ * Finds every [ConditionalJump] and every `TABLESWITCH`/`LOOKUPSWITCH` in a class's original
+ * bytecode, restricted to methods [methodFilter] accepts. Read-only: this only sizes the probe
+ * array and builds manifest metadata ahead of the actual rewrite that
+ * [BranchProbeAsmVisitorWrapper] performs later in the same class transform.
  */
 object BranchSiteAnalyzer {
     fun analyze(
@@ -47,6 +47,25 @@ object BranchSiteAnalyzer {
                         ) {
                             if (!ConditionalJump.isTracked(opcode)) return
                             sites += BranchSite(name, descriptor, currentLine, nextSiteIndex)
+                            nextSiteIndex++
+                        }
+
+                        override fun visitTableSwitchInsn(
+                            min: Int,
+                            max: Int,
+                            dflt: Label,
+                            vararg labels: Label,
+                        ) {
+                            sites += BranchSite(name, descriptor, currentLine, nextSiteIndex, outcomeCount = labels.size + 1)
+                            nextSiteIndex++
+                        }
+
+                        override fun visitLookupSwitchInsn(
+                            dflt: Label,
+                            keys: IntArray,
+                            labels: Array<out Label>,
+                        ) {
+                            sites += BranchSite(name, descriptor, currentLine, nextSiteIndex, outcomeCount = labels.size + 1)
                             nextSiteIndex++
                         }
                     }
