@@ -5,7 +5,6 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
 
 class ProbeLayoutHashTest {
-
     @Test
     fun `same signatures produce the same hash`() {
         val signatures = listOf("bar()V", "foo(I)Z")

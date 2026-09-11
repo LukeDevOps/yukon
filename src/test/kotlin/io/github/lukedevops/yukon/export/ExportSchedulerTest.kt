@@ -22,11 +22,11 @@ private class RecordingExporter : Exporter {
 
 private class FailingExporter : Exporter {
     override fun exportDeltaBatch(batch: DeltaBatch) = throw RuntimeException("collector unreachable")
+
     override fun exportManifest(manifest: ProbeManifest) = throw RuntimeException("collector unreachable")
 }
 
 class ExportSchedulerTest {
-
     private val resource = ResourceAttributes("checkout", "1.0.0", "instance-1", "test")
     private val config = AgentConfig.parse("serviceName=checkout,serviceVersion=1.0.0,serviceInstanceId=instance-1,environment=test")
 
@@ -53,7 +53,14 @@ class ExportSchedulerTest {
         scheduler.flush()
 
         assertEquals(1, exporter.deltaBatches.size)
-        assertEquals(4L, exporter.deltaBatches.single().deltas.single().hitsSinceLastFlush)
+        assertEquals(
+            4L,
+            exporter.deltaBatches
+                .single()
+                .deltas
+                .single()
+                .hitsSinceLastFlush,
+        )
         assertTrue(registry.computeDeltaBatch(resource).deltas.isEmpty())
     }
 
@@ -66,7 +73,14 @@ class ExportSchedulerTest {
 
         scheduler.flush()
 
-        assertEquals(4L, registry.computeDeltaBatch(resource).deltas.single().hitsSinceLastFlush)
+        assertEquals(
+            4L,
+            registry
+                .computeDeltaBatch(resource)
+                .deltas
+                .single()
+                .hitsSinceLastFlush,
+        )
     }
 
     @Test
@@ -79,7 +93,14 @@ class ExportSchedulerTest {
         scheduler.flush()
 
         assertEquals(1, exporter.manifests.size)
-        assertEquals("com.example.Foo", exporter.manifests.single().probes.single().className)
+        assertEquals(
+            "com.example.Foo",
+            exporter.manifests
+                .single()
+                .probes
+                .single()
+                .className,
+        )
     }
 
     @Test
@@ -101,14 +122,17 @@ class ExportSchedulerTest {
         val registry = ProbeRegistry()
         registry.register("com.example.Foo", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "bar", "()V", 1)))
         var fail = true
-        val exporter = object : Exporter {
-            var manifestSends = 0
-            override fun exportDeltaBatch(batch: DeltaBatch) {}
-            override fun exportManifest(manifest: ProbeManifest) {
-                manifestSends++
-                if (fail) throw RuntimeException("collector unreachable")
+        val exporter =
+            object : Exporter {
+                var manifestSends = 0
+
+                override fun exportDeltaBatch(batch: DeltaBatch) {}
+
+                override fun exportManifest(manifest: ProbeManifest) {
+                    manifestSends++
+                    if (fail) throw RuntimeException("collector unreachable")
+                }
             }
-        }
         val scheduler = ExportScheduler(config, registry, exporter)
 
         scheduler.flush()

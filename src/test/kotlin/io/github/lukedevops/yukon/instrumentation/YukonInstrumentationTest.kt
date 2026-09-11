@@ -17,8 +17,14 @@ import kotlin.test.assertTrue
  * instrumentation is installed. Everything else (the JDK, [ProbeDispatch])
  * still resolves through the parent as normal.
  */
-private class FixtureClassLoader(urls: Array<URL>, parent: ClassLoader) : URLClassLoader(urls, parent) {
-    override fun loadClass(name: String, resolve: Boolean): Class<*> {
+private class FixtureClassLoader(
+    urls: Array<URL>,
+    parent: ClassLoader,
+) : URLClassLoader(urls, parent) {
+    override fun loadClass(
+        name: String,
+        resolve: Boolean,
+    ): Class<*> {
         if (!name.startsWith("com.example.target.")) return super.loadClass(name, resolve)
         synchronized(getClassLoadingLock(name)) {
             val existing = findLoadedClass(name)
@@ -30,7 +36,6 @@ private class FixtureClassLoader(urls: Array<URL>, parent: ClassLoader) : URLCla
 }
 
 class YukonInstrumentationTest {
-
     private fun loadFixtureFresh(): Any {
         val classesDir = File("build/classes/java/test")
         val loader = FixtureClassLoader(arrayOf(classesDir.toURI().toURL()), javaClass.classLoader)

@@ -4,7 +4,6 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 class ProbeDispatchTest {
-
     @Test
     fun `hit increments the registered array slot`() {
         val dispatch = ProbeDispatch()

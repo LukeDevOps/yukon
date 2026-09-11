@@ -10,7 +10,6 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 
 class HttpOtlpStyleExporterTest {
-
     private var server: HttpServer? = null
     private val requestCount = AtomicInteger(0)
     private val requestedPaths = mutableListOf<String>()
@@ -34,12 +33,13 @@ class HttpOtlpStyleExporterTest {
         return "http://localhost:${httpServer.address.port}"
     }
 
-    private fun exporterFor(endpoint: String) = HttpOtlpStyleExporter(
-        endpoint = endpoint,
-        maxAttempts = 5,
-        initialBackoff = Duration.ofMillis(1),
-        maxBackoff = Duration.ofMillis(10),
-    )
+    private fun exporterFor(endpoint: String) =
+        HttpOtlpStyleExporter(
+            endpoint = endpoint,
+            maxAttempts = 5,
+            initialBackoff = Duration.ofMillis(1),
+            maxBackoff = Duration.ofMillis(10),
+        )
 
     @Test
     fun `posts a delta batch to the deltas endpoint`() {

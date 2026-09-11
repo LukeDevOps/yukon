@@ -24,12 +24,14 @@ class ExportScheduler(
 ) {
     private val log = System.getLogger(ExportScheduler::class.java.name)
     private var executor: ScheduledExecutorService? = null
+
     @Volatile private var manifestSent = false
 
     fun start() {
-        val executor = Executors.newSingleThreadScheduledExecutor { runnable ->
-            Thread(runnable, "yukon-export").apply { isDaemon = true }
-        }
+        val executor =
+            Executors.newSingleThreadScheduledExecutor { runnable ->
+                Thread(runnable, "yukon-export").apply { isDaemon = true }
+            }
         this.executor = executor
         val intervalMillis = config.flushInterval.toMillis()
         val initialDelayMillis = if (intervalMillis > 0) Random.nextLong(intervalMillis) else 0L
@@ -71,10 +73,11 @@ class ExportScheduler(
         }
     }
 
-    private fun resourceAttributes() = ResourceAttributes(
-        serviceName = config.serviceName,
-        serviceVersion = config.serviceVersion,
-        serviceInstanceId = config.serviceInstanceId,
-        environment = config.environment,
-    )
+    private fun resourceAttributes() =
+        ResourceAttributes(
+            serviceName = config.serviceName,
+            serviceVersion = config.serviceVersion,
+            serviceInstanceId = config.serviceInstanceId,
+            environment = config.environment,
+        )
 }

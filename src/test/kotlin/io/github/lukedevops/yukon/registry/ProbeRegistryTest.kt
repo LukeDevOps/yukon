@@ -8,13 +8,13 @@ import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 class ProbeRegistryTest {
-
-    private val resource = ResourceAttributes(
-        serviceName = "checkout",
-        serviceVersion = "1.0.0",
-        serviceInstanceId = "instance-1",
-        environment = "test",
-    )
+    private val resource =
+        ResourceAttributes(
+            serviceName = "checkout",
+            serviceVersion = "1.0.0",
+            serviceInstanceId = "instance-1",
+            environment = "test",
+        )
 
     private fun methodProbes(count: Int): List<ProbeMeta> =
         (0 until count).map { ProbeMeta(ProbeKind.METHOD, "method$it", "()V", line = it) }
