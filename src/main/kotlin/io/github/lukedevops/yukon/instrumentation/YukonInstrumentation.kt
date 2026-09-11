@@ -45,7 +45,7 @@ class YukonInstrumentation(
 
     private fun typeMatcher(): ElementMatcher.Junction<TypeDescription> {
         val excluded: ElementMatcher.Junction<TypeDescription> =
-            not(isSynthetic<TypeDescription>()).and(not(nameStartsWith<TypeDescription>(AGENT_PACKAGE_PREFIX)))
+            not(isSynthetic<TypeDescription>()).and(not(nameStartsWith(AGENT_PACKAGE_PREFIX)))
         val prefixes = config.instrumentedPackagePrefixes
         if (prefixes.isEmpty()) return excluded
         val includesAny =
