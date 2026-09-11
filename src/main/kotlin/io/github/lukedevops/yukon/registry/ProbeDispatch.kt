@@ -9,13 +9,15 @@ import java.util.concurrent.ConcurrentHashMap
  * [ProbeRegistry] entry already owns.
  */
 class ProbeDispatch {
-
     companion object {
         @JvmField
         val INSTANCE = ProbeDispatch()
     }
 
-    private data class Slot(val counts: LongArray, val index: Int) {
+    private data class Slot(
+        val counts: LongArray,
+        val index: Int,
+    ) {
         override fun equals(other: Any?): Boolean {
             if (this === other) return true
             if (javaClass != other?.javaClass) return false
@@ -37,7 +39,11 @@ class ProbeDispatch {
 
     private val slots = ConcurrentHashMap<String, Slot>()
 
-    fun register(key: String, counts: LongArray, index: Int) {
+    fun register(
+        key: String,
+        counts: LongArray,
+        index: Int,
+    ) {
         slots[key] = Slot(counts, index)
     }
 

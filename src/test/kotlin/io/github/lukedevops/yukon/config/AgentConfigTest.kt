@@ -6,7 +6,6 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 
 class AgentConfigTest {
-
     @Test
     fun `null args fall back to defaults`() {
         val config = AgentConfig.parse(null)
@@ -21,10 +20,11 @@ class AgentConfigTest {
 
     @Test
     fun `parses comma-separated key=value pairs`() {
-        val config = AgentConfig.parse(
-            "serviceName=checkout,serviceVersion=1.2.3,environment=prod," +
-                "endpoint=https://collector.example.com,flushIntervalSeconds=30"
-        )
+        val config =
+            AgentConfig.parse(
+                "serviceName=checkout,serviceVersion=1.2.3,environment=prod," +
+                    "endpoint=https://collector.example.com,flushIntervalSeconds=30",
+            )
 
         assertEquals("checkout", config.serviceName)
         assertEquals("1.2.3", config.serviceVersion)

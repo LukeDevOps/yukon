@@ -9,9 +9,11 @@ import java.lang.instrument.Instrumentation
 
 /** `-javaagent:yukon-agent.jar` entry point. */
 object Agent {
-
     @JvmStatic
-    fun premain(agentArgs: String?, instrumentation: Instrumentation) {
+    fun premain(
+        agentArgs: String?,
+        instrumentation: Instrumentation,
+    ) {
         val config = AgentConfig.parse(agentArgs)
         val registry = ProbeRegistry()
 

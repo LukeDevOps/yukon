@@ -7,5 +7,6 @@ package io.github.lukedevops.yukon.export
  */
 interface Exporter {
     fun exportDeltaBatch(batch: DeltaBatch)
+
     fun exportManifest(manifest: ProbeManifest)
 }

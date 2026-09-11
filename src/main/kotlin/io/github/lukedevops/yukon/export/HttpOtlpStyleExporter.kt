@@ -22,7 +22,6 @@ class HttpOtlpStyleExporter(
     private val initialBackoff: Duration = Duration.ofMillis(200),
     private val maxBackoff: Duration = Duration.ofSeconds(30),
 ) : Exporter {
-
     override fun exportDeltaBatch(batch: DeltaBatch) {
         post("$endpoint/v1/yukon/deltas", JsonPayloadCodec.encode(batch))
     }
@@ -31,15 +30,20 @@ class HttpOtlpStyleExporter(
         post("$endpoint/v1/yukon/manifest", JsonPayloadCodec.encode(manifest))
     }
 
-    private fun post(uri: String, body: ByteArray) {
+    private fun post(
+        uri: String,
+        body: ByteArray,
+    ) {
         var backoff = initialBackoff
         var lastError: Exception? = null
         for (attempt in 1..maxAttempts) {
             try {
-                val request = HttpRequest.newBuilder(URI.create(uri))
-                    .header("Content-Type", "application/json")
-                    .POST(HttpRequest.BodyPublishers.ofByteArray(body))
-                    .build()
+                val request =
+                    HttpRequest
+                        .newBuilder(URI.create(uri))
+                        .header("Content-Type", "application/json")
+                        .POST(HttpRequest.BodyPublishers.ofByteArray(body))
+                        .build()
                 val response = httpClient.send(request, HttpResponse.BodyHandlers.discarding())
                 if (response.statusCode() in 200..299) return
                 lastError = ExportFailedException("yukon: unexpected status ${response.statusCode()} from $uri")
@@ -55,4 +59,6 @@ class HttpOtlpStyleExporter(
     }
 }
 
-class ExportFailedException(message: String) : RuntimeException(message)
+class ExportFailedException(
+    message: String,
+) : RuntimeException(message)

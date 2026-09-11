@@ -30,26 +30,28 @@ data class AgentConfig(
                 serviceInstanceId = options["serviceInstanceId"] ?: UUID.randomUUID().toString(),
                 environment = options["environment"],
                 collectorEndpoint = options["endpoint"] ?: DEFAULT_ENDPOINT,
-                flushInterval = options["flushIntervalSeconds"]
-                    ?.toLongOrNull()
-                    ?.let { Duration.ofSeconds(it) }
-                    ?: DEFAULT_FLUSH_INTERVAL,
-                instrumentedPackagePrefixes = options["includePackages"]
-                    ?.split(";")
-                    ?.map { it.trim() }
-                    ?.filter { it.isNotEmpty() }
-                    ?: emptyList(),
+                flushInterval =
+                    options["flushIntervalSeconds"]
+                        ?.toLongOrNull()
+                        ?.let { Duration.ofSeconds(it) }
+                        ?: DEFAULT_FLUSH_INTERVAL,
+                instrumentedPackagePrefixes =
+                    options["includePackages"]
+                        ?.split(";")
+                        ?.map { it.trim() }
+                        ?.filter { it.isNotEmpty() }
+                        ?: emptyList(),
             )
         }
 
         private fun parseOptions(agentArgs: String?): Map<String, String> {
             if (agentArgs.isNullOrBlank()) return emptyMap()
-            return agentArgs.split(",")
+            return agentArgs
+                .split(",")
                 .mapNotNull { pair ->
                     val separator = pair.indexOf('=')
                     if (separator <= 0) null else pair.take(separator).trim() to pair.substring(separator + 1).trim()
-                }
-                .toMap()
+                }.toMap()
         }
     }
 }

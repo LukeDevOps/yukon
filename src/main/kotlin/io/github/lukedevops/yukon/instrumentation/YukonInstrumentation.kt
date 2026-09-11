@@ -35,9 +35,9 @@ class YukonInstrumentation(
     private val config: AgentConfig,
     private val registry: ProbeRegistry,
 ) {
-
     fun install(instrumentation: Instrumentation) {
-        AgentBuilder.Default()
+        AgentBuilder
+            .Default()
             .type(typeMatcher())
             .transform { builder, typeDescription, _, _, _ -> instrument(builder, typeDescription) }
             .installOn(instrumentation)
@@ -48,9 +48,10 @@ class YukonInstrumentation(
             not(isSynthetic<TypeDescription>()).and(not(nameStartsWith<TypeDescription>(AGENT_PACKAGE_PREFIX)))
         val prefixes = config.instrumentedPackagePrefixes
         if (prefixes.isEmpty()) return excluded
-        val includesAny = prefixes
-            .map { nameStartsWith<TypeDescription>(it) }
-            .reduce { a, b -> a.or(b) }
+        val includesAny =
+            prefixes
+                .map { nameStartsWith<TypeDescription>(it) }
+                .reduce { a, b -> a.or(b) }
         return excluded.and(includesAny)
     }
 
@@ -78,8 +79,10 @@ class YukonInstrumentation(
             .and(not(isBridge()))
             .and(not(isTypeInitializer()))
 
-    private fun originKey(type: TypeDescription, method: MethodDescription): String =
-        "${type.name}:${method.internalName}:${method.descriptor}"
+    private fun originKey(
+        type: TypeDescription,
+        method: MethodDescription,
+    ): String = "${type.name}:${method.internalName}:${method.descriptor}"
 
     private companion object {
         const val AGENT_PACKAGE_PREFIX = "io.github.lukedevops.yukon."

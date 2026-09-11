@@ -8,7 +8,6 @@ import java.nio.charset.StandardCharsets
  * interface doesn't need to change when this codec is swapped out for one.
  */
 object JsonPayloadCodec {
-
     fun encode(batch: DeltaBatch): ByteArray {
         val sb = StringBuilder()
         sb.append('{')
@@ -52,7 +51,10 @@ object JsonPayloadCodec {
         return sb.toString().toByteArray(StandardCharsets.UTF_8)
     }
 
-    private fun writeResource(sb: StringBuilder, resource: ResourceAttributes) {
+    private fun writeResource(
+        sb: StringBuilder,
+        resource: ResourceAttributes,
+    ) {
         sb.append('{')
         sb.append("\"serviceName\":").append(quote(resource.serviceName))
         sb.append(",\"serviceVersion\":").append(resource.serviceVersion?.let { quote(it) } ?: "null")

@@ -22,8 +22,10 @@ import java.util.concurrent.atomic.AtomicInteger
  * merging counts that no longer mean anything against new bytecode.
  */
 class ProbeRegistry {
-
-    private data class RegistryKey(val className: String, val layoutHash: Long)
+    private data class RegistryKey(
+        val className: String,
+        val layoutHash: Long,
+    )
 
     private class ClassEntry(
         val classId: Int,
@@ -44,16 +46,21 @@ class ProbeRegistry {
      * in this class increments; repeat calls for an unchanged (className,
      * layoutHash) return the same array instance.
      */
-    fun register(className: String, layoutHash: Long, probes: List<ProbeMeta>): LongArray {
+    fun register(
+        className: String,
+        layoutHash: Long,
+        probes: List<ProbeMeta>,
+    ): LongArray {
         val key = RegistryKey(className, layoutHash)
-        val entry = entriesByKey.computeIfAbsent(key) {
-            ClassEntry(
-                classId = nextClassId.getAndIncrement(),
-                className = className,
-                probes = probes,
-                counts = LongArray(probes.size),
-            )
-        }
+        val entry =
+            entriesByKey.computeIfAbsent(key) {
+                ClassEntry(
+                    classId = nextClassId.getAndIncrement(),
+                    className = className,
+                    probes = probes,
+                    counts = LongArray(probes.size),
+                )
+            }
         return entry.counts
     }
 
@@ -74,13 +81,14 @@ class ProbeRegistry {
                 if (entry.firstSeenAt[index] == 0L) {
                     entry.firstSeenAt[index] = System.currentTimeMillis()
                 }
-                deltas += ProbeDelta(
-                    classId = entry.classId,
-                    probeIndex = index,
-                    kind = entry.probes[index].kind,
-                    firstSeenAt = entry.firstSeenAt[index],
-                    hitsSinceLastFlush = delta,
-                )
+                deltas +=
+                    ProbeDelta(
+                        classId = entry.classId,
+                        probeIndex = index,
+                        kind = entry.probes[index].kind,
+                        firstSeenAt = entry.firstSeenAt[index],
+                        hitsSinceLastFlush = delta,
+                    )
             }
         }
         return DeltaBatch(resource, deltas)
@@ -100,21 +108,25 @@ class ProbeRegistry {
     }
 
     /** Sent once per (service, version) so the collector can resolve probe IDs to source. */
-    fun manifest(serviceName: String, serviceVersion: String?): ProbeManifest {
-        val locations = entriesByKey.values.flatMap { entry ->
-            entry.probes.mapIndexed { index, meta ->
-                ProbeLocation(
-                    classId = entry.classId,
-                    probeIndex = index,
-                    kind = meta.kind,
-                    className = entry.className,
-                    methodName = meta.methodName,
-                    methodDescriptor = meta.methodDescriptor,
-                    line = meta.line,
-                    branchIndex = meta.branchIndex,
-                )
+    fun manifest(
+        serviceName: String,
+        serviceVersion: String?,
+    ): ProbeManifest {
+        val locations =
+            entriesByKey.values.flatMap { entry ->
+                entry.probes.mapIndexed { index, meta ->
+                    ProbeLocation(
+                        classId = entry.classId,
+                        probeIndex = index,
+                        kind = meta.kind,
+                        className = entry.className,
+                        methodName = meta.methodName,
+                        methodDescriptor = meta.methodDescriptor,
+                        line = meta.line,
+                        branchIndex = meta.branchIndex,
+                    )
+                }
             }
-        }
         return ProbeManifest(serviceName, serviceVersion, locations)
     }
 }
