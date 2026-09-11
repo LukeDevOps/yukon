@@ -42,7 +42,7 @@ class BranchProbeAsmVisitorWrapper(
         readerFlags: Int,
     ): ClassVisitor {
         val ownerInternalName = instrumentedType.internalName
-        var nextSiteIndex = 0
+        var nextSlot = 0
 
         return object : ClassVisitor(Opcodes.ASM9, classVisitor) {
             override fun visitMethod(
@@ -54,7 +54,11 @@ class BranchProbeAsmVisitorWrapper(
             ): MethodVisitor {
                 val delegate = super.visitMethod(access, name, descriptor, signature, exceptions)
                 if (!eligibleMethods(name, descriptor)) return delegate
-                return BranchProbeMethodVisitor(delegate, ownerInternalName, probeIndexBase) { nextSiteIndex++ }
+                return BranchProbeMethodVisitor(delegate, ownerInternalName, probeIndexBase) { outcomeCount ->
+                    val base = nextSlot
+                    nextSlot += outcomeCount
+                    base
+                }
             }
         }
     }

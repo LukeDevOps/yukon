@@ -78,21 +78,20 @@ class YukonInstrumentation(
         val branchSites = findBranchSites(typeDescription, classLoader, methods)
 
         val methodProbes = methods.map { ProbeMeta(ProbeKind.METHOD, it.internalName, it.descriptor, line = -1) }
-        // Each site becomes two adjacent slots: the even one counts the outcome that jumps
-        // to the site's original target, the odd one counts falling through past the jump.
+        // Each site contributes `outcomeCount` adjacent slots (2 for a conditional jump; case
+        // count + 1 for a switch), in the same order BranchProbeAsmVisitorWrapper allocates them.
         val branchProbes =
-            branchSites.flatMap { site ->
-                listOf(
-                    ProbeMeta(ProbeKind.BRANCH, site.methodName, site.methodDescriptor, site.line, branchIndex = site.siteIndex * 2),
-                    ProbeMeta(ProbeKind.BRANCH, site.methodName, site.methodDescriptor, site.line, branchIndex = site.siteIndex * 2 + 1),
-                )
-            }
+            branchSites
+                .flatMap { site -> List(site.outcomeCount) { site } }
+                .mapIndexed { branchIndex, site ->
+                    ProbeMeta(ProbeKind.BRANCH, site.methodName, site.methodDescriptor, site.line, branchIndex = branchIndex)
+                }
         val probes = methodProbes + branchProbes
 
         val layoutHash =
             ProbeLayoutHash.of(
                 methods.map { it.internalName + it.descriptor } +
-                    branchSites.map { "${it.methodName}${it.methodDescriptor}#branch${it.siteIndex}" },
+                    branchSites.map { "${it.methodName}${it.methodDescriptor}#branch${it.siteIndex}x${it.outcomeCount}" },
             )
         val counts = registry.register(typeDescription.name, layoutHash, probes)
 
