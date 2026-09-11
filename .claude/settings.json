@@ -1,0 +1,22 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh .claude/hooks/commit-gate.sh",
+            "statusMessage": "Checking commit is standalone..."
+          },
+          {
+            "type": "agent",
+            "if": "Bash(git commit*)",
+            "prompt": "A `git commit` is about to run in this repo. Before allowing it, review what's actually being committed: run `git diff --cached` and `git status` yourself. Check for real problems: obvious bugs or broken code, leftover debug statements, secrets or credentials, or a commit message that doesn't match the diff. If the change looks fine, allow it. If you find a genuine problem, deny it with a specific, actionable reason (not a nitpick). Command being run: $ARGUMENTS",
+            "statusMessage": "Reviewing staged changes before commit..."
+          }
+        ]
+      }
+    ]
+  }
+}
