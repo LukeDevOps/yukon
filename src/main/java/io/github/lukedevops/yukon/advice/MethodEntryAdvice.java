@@ -1,17 +1,22 @@
 package io.github.lukedevops.yukon.advice;
 
-import io.github.lukedevops.yukon.registry.ProbeDispatch;
 import net.bytebuddy.asm.Advice;
 
 /**
- * Inlined into every instrumented method's entry point. The origin string is
- * resolved by ByteBuddy at weave time into a compile-time constant, so this
- * reduces to a single map lookup plus an array increment per call.
+ * Inlined into every instrumented method's entry point. {@code probes} resolves to a
+ * synthetic static field the instrumenting code injects onto the same class, holding the
+ * exact {@code long[]} its {@link io.github.lukedevops.yukon.registry.ProbeRegistry} entry
+ * owns; {@code index} is a per-method constant bound at weave time. Both are direct reads,
+ * so a hit is one array store with no lookup of any kind.
  */
 public class MethodEntryAdvice {
 
+    public static final String PROBE_ARRAY_FIELD = "$yukonProbeCounts";
+
     @Advice.OnMethodEnter
-    public static void onEnter(@Advice.Origin("#t:#m:#d") String originKey) {
-        ProbeDispatch.INSTANCE.hit(originKey);
+    public static void onEnter(
+            @Advice.FieldValue(PROBE_ARRAY_FIELD) long[] probes,
+            @ProbeIndex int index) {
+        probes[index]++;
     }
 }
