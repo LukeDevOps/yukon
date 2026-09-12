@@ -39,8 +39,16 @@ data class ProbeLocation(
     val branchIndex: Int?,
 )
 
+/** A class the agent matched but could not instrument, so it never gets a classId or any probes. */
+data class SkippedClass(
+    val className: String,
+    val reason: String,
+    val skippedAt: Long,
+)
+
 data class ProbeManifest(
     val serviceName: String,
     val serviceVersion: String?,
     val probes: List<ProbeLocation>,
+    val skippedClasses: List<SkippedClass> = emptyList(),
 )

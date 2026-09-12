@@ -6,6 +6,7 @@ import io.github.lukedevops.yukon.proto.ProbeKind as ProtoProbeKind
 import io.github.lukedevops.yukon.proto.ProbeLocation as ProtoProbeLocation
 import io.github.lukedevops.yukon.proto.ProbeManifest as ProtoProbeManifest
 import io.github.lukedevops.yukon.proto.ResourceAttributes as ProtoResourceAttributes
+import io.github.lukedevops.yukon.proto.SkippedClass as ProtoSkippedClass
 
 /**
  * Encodes [DeltaBatch] and [ProbeManifest] to the wire schema defined in
@@ -51,9 +52,18 @@ object ProtoPayloadCodec {
                 .newBuilder()
                 .setServiceName(manifest.serviceName)
                 .addAllProbes(manifest.probes.map { toProto(it) })
+                .addAllSkippedClasses(manifest.skippedClasses.map { toProto(it) })
         manifest.serviceVersion?.let { builder.serviceVersion = it }
         return builder.build()
     }
+
+    private fun toProto(skippedClass: SkippedClass): ProtoSkippedClass =
+        ProtoSkippedClass
+            .newBuilder()
+            .setClassName(skippedClass.className)
+            .setReason(skippedClass.reason)
+            .setSkippedAt(skippedClass.skippedAt)
+            .build()
 
     private fun toProto(location: ProbeLocation): ProtoProbeLocation {
         val builder =

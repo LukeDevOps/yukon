@@ -145,6 +145,26 @@ class ExportSchedulerTest {
     }
 
     @Test
+    fun `a skipped class with no probes at all still triggers a manifest send`() {
+        val registry = ProbeRegistry()
+        registry.recordSkipped("com.example.Foo", reason = "annotation not supported on TYPE")
+        val exporter = RecordingExporter()
+        val scheduler = ExportScheduler(config, registry, exporter)
+
+        scheduler.flush()
+
+        assertEquals(1, exporter.manifests.size)
+        assertEquals(
+            "com.example.Foo",
+            exporter.manifests
+                .single()
+                .skippedClasses
+                .single()
+                .className,
+        )
+    }
+
+    @Test
     fun `a failed manifest send is retried on the next flush`() {
         val registry = ProbeRegistry()
         registry.register("com.example.Foo", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "bar", "()V", 1)))

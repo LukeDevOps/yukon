@@ -29,7 +29,10 @@ import net.bytebuddy.matcher.ElementMatchers.isSynthetic
 import net.bytebuddy.matcher.ElementMatchers.isTypeInitializer
 import net.bytebuddy.matcher.ElementMatchers.nameStartsWith
 import net.bytebuddy.matcher.ElementMatchers.not
+import net.bytebuddy.utility.JavaModule
 import java.io.IOException
+import java.lang.System.Logger.Level
+import java.lang.annotation.ElementType
 import java.lang.instrument.Instrumentation
 
 /**
@@ -48,23 +51,81 @@ class YukonInstrumentation(
     private val config: AgentConfig,
     private val registry: ProbeRegistry,
 ) {
+    private val log = System.getLogger(YukonInstrumentation::class.java.name)
+
     fun install(instrumentation: Instrumentation): ResettableClassFileTransformer =
         AgentBuilder
             .Default()
+            .with(TransformFailureListener())
             .type(typeMatcher())
             .transform { builder, typeDescription, classLoader, _, _ -> instrument(builder, typeDescription, classLoader) }
             .installOn(instrumentation)
+
+    /**
+     * A class transform can still fail after [instrument] has already called
+     * [ProbeRegistry.register]: ByteBuddy only actually rewrites and validates
+     * the bytecode once this callback returns, so a failure here is reported
+     * asynchronously relative to that speculative registration. Left alone,
+     * the manifest would permanently list that class's probes as known but
+     * never hit, indistinguishable from genuinely dead code. Rolling the
+     * registration back on failure keeps the manifest honest: a class this
+     * agent couldn't safely instrument is simply absent, not falsely "dead".
+     */
+    private inner class TransformFailureListener : AgentBuilder.Listener.Adapter() {
+        override fun onError(
+            typeName: String,
+            classLoader: ClassLoader?,
+            module: JavaModule?,
+            loaded: Boolean,
+            throwable: Throwable,
+        ) {
+            log.log(Level.WARNING, "yukon: instrumentation failed for $typeName, class will run uninstrumented", throwable)
+            registry.unregister(typeName)
+            registry.recordSkipped(typeName, throwable.message ?: throwable.toString())
+        }
+    }
 
     private fun typeMatcher(): ElementMatcher.Junction<TypeDescription> {
         val excluded: ElementMatcher.Junction<TypeDescription> =
             not(isSynthetic<TypeDescription>()).and(not(nameStartsWith(AGENT_PACKAGE_PREFIX)))
         val prefixes = config.instrumentedPackagePrefixes
-        if (prefixes.isEmpty()) return excluded
-        val includesAny =
-            prefixes
-                .map { nameStartsWith<TypeDescription>(it) }
-                .reduce { a, b -> a.or(b) }
-        return excluded.and(includesAny)
+        val matcher =
+            if (prefixes.isEmpty()) {
+                excluded
+            } else {
+                val includesAny =
+                    prefixes
+                        .map { nameStartsWith<TypeDescription>(it) }
+                        .reduce { a, b -> a.or(b) }
+                excluded.and(includesAny)
+            }
+        return matcher.and { typeDescription -> isSafeToInstrument(typeDescription) }
+    }
+
+    /**
+     * `AgentBuilder` commits to rebasing a type the moment it matches `.type(...)`,
+     * before [instrument] (the `.transform()` callback) ever runs: a type excluded
+     * here never reaches that callback at all. That commitment is what makes this
+     * the only point that can actually prevent the crash described below, rather
+     * than just contain its aftermath: returning the original builder unchanged
+     * from [instrument] does not stop ByteBuddy's later `.make()` call on the
+     * already-rebased type from crashing regardless.
+     *
+     * ByteBuddy refuses to redefine any type carrying a declared annotation whose
+     * own `@Target` doesn't legally support [ElementType.TYPE], throwing
+     * `IllegalStateException` deep inside its own validation. Kotlin's compiler
+     * attaches `@kotlin.jvm.JvmName` (targeted at functions/properties/files, per
+     * its own `@Target`) directly onto the class file for any
+     * `@file:JvmName`-annotated source file, which trips exactly this check:
+     * legal bytecode, but not a shape ByteBuddy's redefinition path accepts.
+     */
+    private fun isSafeToInstrument(typeDescription: TypeDescription): Boolean {
+        val unsupported = typeDescription.declaredAnnotations.firstOrNull { !it.isSupportedOn(ElementType.TYPE) } ?: return true
+        registry.recordSkipped(
+            typeDescription.name,
+            "@${unsupported.annotationType.name} is not a legal annotation on a class per its own @Target",
+        )
+        return false
     }
 
     private fun instrument(
