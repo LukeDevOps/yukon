@@ -25,8 +25,6 @@ class ExportScheduler(
     private val log = System.getLogger(ExportScheduler::class.java.name)
     private var executor: ScheduledExecutorService? = null
 
-    @Volatile private var manifestSent = false
-
     fun start() {
         val executor =
             Executors.newSingleThreadScheduledExecutor { runnable ->
@@ -43,19 +41,19 @@ class ExportScheduler(
     }
 
     /**
-     * One flush attempt. Sends the probe manifest first if it hasn't gone out
-     * yet. That's deferred to the first flush rather than sent at agent
-     * startup, so it actually has probes in it once classes have started
-     * loading. Then it computes the delta since the last acknowledged
-     * baseline and sends it, only advancing the baseline on success. Neither
-     * send has an explicit retry queue: a failure simply leaves the relevant
-     * state where it is, so the next tick naturally retries.
+     * One flush attempt. Sends whatever manifest entries haven't gone out
+     * yet, then the delta since the last acknowledged baseline. The delta
+     * batch is sent even when empty: with no signal otherwise, a collector
+     * can't tell an instance that's alive but genuinely idle from one that's
+     * crashed or lost its network path, so an empty batch doubles as a
+     * liveness heartbeat. Neither send has an explicit retry queue: a
+     * failure simply leaves the relevant state where it is, so the next tick
+     * naturally retries.
      */
     fun flush() {
-        if (!manifestSent) sendManifest()
+        sendManifestDelta()
 
         val batch = registry.computeDeltaBatch(resourceAttributes())
-        if (batch.deltas.isEmpty()) return
         try {
             exporter.exportDeltaBatch(batch)
             registry.advanceBaseline()
@@ -64,10 +62,21 @@ class ExportScheduler(
         }
     }
 
-    private fun sendManifest() {
+    /**
+     * Sends only the probes not yet included in a successfully delivered
+     * manifest, deferred to the first flush rather than agent startup so it
+     * actually has probes in it once classes have started loading. Classes
+     * that register later in the process's life (lazy singletons, a code
+     * path exercised for the first time) get picked up here too, rather than
+     * being permanently absent from every manifest because an earlier send
+     * already succeeded.
+     */
+    private fun sendManifestDelta() {
+        val manifest = registry.computeManifestDelta(config.serviceName, config.serviceVersion)
+        if (manifest.probes.isEmpty()) return
         try {
-            exporter.exportManifest(registry.manifest(config.serviceName, config.serviceVersion))
-            manifestSent = true
+            exporter.exportManifest(manifest)
+            registry.advanceManifestBaseline()
         } catch (e: Exception) {
             log.log(Level.WARNING, "yukon: manifest export failed, will retry next flush", e)
         }

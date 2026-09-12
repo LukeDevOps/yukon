@@ -169,4 +169,55 @@ class ProbeRegistryTest {
         assertEquals(10, location.line)
         assertEquals(ProbeKind.METHOD, location.kind)
     }
+
+    @Test
+    fun `computeManifestDelta reports probes not yet included in a sent manifest`() {
+        val registry = ProbeRegistry()
+        registry.register(
+            "com.example.Foo",
+            layoutHash = 1L,
+            probes = listOf(ProbeMeta(ProbeKind.METHOD, "bar", "()V", line = 10)),
+        )
+
+        val delta = registry.computeManifestDelta(serviceName = "checkout", serviceVersion = "1.0.0")
+
+        assertEquals("com.example.Foo", delta.probes.single().className)
+    }
+
+    @Test
+    fun `advanceManifestBaseline marks reported classes so they are not sent again`() {
+        val registry = ProbeRegistry()
+        registry.register("com.example.Foo", layoutHash = 1L, probes = methodProbes(1))
+
+        registry.computeManifestDelta(serviceName = "checkout", serviceVersion = null)
+        registry.advanceManifestBaseline()
+        val secondDelta = registry.computeManifestDelta(serviceName = "checkout", serviceVersion = null)
+
+        assertTrue(secondDelta.probes.isEmpty())
+    }
+
+    @Test
+    fun `a class registered after the manifest baseline advances appears in the next delta`() {
+        val registry = ProbeRegistry()
+        registry.register("com.example.Foo", layoutHash = 1L, probes = methodProbes(1))
+        registry.computeManifestDelta(serviceName = "checkout", serviceVersion = null)
+        registry.advanceManifestBaseline()
+
+        registry.register("com.example.Bar", layoutHash = 1L, probes = methodProbes(1))
+        val secondDelta = registry.computeManifestDelta(serviceName = "checkout", serviceVersion = null)
+
+        assertEquals("com.example.Bar", secondDelta.probes.single().className)
+    }
+
+    @Test
+    fun `a failed manifest send is not advanced, so the next computeManifestDelta retries the same classes`() {
+        val registry = ProbeRegistry()
+        registry.register("com.example.Foo", layoutHash = 1L, probes = methodProbes(1))
+
+        registry.computeManifestDelta(serviceName = "checkout", serviceVersion = null)
+        // advanceManifestBaseline is never called here, simulating a failed send.
+        val retryDelta = registry.computeManifestDelta(serviceName = "checkout", serviceVersion = null)
+
+        assertEquals("com.example.Foo", retryDelta.probes.single().className)
+    }
 }
