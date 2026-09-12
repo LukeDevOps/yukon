@@ -1,0 +1,18 @@
+version: v2
+modules:
+  - path: src/main/proto
+    name: buf.build/lukedevops-oss/yukon
+lint:
+  use:
+    - STANDARD
+  except:
+    # Renaming to satisfy these would rename the generated Java enum
+    # constants and move the package (yukon -> yukon.v1), a breaking change
+    # for the agent and collector's existing generated code. Not worth it
+    # for a schema that already ships.
+    - PACKAGE_DIRECTORY_MATCH
+    - PACKAGE_VERSION_SUFFIX
+    - ENUM_VALUE_PREFIX
+breaking:
+  use:
+    - FILE
