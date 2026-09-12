@@ -220,4 +220,83 @@ class ProbeRegistryTest {
 
         assertEquals("com.example.Foo", retryDelta.probes.single().className)
     }
+
+    @Test
+    fun `unregister removes a class so it no longer appears in the manifest`() {
+        val registry = ProbeRegistry()
+        registry.register("com.example.Foo", layoutHash = 1L, probes = methodProbes(1))
+
+        registry.unregister("com.example.Foo")
+
+        assertTrue(registry.manifest(serviceName = "checkout", serviceVersion = null).probes.isEmpty())
+    }
+
+    @Test
+    fun `unregister only removes the named class, leaving others intact`() {
+        val registry = ProbeRegistry()
+        registry.register("com.example.Foo", layoutHash = 1L, probes = methodProbes(1))
+        registry.register("com.example.Bar", layoutHash = 1L, probes = methodProbes(1))
+
+        registry.unregister("com.example.Foo")
+
+        assertEquals("com.example.Bar", registry.manifest(serviceName = "checkout", serviceVersion = null).probes.single().className)
+    }
+
+    @Test
+    fun `recordSkipped adds a class to the manifest with no probes`() {
+        val registry = ProbeRegistry()
+
+        registry.recordSkipped("com.example.Foo", reason = "annotation not supported on TYPE")
+
+        val manifest = registry.manifest(serviceName = "checkout", serviceVersion = null)
+        val skipped = manifest.skippedClasses.single()
+        assertEquals("com.example.Foo", skipped.className)
+        assertEquals("annotation not supported on TYPE", skipped.reason)
+        assertTrue(manifest.probes.isEmpty())
+    }
+
+    @Test
+    fun `recordSkipped is idempotent, keeping the first reason and timestamp`() {
+        val registry = ProbeRegistry()
+
+        registry.recordSkipped("com.example.Foo", reason = "first reason")
+        registry.recordSkipped("com.example.Foo", reason = "second reason")
+
+        val skipped = registry.manifest(serviceName = "checkout", serviceVersion = null).skippedClasses.single()
+        assertEquals("first reason", skipped.reason)
+    }
+
+    @Test
+    fun `computeManifestDelta reports skipped classes not yet included in a sent manifest`() {
+        val registry = ProbeRegistry()
+        registry.recordSkipped("com.example.Foo", reason = "annotation not supported on TYPE")
+
+        val delta = registry.computeManifestDelta(serviceName = "checkout", serviceVersion = null)
+
+        assertEquals("com.example.Foo", delta.skippedClasses.single().className)
+    }
+
+    @Test
+    fun `advanceManifestBaseline marks a skipped class as sent so it is not repeated`() {
+        val registry = ProbeRegistry()
+        registry.recordSkipped("com.example.Foo", reason = "annotation not supported on TYPE")
+
+        registry.computeManifestDelta(serviceName = "checkout", serviceVersion = null)
+        registry.advanceManifestBaseline()
+        val secondDelta = registry.computeManifestDelta(serviceName = "checkout", serviceVersion = null)
+
+        assertTrue(secondDelta.skippedClasses.isEmpty())
+    }
+
+    @Test
+    fun `a failed manifest send is not advanced, so the next computeManifestDelta retries the same skipped class`() {
+        val registry = ProbeRegistry()
+        registry.recordSkipped("com.example.Foo", reason = "annotation not supported on TYPE")
+
+        registry.computeManifestDelta(serviceName = "checkout", serviceVersion = null)
+        // advanceManifestBaseline is never called here, simulating a failed send.
+        val retryDelta = registry.computeManifestDelta(serviceName = "checkout", serviceVersion = null)
+
+        assertEquals("com.example.Foo", retryDelta.skippedClasses.single().className)
+    }
 }

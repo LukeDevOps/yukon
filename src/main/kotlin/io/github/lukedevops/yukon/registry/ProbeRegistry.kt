@@ -5,6 +5,7 @@ import io.github.lukedevops.yukon.export.ProbeDelta
 import io.github.lukedevops.yukon.export.ProbeLocation
 import io.github.lukedevops.yukon.export.ProbeManifest
 import io.github.lukedevops.yukon.export.ResourceAttributes
+import io.github.lukedevops.yukon.export.SkippedClass
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -40,7 +41,16 @@ class ProbeRegistry {
         var pendingManifestInclusion: Boolean = false
     }
 
+    private class SkippedEntry(
+        val reason: String,
+        val skippedAt: Long,
+    ) {
+        var manifestIncluded: Boolean = false
+        var pendingManifestInclusion: Boolean = false
+    }
+
     private val entriesByKey = ConcurrentHashMap<RegistryKey, ClassEntry>()
+    private val skippedByClassName = ConcurrentHashMap<String, SkippedEntry>()
     private val nextClassId = AtomicInteger(0)
 
     /**
@@ -64,6 +74,34 @@ class ProbeRegistry {
                 )
             }
         return entry.counts
+    }
+
+    /**
+     * Removes every entry registered for [className], regardless of layout hash.
+     * For a class whose instrumentation was registered speculatively but then
+     * failed to actually weave (e.g. bytecode ByteBuddy refuses to redefine),
+     * this keeps it out of every future manifest instead of permanently
+     * reporting probes that can never fire as "never hit".
+     */
+    fun unregister(className: String) {
+        entriesByKey.keys.removeIf { it.className == className }
+    }
+
+    /**
+     * Records a class the agent matched but could not instrument, so it's
+     * visible on the wire instead of only in an agent-local log line. Never
+     * gets a `classId` or any probes, since it never reaches [register].
+     * Idempotent per class name: a repeat call (e.g. the same class loaded
+     * by a second classloader) keeps the first reason and timestamp rather
+     * than overwriting them.
+     */
+    fun recordSkipped(
+        className: String,
+        reason: String,
+    ) {
+        skippedByClassName.computeIfAbsent(className) {
+            SkippedEntry(reason, System.currentTimeMillis())
+        }
     }
 
     /**
@@ -129,7 +167,11 @@ class ProbeRegistry {
                     )
                 }
             }
-        return ProbeManifest(serviceName, serviceVersion, locations)
+        val skipped =
+            skippedByClassName.map { (className, entry) ->
+                SkippedClass(className, entry.reason, entry.skippedAt)
+            }
+        return ProbeManifest(serviceName, serviceVersion, locations, skipped)
     }
 
     /**
@@ -163,7 +205,13 @@ class ProbeRegistry {
                     )
             }
         }
-        return ProbeManifest(serviceName, serviceVersion, locations)
+        val skipped = mutableListOf<SkippedClass>()
+        for ((className, entry) in skippedByClassName) {
+            entry.pendingManifestInclusion = !entry.manifestIncluded
+            if (!entry.pendingManifestInclusion) continue
+            skipped += SkippedClass(className, entry.reason, entry.skippedAt)
+        }
+        return ProbeManifest(serviceName, serviceVersion, locations, skipped)
     }
 
     /**
@@ -174,6 +222,9 @@ class ProbeRegistry {
      */
     fun advanceManifestBaseline() {
         for (entry in entriesByKey.values) {
+            if (entry.pendingManifestInclusion) entry.manifestIncluded = true
+        }
+        for (entry in skippedByClassName.values) {
             if (entry.pendingManifestInclusion) entry.manifestIncluded = true
         }
     }

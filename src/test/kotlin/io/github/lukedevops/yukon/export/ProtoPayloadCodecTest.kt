@@ -107,4 +107,29 @@ class ProtoPayloadCodecTest {
 
         assertFalse(decoded.hasServiceVersion())
     }
+
+    @Test
+    fun `encodes skipped classes on the manifest`() {
+        val manifest =
+            ProbeManifest(
+                serviceName = "checkout",
+                serviceVersion = null,
+                probes = emptyList(),
+                skippedClasses =
+                    listOf(
+                        SkippedClass(
+                            className = "com.example.Foo",
+                            reason = "annotation not supported on TYPE",
+                            skippedAt = 1000L,
+                        ),
+                    ),
+            )
+
+        val decoded = ProtoProbeManifest.parseFrom(ProtoPayloadCodec.encode(manifest))
+
+        val skipped = decoded.skippedClassesList.single()
+        assertEquals("com.example.Foo", skipped.className)
+        assertEquals("annotation not supported on TYPE", skipped.reason)
+        assertEquals(1000L, skipped.skippedAt)
+    }
 }

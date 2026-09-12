@@ -49,6 +49,17 @@ tasks.test {
 
 val agentMainClass = "io.github.lukedevops.yukon.Agent"
 
+// The plain jar task would otherwise write to the same build/libs/yukon-*.jar
+// path as shadowJar below (its classifier is cleared to make that the single
+// distributable file), and whichever task happened to run last would win,
+// silently overwriting the shaded agent jar with one missing the
+// Premain-Class manifest attribute and the relocated dependencies. Only
+// shadowJar's output is ever meant to be distributed or used as the
+// -javaagent jar, so the plain jar task is disabled outright.
+tasks.jar {
+    enabled = false
+}
+
 tasks.shadowJar {
     archiveClassifier.set("")
 
