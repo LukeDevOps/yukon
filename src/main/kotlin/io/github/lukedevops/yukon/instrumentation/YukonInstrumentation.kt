@@ -81,7 +81,7 @@ class YukonInstrumentation(
             throwable: Throwable,
         ) {
             log.log(Level.WARNING, "yukon: instrumentation failed for $typeName, class will run uninstrumented", throwable)
-            registry.unregister(typeName)
+            registry.unregister(typeName, classLoader)
             registry.recordSkipped(typeName, throwable.message ?: throwable.toString())
         }
     }
@@ -157,7 +157,7 @@ class YukonInstrumentation(
                 methods.map { it.internalName + it.descriptor } +
                     branchSites.map { "${it.methodName}${it.methodDescriptor}#branch${it.siteIndex}x${it.outcomeCount}" },
             )
-        val counts = registry.register(typeDescription.name, layoutHash, probes)
+        val counts = registry.register(typeDescription.name, layoutHash, probes, classLoader)
 
         var instrumented =
             builder

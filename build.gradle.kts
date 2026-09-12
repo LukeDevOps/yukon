@@ -71,6 +71,18 @@ tasks.shadowJar {
     // own, differently-versioned copy on the classpath.
     relocate("com.google.protobuf", "io.github.lukedevops.yukon.shaded.protobuf")
 
+    // Most of the agent itself is Kotlin, so kotlin-stdlib is unavoidably on this jar's own
+    // classpath too. Left unrelocated, it collides exactly the same way ByteBuddy and protobuf
+    // would: a Kotlin target app almost certainly carries its own, possibly differently-versioned
+    // copy of the same classes on the system classloader the agent shares with it.
+    relocate("kotlin", "io.github.lukedevops.yukon.shaded.kotlin")
+
+    // Transitive dependency of kotlin-stdlib (org.jetbrains:annotations). Same collision
+    // rationale, lower stakes since these are stable marker annotations, but no reason to leave
+    // them unshaded either.
+    relocate("org.jetbrains.annotations", "io.github.lukedevops.yukon.shaded.annotations")
+    relocate("org.intellij.lang.annotations", "io.github.lukedevops.yukon.shaded.intellij.annotations")
+
     manifest {
         attributes(
             "Premain-Class" to agentMainClass,
