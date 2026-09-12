@@ -23,11 +23,11 @@ class HttpOtlpStyleExporter(
     private val maxBackoff: Duration = Duration.ofSeconds(30),
 ) : Exporter {
     override fun exportDeltaBatch(batch: DeltaBatch) {
-        post("$endpoint/v1/yukon/deltas", JsonPayloadCodec.encode(batch))
+        post("$endpoint/v1/yukon/deltas", ProtoPayloadCodec.encode(batch))
     }
 
     override fun exportManifest(manifest: ProbeManifest) {
-        post("$endpoint/v1/yukon/manifest", JsonPayloadCodec.encode(manifest))
+        post("$endpoint/v1/yukon/manifest", ProtoPayloadCodec.encode(manifest))
     }
 
     private fun post(
@@ -41,7 +41,7 @@ class HttpOtlpStyleExporter(
                 val request =
                     HttpRequest
                         .newBuilder(URI.create(uri))
-                        .header("Content-Type", "application/json")
+                        .header("Content-Type", "application/x-protobuf")
                         .POST(HttpRequest.BodyPublishers.ofByteArray(body))
                         .build()
                 val response = httpClient.send(request, HttpResponse.BodyHandlers.discarding())
