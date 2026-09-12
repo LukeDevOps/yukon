@@ -1,0 +1,38 @@
+name: buf
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "src/main/proto/**"
+      - "buf.yaml"
+  pull_request:
+    paths:
+      - "src/main/proto/**"
+      - "buf.yaml"
+
+jobs:
+  lint-and-breaking:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: bufbuild/buf-setup-action@v1
+      - uses: bufbuild/buf-lint-action@v1
+      - uses: bufbuild/buf-breaking-action@v1
+        if: github.event_name == 'pull_request'
+        with:
+          against: "https://github.com/${{ github.repository }}.git#branch=${{ github.event.pull_request.base.ref }}"
+
+  push:
+    needs: lint-and-breaking
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: bufbuild/buf-setup-action@v1
+        with:
+          github_token: ${{ github.token }}
+      - uses: bufbuild/buf-push-action@v1
+        with:
+          buf_token: ${{ secrets.BUF_TOKEN }}
+          input: "src/main/proto"
