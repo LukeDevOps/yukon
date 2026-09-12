@@ -36,6 +36,8 @@ class ProbeRegistry {
         var baseline: LongArray = LongArray(counts.size)
         var pendingBaseline: LongArray? = null
         val firstSeenAt: LongArray = LongArray(counts.size)
+        var manifestIncluded: Boolean = false
+        var pendingManifestInclusion: Boolean = false
     }
 
     private val entriesByKey = ConcurrentHashMap<RegistryKey, ClassEntry>()
@@ -128,5 +130,51 @@ class ProbeRegistry {
                 }
             }
         return ProbeManifest(serviceName, serviceVersion, locations)
+    }
+
+    /**
+     * Returns only the probe locations for classes not yet included in a
+     * successfully sent manifest, staged the same way [computeDeltaBatch]
+     * stages counts: [advanceManifestBaseline] must be called explicitly,
+     * and only once the manifest is confirmed delivered. A class that
+     * registers after an earlier successful send is picked up here instead
+     * of being left out of every manifest for the rest of the process's
+     * life.
+     */
+    fun computeManifestDelta(
+        serviceName: String,
+        serviceVersion: String?,
+    ): ProbeManifest {
+        val locations = mutableListOf<ProbeLocation>()
+        for (entry in entriesByKey.values) {
+            entry.pendingManifestInclusion = !entry.manifestIncluded
+            if (!entry.pendingManifestInclusion) continue
+            entry.probes.forEachIndexed { index, meta ->
+                locations +=
+                    ProbeLocation(
+                        classId = entry.classId,
+                        probeIndex = index,
+                        kind = meta.kind,
+                        className = entry.className,
+                        methodName = meta.methodName,
+                        methodDescriptor = meta.methodDescriptor,
+                        line = meta.line,
+                        branchIndex = meta.branchIndex,
+                    )
+            }
+        }
+        return ProbeManifest(serviceName, serviceVersion, locations)
+    }
+
+    /**
+     * Marks every class staged by the last [computeManifestDelta] call as
+     * included, so it isn't sent again. Call only after that manifest is
+     * confirmed delivered; a failed send must leave entries unmarked so the
+     * next attempt's delta naturally includes them again.
+     */
+    fun advanceManifestBaseline() {
+        for (entry in entriesByKey.values) {
+            if (entry.pendingManifestInclusion) entry.manifestIncluded = true
+        }
     }
 }

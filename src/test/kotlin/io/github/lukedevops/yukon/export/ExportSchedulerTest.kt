@@ -31,7 +31,7 @@ class ExportSchedulerTest {
     private val config = AgentConfig.parse("serviceName=checkout,serviceVersion=1.0.0,serviceInstanceId=instance-1,environment=test")
 
     @Test
-    fun `flush skips the delta batch entirely when there is nothing new to report`() {
+    fun `flush sends the delta batch even when there is nothing new to report, as a liveness heartbeat`() {
         val registry = ProbeRegistry()
         registry.register("com.example.Foo", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "bar", "()V", 1)))
         val exporter = RecordingExporter()
@@ -39,7 +39,13 @@ class ExportSchedulerTest {
 
         scheduler.flush()
 
-        assertTrue(exporter.deltaBatches.isEmpty())
+        assertEquals(1, exporter.deltaBatches.size)
+        assertTrue(
+            exporter.deltaBatches
+                .single()
+                .deltas
+                .isEmpty(),
+        )
     }
 
     @Test
@@ -104,7 +110,7 @@ class ExportSchedulerTest {
     }
 
     @Test
-    fun `the manifest is sent only once, not on every flush`() {
+    fun `the manifest is not resent once its probes have already been included`() {
         val registry = ProbeRegistry()
         registry.register("com.example.Foo", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "bar", "()V", 1)))
         val exporter = RecordingExporter()
@@ -115,6 +121,27 @@ class ExportSchedulerTest {
         scheduler.flush()
 
         assertEquals(1, exporter.manifests.size)
+    }
+
+    @Test
+    fun `a class registered after an earlier successful flush is included in a later manifest send`() {
+        val registry = ProbeRegistry()
+        registry.register("com.example.Foo", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "bar", "()V", 1)))
+        val exporter = RecordingExporter()
+        val scheduler = ExportScheduler(config, registry, exporter)
+
+        scheduler.flush()
+        registry.register("com.example.Bar", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "baz", "()V", 1)))
+        scheduler.flush()
+
+        assertEquals(2, exporter.manifests.size)
+        assertEquals(
+            "com.example.Bar",
+            exporter.manifests[1]
+                .probes
+                .single()
+                .className,
+        )
     }
 
     @Test
