@@ -11,24 +11,47 @@ import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Stores one probe-count array per class. Each array is a plain `long[]`,
- * keyed by (class name, probe-layout hash). A probe hit does one direct
- * `arr[index]++`, with no shared map and no atomic operations on the hot
- * path.
+ * keyed by (class name, probe-layout hash, defining classloader). A probe
+ * hit does one direct `arr[index]++`, with no shared map and no atomic
+ * operations on the hot path.
  *
  * This type only manages bookkeeping for those arrays: allocation,
  * baseline/delta accounting, and manifest metadata. Instrumented bytecode
  * receives the array at class-init, and writes to it directly from there.
  *
  * The key includes the probe-layout hash, not just the class name. This
- * matters for retransforms. If the layout is unchanged, the class keeps its
- * existing array and history. If the layout changed, old counts would not
- * mean anything against the new bytecode, so the class gets a fresh array
- * instead of a merge.
+ * matters for a class reloaded by the *same* classloader identity with an
+ * unchanged layout (not reachable in this v1 static-attach agent today, but
+ * cheap to keep correct for later). If the layout is unchanged, the class
+ * keeps its existing array and history. If the layout changed, old counts
+ * would not mean anything against the new bytecode, so the class gets a
+ * fresh array instead of a merge.
+ *
+ * The key also includes the defining classloader's identity, not just the
+ * class name. JVM class identity is (classloader, name), not name alone: two
+ * different, concurrently active classloaders can define a class with the
+ * same fully-qualified name (multi-tenant app servers, OSGi, plugin hosts),
+ * and those are two unrelated classes that happen to share a name, not one
+ * class reloaded. Keying on name alone would silently merge their hit
+ * counts into one manifest entry. Identity is tracked via
+ * [System.identityHashCode] rather than holding the [ClassLoader] itself, so
+ * a retired classloader (for example, a devtools-style same-JVM reload that
+ * swaps in a new classloader for changed classes) can still be garbage
+ * collected instead of being pinned forever by this registry.
+ *
+ * This registry does not, on its own, give a class continuity across an
+ * actual app/JVM restart: a fresh [ProbeRegistry] is created every time
+ * [io.github.lukedevops.yukon.Agent.premain] runs, so restarting the process
+ * always starts every count at zero regardless of this key. Long-running,
+ * cross-restart visibility is the collector's job: it aggregates deltas
+ * from every `service.instance.id` a service has ever reported, over time,
+ * as described in the design notes for the export payloads.
  */
 open class ProbeRegistry {
     private data class RegistryKey(
         val className: String,
         val layoutHash: Long,
+        val classLoaderId: Int,
     )
 
     private class ClassEntry(
@@ -59,14 +82,15 @@ open class ProbeRegistry {
     /**
      * Called once per class transform. Returns the backing array every probe
      * in this class increments. A repeat call for an unchanged (className,
-     * layoutHash) returns the same array instance.
+     * layoutHash, classLoader) returns the same array instance.
      */
     fun register(
         className: String,
         layoutHash: Long,
         probes: List<ProbeMeta>,
+        classLoader: ClassLoader? = null,
     ): LongArray {
-        val key = RegistryKey(className, layoutHash)
+        val key = RegistryKey(className, layoutHash, System.identityHashCode(classLoader))
         val entry =
             entriesByKey.computeIfAbsent(key) {
                 ClassEntry(
@@ -80,15 +104,24 @@ open class ProbeRegistry {
     }
 
     /**
-     * Removes every entry registered for [className], regardless of layout hash.
+     * Removes the entry registered for [className] by this specific [classLoader], if any.
      *
      * Use this for a class whose instrumentation was registered speculatively, but then failed
      * to actually weave (for example, bytecode ByteBuddy refuses to redefine). It keeps that
      * class out of every future manifest. Without it, the class's probes would be permanently
      * reported as "never hit", when they can in fact never fire at all.
+     *
+     * Scoped to one classloader, not every entry sharing [className]: a different classloader's
+     * class of the same name is a different class (see the class-level doc), and may already be
+     * successfully instrumented. Removing it too, just because another loader's copy of the same
+     * name failed, would be its own instance of the exact bug this method exists to prevent.
      */
-    fun unregister(className: String) {
-        entriesByKey.keys.removeIf { it.className == className }
+    fun unregister(
+        className: String,
+        classLoader: ClassLoader? = null,
+    ) {
+        val classLoaderId = System.identityHashCode(classLoader)
+        entriesByKey.keys.removeIf { it.className == className && it.classLoaderId == classLoaderId }
     }
 
     /**

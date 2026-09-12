@@ -42,7 +42,7 @@ class ExportScheduler(
 
     /**
      * One flush attempt. Sends whatever manifest entries haven't gone out
-     * yet, then the delta since the last acknowledged baseline.
+     * yet, and the delta since the last acknowledged baseline.
      *
      * The delta batch is sent even when empty. A collector otherwise has no
      * way to tell an instance that's alive but idle from one that's crashed
@@ -50,6 +50,18 @@ class ExportScheduler(
      *
      * Neither send has an explicit retry queue. A failure just leaves the
      * relevant state where it is, so the next tick retries it naturally.
+     * [io.github.lukedevops.yukon.export.HttpOtlpStyleExporter] still wraps
+     * each individual send in its own capped exponential backoff, for a
+     * transient failure within one attempt.
+     *
+     * The two sends run concurrently, not one after the other. Each can take
+     * a while to fail on its own (multiple retries, each with its own
+     * timeout) if the collector is unreachable. Run back to back, a single
+     * flush's worst case could take roughly twice one flush interval,
+     * meaning the liveness heartbeat above would arrive far less often than
+     * configured during exactly the outage it exists to report. Running
+     * them side by side keeps one flush's worst case close to a single
+     * send's worst case instead of the sum of both.
      *
      * This method runs under `scheduleAtFixedRate`, which stops calling a
      * task forever the first time it lets an exception escape, with nothing
@@ -59,8 +71,12 @@ class ExportScheduler(
      * flush, including the heartbeat, silently stops.
      */
     fun flush() {
-        sendManifestDelta()
-        sendDeltaBatch()
+        val manifestThread = Thread(::sendManifestDelta, "yukon-export-manifest").apply { isDaemon = true }
+        val deltaThread = Thread(::sendDeltaBatch, "yukon-export-delta").apply { isDaemon = true }
+        manifestThread.start()
+        deltaThread.start()
+        manifestThread.join()
+        deltaThread.join()
     }
 
     private fun sendDeltaBatch() {

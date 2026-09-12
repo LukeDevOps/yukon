@@ -2,6 +2,7 @@ package io.github.lukedevops.yukon.registry
 
 import io.github.lukedevops.yukon.export.ProbeKind
 import io.github.lukedevops.yukon.export.ResourceAttributes
+import java.net.URLClassLoader
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertSame
@@ -39,6 +40,34 @@ class ProbeRegistryTest {
 
         assertSame(first, second)
         assertEquals(1L, second[0])
+    }
+
+    @Test
+    fun `the same class name loaded by two different classloaders gets two separate arrays`() {
+        val registry = ProbeRegistry()
+        val loaderA = URLClassLoader(emptyArray())
+        val loaderB = URLClassLoader(emptyArray())
+
+        val first = registry.register("com.example.Foo", layoutHash = 1L, probes = methodProbes(1), classLoader = loaderA)
+        first[0]++
+        val second = registry.register("com.example.Foo", layoutHash = 1L, probes = methodProbes(1), classLoader = loaderB)
+
+        assertTrue(first !== second, "two different classloaders' same-named classes must not share a counts array")
+        assertEquals(0L, second[0], "a hit recorded against one classloader's class must not appear against another's")
+    }
+
+    @Test
+    fun `unregister for one classloader leaves another classloader's same-named class intact`() {
+        val registry = ProbeRegistry()
+        val loaderA = URLClassLoader(emptyArray())
+        val loaderB = URLClassLoader(emptyArray())
+        registry.register("com.example.Foo", layoutHash = 1L, probes = methodProbes(1), classLoader = loaderA)
+        registry.register("com.example.Foo", layoutHash = 1L, probes = methodProbes(1), classLoader = loaderB)
+
+        registry.unregister("com.example.Foo", loaderA)
+
+        val remaining = registry.manifest(serviceName = "checkout", serviceVersion = null).probes
+        assertEquals(1, remaining.size, "unregistering one classloader's failed class must not remove another loader's successfully registered one")
     }
 
     @Test
