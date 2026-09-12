@@ -10,7 +10,7 @@ import io.github.lukedevops.yukon.proto.SkippedClass as ProtoSkippedClass
 
 /**
  * Encodes [DeltaBatch] and [ProbeManifest] to the wire schema defined in
- * `yukon.proto`, so [Exporter] implementations can send them without
+ * `yukon.proto`. This lets an [Exporter] implementation send them without
  * depending on the generated protobuf classes directly.
  */
 object ProtoPayloadCodec {

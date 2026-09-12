@@ -6,9 +6,9 @@ import net.bytebuddy.jar.asm.MethodVisitor
 import net.bytebuddy.jar.asm.Opcodes
 
 /**
- * Splits each [ConditionalJump] into two private edges, one per outcome, and each
- * `TABLESWITCH`/`LOOKUPSWITCH` into one private edge per case plus the default, every edge
- * incrementing its own slot in the class's shared `$yukonProbeCounts` array:
+ * Splits each [ConditionalJump] into two private edges, one per outcome. It splits each
+ * `TABLESWITCH`/`LOOKUPSWITCH` into one private edge per case, plus the default. Every edge
+ * increments its own slot in the class's shared `$yukonProbeCounts` array:
  *
  * ```
  * IFEQ original_target              IFEQ taken
@@ -20,16 +20,16 @@ import net.bytebuddy.jar.asm.Opcodes
  *                                    continue:
  * ```
  *
- * Neither new edge is shared with any other control flow, so a probe only increments for the
- * outcome it stands for, regardless of what the original jump target is also used for
- * elsewhere (a loop back-edge, an if/else merge point, two switch cases falling into the same
- * code, and so on) - inserting a counter directly at an original target would conflate every
- * outcome that shares it.
+ * No new edge is shared with any other control flow. So a probe only increments for the outcome
+ * it stands for. This holds regardless of what the original jump target is also used for
+ * elsewhere: a loop back-edge, an if/else merge point, two switch cases falling into the same
+ * code, and so on. Inserting a counter directly at an original target would instead conflate
+ * every outcome that shares it.
  *
- * [allocateSlots] hands out this site's slots, relative to [probeIndexBase]: given the number
- * of outcomes the site needs, it returns the first slot and advances its own running total by
- * that many, so sites of different arity (a two-outcome jump next to an N-way switch) still
- * pack into contiguous slots in the same order
+ * [allocateSlots] hands out this site's slots, relative to [probeIndexBase]. Given the number of
+ * outcomes the site needs, it returns the first slot, then advances its own running total by
+ * that many. This lets sites of different arity (a two-outcome jump next to an N-way switch)
+ * still pack into contiguous slots, in the same order
  * [io.github.lukedevops.yukon.instrumentation.YukonInstrumentation] lays out from
  * [BranchSiteAnalyzer]'s output.
  */

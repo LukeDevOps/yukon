@@ -61,4 +61,29 @@ class AgentConfigTest {
 
         assertEquals(listOf("com.acme", "com.acme.internal", "com.other"), config.instrumentedPackagePrefixes)
     }
+
+    @Test
+    fun `a zero flushIntervalSeconds falls back to the default instead of producing an invalid schedule`() {
+        // ExportScheduler.start() passes flushInterval straight into scheduleAtFixedRate. That
+        // call throws for a non-positive period. It runs inside Agent.premain, so an uncaught
+        // exception there aborts the whole target JVM. A bad flag value must never reach a
+        // non-positive Duration.
+        val config = AgentConfig.parse("flushIntervalSeconds=0")
+
+        assertEquals(Duration.ofSeconds(60), config.flushInterval)
+    }
+
+    @Test
+    fun `a negative flushIntervalSeconds falls back to the default`() {
+        val config = AgentConfig.parse("flushIntervalSeconds=-5")
+
+        assertEquals(Duration.ofSeconds(60), config.flushInterval)
+    }
+
+    @Test
+    fun `a non-numeric flushIntervalSeconds falls back to the default`() {
+        val config = AgentConfig.parse("flushIntervalSeconds=soon")
+
+        assertEquals(Duration.ofSeconds(60), config.flushInterval)
+    }
 }

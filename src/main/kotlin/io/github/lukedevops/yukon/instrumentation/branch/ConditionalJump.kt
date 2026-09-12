@@ -3,9 +3,11 @@ package io.github.lukedevops.yukon.instrumentation.branch
 import net.bytebuddy.jar.asm.Opcodes
 
 /**
- * Identifies the bytecode jump instructions this tier tracks: every comparison that has
- * exactly two outcomes (taken or fell through). `GOTO` and `JSR` are unconditional and have
- * only one successor, so there is no second outcome to ever leave uncovered.
+ * Identifies the bytecode jump instructions this tier tracks: every comparison with exactly two
+ * outcomes, taken or fell through.
+ *
+ * `GOTO` and `JSR` are unconditional. Each has only one successor, so neither has a second
+ * outcome to track.
  */
 object ConditionalJump {
     fun isTracked(opcode: Int): Boolean =

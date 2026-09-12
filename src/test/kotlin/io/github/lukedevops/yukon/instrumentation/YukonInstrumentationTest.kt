@@ -23,10 +23,11 @@ class YukonInstrumentationTest {
     }
 
     /**
-     * Each test loads its own fresh definition of the fixture class, but the underlying
-     * [java.lang.instrument.Instrumentation] instance is process-wide: a transformer left
-     * registered from a previous test would also fire for the next test's fixture class load,
-     * fighting over the same synthetic field name. [tearDown] deregisters it afterwards.
+     * Each test loads its own fresh definition of the fixture class. But the underlying
+     * [java.lang.instrument.Instrumentation] instance is process-wide. A transformer left
+     * registered from a previous test would also fire on the next test's fixture class load,
+     * and both would fight over the same synthetic field name. [tearDown] deregisters the
+     * transformer afterwards, to prevent that.
      */
     private fun install(
         registry: ProbeRegistry,

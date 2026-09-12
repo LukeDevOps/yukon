@@ -165,6 +165,41 @@ class ExportSchedulerTest {
     }
 
     @Test
+    fun `an exception thrown while computing the delta batch does not stop future flushes`() {
+        val registry =
+            object : ProbeRegistry() {
+                override fun computeDeltaBatch(resource: ResourceAttributes): DeltaBatch = throw RuntimeException("boom")
+            }
+        val exporter = RecordingExporter()
+        val scheduler = ExportScheduler(config, registry, exporter)
+
+        // A ScheduledExecutorService running scheduleAtFixedRate stops calling a task forever,
+        // the first time it lets an exception escape, with nothing logged. So flush() must never
+        // let one out. This registry throws from computeDeltaBatch itself, to prove the guard
+        // covers that call too, not only the exporter call.
+        scheduler.flush()
+        scheduler.flush()
+    }
+
+    @Test
+    fun `an exception thrown while computing the manifest delta does not stop future flushes`() {
+        val registry =
+            object : ProbeRegistry() {
+                override fun computeManifestDelta(
+                    serviceName: String,
+                    serviceVersion: String?,
+                ): ProbeManifest = throw RuntimeException("boom")
+            }
+        val exporter = RecordingExporter()
+        val scheduler = ExportScheduler(config, registry, exporter)
+
+        scheduler.flush()
+        scheduler.flush()
+
+        assertEquals(2, exporter.deltaBatches.size, "the delta batch send should still happen on every flush even if the manifest side failed")
+    }
+
+    @Test
     fun `a failed manifest send is retried on the next flush`() {
         val registry = ProbeRegistry()
         registry.register("com.example.Foo", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "bar", "()V", 1)))

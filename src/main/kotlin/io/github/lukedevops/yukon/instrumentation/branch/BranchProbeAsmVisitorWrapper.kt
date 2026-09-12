@@ -14,14 +14,14 @@ import net.bytebuddy.pool.TypePool
 
 /**
  * Hosts the branch-tracking tier's raw ASM rewrite inside ByteBuddy's own class-transform
- * pipeline, so branch probes are woven in the same pass as the method-entry [net.bytebuddy.asm.Advice]
- * tier rather than a second, competing transformer.
+ * pipeline. This weaves branch probes in the same pass as the method-entry
+ * [net.bytebuddy.asm.Advice] tier, instead of using a second, competing transformer.
  *
- * Rewriting a conditional jump into two edges introduces new basic blocks, so the class file's
- * stack map frames need recomputing; [mergeWriter] asks ByteBuddy's writer for that.
+ * Rewriting a conditional jump into two edges introduces new basic blocks. The class file's stack
+ * map frames then need recomputing, so [mergeWriter] asks ByteBuddy's writer to do that.
  *
- * [probeIndexBase] is where branch slots start in the class's shared probe array:
- * method-entry probes occupy `[0, probeIndexBase)`.
+ * [probeIndexBase] is where branch slots start in the class's shared probe array. Method-entry
+ * probes occupy `[0, probeIndexBase)`.
  */
 class BranchProbeAsmVisitorWrapper(
     private val eligibleMethods: (name: String, descriptor: String) -> Boolean,
