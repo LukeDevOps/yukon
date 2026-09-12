@@ -48,7 +48,13 @@ tasks.register("runDemo") {
     doLast {
         val javaBin = Jvm.current().javaExecutable.absolutePath
         val demoClasspath = sourceSets["main"].runtimeClasspath.asPath
-        val agentJar = rootProject.tasks.named("shadowJar", Jar::class.java).get().archiveFile.get().asFile
+        val agentJar =
+            rootProject.tasks
+                .named("shadowJar", Jar::class.java)
+                .get()
+                .archiveFile
+                .get()
+                .asFile
 
         println("yukon demo: starting stub collector")
         val collector = startProcess("collector", javaBin, listOf("-cp", demoClasspath, stubCollectorMainClass))

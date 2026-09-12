@@ -98,8 +98,8 @@ class ProbeRegistryTest {
         val probes = registry.register("com.example.Foo", layoutHash = 1L, probes = methodProbes(1))
         probes[0] += 3
 
-        // Flush computes a snapshot but the send fails, so advanceBaseline is
-        // never called; more hits land before the next flush attempt.
+        // Flush computes a snapshot, but the send fails. So advanceBaseline is never called.
+        // More hits land before the next flush attempt.
         registry.computeDeltaBatch(resource)
         probes[0] += 2
 
@@ -239,7 +239,14 @@ class ProbeRegistryTest {
 
         registry.unregister("com.example.Foo")
 
-        assertEquals("com.example.Bar", registry.manifest(serviceName = "checkout", serviceVersion = null).probes.single().className)
+        assertEquals(
+            "com.example.Bar",
+            registry
+                .manifest(serviceName = "checkout", serviceVersion = null)
+                .probes
+                .single()
+                .className,
+        )
     }
 
     @Test

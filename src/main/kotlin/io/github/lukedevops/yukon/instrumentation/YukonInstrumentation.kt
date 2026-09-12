@@ -36,16 +36,17 @@ import java.lang.annotation.ElementType
 import java.lang.instrument.Instrumentation
 
 /**
- * Wires method-entry probes into every type matched by [AgentConfig.instrumentedPackagePrefixes]
- * (or every non-agent type when that list is empty). Each matched type is registered with
- * [ProbeRegistry] once and given its own synthetic static field holding the resulting counts
- * array, so every probe in that class reaches [MethodEntryAdvice] with a direct reference to
- * its own array and a constant slot index, no lookup keyed by class or method name involved.
+ * Wires method-entry probes into every type matched by [AgentConfig.instrumentedPackagePrefixes].
+ * If that list is empty, every non-agent type is matched instead.
  *
- * Registers a transformer for classes as they load; it does not retransform
- * classes already loaded when [install] runs, matching the agent's static
- * `premain` attach model where the transformer is registered before any
- * application class has loaded.
+ * Each matched type is registered with [ProbeRegistry] once. It gets its own synthetic static
+ * field, holding the resulting counts array. Every probe in that class then reaches
+ * [MethodEntryAdvice] with a direct reference to its own array and a constant slot index. No
+ * lookup by class or method name is involved.
+ *
+ * This registers a transformer for classes as they load. It does not retransform classes already
+ * loaded when [install] runs. That matches the agent's static `premain` attach model, where the
+ * transformer is registered before any application class has loaded.
  */
 class YukonInstrumentation(
     private val config: AgentConfig,
@@ -63,13 +64,13 @@ class YukonInstrumentation(
 
     /**
      * A class transform can still fail after [instrument] has already called
-     * [ProbeRegistry.register]: ByteBuddy only actually rewrites and validates
-     * the bytecode once this callback returns, so a failure here is reported
-     * asynchronously relative to that speculative registration. Left alone,
-     * the manifest would permanently list that class's probes as known but
-     * never hit, indistinguishable from genuinely dead code. Rolling the
-     * registration back on failure keeps the manifest honest: a class this
-     * agent couldn't safely instrument is simply absent, not falsely "dead".
+     * [ProbeRegistry.register]. ByteBuddy only rewrites and validates the bytecode once that
+     * callback returns, so this failure is reported later than the registration that caused it.
+     *
+     * Left alone, the manifest would permanently list that class's probes as known but never hit.
+     * That looks identical to genuinely dead code. Rolling the registration back on failure keeps
+     * the manifest honest instead: a class this agent could not safely instrument is simply
+     * absent, not falsely reported as "dead".
      */
     private inner class TransformFailureListener : AgentBuilder.Listener.Adapter() {
         override fun onError(
@@ -103,21 +104,22 @@ class YukonInstrumentation(
     }
 
     /**
-     * `AgentBuilder` commits to rebasing a type the moment it matches `.type(...)`,
-     * before [instrument] (the `.transform()` callback) ever runs: a type excluded
-     * here never reaches that callback at all. That commitment is what makes this
-     * the only point that can actually prevent the crash described below, rather
-     * than just contain its aftermath: returning the original builder unchanged
-     * from [instrument] does not stop ByteBuddy's later `.make()` call on the
-     * already-rebased type from crashing regardless.
+     * `AgentBuilder` commits to rebasing a type the moment it matches `.type(...)`. This happens
+     * before [instrument] (the `.transform()` callback) ever runs, so a type excluded here never
+     * reaches that callback at all.
      *
-     * ByteBuddy refuses to redefine any type carrying a declared annotation whose
-     * own `@Target` doesn't legally support [ElementType.TYPE], throwing
-     * `IllegalStateException` deep inside its own validation. Kotlin's compiler
-     * attaches `@kotlin.jvm.JvmName` (targeted at functions/properties/files, per
-     * its own `@Target`) directly onto the class file for any
-     * `@file:JvmName`-annotated source file, which trips exactly this check:
-     * legal bytecode, but not a shape ByteBuddy's redefinition path accepts.
+     * That early commitment is why this is the only point that can actually prevent the crash
+     * described below, rather than just contain its aftermath. Returning the original builder
+     * unchanged from [instrument] does not help: ByteBuddy's later `.make()` call still crashes
+     * on the already-rebased type regardless.
+     *
+     * ByteBuddy refuses to redefine any type that carries a declared annotation whose own
+     * `@Target` does not legally support [ElementType.TYPE]. It throws `IllegalStateException`
+     * deep inside its own validation. Kotlin's compiler attaches `@kotlin.jvm.JvmName` directly
+     * onto the class file for any `@file:JvmName`-annotated source file, even though that
+     * annotation's own `@Target` only covers functions, properties, and files, not classes. This
+     * trips the same check: legal bytecode, but not a shape ByteBuddy's redefinition path
+     * accepts.
      */
     private fun isSafeToInstrument(typeDescription: TypeDescription): Boolean {
         val unsupported = typeDescription.declaredAnnotations.firstOrNull { !it.isSupportedOn(ElementType.TYPE) } ?: return true
@@ -139,8 +141,9 @@ class YukonInstrumentation(
         val branchSites = findBranchSites(typeDescription, classLoader, methods)
 
         val methodProbes = methods.map { ProbeMeta(ProbeKind.METHOD, it.internalName, it.descriptor, line = -1) }
-        // Each site contributes `outcomeCount` adjacent slots (2 for a conditional jump; case
-        // count + 1 for a switch), in the same order BranchProbeAsmVisitorWrapper allocates them.
+        // Each site contributes `outcomeCount` adjacent slots: 2 for a conditional jump, or the
+        // case count plus one for a switch. BranchProbeAsmVisitorWrapper allocates them in this
+        // same order.
         val branchProbes =
             branchSites
                 .flatMap { site -> List(site.outcomeCount) { site } }
@@ -192,10 +195,11 @@ class YukonInstrumentation(
     }
 
     /**
-     * Re-reads the class's own original bytecode to find its conditional jumps, since
-     * ByteBuddy's transform callback hands over type metadata, not the class bytes
-     * themselves. If the bytes can't be located or read, this class just gets no branch
-     * probes; method-entry tracking is unaffected.
+     * Re-reads the class's own original bytecode to find its conditional jumps. ByteBuddy's
+     * transform callback only hands over type metadata, not the class bytes themselves.
+     *
+     * If the bytes cannot be located or read, this class just gets no branch probes.
+     * Method-entry tracking is unaffected.
      */
     private fun findBranchSites(
         typeDescription: TypeDescription,

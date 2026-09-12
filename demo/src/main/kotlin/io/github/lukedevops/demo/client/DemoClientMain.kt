@@ -10,8 +10,8 @@ private const val REQUEST_COUNT = 20
 private const val BELOW_THRESHOLD_TOTAL = 42.50
 
 /**
- * Calls `/checkout` repeatedly, always with a total below the free-shipping
- * threshold, and never calls `/promo` at all.
+ * Calls `/checkout` repeatedly, always with a total below the free-shipping threshold.
+ * Never calls `/promo` at all.
  */
 fun main() {
     val client = HttpClient.newHttpClient()

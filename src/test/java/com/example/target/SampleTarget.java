@@ -1,6 +1,6 @@
 package com.example.target;
 
-/** A plain-Java fixture so it can be loaded via a bare bootstrap-parented classloader with no runtime dependencies. */
+/** A plain-Java fixture with no runtime dependencies. This lets it load via a bare bootstrap-parented classloader. */
 public class SampleTarget {
 
     public String ping() {

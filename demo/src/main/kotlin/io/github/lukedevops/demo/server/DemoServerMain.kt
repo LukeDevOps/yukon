@@ -9,10 +9,10 @@ import java.nio.charset.StandardCharsets
 private const val FREE_SHIPPING_THRESHOLD = 100.0
 
 /**
- * Two endpoints, illustrating the two things static analysis can't catch:
- * `/checkout`'s free-shipping branch is only ever exercised one way given
- * how [io.github.lukedevops.demo.client] calls it, and `/promo` is never
- * called at all despite being reachable.
+ * Two endpoints, illustrating two things static analysis can't catch.
+ *
+ * `/checkout`'s free-shipping branch is only ever exercised one way, given how
+ * [io.github.lukedevops.demo.client] calls it. `/promo` is reachable, but never called at all.
  */
 fun main() {
     val server = HttpServer.create(InetSocketAddress(DemoPorts.SERVER_PORT), 0)

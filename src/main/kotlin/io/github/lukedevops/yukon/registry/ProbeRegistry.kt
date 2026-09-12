@@ -10,19 +10,22 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * A dense, per-class probe array: one non-atomic `long[]` per (class,
- * probe-layout) key, one direct `arr[index]++` per probe hit, no shared map
- * on the hot path. This type only owns bookkeeping around those arrays
- * (allocation, baseline/delta accounting, manifest metadata). The array
- * itself is handed to instrumented bytecode at class-init and written to
- * directly from there.
+ * Stores one probe-count array per class. Each array is a plain `long[]`,
+ * keyed by (class name, probe-layout hash). A probe hit does one direct
+ * `arr[index]++`, with no shared map and no atomic operations on the hot
+ * path.
  *
- * Keying by (class name, probe-layout hash) rather than class name alone
- * means a retransform with an unchanged layout keeps its history, while an
- * actual code change (different probe layout) gets a fresh array instead of
- * merging counts that no longer mean anything against new bytecode.
+ * This type only manages bookkeeping for those arrays: allocation,
+ * baseline/delta accounting, and manifest metadata. Instrumented bytecode
+ * receives the array at class-init, and writes to it directly from there.
+ *
+ * The key includes the probe-layout hash, not just the class name. This
+ * matters for retransforms. If the layout is unchanged, the class keeps its
+ * existing array and history. If the layout changed, old counts would not
+ * mean anything against the new bytecode, so the class gets a fresh array
+ * instead of a merge.
  */
-class ProbeRegistry {
+open class ProbeRegistry {
     private data class RegistryKey(
         val className: String,
         val layoutHash: Long,
@@ -55,8 +58,8 @@ class ProbeRegistry {
 
     /**
      * Called once per class transform. Returns the backing array every probe
-     * in this class increments; repeat calls for an unchanged (className,
-     * layoutHash) return the same array instance.
+     * in this class increments. A repeat call for an unchanged (className,
+     * layoutHash) returns the same array instance.
      */
     fun register(
         className: String,
@@ -78,22 +81,23 @@ class ProbeRegistry {
 
     /**
      * Removes every entry registered for [className], regardless of layout hash.
-     * For a class whose instrumentation was registered speculatively but then
-     * failed to actually weave (e.g. bytecode ByteBuddy refuses to redefine),
-     * this keeps it out of every future manifest instead of permanently
-     * reporting probes that can never fire as "never hit".
+     *
+     * Use this for a class whose instrumentation was registered speculatively, but then failed
+     * to actually weave (for example, bytecode ByteBuddy refuses to redefine). It keeps that
+     * class out of every future manifest. Without it, the class's probes would be permanently
+     * reported as "never hit", when they can in fact never fire at all.
      */
     fun unregister(className: String) {
         entriesByKey.keys.removeIf { it.className == className }
     }
 
     /**
-     * Records a class the agent matched but could not instrument, so it's
-     * visible on the wire instead of only in an agent-local log line. Never
-     * gets a `classId` or any probes, since it never reaches [register].
-     * Idempotent per class name: a repeat call (e.g. the same class loaded
-     * by a second classloader) keeps the first reason and timestamp rather
-     * than overwriting them.
+     * Records a class the agent matched but could not instrument. This makes it visible on the
+     * wire, not just in an agent-local log line. The class never gets a `classId` or any probes,
+     * because it never reaches [register].
+     *
+     * Idempotent per class name. A repeat call, for example the same class loaded by a second
+     * classloader, keeps the first reason and timestamp. It does not overwrite them.
      */
     fun recordSkipped(
         className: String,
@@ -105,12 +109,12 @@ class ProbeRegistry {
     }
 
     /**
-     * Snapshots current counts against each entry's baseline and returns only
-     * what changed. The snapshot is stashed as a pending baseline rather than
-     * applied immediately: [advanceBaseline] must be called explicitly, and
-     * only after the batch is confirmed delivered.
+     * Compares current counts against each entry's baseline, and returns only what changed.
+     *
+     * The snapshot is stashed as a pending baseline, not applied immediately. [advanceBaseline]
+     * must be called explicitly to apply it, and only after the batch is confirmed delivered.
      */
-    fun computeDeltaBatch(resource: ResourceAttributes): DeltaBatch {
+    open fun computeDeltaBatch(resource: ResourceAttributes): DeltaBatch {
         val deltas = mutableListOf<ProbeDelta>()
         for (entry in entriesByKey.values) {
             val snapshot = entry.counts.copyOf()
@@ -135,11 +139,12 @@ class ProbeRegistry {
     }
 
     /**
-     * Advances every entry's baseline to its last-computed snapshot, never to
-     * the live counts, which may have moved further ahead (e.g. while a POST
-     * was in flight). Call only after a flush is confirmed delivered; a failed
-     * flush must leave the baseline untouched so the next attempt's delta
-     * naturally includes everything accrued since the last success.
+     * Advances every entry's baseline to its last-computed snapshot. It never advances to the
+     * live counts: those may have moved further ahead, for example while a POST was in flight.
+     *
+     * Call this only after a flush is confirmed delivered. A failed flush must leave the
+     * baseline untouched, so the next attempt's delta naturally includes everything accrued
+     * since the last success.
      */
     fun advanceBaseline() {
         for (entry in entriesByKey.values) {
@@ -175,15 +180,15 @@ class ProbeRegistry {
     }
 
     /**
-     * Returns only the probe locations for classes not yet included in a
-     * successfully sent manifest, staged the same way [computeDeltaBatch]
-     * stages counts: [advanceManifestBaseline] must be called explicitly,
-     * and only once the manifest is confirmed delivered. A class that
-     * registers after an earlier successful send is picked up here instead
-     * of being left out of every manifest for the rest of the process's
-     * life.
+     * Returns only the probe locations for classes not yet included in a successfully sent
+     * manifest. It stages them the same way [computeDeltaBatch] stages counts:
+     * [advanceManifestBaseline] must be called explicitly, and only once the manifest is
+     * confirmed delivered.
+     *
+     * A class that registers after an earlier successful send is picked up on a later call, not
+     * left out of every manifest for the rest of the process's life.
      */
-    fun computeManifestDelta(
+    open fun computeManifestDelta(
         serviceName: String,
         serviceVersion: String?,
     ): ProbeManifest {
@@ -215,10 +220,11 @@ class ProbeRegistry {
     }
 
     /**
-     * Marks every class staged by the last [computeManifestDelta] call as
-     * included, so it isn't sent again. Call only after that manifest is
-     * confirmed delivered; a failed send must leave entries unmarked so the
-     * next attempt's delta naturally includes them again.
+     * Marks every class staged by the last [computeManifestDelta] call as included, so it is
+     * not sent again.
+     *
+     * Call this only after that manifest is confirmed delivered. A failed send must leave
+     * entries unmarked, so the next attempt's delta naturally includes them again.
      */
     fun advanceManifestBaseline() {
         for (entry in entriesByKey.values) {

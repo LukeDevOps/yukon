@@ -13,11 +13,16 @@ class ProbeLayoutHashTest {
     }
 
     @Test
-    fun `hash is independent of declaration order`() {
+    fun `reordering the same signatures changes the hash`() {
+        // Probe slots are assigned positionally, in this same list's order (see
+        // YukonInstrumentation), so a reorder must count as a layout change. Otherwise a
+        // retransformed class with methods declared in a different order would reuse the old
+        // array and metadata, even though its bytecode wires different slots to different
+        // probes - silently swapping whose hits land where.
         val a = listOf("bar()V", "foo(I)Z", "baz()I")
         val b = listOf("foo(I)Z", "baz()I", "bar()V")
 
-        assertEquals(ProbeLayoutHash.of(a), ProbeLayoutHash.of(b))
+        assertNotEquals(ProbeLayoutHash.of(a), ProbeLayoutHash.of(b))
     }
 
     @Test

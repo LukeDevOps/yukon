@@ -33,10 +33,11 @@ private val everHit = Collections.newSetFromMap(ConcurrentHashMap<ProbeKey, Bool
 private val skippedClasses = ConcurrentHashMap<String, SkippedInfo>()
 
 /**
- * Stands in for the real collector that lives outside this repo: decodes the
- * same generated protobuf classes the agent sends, keeps the manifest and
- * hit history in memory, and prints a "never hit" report on shutdown:
- * manifest probes with no delta that ever reported a hit.
+ * Stands in for the real collector, which lives outside this repo.
+ *
+ * It decodes the same generated protobuf classes the agent sends. It keeps the manifest and
+ * hit history in memory. On shutdown, it prints a "never hit" report: manifest probes with no
+ * delta that ever reported a hit.
  */
 fun main() {
     val server = HttpServer.create(InetSocketAddress(DemoPorts.COLLECTOR_PORT), 0)
@@ -49,7 +50,7 @@ fun main() {
     Runtime.getRuntime().addShutdownHook(Thread(::printNeverHitReport))
 }
 
-/** Exits in-process instead of via SIGTERM, which can drop the shutdown-hook report mid-write. */
+/** Exits in-process, instead of relying on SIGTERM. SIGTERM can drop the shutdown-hook report mid-write. */
 private fun handleShutdown(exchange: HttpExchange) {
     respondOk(exchange)
     Thread { System.exit(0) }.start()

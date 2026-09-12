@@ -8,9 +8,10 @@ import net.bytebuddy.jar.asm.Opcodes
 
 /**
  * Finds every [ConditionalJump] and every `TABLESWITCH`/`LOOKUPSWITCH` in a class's original
- * bytecode, restricted to methods [methodFilter] accepts. Read-only: this only sizes the probe
- * array and builds manifest metadata ahead of the actual rewrite that
- * [BranchProbeAsmVisitorWrapper] performs later in the same class transform.
+ * bytecode. Only methods [methodFilter] accepts are searched.
+ *
+ * This is read-only. It only sizes the probe array and builds manifest metadata, ahead of the
+ * actual rewrite that [BranchProbeAsmVisitorWrapper] performs later in the same class transform.
  */
 object BranchSiteAnalyzer {
     fun analyze(

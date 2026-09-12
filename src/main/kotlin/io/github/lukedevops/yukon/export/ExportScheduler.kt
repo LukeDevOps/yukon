@@ -9,13 +9,13 @@ import java.util.concurrent.TimeUnit
 import kotlin.random.Random
 
 /**
- * Flushes on a fixed interval, with each instance picking a random offset
- * within that interval before its first flush. Otherwise a fleet of
- * instances started around the same time would all flush on the same
- * wall-clock tick and thunder-herd the collector. Uses
- * `java.lang.System.Logger` rather than a logging framework dependency, to
- * avoid pulling anything onto the target app's classpath for an
- * agent-internal warning.
+ * Flushes on a fixed interval. Each instance picks a random offset within
+ * that interval before its first flush. Without this, a fleet of instances
+ * started around the same time would all flush on the same wall-clock tick,
+ * overwhelming the collector at once.
+ *
+ * Logs through `java.lang.System.Logger`, not a logging framework. This
+ * keeps agent-internal warnings off the target app's classpath.
  */
 class ExportScheduler(
     private val config: AgentConfig,
@@ -42,19 +42,30 @@ class ExportScheduler(
 
     /**
      * One flush attempt. Sends whatever manifest entries haven't gone out
-     * yet, then the delta since the last acknowledged baseline. The delta
-     * batch is sent even when empty: with no signal otherwise, a collector
-     * can't tell an instance that's alive but genuinely idle from one that's
-     * crashed or lost its network path, so an empty batch doubles as a
-     * liveness heartbeat. Neither send has an explicit retry queue: a
-     * failure simply leaves the relevant state where it is, so the next tick
-     * naturally retries.
+     * yet, then the delta since the last acknowledged baseline.
+     *
+     * The delta batch is sent even when empty. A collector otherwise has no
+     * way to tell an instance that's alive but idle from one that's crashed
+     * or lost its network path. An empty batch acts as a liveness heartbeat.
+     *
+     * Neither send has an explicit retry queue. A failure just leaves the
+     * relevant state where it is, so the next tick retries it naturally.
+     *
+     * This method runs under `scheduleAtFixedRate`, which stops calling a
+     * task forever the first time it lets an exception escape, with nothing
+     * logged. So `sendManifestDelta` and `sendDeltaBatch` each wrap their
+     * own registry call (`compute*`) and exporter call in one try/catch: a
+     * registry exception must never escape either one, or every future
+     * flush, including the heartbeat, silently stops.
      */
     fun flush() {
         sendManifestDelta()
+        sendDeltaBatch()
+    }
 
-        val batch = registry.computeDeltaBatch(resourceAttributes())
+    private fun sendDeltaBatch() {
         try {
+            val batch = registry.computeDeltaBatch(resourceAttributes())
             exporter.exportDeltaBatch(batch)
             registry.advanceBaseline()
         } catch (e: Exception) {
@@ -64,17 +75,19 @@ class ExportScheduler(
 
     /**
      * Sends only the probes not yet included in a successfully delivered
-     * manifest, deferred to the first flush rather than agent startup so it
-     * actually has probes in it once classes have started loading. Classes
-     * that register later in the process's life (lazy singletons, a code
-     * path exercised for the first time) get picked up here too, rather than
-     * being permanently absent from every manifest because an earlier send
-     * already succeeded.
+     * manifest.
+     *
+     * This runs on the first flush, not at agent startup. By the first
+     * flush, classes have actually started loading, so there are probes to
+     * send. Classes that register later (lazy singletons, or a code path
+     * run for the first time) are still picked up on a later flush. They
+     * are not permanently left out just because an earlier send already
+     * succeeded.
      */
     private fun sendManifestDelta() {
-        val manifest = registry.computeManifestDelta(config.serviceName, config.serviceVersion)
-        if (manifest.probes.isEmpty() && manifest.skippedClasses.isEmpty()) return
         try {
+            val manifest = registry.computeManifestDelta(config.serviceName, config.serviceVersion)
+            if (manifest.probes.isEmpty() && manifest.skippedClasses.isEmpty()) return
             exporter.exportManifest(manifest)
             registry.advanceManifestBaseline()
         } catch (e: Exception) {
