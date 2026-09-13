@@ -6,7 +6,6 @@ import io.github.lukedevops.yukon.bootstrap.YukonProbeArrays
 import io.github.lukedevops.yukon.config.AgentConfig
 import io.github.lukedevops.yukon.export.ProbeKind
 import io.github.lukedevops.yukon.instrumentation.branch.BranchProbeAsmVisitorWrapper
-import io.github.lukedevops.yukon.instrumentation.branch.BranchSite
 import io.github.lukedevops.yukon.instrumentation.branch.BranchSiteAnalyzer
 import io.github.lukedevops.yukon.instrumentation.staticscan.StaticBaselineMismatchDetector
 import io.github.lukedevops.yukon.registry.ProbeMeta
@@ -14,9 +13,11 @@ import io.github.lukedevops.yukon.registry.ProbeRegistry
 import net.bytebuddy.agent.builder.AgentBuilder
 import net.bytebuddy.agent.builder.ResettableClassFileTransformer
 import net.bytebuddy.asm.Advice
+import net.bytebuddy.description.annotation.AnnotationDescription
 import net.bytebuddy.description.field.FieldDescription
 import net.bytebuddy.description.method.MethodDescription
 import net.bytebuddy.description.method.MethodList
+import net.bytebuddy.description.method.ParameterDescription
 import net.bytebuddy.description.modifier.FieldManifestation
 import net.bytebuddy.description.modifier.Ownership
 import net.bytebuddy.description.modifier.SyntheticState
@@ -35,7 +36,6 @@ import net.bytebuddy.implementation.bytecode.member.FieldAccess
 import net.bytebuddy.implementation.bytecode.member.MethodInvocation
 import net.bytebuddy.jar.asm.MethodVisitor
 import net.bytebuddy.matcher.ElementMatcher
-import net.bytebuddy.matcher.ElementMatchers.`is`
 import net.bytebuddy.matcher.ElementMatchers.named
 import net.bytebuddy.matcher.ElementMatchers.takesArguments
 import net.bytebuddy.utility.JavaModule
@@ -108,13 +108,9 @@ class YukonInstrumentation(
         instrumentation.removeTransformer(classBytesCapture)
     }
 
-    /** String-only pre-filter for the capture, mirroring the package part of [typeMatcher] without resolving a type. */
-    private fun isCandidateInternalName(internalName: String): Boolean {
-        val name = internalName.replace('/', '.')
-        if (name.startsWith(TypeMatchPolicy.AGENT_PACKAGE_PREFIX)) return false
-        val prefixes = config.instrumentedPackagePrefixes
-        return prefixes.isEmpty() || prefixes.any { name.startsWith(it) }
-    }
+    /** String-only pre-filter for the capture, the package part of [typeMatcher] without resolving a type. */
+    private fun isCandidateInternalName(internalName: String): Boolean =
+        TypeMatchPolicy.isIncluded(internalName.replace('/', '.'), config.instrumentedPackagePrefixes)
 
     /**
      * A class transform can still fail after [instrument] has already called
@@ -180,9 +176,13 @@ class YukonInstrumentation(
         val methods = typeDescription.declaredMethods.filter(methodMatcher())
         if (methods.isEmpty()) return builder
 
-        val branchSites = findBranchSites(typeDescription, classLoader, methods)
+        val analysis = analyzeBytecode(typeDescription, classLoader, methods)
+        val branchSites = analysis.sites
 
-        val methodProbes = methods.map { ProbeMeta(ProbeKind.METHOD, it.internalName, it.descriptor, line = -1) }
+        val methodProbes =
+            methods.map {
+                ProbeMeta(ProbeKind.METHOD, it.internalName, it.descriptor, line = analysis.firstLineOf(it.internalName, it.descriptor))
+            }
         // Each site contributes `outcomeCount` adjacent slots: 2 for a conditional jump, or the
         // case count plus one for a switch. BranchProbeAsmVisitorWrapper allocates them in this
         // same order.
@@ -220,16 +220,19 @@ class YukonInstrumentation(
                     SyntheticState.SYNTHETIC,
                 ).initializer(ProbeArrayInitializer(typeDescription.name, layoutHash, counts.size))
 
-        methods.forEachIndexed { index, method ->
-            instrumented =
-                instrumented.visit(
-                    Advice
-                        .withCustomMapping()
-                        .bind(ProbeIndex::class.java, index)
-                        .to(MethodEntryAdvice::class.java)
-                        .on(`is`(method)),
-                )
-        }
+        // One Advice visitor for the whole class, with each method's slot resolved from its
+        // signature at weave time. One visitor per method would stack N method visitors, each
+        // checking every method against its own matcher, so transform cost grew with the square of
+        // the method count.
+        val slotBySignature = methods.withIndex().associate { (index, method) -> (method.internalName to method.descriptor) to index }
+        instrumented =
+            instrumented.visit(
+                Advice
+                    .withCustomMapping()
+                    .bind(ProbeIndexMapping(slotBySignature))
+                    .to(MethodEntryAdvice::class.java)
+                    .on { method -> (method.internalName to method.descriptor) in slotBySignature },
+            )
 
         if (branchSites.isNotEmpty()) {
             val eligible = methods.map { it.internalName to it.descriptor }.toSet()
@@ -256,24 +259,50 @@ class YukonInstrumentation(
     }
 
     /**
-     * Finds the class's conditional jumps in the bytes the JVM is actually about to define, as
-     * captured by [ClassBytesCapture] just before ByteBuddy's transform. ByteBuddy's own callback
-     * only hands over type metadata, not the class bytes themselves.
+     * Finds the class's conditional jumps, and each method's first line number, in the bytes the
+     * JVM is actually about to define, as captured by [ClassBytesCapture] just before ByteBuddy's
+     * transform. ByteBuddy's own callback only hands over type metadata, not the class bytes.
      *
      * Falls back to the class's own classloader resource when nothing was captured (a class
      * defined outside the ordinary transformer chain, or loaded by a test harness that bypasses
-     * [install]). If the bytes cannot be located or read at all, this class just gets no branch
-     * probes. Method-entry tracking is unaffected.
+     * [install]). If the bytes cannot be located or read at all, this class gets no branch probes
+     * and no method line numbers. Method-entry tracking is unaffected.
      */
-    private fun findBranchSites(
+    private fun analyzeBytecode(
         typeDescription: TypeDescription,
         classLoader: ClassLoader?,
         methods: MethodList<*>,
-    ): List<BranchSite> {
+    ): BranchSiteAnalyzer.Analysis {
         val eligible = methods.map { it.internalName to it.descriptor }.toSet()
         val bytes =
-            classBytesCapture.take(typeDescription.internalName) ?: locateClassBytes(typeDescription, classLoader) ?: return emptyList()
+            classBytesCapture.take(typeDescription.internalName)
+                ?: locateClassBytes(typeDescription, classLoader)
+                ?: return BranchSiteAnalyzer.Analysis.EMPTY
         return BranchSiteAnalyzer.analyze(bytes) { name, descriptor -> (name to descriptor) in eligible }
+    }
+
+    /**
+     * Resolves `@ProbeIndex` to the instrumented method's own slot, as a constant folded into the
+     * inlined advice, so one [Advice] visitor serves every probed method in the class.
+     */
+    private class ProbeIndexMapping(
+        private val slotBySignature: Map<Pair<String, String>, Int>,
+    ) : Advice.OffsetMapping.Factory<ProbeIndex> {
+        override fun getAnnotationType(): Class<ProbeIndex> = ProbeIndex::class.java
+
+        override fun make(
+            target: ParameterDescription.InDefinedShape,
+            annotation: AnnotationDescription.Loadable<ProbeIndex>,
+            adviceType: Advice.OffsetMapping.Factory.AdviceType,
+        ): Advice.OffsetMapping =
+            Advice.OffsetMapping { _, instrumentedMethod, _, _, _ ->
+                val slot =
+                    slotBySignature[instrumentedMethod.internalName to instrumentedMethod.descriptor]
+                        ?: throw IllegalStateException(
+                            "yukon: no probe slot for ${instrumentedMethod.internalName}${instrumentedMethod.descriptor}",
+                        )
+                Advice.OffsetMapping.Target.ForStackManipulation(IntegerConstant.forValue(slot))
+            }
     }
 
     private fun locateClassBytes(

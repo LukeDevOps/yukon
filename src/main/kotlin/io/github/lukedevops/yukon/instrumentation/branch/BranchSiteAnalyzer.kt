@@ -8,17 +8,47 @@ import net.bytebuddy.jar.asm.Opcodes
 
 /**
  * Finds every [ConditionalJump] and every `TABLESWITCH`/`LOOKUPSWITCH` in a class's original
- * bytecode. Only methods [methodFilter] accepts are searched.
+ * bytecode, and the first source line of each method. Only methods [methodFilter] accepts are
+ * searched.
  *
  * This is read-only. It only sizes the probe array and builds manifest metadata, ahead of the
  * actual rewrite that [BranchProbeAsmVisitorWrapper] performs later in the same class transform.
+ *
+ * A switch's outcome count is one per distinct case target plus the default. A `TABLESWITCH`
+ * over sparse case values carries filler entries for the gaps that jump straight to the default
+ * label; those are the default outcome, not cases of their own, and counting them separately
+ * would report "case 4 never hit" for a switch that has no case 4. [BranchProbeMethodVisitor]
+ * applies the same rule when it rewrites the switch, so the two agree on the slot count.
  */
 object BranchSiteAnalyzer {
+    /** Everything one pass over a class's bytecode yields. */
+    class Analysis(
+        val sites: List<BranchSite>,
+        private val firstLineByMethod: Map<Pair<String, String>, Int>,
+    ) {
+        /** First line-number-table entry of the method, or -1 when the class carries no debug info or the bytes were never read. */
+        fun firstLineOf(
+            name: String,
+            descriptor: String,
+        ): Int = firstLineByMethod[name to descriptor] ?: -1
+
+        companion object {
+            val EMPTY = Analysis(emptyList(), emptyMap())
+        }
+    }
+
+    /** How many probe slots a switch with these case targets and this default owns. */
+    fun switchOutcomeCount(
+        dflt: Label,
+        labels: Array<out Label>,
+    ): Int = labels.count { it !== dflt } + 1
+
     fun analyze(
         classBytes: ByteArray,
         methodFilter: (name: String, descriptor: String) -> Boolean,
-    ): List<BranchSite> {
+    ): Analysis {
         val sites = mutableListOf<BranchSite>()
+        val firstLines = mutableMapOf<Pair<String, String>, Int>()
         var nextSiteIndex = 0
 
         val classVisitor =
@@ -40,6 +70,7 @@ object BranchSiteAnalyzer {
                             start: Label,
                         ) {
                             currentLine = line
+                            firstLines.putIfAbsent(name to descriptor, line)
                         }
 
                         override fun visitJumpInsn(
@@ -57,7 +88,8 @@ object BranchSiteAnalyzer {
                             dflt: Label,
                             vararg labels: Label,
                         ) {
-                            sites += BranchSite(name, descriptor, currentLine, nextSiteIndex, outcomeCount = labels.size + 1)
+                            sites +=
+                                BranchSite(name, descriptor, currentLine, nextSiteIndex, outcomeCount = switchOutcomeCount(dflt, labels))
                             nextSiteIndex++
                         }
 
@@ -66,7 +98,8 @@ object BranchSiteAnalyzer {
                             keys: IntArray,
                             labels: Array<out Label>,
                         ) {
-                            sites += BranchSite(name, descriptor, currentLine, nextSiteIndex, outcomeCount = labels.size + 1)
+                            sites +=
+                                BranchSite(name, descriptor, currentLine, nextSiteIndex, outcomeCount = switchOutcomeCount(dflt, labels))
                             nextSiteIndex++
                         }
                     }
@@ -74,6 +107,6 @@ object BranchSiteAnalyzer {
             }
 
         ClassReader(classBytes).accept(classVisitor, ClassReader.SKIP_FRAMES)
-        return sites
+        return Analysis(sites, firstLines)
     }
 }

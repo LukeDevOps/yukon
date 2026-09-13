@@ -170,9 +170,7 @@ class StaticBaselineScanner(
             .map { DeclaredMethod(it.internalName, it.descriptor) }
 
     /** Cheap, string-only pre-filter, applied before resolving a [TypeDescription] at all. */
-    private fun looksInScope(className: String): Boolean =
-        !className.startsWith(TypeMatchPolicy.AGENT_PACKAGE_PREFIX) &&
-            (instrumentedPackagePrefixes.isEmpty() || instrumentedPackagePrefixes.any { className.startsWith(it) })
+    private fun looksInScope(className: String): Boolean = TypeMatchPolicy.isIncluded(className, instrumentedPackagePrefixes)
 
     /**
      * A root's own locator only has the bytes for classes physically inside that root. Resolving

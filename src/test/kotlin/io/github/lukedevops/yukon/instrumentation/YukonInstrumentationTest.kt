@@ -124,6 +124,32 @@ class YukonInstrumentationTest {
     }
 
     @Test
+    fun `a native method gets no probe, since nothing could ever increment it`() {
+        val registry = ProbeRegistry()
+        val config = AgentConfig.parse("includePackages=com.example.target")
+        install(registry, config)
+
+        val target = Class.forName("com.example.target.NativeTarget", true, fixtureLoader())
+        target.getMethod("normalThing").invoke(target.getDeclaredConstructor().newInstance())
+
+        val probes = registry.manifest("test", null, "instance-1").probes.filter { it.className == "com.example.target.NativeTarget" }
+        assertEquals(setOf("<init>", "normalThing"), probes.map { it.methodName }.toSet())
+    }
+
+    @Test
+    fun `method probes carry the method's first source line when the class has debug info`() {
+        val registry = ProbeRegistry()
+        val config = AgentConfig.parse("includePackages=com.example.target")
+        install(registry, config)
+
+        val probes = registry.manifest("test", null, "instance-1").probes
+        val ping = probes.single { it.methodName == "ping" }
+        val neverCalled = probes.single { it.methodName == "neverCalled" }
+        assertTrue(ping.line > 0, "expected a real line, got ${ping.line}")
+        assertTrue(neverCalled.line > ping.line, "neverCalled is declared after ping in SampleTarget")
+    }
+
+    @Test
     fun `the probe array is in place before the class's own static initializer runs`() {
         val registry = ProbeRegistry()
         val config = AgentConfig.parse("includePackages=com.example.target")
