@@ -38,6 +38,11 @@ private val manifestProbes = ConcurrentHashMap<ProbeKey, ProbeInfo>()
 private val everHit = Collections.newSetFromMap(ConcurrentHashMap<ProbeKey, Boolean>())
 private val skippedClasses = ConcurrentHashMap<String, SkippedInfo>()
 
+// hits_total is cumulative from process start, not the count since the last flush. Merging with
+// max() is what makes this safe against a re-delivered or reordered batch: applying the same or
+// an older value again is a no-op instead of double-counting.
+private val latestHitsTotal = ConcurrentHashMap<ProbeKey, Long>()
+
 // Any class name the reactive manifest has ever mentioned, whether it got probes or was skipped.
 // Either way, it was loaded and reached the transform stage - the opposite of what the static
 // baseline's declared-classes set is for.
@@ -80,11 +85,12 @@ private fun handleShutdown(exchange: HttpExchange) {
 
 private fun handleDeltaBatch(exchange: HttpExchange) {
     val batch = DeltaBatch.parseFrom(exchange.requestBody.readBytes())
-    var totalHits = 0L
     for (delta in batch.deltasList) {
-        everHit += ProbeKey(delta.classId, delta.probeIndex)
-        totalHits += delta.hitsSinceLastFlush
+        val key = ProbeKey(delta.classId, delta.probeIndex)
+        everHit += key
+        latestHitsTotal.merge(key, delta.hitsTotal, ::maxOf)
     }
+    val totalHits = latestHitsTotal.values.sum()
     println(
         "[flush] service=${batch.resource.serviceName} instance=${batch.resource.serviceInstanceId} " +
             "probes_with_activity=${batch.deltasList.size} total_hits=$totalHits",

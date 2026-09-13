@@ -17,12 +17,17 @@ data class ResourceAttributes(
     val environment: String?,
 )
 
+/**
+ * [hitsTotal] is a cumulative count from process start, not the count since
+ * the last flush. A collector merges it with max() across retries and
+ * reordering, so a re-delivered or reordered value cannot double-count.
+ */
 data class ProbeDelta(
     val classId: Int,
     val probeIndex: Int,
     val kind: ProbeKind,
     val firstSeenAt: Long,
-    val hitsSinceLastFlush: Long,
+    val hitsTotal: Long,
 )
 
 data class DeltaBatch(

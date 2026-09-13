@@ -62,7 +62,7 @@ class YukonInstrumentationTest {
         val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null)).deltas
         val byIndex = deltas.associateBy { it.probeIndex }
 
-        assertEquals(1L, byIndex.getValue(pingProbeIndex).hitsSinceLastFlush)
+        assertEquals(1L, byIndex.getValue(pingProbeIndex).hitsTotal)
         assertTrue(neverCalledProbeIndex !in byIndex)
     }
 
@@ -82,8 +82,8 @@ class YukonInstrumentationTest {
         val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null)).deltas
         val byIndex = deltas.associateBy { it.probeIndex }
 
-        assertEquals(3L, byIndex.getValue(pingProbeIndex).hitsSinceLastFlush)
-        assertEquals(2L, byIndex.getValue(neverCalledProbeIndex).hitsSinceLastFlush)
+        assertEquals(3L, byIndex.getValue(pingProbeIndex).hitsTotal)
+        assertEquals(2L, byIndex.getValue(neverCalledProbeIndex).hitsTotal)
     }
 
     @Test

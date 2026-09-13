@@ -70,7 +70,7 @@ object ProtoPayloadCodec {
             .setProbeIndex(delta.probeIndex)
             .setKind(toProto(delta.kind))
             .setFirstSeenAt(delta.firstSeenAt)
-            .setHitsSinceLastFlush(delta.hitsSinceLastFlush)
+            .setHitsTotal(delta.hitsTotal)
             .build()
 
     private fun fromProto(delta: ProtoProbeDelta): ProbeDelta =
@@ -79,7 +79,7 @@ object ProtoPayloadCodec {
             probeIndex = delta.probeIndex,
             kind = fromProto(delta.kind),
             firstSeenAt = delta.firstSeenAt,
-            hitsSinceLastFlush = delta.hitsSinceLastFlush,
+            hitsTotal = delta.hitsTotal,
         )
 
     private fun toProto(manifest: ProbeManifest): ProtoProbeManifest {
