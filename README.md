@@ -80,6 +80,31 @@ one way; `/promo`, never called), and a client that drives the server, all as
 separate JVM processes. On shutdown, the stub collector prints a report of
 probes that were never hit and any classes it had to skip.
 
+## Run the demo against a real collector
+
+```
+./gradlew :demo:runDemoStack
+```
+
+Runs the same instrumented demo server and client, but against a real
+collector instead of the stub, then prints what the backend behind it
+reports: probe and class counts, the never-hit probes, and the never-loaded
+classes. It expects a collector at `http://localhost:4319` and the
+yukon-server read API at `http://localhost:4320`, which is what
+yukon-server's `docker compose --profile stack up --build` provides. Every
+address and credential can be overridden:
+
+| Property | Default |
+|---|---|
+| `-PyukonEndpoint` | `http://localhost:4319` |
+| `-PyukonAgentToken` | `local-stack-agent-token` |
+| `-PyukonServerUrl` | `http://localhost:4320` |
+| `-PyukonServerApiKey` | `yk_local-stack-api-key` |
+| `-PyukonServiceVersion` | `stack-demo` |
+
+The defaults match the compose stack's own development defaults, so with
+the stack up it works with no arguments.
+
 ## Test your app against the agent
 
 The `testkit` module is an embeddable collector for your own tests. It
