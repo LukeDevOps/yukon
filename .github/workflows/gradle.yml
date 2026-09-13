@@ -24,3 +24,4 @@ jobs:
           path: |
             build/reports/tests/
             demo/build/reports/tests/
+            testkit/build/reports/tests/
