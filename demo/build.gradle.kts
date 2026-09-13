@@ -4,6 +4,8 @@ import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.Socket
 import java.net.URI
+import java.time.Instant
+import java.util.UUID
 import java.util.concurrent.TimeUnit
 
 plugins {
@@ -122,11 +124,13 @@ tasks.register("runDemoStack") {
             )
         }
 
-        println("yukon demo: starting instrumented demo server against $stackEndpoint")
+        val runInstanceId = UUID.randomUUID().toString()
+        println("yukon demo: starting instrumented demo server against $stackEndpoint as instance $runInstanceId")
         val agentArg =
             "-javaagent:${agentJar.absolutePath}=" +
                 "serviceName=$stackServiceName," +
                 "serviceVersion=$stackServiceVersion," +
+                "serviceInstanceId=$runInstanceId," +
                 "flushIntervalSeconds=$flushIntervalSeconds," +
                 "endpoint=$stackEndpoint," +
                 "includePackages=io.github.lukedevops.demo.server," +
@@ -149,7 +153,9 @@ tasks.register("runDemoStack") {
             println("yukon demo: waiting for one more flush and the static baseline scan before shutdown")
             Thread.sleep((flushIntervalSeconds + 2) * 1000)
         } finally {
+            val seenBeforeShutdown = instanceLastSeen(runInstanceId)
             gracefulShutdown("server", server, DemoPorts.SERVER_PORT)
+            awaitShutdownFlush(runInstanceId, seenBeforeShutdown)
         }
 
         printStackReport()
@@ -189,20 +195,46 @@ fun readApi(path: String): Map<*, *> {
     return groovy.json.JsonSlurper().parseText(result.body) as Map<*, *>
 }
 
-// The collector forwards to the server asynchronously, so the shutdown
-// flush can still be in flight when the demo server has exited. Poll the
-// report until the final hit count has landed rather than sleeping.
+// last_seen_at of this run's instance as the server reports it, or null
+// if the server has not heard from the instance yet.
+fun instanceLastSeen(instanceId: String): Instant? {
+    val instances = readApi("/instances?version=$stackServiceVersion")["instances"] as List<*>
+    val match = instances.map { it as Map<*, *> }.firstOrNull { it["instance_id"] == instanceId } ?: return null
+    return Instant.parse(match["last_seen_at"] as String)
+}
+
+// The agent's shutdown hook sends one last delta batch, and the collector
+// forwards it asynchronously, so it can still be in flight after the demo
+// server has exited. Every delta batch moves the instance's last_seen_at,
+// so wait until this run's instance has been seen again since just before
+// the shutdown request; that is the final flush landing. The report would
+// otherwise be read before the last hits arrived, and because the store
+// keeps data across runs, "any probes known" cannot tell one run from the
+// last.
+fun awaitShutdownFlush(
+    instanceId: String,
+    seenBefore: Instant?,
+) {
+    val deadline = System.currentTimeMillis() + 15_000
+    while (System.currentTimeMillis() < deadline) {
+        val seenNow = instanceLastSeen(instanceId)
+        if (seenNow != null && (seenBefore == null || seenNow.isAfter(seenBefore))) return
+        Thread.sleep(250)
+    }
+    println(
+        "yukon demo: warning: the shutdown flush for instance $instanceId did not reach the server within 15s; the report may be missing its final hits",
+    )
+}
+
+// The report covers every instance of this service and version the server
+// has ever seen, so repeated runs against the same stack accumulate.
 fun printStackReport() {
     val version = "?version=$stackServiceVersion"
-    val deadline = System.currentTimeMillis() + 15_000
-    var report = readApi("/report$version")
-    while (System.currentTimeMillis() < deadline && ((report["probes"] as Map<*, *>)["known"] as Number).toInt() == 0) {
-        Thread.sleep(500)
-        report = readApi("/report$version")
-    }
+    val report = readApi("/report$version")
     val probes = report["probes"] as Map<*, *>
     val classes = report["classes"] as Map<*, *>
-    println("yukon demo: report for $stackServiceName@$stackServiceVersion from $stackServerUrl")
+    val instances = report["instances"] as Map<*, *>
+    println("yukon demo: report for $stackServiceName@$stackServiceVersion from $stackServerUrl (${instances["total"]} instance(s) so far)")
     println("  probes: known=${probes["known"]} hit=${probes["hit"]} never_hit=${probes["never_hit"]}")
     println("  classes: declared=${classes["declared"]} loaded=${classes["loaded"]} never_loaded=${classes["never_loaded"]}")
 
@@ -252,7 +284,9 @@ fun startProcess(
 }
 
 // POSTing to /__shutdown lets each process exit itself and flush any final output first;
-// destroy() (SIGTERM) is only a fallback if that doesn't work.
+// destroy() (SIGTERM) is only a fallback if that doesn't work. The wait outlasts the
+// agent's own ten-second shutdown flush budget, so a slow collector is never the
+// reason the final flush is cut off.
 fun gracefulShutdown(
     tag: String,
     demoProcess: DemoProcess,
@@ -268,7 +302,7 @@ fun gracefulShutdown(
     } catch (e: IOException) {
         println("yukon demo: graceful shutdown request to $tag failed ($e), falling back to destroy")
     }
-    if (!demoProcess.process.waitFor(5, TimeUnit.SECONDS)) {
+    if (!demoProcess.process.waitFor(15, TimeUnit.SECONDS)) {
         demoProcess.process.destroy()
         demoProcess.process.waitFor()
     }

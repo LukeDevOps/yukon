@@ -103,7 +103,10 @@ address and credential can be overridden:
 | `-PyukonServiceVersion` | `stack-demo` |
 
 The defaults match the compose stack's own development defaults, so with
-the stack up it works with no arguments.
+the stack up it works with no arguments. Each run registers as a new
+instance, and the server keeps everything it has seen, so the report
+covers every run of that service and version so far; pass a fresh
+`-PyukonServiceVersion` to start a clean slate.
 
 ## Test your app against the agent
 
