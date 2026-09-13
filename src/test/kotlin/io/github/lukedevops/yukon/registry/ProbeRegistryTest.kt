@@ -67,7 +67,11 @@ class ProbeRegistryTest {
         registry.unregister("com.example.Foo", loaderA)
 
         val remaining = registry.manifest(serviceName = "checkout", serviceVersion = null).probes
-        assertEquals(1, remaining.size, "unregistering one classloader's failed class must not remove another loader's successfully registered one")
+        assertEquals(
+            1,
+            remaining.size,
+            "unregistering one classloader's failed class must not remove another loader's successfully registered one",
+        )
     }
 
     @Test
