@@ -67,7 +67,8 @@ tasks.register("runDemo") {
                     "serviceName=yukon-demo," +
                     "flushIntervalSeconds=$flushIntervalSeconds," +
                     "endpoint=http://localhost:${DemoPorts.COLLECTOR_PORT}," +
-                    "includePackages=io.github.lukedevops.demo.server"
+                    "includePackages=io.github.lukedevops.demo.server," +
+                    "staticBaselineEnabled=true"
             val server = startProcess("server", javaBin, listOf(agentArg, "-cp", demoClasspath, demoServerMainClass))
             try {
                 waitForPort(DemoPorts.SERVER_PORT, portWaitTimeoutSeconds)
@@ -77,7 +78,7 @@ tasks.register("runDemo") {
                 client.process.waitFor()
                 client.outputThread.join()
 
-                println("yukon demo: waiting for one more flush before shutdown")
+                println("yukon demo: waiting for one more flush and the static baseline scan before shutdown")
                 Thread.sleep((flushIntervalSeconds + 2) * 1000)
             } finally {
                 gracefulShutdown("server", server, DemoPorts.SERVER_PORT)

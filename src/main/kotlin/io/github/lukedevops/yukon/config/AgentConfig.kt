@@ -18,6 +18,12 @@ data class AgentConfig(
     val flushInterval: Duration,
     /** Only types whose name starts with one of these prefixes are instrumented. Empty means every type is. */
     val instrumentedPackagePrefixes: List<String>,
+    /**
+     * Off unless explicitly enabled. Unlike every other capability here, a full classpath scan
+     * has a cost that genuinely scales with an adopter's classpath size, so it does not inherit
+     * this agent's usual "on unless configured otherwise" default.
+     */
+    val staticBaselineEnabled: Boolean,
 ) {
     companion object {
         private const val DEFAULT_ENDPOINT = "http://localhost:4319"
@@ -39,6 +45,7 @@ data class AgentConfig(
                         ?.map { it.trim() }
                         ?.filter { it.isNotEmpty() }
                         ?: emptyList(),
+                staticBaselineEnabled = options["staticBaselineEnabled"]?.toBoolean() ?: false,
             )
         }
 

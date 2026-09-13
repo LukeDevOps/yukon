@@ -109,6 +109,145 @@ class ProtoPayloadCodecTest {
     }
 
     @Test
+    fun `decodes a delta batch back into the same values it was encoded from`() {
+        val batch =
+            DeltaBatch(
+                resource = ResourceAttributes("checkout", "1.0.0", "instance-1", "prod"),
+                deltas =
+                    listOf(
+                        ProbeDelta(classId = 0, probeIndex = 1, kind = ProbeKind.METHOD, firstSeenAt = 1000L, hitsSinceLastFlush = 5L),
+                        ProbeDelta(classId = 0, probeIndex = 2, kind = ProbeKind.BRANCH, firstSeenAt = 1200L, hitsSinceLastFlush = 1L),
+                    ),
+            )
+
+        val decoded = ProtoPayloadCodec.decodeDeltaBatch(ProtoPayloadCodec.encode(batch))
+
+        assertEquals(batch, decoded)
+    }
+
+    @Test
+    fun `decodes a delta batch with null optional resource fields`() {
+        val batch =
+            DeltaBatch(
+                resource = ResourceAttributes("checkout", serviceVersion = null, serviceInstanceId = "i-1", environment = null),
+                deltas = emptyList(),
+            )
+
+        val decoded = ProtoPayloadCodec.decodeDeltaBatch(ProtoPayloadCodec.encode(batch))
+
+        assertEquals(batch, decoded)
+    }
+
+    @Test
+    fun `decodes a probe manifest back into the same values it was encoded from, including skipped classes`() {
+        val manifest =
+            ProbeManifest(
+                serviceName = "checkout",
+                serviceVersion = "1.0.0",
+                probes =
+                    listOf(
+                        ProbeLocation(
+                            classId = 0,
+                            probeIndex = 0,
+                            kind = ProbeKind.METHOD,
+                            className = "com.example.Foo",
+                            methodName = "bar",
+                            methodDescriptor = "()V",
+                            line = 10,
+                            branchIndex = null,
+                        ),
+                        ProbeLocation(
+                            classId = 0,
+                            probeIndex = 1,
+                            kind = ProbeKind.BRANCH,
+                            className = "com.example.Foo",
+                            methodName = "bar",
+                            methodDescriptor = "()V",
+                            line = 12,
+                            branchIndex = 3,
+                        ),
+                    ),
+                skippedClasses =
+                    listOf(
+                        SkippedClass(
+                            className = "com.example.Skipped",
+                            reason = "annotation not supported on TYPE",
+                            skippedAt = 1000L,
+                        ),
+                    ),
+            )
+
+        val decoded = ProtoPayloadCodec.decodeProbeManifest(ProtoPayloadCodec.encode(manifest))
+
+        assertEquals(manifest, decoded)
+    }
+
+    @Test
+    fun `decodes a probe manifest with a null service version`() {
+        val manifest = ProbeManifest(serviceName = "checkout", serviceVersion = null, probes = emptyList())
+
+        val decoded = ProtoPayloadCodec.decodeProbeManifest(ProtoPayloadCodec.encode(manifest))
+
+        assertEquals(manifest, decoded)
+    }
+
+    @Test
+    fun `encodes and decodes a static baseline with declared classes and methods`() {
+        val baseline =
+            StaticBaseline(
+                resource = ResourceAttributes("checkout", "1.0.0", "instance-1", "prod"),
+                declaredClasses =
+                    listOf(
+                        DeclaredClass(
+                            className = "com.example.Foo",
+                            methods =
+                                listOf(
+                                    DeclaredMethod(methodName = "bar", methodDescriptor = "()V"),
+                                    DeclaredMethod(methodName = "baz", methodDescriptor = "(I)Z"),
+                                ),
+                        ),
+                    ),
+                scannedAt = 1000L,
+            )
+
+        val decoded = ProtoPayloadCodec.decodeStaticBaseline(ProtoPayloadCodec.encode(baseline))
+
+        assertEquals(baseline, decoded)
+    }
+
+    @Test
+    fun `encodes and decodes a static baseline's statically-unsafe and unreadable classes`() {
+        val baseline =
+            StaticBaseline(
+                resource = ResourceAttributes("checkout", null, "instance-1", null),
+                declaredClasses = emptyList(),
+                staticallyUnsafeClasses =
+                    listOf(StaticallyUnsafeClass("com.example.Unsafe", "@kotlin.jvm.JvmName is not legal on TYPE")),
+                unreadableClasses =
+                    listOf(UnreadableClass("com.example.Corrupt", "unexpected end of ZLIB input stream")),
+                scannedAt = 2000L,
+            )
+
+        val decoded = ProtoPayloadCodec.decodeStaticBaseline(ProtoPayloadCodec.encode(baseline))
+
+        assertEquals(baseline, decoded)
+    }
+
+    @Test
+    fun `encodes an empty static baseline`() {
+        val baseline =
+            StaticBaseline(
+                resource = ResourceAttributes("checkout", null, "instance-1", null),
+                declaredClasses = emptyList(),
+                scannedAt = 3000L,
+            )
+
+        val decoded = ProtoPayloadCodec.decodeStaticBaseline(ProtoPayloadCodec.encode(baseline))
+
+        assertEquals(baseline, decoded)
+    }
+
+    @Test
     fun `encodes skipped classes on the manifest`() {
         val manifest =
             ProbeManifest(

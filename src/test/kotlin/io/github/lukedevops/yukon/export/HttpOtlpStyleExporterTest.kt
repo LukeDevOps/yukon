@@ -72,6 +72,22 @@ class HttpOtlpStyleExporterTest {
     }
 
     @Test
+    fun `posts a static baseline to the static-baseline endpoint`() {
+        val endpoint = startServer { 200 }
+        val exporter = exporterFor(endpoint)
+        val baseline =
+            StaticBaseline(
+                resource = ResourceAttributes("checkout", "1.0.0", "i-1", "test"),
+                declaredClasses = emptyList(),
+                scannedAt = 1000L,
+            )
+
+        exporter.exportStaticBaseline(baseline)
+
+        assertEquals(listOf("/v1/yukon/static-baseline"), requestedPaths)
+    }
+
+    @Test
     fun `retries a transient server error and succeeds once the server recovers`() {
         val endpoint = startServer { requestNumber -> if (requestNumber < 3) 503 else 200 }
         val exporter = exporterFor(endpoint)

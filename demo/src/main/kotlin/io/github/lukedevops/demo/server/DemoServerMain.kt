@@ -9,10 +9,14 @@ import java.nio.charset.StandardCharsets
 private const val FREE_SHIPPING_THRESHOLD = 100.0
 
 /**
- * Two endpoints, illustrating two things static analysis can't catch.
+ * Two endpoints and one feature-flagged class, illustrating three things static analysis can't
+ * catch.
  *
  * `/checkout`'s free-shipping branch is only ever exercised one way, given how
- * [io.github.lukedevops.demo.client] calls it. `/promo` is reachable, but never called at all.
+ * [io.github.lukedevops.demo.client] calls it. `/promo` is reachable, but never called at all -
+ * both are method-level "loaded but never hit" findings. [LegacyDiscountCalculator] is a level
+ * further: its feature flag is always off in this demo, so the class itself never loads, which
+ * only the static baseline (opted into below via `staticBaselineEnabled=true`) can report.
  */
 fun main() {
     val server = HttpServer.create(InetSocketAddress(DemoPorts.SERVER_PORT), 0)
@@ -28,11 +32,17 @@ fun main() {
 
 private fun handleCheckout(exchange: HttpExchange) {
     val total = totalParam(exchange)
-    val message =
-        if (total > FREE_SHIPPING_THRESHOLD) {
-            "order of $total qualifies for free shipping"
+    val discounted =
+        if (System.getenv("ENABLE_LEGACY_DISCOUNT") == "true") {
+            LegacyDiscountCalculator().apply(total)
         } else {
-            "order of $total does not qualify for free shipping"
+            total
+        }
+    val message =
+        if (discounted > FREE_SHIPPING_THRESHOLD) {
+            "order of $discounted qualifies for free shipping"
+        } else {
+            "order of $discounted does not qualify for free shipping"
         }
     respond(exchange, message)
 }

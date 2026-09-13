@@ -41,6 +41,10 @@ class HttpOtlpStyleExporter(
         post("$endpoint/v1/yukon/manifest", ProtoPayloadCodec.encode(manifest))
     }
 
+    override fun exportStaticBaseline(baseline: StaticBaseline) {
+        post("$endpoint/v1/yukon/static-baseline", ProtoPayloadCodec.encode(baseline))
+    }
+
     private fun post(
         uri: String,
         body: ByteArray,

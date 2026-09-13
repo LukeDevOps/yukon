@@ -10,6 +10,7 @@ import kotlin.test.assertTrue
 private class RecordingExporter : Exporter {
     var deltaBatches = mutableListOf<DeltaBatch>()
     var manifests = mutableListOf<ProbeManifest>()
+    var staticBaselines = mutableListOf<StaticBaseline>()
 
     override fun exportDeltaBatch(batch: DeltaBatch) {
         deltaBatches += batch
@@ -18,12 +19,18 @@ private class RecordingExporter : Exporter {
     override fun exportManifest(manifest: ProbeManifest) {
         manifests += manifest
     }
+
+    override fun exportStaticBaseline(baseline: StaticBaseline) {
+        staticBaselines += baseline
+    }
 }
 
 private class FailingExporter : Exporter {
     override fun exportDeltaBatch(batch: DeltaBatch) = throw RuntimeException("collector unreachable")
 
     override fun exportManifest(manifest: ProbeManifest) = throw RuntimeException("collector unreachable")
+
+    override fun exportStaticBaseline(baseline: StaticBaseline) = throw RuntimeException("collector unreachable")
 }
 
 class ExportSchedulerTest {
@@ -214,6 +221,8 @@ class ExportSchedulerTest {
                     manifestSends++
                     if (fail) throw RuntimeException("collector unreachable")
                 }
+
+                override fun exportStaticBaseline(baseline: StaticBaseline) {}
             }
         val scheduler = ExportScheduler(config, registry, exporter)
 

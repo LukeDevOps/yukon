@@ -68,3 +68,46 @@ message ProbeManifest {
   repeated ProbeLocation probes = 3;
   repeated SkippedClass skipped_classes = 4;
 }
+
+// No line field, unlike ProbeLocation: method-level probes never carry a
+// real line number today, so this does not propagate a placeholder value.
+message DeclaredMethod {
+  string method_name = 1;
+  string method_descriptor = 2;
+}
+
+message DeclaredClass {
+  string class_name = 1;
+  repeated DeclaredMethod methods = 2;
+}
+
+// A class the static scanner found on the classpath but judged unsafe to
+// instrument without loading it, using the same @Target-legality check
+// applied at transform time. Kept separate from DeclaredClass so it is
+// never conflated with a confidently-dead class.
+message StaticallyUnsafeClass {
+  string class_name = 1;
+  string reason = 2;
+}
+
+// A class file the scanner found but could not read (a corrupt entry, an
+// unusual bytecode version). class_name is best-effort, derived from its
+// path within the classpath root rather than from parsed bytecode.
+message UnreadableClass {
+  string class_name = 1;
+  string reason = 2;
+}
+
+// Sent once per process, independent of the reactive ProbeManifest: a
+// load-independent inventory of what exists on the classpath under
+// includePackages, built by reading bytecode directly rather than
+// waiting for the JVM to load it. The collector diffs this against
+// classes that actually register dynamically; one declared here and
+// never reported dynamically was never even constructed.
+message StaticBaseline {
+  ResourceAttributes resource = 1;
+  repeated DeclaredClass declared_classes = 2;
+  repeated StaticallyUnsafeClass statically_unsafe_classes = 3;
+  repeated UnreadableClass unreadable_classes = 4;
+  int64 scanned_at = 5;
+}

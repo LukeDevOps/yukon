@@ -7,6 +7,7 @@ import io.github.lukedevops.yukon.export.ProbeKind
 import io.github.lukedevops.yukon.instrumentation.branch.BranchProbeAsmVisitorWrapper
 import io.github.lukedevops.yukon.instrumentation.branch.BranchSite
 import io.github.lukedevops.yukon.instrumentation.branch.BranchSiteAnalyzer
+import io.github.lukedevops.yukon.instrumentation.staticscan.StaticBaselineMismatchDetector
 import io.github.lukedevops.yukon.registry.ProbeMeta
 import io.github.lukedevops.yukon.registry.ProbeRegistry
 import net.bytebuddy.agent.builder.AgentBuilder
@@ -23,16 +24,9 @@ import net.bytebuddy.dynamic.DynamicType
 import net.bytebuddy.implementation.LoadedTypeInitializer
 import net.bytebuddy.matcher.ElementMatcher
 import net.bytebuddy.matcher.ElementMatchers.`is`
-import net.bytebuddy.matcher.ElementMatchers.isAbstract
-import net.bytebuddy.matcher.ElementMatchers.isBridge
-import net.bytebuddy.matcher.ElementMatchers.isSynthetic
-import net.bytebuddy.matcher.ElementMatchers.isTypeInitializer
-import net.bytebuddy.matcher.ElementMatchers.nameStartsWith
-import net.bytebuddy.matcher.ElementMatchers.not
 import net.bytebuddy.utility.JavaModule
 import java.io.IOException
 import java.lang.System.Logger.Level
-import java.lang.annotation.ElementType
 import java.lang.instrument.Instrumentation
 
 /**
@@ -51,6 +45,7 @@ import java.lang.instrument.Instrumentation
 class YukonInstrumentation(
     private val config: AgentConfig,
     private val registry: ProbeRegistry,
+    private val staticBaselineMismatchDetector: StaticBaselineMismatchDetector = StaticBaselineMismatchDetector(),
 ) {
     private val log = System.getLogger(YukonInstrumentation::class.java.name)
 
@@ -86,22 +81,10 @@ class YukonInstrumentation(
         }
     }
 
-    private fun typeMatcher(): ElementMatcher.Junction<TypeDescription> {
-        val excluded: ElementMatcher.Junction<TypeDescription> =
-            not(isSynthetic<TypeDescription>()).and(not(nameStartsWith(AGENT_PACKAGE_PREFIX)))
-        val prefixes = config.instrumentedPackagePrefixes
-        val matcher =
-            if (prefixes.isEmpty()) {
-                excluded
-            } else {
-                val includesAny =
-                    prefixes
-                        .map { nameStartsWith<TypeDescription>(it) }
-                        .reduce { a, b -> a.or(b) }
-                excluded.and(includesAny)
-            }
-        return matcher.and { typeDescription -> isSafeToInstrument(typeDescription) }
-    }
+    private fun typeMatcher(): ElementMatcher.Junction<TypeDescription> =
+        TypeMatchPolicy
+            .typeNameMatcher(config.instrumentedPackagePrefixes)
+            .and { typeDescription -> isSafeToInstrument(typeDescription) }
 
     /**
      * `AgentBuilder` commits to rebasing a type the moment it matches `.type(...)`. This happens
@@ -122,7 +105,7 @@ class YukonInstrumentation(
      * accepts.
      */
     private fun isSafeToInstrument(typeDescription: TypeDescription): Boolean {
-        val unsupported = typeDescription.declaredAnnotations.firstOrNull { !it.isSupportedOn(ElementType.TYPE) } ?: return true
+        val unsupported = TypeMatchPolicy.unsafeAnnotation(typeDescription) ?: return true
         registry.recordSkipped(
             typeDescription.name,
             "@${unsupported.annotationType.name} is not a legal annotation on a class per its own @Target",
@@ -158,6 +141,14 @@ class YukonInstrumentation(
                     branchSites.map { "${it.methodName}${it.methodDescriptor}#branch${it.siteIndex}x${it.outcomeCount}" },
             )
         val counts = registry.register(typeDescription.name, layoutHash, probes, classLoader)
+        if (staticBaselineMismatchDetector.shouldWarnAbout(typeDescription.name)) {
+            log.log(
+                Level.WARNING,
+                "yukon: ${typeDescription.name} registered dynamically but was not in the static baseline computed " +
+                    "at startup for this process - the static scan may have a blind spot for this deployment " +
+                    "(see \"Static baseline\" in this project's CLAUDE.md)",
+            )
+        }
 
         var instrumented =
             builder
@@ -222,13 +213,5 @@ class YukonInstrumentation(
         }
     }
 
-    private fun methodMatcher(): ElementMatcher.Junction<MethodDescription> =
-        not(isAbstract<MethodDescription>())
-            .and(not(isSynthetic()))
-            .and(not(isBridge()))
-            .and(not(isTypeInitializer()))
-
-    private companion object {
-        const val AGENT_PACKAGE_PREFIX = "io.github.lukedevops.yukon."
-    }
+    private fun methodMatcher(): ElementMatcher.Junction<MethodDescription> = TypeMatchPolicy.methodMatcher()
 }
