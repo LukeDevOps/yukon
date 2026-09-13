@@ -20,8 +20,24 @@ object Agent {
     private val SHUTDOWN_FLUSH_TIMEOUT: Duration = Duration.ofSeconds(10)
     private val log = System.getLogger(Agent::class.java.name)
 
+    /**
+     * Nothing may escape from here. The `java.lang.instrument` contract aborts the whole target
+     * JVM on an uncaught exception from `premain`, so any bug in the agent's own startup would
+     * take the application down with it. A failed start is logged and the agent stays inert.
+     */
     @JvmStatic
     fun premain(
+        agentArgs: String?,
+        instrumentation: Instrumentation,
+    ) {
+        try {
+            start(agentArgs, instrumentation)
+        } catch (e: Throwable) {
+            log.log(Level.ERROR, "yukon: agent failed to start and is disabled for this JVM", e)
+        }
+    }
+
+    private fun start(
         agentArgs: String?,
         instrumentation: Instrumentation,
     ) {

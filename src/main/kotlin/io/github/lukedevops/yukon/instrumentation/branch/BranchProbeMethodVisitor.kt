@@ -73,15 +73,14 @@ class BranchProbeMethodVisitor(
         dflt: Label,
         vararg labels: Label,
     ) {
-        val slot = allocateSlots(labels.size + 1)
+        val slot = allocateSlots(BranchSiteAnalyzer.switchOutcomeCount(dflt, labels))
         if (slot == NO_SLOT) {
             super.visitTableSwitchInsn(min, max, dflt, *labels)
             return
         }
-        val newDefault = Label()
-        val newLabels = Array(labels.size) { Label() }
-        super.visitTableSwitchInsn(min, max, newDefault, *newLabels)
-        emitSwitchEdges(slot, labels.asList(), dflt, newDefault, newLabels.asList())
+        val edges = SwitchEdges(dflt, labels)
+        super.visitTableSwitchInsn(min, max, edges.newDefault, *edges.newLabels)
+        emitSwitchEdges(slot, edges)
     }
 
     override fun visitLookupSwitchInsn(
@@ -89,33 +88,45 @@ class BranchProbeMethodVisitor(
         keys: IntArray,
         labels: Array<out Label>,
     ) {
-        val slot = allocateSlots(labels.size + 1)
+        val slot = allocateSlots(BranchSiteAnalyzer.switchOutcomeCount(dflt, labels))
         if (slot == NO_SLOT) {
             super.visitLookupSwitchInsn(dflt, keys, labels)
             return
         }
+        val edges = SwitchEdges(dflt, labels)
+        super.visitLookupSwitchInsn(edges.newDefault, keys, edges.newLabels)
+        emitSwitchEdges(slot, edges)
+    }
+
+    /**
+     * The private edges for one switch. Every case entry that already jumps to the default label
+     * (a `TABLESWITCH` filler for a gap in the case values) is routed to the new default edge, so
+     * it counts as the default outcome it is rather than as a case of its own.
+     */
+    private class SwitchEdges(
+        val originalDefault: Label,
+        originalLabels: Array<out Label>,
+    ) {
         val newDefault = Label()
-        val newLabels = Array(labels.size) { Label() }
-        super.visitLookupSwitchInsn(newDefault, keys, newLabels)
-        emitSwitchEdges(slot, labels.asList(), dflt, newDefault, newLabels.asList())
+        val newLabels: Array<Label> = Array(originalLabels.size) { i -> if (originalLabels[i] === originalDefault) newDefault else Label() }
+        val caseIndices: List<Int> = originalLabels.indices.filter { originalLabels[it] !== originalDefault }
+        val caseTargets: List<Label> = caseIndices.map { originalLabels[it] }
+        val caseEdges: List<Label> = caseIndices.map { newLabels[it] }
     }
 
     private fun emitSwitchEdges(
         slot: Int,
-        originalLabels: List<Label>,
-        originalDefault: Label,
-        newDefault: Label,
-        newLabels: List<Label>,
+        edges: SwitchEdges,
     ) {
         val base = probeIndexBase + slot
-        newLabels.forEachIndexed { i, block ->
+        edges.caseEdges.forEachIndexed { i, block ->
             super.visitLabel(block)
             emitProbeIncrement(base + i)
-            super.visitJumpInsn(Opcodes.GOTO, originalLabels[i])
+            super.visitJumpInsn(Opcodes.GOTO, edges.caseTargets[i])
         }
-        super.visitLabel(newDefault)
-        emitProbeIncrement(base + originalLabels.size)
-        super.visitJumpInsn(Opcodes.GOTO, originalDefault)
+        super.visitLabel(edges.newDefault)
+        emitProbeIncrement(base + edges.caseEdges.size)
+        super.visitJumpInsn(Opcodes.GOTO, edges.originalDefault)
     }
 
     private fun emitProbeIncrement(index: Int) {

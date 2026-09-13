@@ -21,6 +21,10 @@ data class ResourceAttributes(
  * [hitsTotal] is a cumulative count from process start, not the count since
  * the last flush. A collector merges it with max() across retries and
  * reordering, so a re-delivered or reordered value cannot double-count.
+ *
+ * [firstSeenAt] is stamped by the first flush that observed a non-zero count,
+ * not by the hit itself; the hot path reads no clock. Its precision is one
+ * flush interval.
  */
 data class ProbeDelta(
     val classId: Int,

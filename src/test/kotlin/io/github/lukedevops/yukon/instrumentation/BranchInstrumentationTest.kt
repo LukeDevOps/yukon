@@ -174,6 +174,35 @@ class BranchInstrumentationTest {
     }
 
     @Test
+    fun `a value that lands on a tableswitch filler entry counts toward the default outcome`() {
+        val registry = ProbeRegistry()
+        val config = AgentConfig.parse("includePackages=com.example.target")
+        install(registry, config)
+        val loader = FixtureClassLoader(arrayOf(File("build/classes/java/test").toURI().toURL()), javaClass.classLoader)
+        val targetClass = Class.forName("com.example.target.SwitchFillerTarget", true, loader)
+        val target = targetClass.getDeclaredConstructor().newInstance()
+        val method = targetClass.getMethod("classifyGappy", Int::class.java)
+
+        assertEquals(-1, method.invoke(target, 4), "4 is a gap, so it takes the default")
+        assertEquals(-1, method.invoke(target, 99), "99 is out of range, so it takes the default too")
+        assertEquals(3, method.invoke(target, 3))
+
+        val manifest = registry.manifest("test", null, "instance-1")
+        val branches = manifest.probes.filter { it.methodName == "classifyGappy" && it.kind == ProbeKind.BRANCH }
+        assertEquals(5, branches.size, "four real cases plus one default; no probe for the filler")
+
+        val classId = branches.first().classId
+        val byIndex =
+            registry
+                .computeDeltaBatch(ResourceAttributes("test", null, "i-1", null))
+                .batch.deltas
+                .filter { it.classId == classId }
+                .associateBy { it.probeIndex }
+        val hits = branches.map { byIndex[it.probeIndex]?.hitsTotal ?: 0L }.sorted()
+        assertEquals(listOf(0L, 0L, 0L, 1L, 2L), hits, "the filler (4) and the out-of-range value (99) both count as the default")
+    }
+
+    @Test
     fun `the method-entry probe for the branching method still fires independently of its branch probes`() {
         val registry = ProbeRegistry()
         val config = AgentConfig.parse("includePackages=com.example.target")

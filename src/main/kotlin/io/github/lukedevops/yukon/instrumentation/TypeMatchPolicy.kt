@@ -6,9 +6,9 @@ import net.bytebuddy.description.type.TypeDescription
 import net.bytebuddy.matcher.ElementMatcher
 import net.bytebuddy.matcher.ElementMatchers.isAbstract
 import net.bytebuddy.matcher.ElementMatchers.isBridge
+import net.bytebuddy.matcher.ElementMatchers.isNative
 import net.bytebuddy.matcher.ElementMatchers.isSynthetic
 import net.bytebuddy.matcher.ElementMatchers.isTypeInitializer
-import net.bytebuddy.matcher.ElementMatchers.nameStartsWith
 import net.bytebuddy.matcher.ElementMatchers.not
 import java.lang.annotation.ElementType
 
@@ -21,22 +21,46 @@ import java.lang.annotation.ElementType
  * while the other tier would have skipped it as unsafe to instrument.
  */
 object TypeMatchPolicy {
-    /** Exposed so a cheap, string-only pre-filter (before resolving a [TypeDescription] at all) can reuse it. */
+    /** The agent's own classes are never instrumented, whatever `includePackages` says. */
     const val AGENT_PACKAGE_PREFIX = "io.github.lukedevops.yukon."
 
-    fun typeNameMatcher(instrumentedPackagePrefixes: List<String>): ElementMatcher.Junction<TypeDescription> {
-        val excluded: ElementMatcher.Junction<TypeDescription> =
-            not(isSynthetic<TypeDescription>()).and(not(nameStartsWith(AGENT_PACKAGE_PREFIX)))
-        if (instrumentedPackagePrefixes.isEmpty()) return excluded
-        val includesAny =
-            instrumentedPackagePrefixes
-                .map { nameStartsWith<TypeDescription>(it) }
-                .reduce { a, b -> a.or(b) }
-        return excluded.and(includesAny)
+    /**
+     * Whether a fully qualified [className] is in scope for [instrumentedPackagePrefixes]. This is
+     * the string-only half of [typeNameMatcher], usable before a [TypeDescription] exists at all
+     * (the class-bytes capture, the static scanner's pre-filter).
+     *
+     * An empty prefix list means everything outside the agent's own package.
+     */
+    fun isIncluded(
+        className: String,
+        instrumentedPackagePrefixes: List<String>,
+    ): Boolean {
+        if (className.startsWith(AGENT_PACKAGE_PREFIX)) return false
+        return instrumentedPackagePrefixes.isEmpty() || instrumentedPackagePrefixes.any { isUnderPrefix(className, it) }
     }
 
+    /**
+     * A prefix matches on a package or class boundary only: `com.acme` matches `com.acme.Foo` and
+     * the class `com.acme` itself with its nested classes, but not `com.acmeinternal.Foo`. A plain
+     * `startsWith` would match the latter, silently widening the instrumented set.
+     */
+    fun isUnderPrefix(
+        className: String,
+        prefix: String,
+    ): Boolean = className == prefix || className.startsWith("$prefix.") || className.startsWith("$prefix$")
+
+    fun typeNameMatcher(instrumentedPackagePrefixes: List<String>): ElementMatcher.Junction<TypeDescription> =
+        not(isSynthetic<TypeDescription>()).and { typeDescription -> isIncluded(typeDescription.name, instrumentedPackagePrefixes) }
+
+    /**
+     * Native methods are excluded along with abstract ones: neither has a body to plant a probe in.
+     * ByteBuddy silently declines to weave advice into a native method, so without this exclusion
+     * such a method would get a slot in the counts array that reads zero forever and be reported
+     * as dead code that can never, by construction, be observed running.
+     */
     fun methodMatcher(): ElementMatcher.Junction<MethodDescription> =
         not(isAbstract<MethodDescription>())
+            .and(not(isNative()))
             .and(not(isSynthetic()))
             .and(not(isBridge()))
             .and(not(isTypeInitializer()))

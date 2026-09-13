@@ -99,4 +99,33 @@ class AgentConfigTest {
 
         assertEquals(Duration.ofSeconds(60), config.flushInterval)
     }
+
+    @Test
+    fun `a trailing slash on the endpoint is dropped so request paths do not get a double slash`() {
+        assertEquals("https://collector.example.com", AgentConfig.parse("endpoint=https://collector.example.com/").collectorEndpoint)
+        assertEquals("http://host:4319/base", AgentConfig.parse("endpoint=http://host:4319/base//").collectorEndpoint)
+    }
+
+    @Test
+    fun `an endpoint that is not an absolute http(s) URL falls back to the default`() {
+        // Left as is, URI.create would throw on every attempt of every flush.
+        assertEquals("http://localhost:4319", AgentConfig.parse("endpoint=not a url").collectorEndpoint)
+        assertEquals("http://localhost:4319", AgentConfig.parse("endpoint=ftp://collector.example.com").collectorEndpoint)
+        assertEquals("http://localhost:4319", AgentConfig.parse("endpoint=/v1/yukon").collectorEndpoint)
+    }
+
+    @Test
+    fun `an unknown option key is ignored without disturbing the known ones`() {
+        val config = AgentConfig.parse("serviceName=checkout,includePackage=com.acme")
+
+        assertEquals("checkout", config.serviceName)
+        assertEquals(emptyList(), config.instrumentedPackagePrefixes, "the typo'd key must not silently act as includePackages")
+    }
+
+    @Test
+    fun `a trailing dot on an includePackages prefix is dropped`() {
+        val config = AgentConfig.parse("includePackages=com.acme.;com.other")
+
+        assertEquals(listOf("com.acme", "com.other"), config.instrumentedPackagePrefixes)
+    }
 }

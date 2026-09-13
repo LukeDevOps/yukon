@@ -4,6 +4,7 @@ import io.github.lukedevops.yukon.config.AgentConfig
 import io.github.lukedevops.yukon.registry.ProbeRegistry
 import java.lang.System.Logger.Level
 import java.time.Duration
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
@@ -32,6 +33,12 @@ class ExportScheduler(
     private val log = System.getLogger(ExportScheduler::class.java.name)
     private var executor: ScheduledExecutorService? = null
 
+    /** Runs the two sends of each flush side by side; see [flush]. Two threads, created once, not two per tick. */
+    private val sendPool: ExecutorService =
+        Executors.newFixedThreadPool(2) { runnable ->
+            Thread(runnable, "yukon-export-send").apply { isDaemon = true }
+        }
+
     fun start() {
         val executor =
             Executors.newSingleThreadScheduledExecutor { runnable ->
@@ -43,8 +50,10 @@ class ExportScheduler(
         executor.scheduleAtFixedRate(::flush, initialDelayMillis, intervalMillis, TimeUnit.MILLISECONDS)
     }
 
+    /** Stops the schedule and the send pool. [flush] must not be called after this. */
     fun stop() {
         executor?.shutdown()
+        sendPool.shutdown()
     }
 
     /**
@@ -74,6 +83,7 @@ class ExportScheduler(
         val worker = Thread(::flush, "yukon-shutdown-flush").apply { isDaemon = true }
         worker.start()
         worker.join(remainingMillis(deadlineNanos))
+        sendPool.shutdown()
     }
 
     private fun remainingMillis(deadlineNanos: Long): Long = maxOf(0L, (deadlineNanos - System.nanoTime()) / 1_000_000)
@@ -109,12 +119,10 @@ class ExportScheduler(
      * flush, including the heartbeat, silently stops.
      */
     fun flush() {
-        val manifestThread = Thread(::sendManifestDelta, "yukon-export-manifest").apply { isDaemon = true }
-        val deltaThread = Thread(::sendDeltaBatch, "yukon-export-delta").apply { isDaemon = true }
-        manifestThread.start()
-        deltaThread.start()
-        manifestThread.join()
-        deltaThread.join()
+        val manifestSend = sendPool.submit(::sendManifestDelta)
+        val deltaSend = sendPool.submit(::sendDeltaBatch)
+        manifestSend.get()
+        deltaSend.get()
     }
 
     /**
