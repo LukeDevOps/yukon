@@ -17,6 +17,7 @@ class AgentConfigTest {
         assertEquals("http://localhost:4319", config.collectorEndpoint)
         assertEquals(emptyList(), config.instrumentedPackagePrefixes)
         assertEquals(false, config.staticBaselineEnabled)
+        assertEquals(null, config.authToken)
     }
 
     @Test
@@ -127,5 +128,51 @@ class AgentConfigTest {
         val config = AgentConfig.parse("includePackages=com.acme.;com.other")
 
         assertEquals(listOf("com.acme", "com.other"), config.instrumentedPackagePrefixes)
+    }
+
+    @Test
+    fun `authToken is null when neither the option nor the env var is set`() {
+        val config = AgentConfig.parse("serviceName=checkout", env = { null })
+
+        assertEquals(null, config.authToken)
+    }
+
+    @Test
+    fun `authToken option is used when set`() {
+        val config = AgentConfig.parse("authToken=abc", env = { null })
+
+        assertEquals("abc", config.authToken)
+    }
+
+    @Test
+    fun `authToken falls back to YUKON_AUTH_TOKEN when the option is not set`() {
+        val env = mapOf("YUKON_AUTH_TOKEN" to "xyz")
+        val config = AgentConfig.parse("serviceName=checkout", env = env::get)
+
+        assertEquals("xyz", config.authToken)
+    }
+
+    @Test
+    fun `authToken option wins when both the option and the env var are set`() {
+        val env = mapOf("YUKON_AUTH_TOKEN" to "xyz")
+        val config = AgentConfig.parse("authToken=abc", env = env::get)
+
+        assertEquals("abc", config.authToken)
+    }
+
+    @Test
+    fun `a blank authToken option falls through to the env var`() {
+        val env = mapOf("YUKON_AUTH_TOKEN" to "xyz")
+        val config = AgentConfig.parse("authToken=  ", env = env::get)
+
+        assertEquals("xyz", config.authToken)
+    }
+
+    @Test
+    fun `a blank YUKON_AUTH_TOKEN with no option gives null`() {
+        val env = mapOf("YUKON_AUTH_TOKEN" to "   ")
+        val config = AgentConfig.parse("serviceName=checkout", env = env::get)
+
+        assertEquals(null, config.authToken)
     }
 }

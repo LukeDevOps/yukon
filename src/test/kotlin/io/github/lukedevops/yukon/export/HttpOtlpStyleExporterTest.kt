@@ -19,6 +19,7 @@ class HttpOtlpStyleExporterTest {
     private var rawSocket: ServerSocket? = null
     private val requestCount = AtomicInteger(0)
     private val requestedPaths = mutableListOf<String>()
+    private val requestedAuthHeaders = mutableListOf<String?>()
 
     @AfterTest
     fun tearDown() {
@@ -31,6 +32,7 @@ class HttpOtlpStyleExporterTest {
         val httpServer = HttpServer.create(InetSocketAddress("localhost", 0), 0)
         httpServer.createContext("/") { exchange ->
             requestedPaths += exchange.requestURI.path
+            requestedAuthHeaders += exchange.requestHeaders.getFirst("Authorization")
             val status = handler(requestCount.incrementAndGet())
             exchange.sendResponseHeaders(status, -1)
             exchange.close()
@@ -186,5 +188,54 @@ class HttpOtlpStyleExporterTest {
             assertEquals(3, requestCount.get(), "status $status should be retried")
             server?.stop(0)
         }
+    }
+
+    @Test
+    fun `a bearer token is sent on every export method when configured`() {
+        val endpoint = startServer { 200 }
+        val exporter =
+            HttpOtlpStyleExporter(
+                endpoint = endpoint,
+                authToken = "secret-token",
+                maxAttempts = 5,
+                initialBackoff = Duration.ofMillis(1),
+                maxBackoff = Duration.ofMillis(10),
+            )
+
+        exporter.exportDeltaBatch(DeltaBatch(ResourceAttributes("checkout", "1.0.0", "i-1", "test"), emptyList()))
+        exporter.exportManifest(ProbeManifest("checkout", "1.0.0", emptyList()))
+        exporter.exportStaticBaseline(
+            StaticBaseline(
+                resource = ResourceAttributes("checkout", "1.0.0", "i-1", "test"),
+                declaredClasses = emptyList(),
+                scannedAt = 1000L,
+            ),
+        )
+
+        assertEquals(listOf<String?>("Bearer secret-token", "Bearer secret-token", "Bearer secret-token"), requestedAuthHeaders)
+    }
+
+    @Test
+    fun `no Authorization header is sent when no token is configured`() {
+        val endpoint = startServer { 200 }
+        val exporter = exporterFor(endpoint)
+
+        exporter.exportDeltaBatch(DeltaBatch(ResourceAttributes("checkout", null, "i-1", null), emptyList()))
+
+        assertEquals(listOf<String?>(null), requestedAuthHeaders)
+    }
+
+    @Test
+    fun `a 401 is not retried, since resending with the same token cannot change the answer`() {
+        val endpoint = startServer { 401 }
+        val exporter = exporterFor(endpoint)
+
+        val failure =
+            assertFailsWith<ExportFailedException> {
+                exporter.exportDeltaBatch(DeltaBatch(ResourceAttributes("checkout", null, "i-1", null), emptyList()))
+            }
+
+        assertEquals(1, requestCount.get())
+        assertEquals(401, failure.statusCode)
     }
 }

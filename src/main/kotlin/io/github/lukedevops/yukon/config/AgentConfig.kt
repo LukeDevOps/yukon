@@ -14,8 +14,15 @@ data class AgentConfig(
     val serviceVersion: String?,
     val serviceInstanceId: String,
     val environment: String?,
-    /** Base URL of the collector. The exporter appends `/v1/yukon/{deltas,manifest}`. */
+    /** Base URL of the collector. The exporter appends `/v1/yukon/{deltas,manifest,static-baseline}`. */
     val collectorEndpoint: String,
+    /**
+     * Sent to the collector as `Authorization: Bearer <token>`. Prefer the `YUKON_AUTH_TOKEN`
+     * environment variable over the `authToken` agent option: a `-javaagent` argument is visible
+     * to every user on the host through `ps` and `/proc/<pid>/cmdline`, so a secret passed that
+     * way is readable by anyone who can list processes.
+     */
+    val authToken: String?,
     val flushInterval: Duration,
     /** Only types whose name starts with one of these prefixes are instrumented. Empty means every type is. */
     val instrumentedPackagePrefixes: List<String>,
@@ -38,12 +45,16 @@ data class AgentConfig(
                 "serviceInstanceId",
                 "environment",
                 "endpoint",
+                "authToken",
                 "flushIntervalSeconds",
                 "includePackages",
                 "staticBaselineEnabled",
             )
 
-        fun parse(agentArgs: String?): AgentConfig {
+        fun parse(
+            agentArgs: String?,
+            env: (String) -> String? = System::getenv,
+        ): AgentConfig {
             val options = parseOptions(agentArgs)
             for (key in options.keys - KNOWN_KEYS) {
                 log.log(Level.WARNING, "yukon: ignoring unknown agent option '$key' (known options: ${KNOWN_KEYS.sorted()})")
@@ -56,17 +67,33 @@ data class AgentConfig(
                         "libraries included; set includePackages to your application's own packages",
                 )
             }
+            val endpoint = parseEndpoint(options["endpoint"])
+            val authToken = parseAuthToken(options["authToken"], env)
+            if (authToken != null && endpoint.startsWith("http://")) {
+                log.log(Level.WARNING, "yukon: endpoint uses plain http, so the auth token is sent unencrypted")
+            }
             return AgentConfig(
                 serviceName = options["serviceName"] ?: "unknown-service",
                 serviceVersion = options["serviceVersion"],
                 serviceInstanceId = options["serviceInstanceId"] ?: UUID.randomUUID().toString(),
                 environment = options["environment"],
-                collectorEndpoint = parseEndpoint(options["endpoint"]),
+                collectorEndpoint = endpoint,
+                authToken = authToken,
                 flushInterval = parseFlushInterval(options["flushIntervalSeconds"]),
                 instrumentedPackagePrefixes = prefixes,
                 staticBaselineEnabled = options["staticBaselineEnabled"]?.toBoolean() ?: false,
             )
         }
+
+        /**
+         * The `authToken` option wins when both sources are set. A blank value from either
+         * source counts as unset, so a blank option falls through to the environment variable
+         * instead of masking it.
+         */
+        private fun parseAuthToken(
+            option: String?,
+            env: (String) -> String?,
+        ): String? = option?.trim()?.ifBlank { null } ?: env("YUKON_AUTH_TOKEN")?.trim()?.ifBlank { null }
 
         /**
          * A trailing dot on a prefix is dropped so `com.acme.` and `com.acme` mean the same thing;

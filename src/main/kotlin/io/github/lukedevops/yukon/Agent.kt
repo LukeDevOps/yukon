@@ -54,7 +54,7 @@ object Agent {
             return
         }
 
-        val exporter = HttpOtlpStyleExporter(config.collectorEndpoint)
+        val exporter = HttpOtlpStyleExporter(config.collectorEndpoint, config.authToken)
         val scheduler = ExportScheduler(config, registry, exporter)
         scheduler.start()
 
