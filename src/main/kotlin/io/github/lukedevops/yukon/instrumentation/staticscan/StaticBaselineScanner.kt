@@ -3,6 +3,7 @@ package io.github.lukedevops.yukon.instrumentation.staticscan
 import io.github.lukedevops.yukon.export.DeclaredClass
 import io.github.lukedevops.yukon.export.DeclaredMethod
 import io.github.lukedevops.yukon.export.StaticallyUnsafeClass
+import io.github.lukedevops.yukon.export.UnprobedClass
 import io.github.lukedevops.yukon.export.UnreadableClass
 import io.github.lukedevops.yukon.instrumentation.TypeMatchPolicy
 import net.bytebuddy.description.type.TypeDescription
@@ -16,7 +17,17 @@ data class StaticScanResult(
     val declaredClasses: List<DeclaredClass>,
     val staticallyUnsafeClasses: List<StaticallyUnsafeClass>,
     val unreadableClasses: List<UnreadableClass>,
-)
+    val unprobedClasses: List<UnprobedClass> = emptyList(),
+) {
+    /** Every class name the scan saw, in any bucket. */
+    fun allClassNames(): Set<String> =
+        buildSet {
+            declaredClasses.mapTo(this) { it.className }
+            staticallyUnsafeClasses.mapTo(this) { it.className }
+            unreadableClasses.mapTo(this) { it.className }
+            unprobedClasses.mapTo(this) { it.className }
+        }
+}
 
 /**
  * Builds a load-independent inventory of what exists on the classpath under
@@ -25,41 +36,54 @@ data class StaticScanResult(
  *
  * Applies the exact same [TypeMatchPolicy] a loaded class would be matched against, so a class
  * this scanner declares as dead-code-eligible is one the reactive tier would also have
- * instrumented, had it loaded.
+ * instrumented, had it loaded. A class the reactive tier would match but never register, because
+ * it has no concrete method to probe, lands in [StaticScanResult.unprobedClasses] rather than
+ * being declared: declaring it would invite a collector to report it "never loaded" when the
+ * agent simply had nothing to say about it.
+ *
+ * [supportingTypesLocator] resolves types a scanned class refers to but its own root does not
+ * contain, such as an annotation's own class; see [withSupportingTypesFallback].
  */
 class StaticBaselineScanner(
     private val instrumentedPackagePrefixes: List<String>,
+    private val supportingTypesLocator: ClassFileLocator = ClassFileLocator.ForClassLoader.ofSystemLoader(),
 ) {
     private val log = System.getLogger(StaticBaselineScanner::class.java.name)
+    private val typeNameMatcher = TypeMatchPolicy.typeNameMatcher(instrumentedPackagePrefixes)
 
-    fun scan(classpathRoots: List<File> = defaultClasspathRoots()): StaticScanResult {
+    private class Buckets {
         val declared = mutableListOf<DeclaredClass>()
         val unsafe = mutableListOf<StaticallyUnsafeClass>()
         val unreadable = mutableListOf<UnreadableClass>()
+        val unprobed = mutableListOf<UnprobedClass>()
+
+        fun toResult() = StaticScanResult(declared, unsafe, unreadable, unprobed)
+    }
+
+    fun scan(classpathRoots: List<File> = defaultClasspathRoots()): StaticScanResult {
+        val buckets = Buckets()
         for (root in classpathRoots) {
             try {
-                scanRoot(root, declared, unsafe, unreadable)
+                scanRoot(root, buckets)
             } catch (e: Exception) {
                 log.log(Level.WARNING, "yukon: could not scan classpath entry $root for the static baseline", e)
             }
         }
-        return StaticScanResult(declared, unsafe, unreadable)
+        return buckets.toResult()
     }
 
     private fun scanRoot(
         root: File,
-        declared: MutableList<DeclaredClass>,
-        unsafe: MutableList<StaticallyUnsafeClass>,
-        unreadable: MutableList<UnreadableClass>,
+        buckets: Buckets,
     ) {
         if (!root.exists()) return
         if (root.isDirectory) {
             val pool = TypePool.Default.of(withSupportingTypesFallback(ClassFileLocator.ForFolder(root)))
-            candidateClassNamesInFolder(root).forEach { className -> classify(className, pool, declared, unsafe, unreadable) }
+            candidateClassNamesInFolder(root).forEach { className -> classify(className, pool, buckets) }
             return
         }
         if (root.extension != "jar") return
-        JarFile(root).use { jarFile -> scanJar(jarFile, declared, unsafe, unreadable) }
+        JarFile(root).use { jarFile -> scanJar(jarFile, buckets) }
     }
 
     /**
@@ -70,9 +94,7 @@ class StaticBaselineScanner(
      */
     private fun scanJar(
         jarFile: JarFile,
-        declared: MutableList<DeclaredClass>,
-        unsafe: MutableList<StaticallyUnsafeClass>,
-        unreadable: MutableList<UnreadableClass>,
+        buckets: Buckets,
     ) {
         val flatPool = TypePool.Default.of(withSupportingTypesFallback(ClassFileLocator.ForJarFile(jarFile)))
         val nestedPools =
@@ -89,7 +111,7 @@ class StaticBaselineScanner(
                     else -> entry.name to flatPool
                 }
             val className = relativeName.removeSuffix(".class").replace('/', '.')
-            classify(className, pool, declared, unsafe, unreadable)
+            classify(className, pool, buckets)
         }
     }
 
@@ -108,34 +130,37 @@ class StaticBaselineScanner(
     private fun classify(
         className: String,
         pool: TypePool,
-        declared: MutableList<DeclaredClass>,
-        unsafe: MutableList<StaticallyUnsafeClass>,
-        unreadable: MutableList<UnreadableClass>,
+        buckets: Buckets,
     ) {
         if (!looksInScope(className)) return
         try {
             val resolution = pool.describe(className)
             if (!resolution.isResolved) {
-                unreadable += UnreadableClass(className, "class file could not be resolved")
+                buckets.unreadable += UnreadableClass(className, "class file could not be resolved")
                 return
             }
             val typeDescription = resolution.resolve()
-            if (!TypeMatchPolicy.typeNameMatcher(instrumentedPackagePrefixes).matches(typeDescription)) return
+            if (!typeNameMatcher.matches(typeDescription)) return
             val unsafeAnnotation = TypeMatchPolicy.unsafeAnnotation(typeDescription)
             if (unsafeAnnotation != null) {
-                unsafe +=
+                buckets.unsafe +=
                     StaticallyUnsafeClass(
                         className,
                         "@${unsafeAnnotation.annotationType.name} is not a legal annotation on a class per its own @Target",
                     )
                 return
             }
-            declared += DeclaredClass(className, declaredMethodsOf(typeDescription))
+            val methods = declaredMethodsOf(typeDescription)
+            if (methods.isEmpty()) {
+                buckets.unprobed += UnprobedClass(className, "no concrete methods to probe")
+                return
+            }
+            buckets.declared += DeclaredClass(className, methods)
         } catch (e: Exception) {
             // Covers a corrupt class file, or a failure resolving a supporting type (e.g. an
             // annotation's own definition) while describing this one. Either way, this class
             // could not be safely classified, so it is reported rather than silently dropped.
-            unreadable += UnreadableClass(className, e.message ?: e.toString())
+            buckets.unreadable += UnreadableClass(className, e.message ?: e.toString())
         }
     }
 
@@ -154,13 +179,21 @@ class StaticBaselineScanner(
      * a type can still need a supporting type's own bytecode. Checking whether a declared
      * annotation's `@Target` permits [java.lang.annotation.ElementType.TYPE] needs the
      * annotation's own class, which usually lives in a library jar elsewhere on the classpath, not
-     * in the root of the class that uses it. Falling back to the system classloader resolves that
-     * without ever loading the type actually being scanned: [ClassFileLocator.ForClassLoader]
-     * reads bytecode as a classloader resource, the same as any other locator here, rather than
-     * calling `Class.forName`.
+     * in the root of the class that uses it. Falling back to [supportingTypesLocator] (the system
+     * classloader by default) resolves that without ever loading the type actually being scanned:
+     * [ClassFileLocator.ForClassLoader] reads bytecode as a classloader resource, the same as any
+     * other locator here, rather than calling `Class.forName`.
+     *
+     * When even the fallback cannot find an annotation's type, ByteBuddy's type pool drops that
+     * annotation from the class's declared annotations rather than failing, so the class is judged
+     * safe and declared. That is the right outcome: a skipped class always shows up in the
+     * manifest's skipped list when it loads, so declaring it here can never produce a false
+     * "never loaded". What is lost is only the "statically unsafe" label. This is the situation
+     * inside a Spring Boot fat jar, where the system loader sees `BOOT-INF/classes` but not the
+     * annotation types packed under `BOOT-INF/lib`.
      */
     private fun withSupportingTypesFallback(locator: ClassFileLocator): ClassFileLocator =
-        ClassFileLocator.Compound(locator, ClassFileLocator.ForClassLoader.ofSystemLoader())
+        ClassFileLocator.Compound(locator, supportingTypesLocator)
 
     private companion object {
         val NESTED_CLASSES_PREFIXES = listOf("BOOT-INF/classes/", "WEB-INF/classes/")

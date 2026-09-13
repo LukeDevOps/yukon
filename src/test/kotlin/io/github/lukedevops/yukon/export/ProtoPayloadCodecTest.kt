@@ -250,6 +250,23 @@ class ProtoPayloadCodecTest {
     }
 
     @Test
+    fun `encodes and decodes a static baseline's unprobed classes and chunk position`() {
+        val baseline =
+            StaticBaseline(
+                resource = ResourceAttributes("checkout", null, "instance-1", null),
+                declaredClasses = emptyList(),
+                unprobedClasses = listOf(UnprobedClass("com.example.Marker", "no concrete methods to probe")),
+                scannedAt = 4000L,
+                chunkIndex = 2,
+                chunkCount = 5,
+            )
+
+        val decoded = ProtoPayloadCodec.decodeStaticBaseline(ProtoPayloadCodec.encode(baseline))
+
+        assertEquals(baseline, decoded)
+    }
+
+    @Test
     fun `encodes an empty static baseline`() {
         val baseline =
             StaticBaseline(

@@ -11,6 +11,7 @@ import io.github.lukedevops.yukon.proto.ResourceAttributes as ProtoResourceAttri
 import io.github.lukedevops.yukon.proto.SkippedClass as ProtoSkippedClass
 import io.github.lukedevops.yukon.proto.StaticBaseline as ProtoStaticBaseline
 import io.github.lukedevops.yukon.proto.StaticallyUnsafeClass as ProtoStaticallyUnsafeClass
+import io.github.lukedevops.yukon.proto.UnprobedClass as ProtoUnprobedClass
 import io.github.lukedevops.yukon.proto.UnreadableClass as ProtoUnreadableClass
 
 /**
@@ -173,7 +174,10 @@ object ProtoPayloadCodec {
             .addAllDeclaredClasses(baseline.declaredClasses.map { toProto(it) })
             .addAllStaticallyUnsafeClasses(baseline.staticallyUnsafeClasses.map { toProto(it) })
             .addAllUnreadableClasses(baseline.unreadableClasses.map { toProto(it) })
+            .addAllUnprobedClasses(baseline.unprobedClasses.map { toProto(it) })
             .setScannedAt(baseline.scannedAt)
+            .setChunkIndex(baseline.chunkIndex)
+            .setChunkCount(baseline.chunkCount)
             .build()
 
     private fun fromProto(baseline: ProtoStaticBaseline): StaticBaseline =
@@ -182,7 +186,23 @@ object ProtoPayloadCodec {
             declaredClasses = baseline.declaredClassesList.map { fromProto(it) },
             staticallyUnsafeClasses = baseline.staticallyUnsafeClassesList.map { fromProto(it) },
             unreadableClasses = baseline.unreadableClassesList.map { fromProto(it) },
+            unprobedClasses = baseline.unprobedClassesList.map { fromProto(it) },
             scannedAt = baseline.scannedAt,
+            chunkIndex = baseline.chunkIndex,
+            chunkCount = baseline.chunkCount,
+        )
+
+    private fun toProto(unprobedClass: UnprobedClass): ProtoUnprobedClass =
+        ProtoUnprobedClass
+            .newBuilder()
+            .setClassName(unprobedClass.className)
+            .setReason(unprobedClass.reason)
+            .build()
+
+    private fun fromProto(unprobedClass: ProtoUnprobedClass): UnprobedClass =
+        UnprobedClass(
+            className = unprobedClass.className,
+            reason = unprobedClass.reason,
         )
 
     private fun toProto(declaredClass: DeclaredClass): ProtoDeclaredClass =
