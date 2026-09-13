@@ -55,7 +55,7 @@ class YukonInstrumentationTest {
         val target = install(registry, config)
         target.javaClass.getMethod("ping").invoke(target)
 
-        val manifest = registry.manifest("test", null)
+        val manifest = registry.manifest("test", null, "instance-1")
         val neverCalledProbeIndex = manifest.probes.single { it.methodName == "neverCalled" }.probeIndex
         val pingProbeIndex = manifest.probes.single { it.methodName == "ping" }.probeIndex
 
@@ -75,7 +75,7 @@ class YukonInstrumentationTest {
         repeat(3) { target.javaClass.getMethod("ping").invoke(target) }
         repeat(2) { target.javaClass.getMethod("neverCalled").invoke(target) }
 
-        val manifest = registry.manifest("test", null)
+        val manifest = registry.manifest("test", null, "instance-1")
         val neverCalledProbeIndex = manifest.probes.single { it.methodName == "neverCalled" }.probeIndex
         val pingProbeIndex = manifest.probes.single { it.methodName == "ping" }.probeIndex
 

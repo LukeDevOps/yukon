@@ -192,6 +192,22 @@ class ProtoPayloadCodecTest {
     }
 
     @Test
+    fun `a probe manifest's service instance id round-trips through the wire`() {
+        val manifest =
+            ProbeManifest(
+                serviceName = "checkout",
+                serviceVersion = "1.0.0",
+                probes = emptyList(),
+                serviceInstanceId = "instance-1",
+            )
+
+        val decoded = ProtoPayloadCodec.decodeProbeManifest(ProtoPayloadCodec.encode(manifest))
+
+        assertEquals("instance-1", decoded.serviceInstanceId)
+        assertEquals(manifest, decoded)
+    }
+
+    @Test
     fun `encodes and decodes a static baseline with declared classes and methods`() {
         val baseline =
             StaticBaseline(

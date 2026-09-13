@@ -102,7 +102,7 @@ class ExportScheduler(
      */
     private fun sendManifestDelta() {
         try {
-            val manifest = registry.computeManifestDelta(config.serviceName, config.serviceVersion)
+            val manifest = registry.computeManifestDelta(config.serviceName, config.serviceVersion, config.serviceInstanceId)
             if (manifest.probes.isEmpty() && manifest.skippedClasses.isEmpty()) return
             exporter.exportManifest(manifest)
             registry.advanceManifestBaseline()

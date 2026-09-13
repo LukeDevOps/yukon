@@ -114,6 +114,12 @@ class ExportSchedulerTest {
                 .single()
                 .className,
         )
+        assertEquals(
+            "instance-1",
+            exporter.manifests.single().serviceInstanceId,
+            "the manifest must carry an instance to key on, since class_id is assigned " +
+                "independently per instance and can mean a different class in another one",
+        )
     }
 
     @Test
@@ -195,6 +201,7 @@ class ExportSchedulerTest {
                 override fun computeManifestDelta(
                     serviceName: String,
                     serviceVersion: String?,
+                    serviceInstanceId: String,
                 ): ProbeManifest = throw RuntimeException("boom")
             }
         val exporter = RecordingExporter()
