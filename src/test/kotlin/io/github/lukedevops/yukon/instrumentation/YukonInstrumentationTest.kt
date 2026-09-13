@@ -59,7 +59,7 @@ class YukonInstrumentationTest {
         val neverCalledProbeIndex = manifest.probes.single { it.methodName == "neverCalled" }.probeIndex
         val pingProbeIndex = manifest.probes.single { it.methodName == "ping" }.probeIndex
 
-        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null)).deltas
+        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null)).batch.deltas
         val byIndex = deltas.associateBy { it.probeIndex }
 
         assertEquals(1L, byIndex.getValue(pingProbeIndex).hitsTotal)
@@ -79,7 +79,7 @@ class YukonInstrumentationTest {
         val neverCalledProbeIndex = manifest.probes.single { it.methodName == "neverCalled" }.probeIndex
         val pingProbeIndex = manifest.probes.single { it.methodName == "ping" }.probeIndex
 
-        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null)).deltas
+        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null)).batch.deltas
         val byIndex = deltas.associateBy { it.probeIndex }
 
         assertEquals(3L, byIndex.getValue(pingProbeIndex).hitsTotal)

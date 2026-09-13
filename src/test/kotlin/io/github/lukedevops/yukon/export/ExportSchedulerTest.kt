@@ -3,6 +3,13 @@ package io.github.lukedevops.yukon.export
 import io.github.lukedevops.yukon.config.AgentConfig
 import io.github.lukedevops.yukon.registry.ProbeMeta
 import io.github.lukedevops.yukon.registry.ProbeRegistry
+import java.time.Duration
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import kotlin.concurrent.thread
+import kotlin.random.Random
+import kotlin.system.measureTimeMillis
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -74,7 +81,12 @@ class ExportSchedulerTest {
                 .single()
                 .hitsTotal,
         )
-        assertTrue(registry.computeDeltaBatch(resource).deltas.isEmpty())
+        assertTrue(
+            registry
+                .computeDeltaBatch(resource)
+                .batch.deltas
+                .isEmpty(),
+        )
     }
 
     @Test
@@ -90,6 +102,7 @@ class ExportSchedulerTest {
             4L,
             registry
                 .computeDeltaBatch(resource)
+                .batch
                 .deltas
                 .single()
                 .hitsTotal,
@@ -181,7 +194,7 @@ class ExportSchedulerTest {
     fun `an exception thrown while computing the delta batch does not stop future flushes`() {
         val registry =
             object : ProbeRegistry() {
-                override fun computeDeltaBatch(resource: ResourceAttributes): DeltaBatch = throw RuntimeException("boom")
+                override fun computeDeltaBatch(resource: ResourceAttributes): ProbeRegistry.DeltaSnapshot = throw RuntimeException("boom")
             }
         val exporter = RecordingExporter()
         val scheduler = ExportScheduler(config, registry, exporter)
@@ -202,7 +215,7 @@ class ExportSchedulerTest {
                     serviceName: String,
                     serviceVersion: String?,
                     serviceInstanceId: String,
-                ): ProbeManifest = throw RuntimeException("boom")
+                ): ProbeRegistry.ManifestSnapshot = throw RuntimeException("boom")
             }
         val exporter = RecordingExporter()
         val scheduler = ExportScheduler(config, registry, exporter)
@@ -246,5 +259,74 @@ class ExportSchedulerTest {
 
         scheduler.flush()
         assertEquals(2, exporter.manifestSends)
+    }
+
+    /** Returns 0 from every `nextLong(bound)`, so the first scheduled flush runs immediately on start(). */
+    private val noJitter =
+        object : Random() {
+            override fun nextBits(bitCount: Int): Int = 0
+        }
+
+    /** Blocks every delta send on [gate] until released, and counts how many sends were attempted. */
+    private class GatedExporter : Exporter {
+        val gate = CountDownLatch(1)
+        val deltaSends = AtomicInteger(0)
+        val inFlight = CountDownLatch(1)
+
+        override fun exportDeltaBatch(batch: DeltaBatch) {
+            deltaSends.incrementAndGet()
+            inFlight.countDown()
+            gate.await()
+        }
+
+        override fun exportManifest(manifest: ProbeManifest) {}
+
+        override fun exportStaticBaseline(baseline: StaticBaseline) {}
+    }
+
+    @Test
+    fun `flushOnShutdown waits for an in-flight scheduled flush before running the final one`() {
+        val registry = ProbeRegistry()
+        registry.register("com.example.Foo", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "bar", "()V", 1)))
+        val exporter = GatedExporter()
+        val scheduler = ExportScheduler(config, registry, exporter, noJitter)
+        scheduler.start()
+        assertTrue(exporter.inFlight.await(5, TimeUnit.SECONDS), "the first scheduled flush should start immediately")
+
+        val hook = thread { scheduler.flushOnShutdown(Duration.ofSeconds(10)) }
+        Thread.sleep(200)
+        assertEquals(1, exporter.deltaSends.get(), "the final flush must not start while a scheduled flush is in flight")
+
+        exporter.gate.countDown()
+        hook.join(10_000)
+
+        assertEquals(2, exporter.deltaSends.get(), "exactly one final flush after the in-flight one finished")
+    }
+
+    @Test
+    fun `flushOnShutdown skips the final flush when the in-flight flush uses up the budget`() {
+        val registry = ProbeRegistry()
+        registry.register("com.example.Foo", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "bar", "()V", 1)))
+        val exporter = GatedExporter()
+        val scheduler = ExportScheduler(config, registry, exporter, noJitter)
+        scheduler.start()
+        assertTrue(exporter.inFlight.await(5, TimeUnit.SECONDS))
+
+        val elapsed = measureTimeMillis { scheduler.flushOnShutdown(Duration.ofMillis(300)) }
+        exporter.gate.countDown()
+
+        assertTrue(elapsed < 5_000, "the hook must return once the budget is spent, not wait for the hung flush")
+        assertEquals(1, exporter.deltaSends.get(), "no final flush once the budget is gone")
+    }
+
+    @Test
+    fun `flushOnShutdown with no scheduler started still runs one final flush`() {
+        val registry = ProbeRegistry()
+        val exporter = RecordingExporter()
+        val scheduler = ExportScheduler(config, registry, exporter)
+
+        scheduler.flushOnShutdown(Duration.ofSeconds(5))
+
+        assertEquals(1, exporter.deltaBatches.size)
     }
 }
