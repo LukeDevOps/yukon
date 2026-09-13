@@ -9,6 +9,7 @@ import io.github.lukedevops.yukon.export.SkippedClass
 import java.lang.System.Logger.Level
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Stores one probe-count array per class. Each array is a plain `long[]`,
@@ -65,13 +66,14 @@ open class ProbeRegistry {
     ) {
         /** The last cumulative count successfully delivered to the collector, per probe. */
         var lastSent: LongArray = LongArray(counts.size)
-        var pendingLastSent: LongArray? = null
+
+        /** Sequence number of the newest [DeltaSnapshot] applied to [lastSent]; see [advanceBaseline]. */
+        var lastAppliedSequence: Long = 0
         val firstSeenAt: LongArray = LongArray(counts.size)
 
         /** Tracks which probes have already logged the one-time decrease warning. */
         val decreaseWarned: BooleanArray = BooleanArray(counts.size)
         var manifestIncluded: Boolean = false
-        var pendingManifestInclusion: Boolean = false
     }
 
     private class SkippedEntry(
@@ -79,12 +81,35 @@ open class ProbeRegistry {
         val skippedAt: Long,
     ) {
         var manifestIncluded: Boolean = false
-        var pendingManifestInclusion: Boolean = false
     }
+
+    /**
+     * One computed delta batch, together with the exact per-class snapshots it was built from.
+     *
+     * [advanceBaseline] takes this back, rather than reading staging state off the registry. Two
+     * flushes can then be in flight at once (a scheduled one and the shutdown flush) without one
+     * marking the other's hits as delivered.
+     */
+    class DeltaSnapshot internal constructor(
+        val batch: DeltaBatch,
+        internal val sequence: Long,
+        internal val staged: List<Pair<Any, LongArray>>,
+    )
+
+    /**
+     * One computed manifest delta, together with the classes it staged. [advanceManifestBaseline]
+     * marks exactly those as included, and nothing that registered after this snapshot was taken.
+     */
+    class ManifestSnapshot internal constructor(
+        val manifest: ProbeManifest,
+        internal val stagedEntries: List<Any>,
+        internal val stagedSkipped: List<Any>,
+    )
 
     private val entriesByKey = ConcurrentHashMap<RegistryKey, ClassEntry>()
     private val skippedByClassName = ConcurrentHashMap<String, SkippedEntry>()
     private val nextClassId = AtomicInteger(0)
+    private val nextSnapshotSequence = AtomicLong(0)
 
     /**
      * Called once per class transform. Returns the backing array every probe
@@ -157,15 +182,16 @@ open class ProbeRegistry {
      * or out of order cannot double-count. This differs from an operation like "add 5 hits":
      * applying that twice, or out of order against a concurrent update, corrupts the total.
      *
-     * The snapshot is stashed as a pending last-sent value, not applied immediately.
-     * [advanceBaseline] must be called explicitly to apply it, and only after the batch is
-     * confirmed delivered.
+     * Nothing is marked as sent here. The returned [DeltaSnapshot] carries the per-class
+     * snapshots it was built from, and [advanceBaseline] must be called with it explicitly, only
+     * after the batch is confirmed delivered.
      */
-    open fun computeDeltaBatch(resource: ResourceAttributes): DeltaBatch {
+    open fun computeDeltaBatch(resource: ResourceAttributes): DeltaSnapshot {
         val deltas = mutableListOf<ProbeDelta>()
+        val staged = mutableListOf<Pair<Any, LongArray>>()
         for (entry in entriesByKey.values) {
             val snapshot = entry.counts.copyOf()
-            entry.pendingLastSent = snapshot
+            staged += entry to snapshot
             for (index in snapshot.indices) {
                 val current = snapshot[index]
                 val lastSent = entry.lastSent[index]
@@ -186,7 +212,7 @@ open class ProbeRegistry {
                     )
             }
         }
-        return DeltaBatch(resource, deltas)
+        return DeltaSnapshot(DeltaBatch(resource, deltas), nextSnapshotSequence.incrementAndGet(), staged)
     }
 
     /**
@@ -213,16 +239,26 @@ open class ProbeRegistry {
     }
 
     /**
-     * Advances every entry's last-sent value to its last-computed snapshot. It never advances to
-     * the live counts: those may have moved further ahead, for example while a POST was in
-     * flight.
+     * Records [snapshot]'s per-class counts as delivered. It never advances to the live counts:
+     * those may have moved further ahead, for example while a POST was in flight.
      *
-     * Call this only after a flush is confirmed delivered. A failed flush must leave the
-     * last-sent value untouched, so the next attempt naturally reports the live count again.
+     * Call this only after that snapshot's batch is confirmed delivered. A failed flush must not
+     * call it, so the next attempt naturally reports the live count again.
+     *
+     * Snapshots are applied newest-wins per class, not last-caller-wins. If a newer snapshot has
+     * already been applied to a class, an older one arriving late (its send was confirmed after
+     * the newer one's) is ignored for that class, so a confirmed higher count is never rolled
+     * back to a stale lower one. Applying the older one first and the newer one second is the
+     * ordinary case and works as expected.
      */
-    fun advanceBaseline() {
-        for (entry in entriesByKey.values) {
-            entry.pendingLastSent?.let { entry.lastSent = it }
+    fun advanceBaseline(snapshot: DeltaSnapshot) {
+        for ((entryRef, counts) in snapshot.staged) {
+            val entry = entryRef as ClassEntry
+            synchronized(entry) {
+                if (snapshot.sequence <= entry.lastAppliedSequence) return@synchronized
+                entry.lastAppliedSequence = snapshot.sequence
+                entry.lastSent = counts
+            }
         }
     }
 
@@ -264,9 +300,9 @@ open class ProbeRegistry {
 
     /**
      * Returns only the probe locations for classes not yet included in a successfully sent
-     * manifest. It stages them the same way [computeDeltaBatch] stages counts:
-     * [advanceManifestBaseline] must be called explicitly, and only once the manifest is
-     * confirmed delivered.
+     * manifest. Nothing is marked as included here: the returned [ManifestSnapshot] names the
+     * classes it staged, and [advanceManifestBaseline] must be called with it explicitly, only
+     * once the manifest is confirmed delivered.
      *
      * A class that registers after an earlier successful send is picked up on a later call, not
      * left out of every manifest for the rest of the process's life.
@@ -275,11 +311,12 @@ open class ProbeRegistry {
         serviceName: String,
         serviceVersion: String?,
         serviceInstanceId: String,
-    ): ProbeManifest {
+    ): ManifestSnapshot {
         val locations = mutableListOf<ProbeLocation>()
+        val stagedEntries = mutableListOf<Any>()
         for (entry in entriesByKey.values) {
-            entry.pendingManifestInclusion = !entry.manifestIncluded
-            if (!entry.pendingManifestInclusion) continue
+            if (entry.manifestIncluded) continue
+            stagedEntries += entry
             entry.probes.forEachIndexed { index, meta ->
                 locations +=
                     ProbeLocation(
@@ -295,27 +332,29 @@ open class ProbeRegistry {
             }
         }
         val skipped = mutableListOf<SkippedClass>()
+        val stagedSkipped = mutableListOf<Any>()
         for ((className, entry) in skippedByClassName) {
-            entry.pendingManifestInclusion = !entry.manifestIncluded
-            if (!entry.pendingManifestInclusion) continue
+            if (entry.manifestIncluded) continue
+            stagedSkipped += entry
             skipped += SkippedClass(className, entry.reason, entry.skippedAt)
         }
-        return ProbeManifest(serviceName, serviceVersion, locations, skipped, serviceInstanceId)
+        return ManifestSnapshot(
+            ProbeManifest(serviceName, serviceVersion, locations, skipped, serviceInstanceId),
+            stagedEntries,
+            stagedSkipped,
+        )
     }
 
     /**
-     * Marks every class staged by the last [computeManifestDelta] call as included, so it is
-     * not sent again.
+     * Marks every class staged by [snapshot] as included, so it is not sent again. Classes that
+     * registered after that snapshot was computed are untouched, even if another, newer snapshot
+     * has staged them in the meantime.
      *
-     * Call this only after that manifest is confirmed delivered. A failed send must leave
-     * entries unmarked, so the next attempt's delta naturally includes them again.
+     * Call this only after that manifest is confirmed delivered. A failed send must not call it,
+     * so the next attempt's delta naturally includes the same classes again.
      */
-    fun advanceManifestBaseline() {
-        for (entry in entriesByKey.values) {
-            if (entry.pendingManifestInclusion) entry.manifestIncluded = true
-        }
-        for (entry in skippedByClassName.values) {
-            if (entry.pendingManifestInclusion) entry.manifestIncluded = true
-        }
+    fun advanceManifestBaseline(snapshot: ManifestSnapshot) {
+        for (entry in snapshot.stagedEntries) (entry as ClassEntry).manifestIncluded = true
+        for (entry in snapshot.stagedSkipped) (entry as SkippedEntry).manifestIncluded = true
     }
 }

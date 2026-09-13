@@ -3,6 +3,7 @@ package io.github.lukedevops.yukon.export
 import io.github.lukedevops.yukon.config.AgentConfig
 import io.github.lukedevops.yukon.registry.ProbeRegistry
 import java.lang.System.Logger.Level
+import java.time.Duration
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
@@ -21,6 +22,8 @@ class ExportScheduler(
     private val config: AgentConfig,
     private val registry: ProbeRegistry,
     private val exporter: Exporter,
+    /** Source of the first-flush jitter. Injectable so a test can pin the initial delay to zero. */
+    private val random: Random = Random.Default,
 ) {
     private val log = System.getLogger(ExportScheduler::class.java.name)
     private var executor: ScheduledExecutorService? = null
@@ -32,13 +35,44 @@ class ExportScheduler(
             }
         this.executor = executor
         val intervalMillis = config.flushInterval.toMillis()
-        val initialDelayMillis = if (intervalMillis > 0) Random.nextLong(intervalMillis) else 0L
+        val initialDelayMillis = if (intervalMillis > 0) random.nextLong(intervalMillis) else 0L
         executor.scheduleAtFixedRate(::flush, initialDelayMillis, intervalMillis, TimeUnit.MILLISECONDS)
     }
 
     fun stop() {
         executor?.shutdown()
     }
+
+    /**
+     * Best-effort final flush for a graceful JVM exit, bounded by [budget] in total.
+     *
+     * The scheduled executor is stopped first, and any flush already in flight on it is allowed
+     * to finish before the final one starts. Two flushes never run at the same time this way:
+     * each holds its own [ProbeRegistry.DeltaSnapshot], so overlap would be safe, but it would
+     * also mean two concurrent POSTs racing to the collector for no benefit.
+     *
+     * [budget] is shared between waiting for the in-flight flush and running the final one. If
+     * the in-flight flush is deep in retries against an unreachable collector and uses it all
+     * up, the final flush is skipped. That in-flight flush already carried the latest snapshot
+     * it could take, so what is lost is bounded by the hits since it started, and shutdown never
+     * stretches past what an orchestrator's termination grace period allows.
+     */
+    fun flushOnShutdown(budget: Duration) {
+        val deadlineNanos = System.nanoTime() + budget.toNanos()
+        val executor = this.executor
+        if (executor != null) {
+            executor.shutdown()
+            if (!executor.awaitTermination(remainingMillis(deadlineNanos), TimeUnit.MILLISECONDS)) {
+                log.log(Level.WARNING, "yukon: an in-flight flush used up the shutdown budget; skipping the final flush")
+                return
+            }
+        }
+        val worker = Thread(::flush, "yukon-shutdown-flush").apply { isDaemon = true }
+        worker.start()
+        worker.join(remainingMillis(deadlineNanos))
+    }
+
+    private fun remainingMillis(deadlineNanos: Long): Long = maxOf(0L, (deadlineNanos - System.nanoTime()) / 1_000_000)
 
     /**
      * One flush attempt. Sends whatever manifest entries haven't gone out
@@ -81,9 +115,9 @@ class ExportScheduler(
 
     private fun sendDeltaBatch() {
         try {
-            val batch = registry.computeDeltaBatch(resourceAttributes())
-            exporter.exportDeltaBatch(batch)
-            registry.advanceBaseline()
+            val snapshot = registry.computeDeltaBatch(resourceAttributes())
+            exporter.exportDeltaBatch(snapshot.batch)
+            registry.advanceBaseline(snapshot)
         } catch (e: Exception) {
             log.log(Level.WARNING, "yukon: delta export failed, will retry next flush", e)
         }
@@ -102,10 +136,11 @@ class ExportScheduler(
      */
     private fun sendManifestDelta() {
         try {
-            val manifest = registry.computeManifestDelta(config.serviceName, config.serviceVersion, config.serviceInstanceId)
+            val snapshot = registry.computeManifestDelta(config.serviceName, config.serviceVersion, config.serviceInstanceId)
+            val manifest = snapshot.manifest
             if (manifest.probes.isEmpty() && manifest.skippedClasses.isEmpty()) return
             exporter.exportManifest(manifest)
-            registry.advanceManifestBaseline()
+            registry.advanceManifestBaseline(snapshot)
         } catch (e: Exception) {
             log.log(Level.WARNING, "yukon: manifest export failed, will retry next flush", e)
         }
