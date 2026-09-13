@@ -5,11 +5,13 @@ import io.github.lukedevops.yukon.export.ExportScheduler
 import io.github.lukedevops.yukon.export.Exporter
 import io.github.lukedevops.yukon.export.HttpOtlpStyleExporter
 import io.github.lukedevops.yukon.export.ResourceAttributes
+import io.github.lukedevops.yukon.instrumentation.BootstrapInstallException
 import io.github.lukedevops.yukon.instrumentation.YukonInstrumentation
 import io.github.lukedevops.yukon.instrumentation.staticscan.StaticBaselineMismatchDetector
 import io.github.lukedevops.yukon.instrumentation.staticscan.StaticBaselinePublisher
 import io.github.lukedevops.yukon.instrumentation.staticscan.StaticBaselineScanner
 import io.github.lukedevops.yukon.registry.ProbeRegistry
+import java.lang.System.Logger.Level
 import java.lang.instrument.Instrumentation
 import java.time.Duration
 
@@ -27,7 +29,14 @@ object Agent {
         val registry = ProbeRegistry()
         val staticBaselineMismatchDetector = StaticBaselineMismatchDetector()
 
-        YukonInstrumentation(config, registry, staticBaselineMismatchDetector).install(instrumentation)
+        try {
+            YukonInstrumentation(config, registry, staticBaselineMismatchDetector).install(instrumentation)
+        } catch (e: BootstrapInstallException) {
+            // Nothing is instrumented and nothing is exported. A missing instance is a visible
+            // signal at the collector; an instance reporting zero hits everywhere would not be.
+            log.log(Level.ERROR, "yukon: could not install the bootstrap holder; the agent is disabled for this JVM", e)
+            return
+        }
 
         val exporter = HttpOtlpStyleExporter(config.collectorEndpoint)
         val scheduler = ExportScheduler(config, registry, exporter)
