@@ -22,10 +22,20 @@ import net.bytebuddy.pool.TypePool
  *
  * [probeIndexBase] is where branch slots start in the class's shared probe array. Method-entry
  * probes occupy `[0, probeIndexBase)`.
+ *
+ * [branchSlotCapacity] is how many branch slots the array actually has, as sized from
+ * [BranchSiteAnalyzer]'s pass over the same bytes. The rewrite must never allocate past it: a
+ * site that would is left as the original instruction, uninstrumented, rather than emitting an
+ * increment that would throw `ArrayIndexOutOfBoundsException` inside the application's own
+ * method. A site count that differs from the analysis in either direction is reported once per
+ * class through [onSiteCountMismatch], since a shortfall means slots have shifted and the
+ * manifest's branch metadata no longer lines up with what each slot counts.
  */
 class BranchProbeAsmVisitorWrapper(
     private val eligibleMethods: (name: String, descriptor: String) -> Boolean,
     private val probeIndexBase: Int,
+    private val branchSlotCapacity: Int = Int.MAX_VALUE,
+    private val onSiteCountMismatch: (expectedSlots: Int, actualSlots: Int) -> Unit = { _, _ -> },
 ) : AsmVisitorWrapper {
     override fun mergeWriter(flags: Int): Int = flags or ClassWriter.COMPUTE_FRAMES
 
@@ -43,6 +53,7 @@ class BranchProbeAsmVisitorWrapper(
     ): ClassVisitor {
         val ownerInternalName = instrumentedType.internalName
         var nextSlot = 0
+        var slotsWanted = 0
 
         return object : ClassVisitor(Opcodes.ASM9, classVisitor) {
             override fun visitMethod(
@@ -55,10 +66,19 @@ class BranchProbeAsmVisitorWrapper(
                 val delegate = super.visitMethod(access, name, descriptor, signature, exceptions)
                 if (!eligibleMethods(name, descriptor)) return delegate
                 return BranchProbeMethodVisitor(delegate, ownerInternalName, probeIndexBase) { outcomeCount ->
+                    slotsWanted += outcomeCount
+                    if (nextSlot + outcomeCount > branchSlotCapacity) return@BranchProbeMethodVisitor BranchProbeMethodVisitor.NO_SLOT
                     val base = nextSlot
                     nextSlot += outcomeCount
                     base
                 }
+            }
+
+            override fun visitEnd() {
+                if (branchSlotCapacity != Int.MAX_VALUE && slotsWanted != branchSlotCapacity) {
+                    onSiteCountMismatch(branchSlotCapacity, slotsWanted)
+                }
+                super.visitEnd()
             }
         }
     }

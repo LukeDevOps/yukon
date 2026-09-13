@@ -31,7 +31,8 @@ import net.bytebuddy.jar.asm.Opcodes
  * that many. This lets sites of different arity (a two-outcome jump next to an N-way switch)
  * still pack into contiguous slots, in the same order
  * [io.github.lukedevops.yukon.instrumentation.YukonInstrumentation] lays out from
- * [BranchSiteAnalyzer]'s output.
+ * [BranchSiteAnalyzer]'s output. It returns [NO_SLOT] when the array has no room left, and the
+ * site is then emitted exactly as it was, with no probe.
  */
 class BranchProbeMethodVisitor(
     methodVisitor: MethodVisitor,
@@ -47,8 +48,13 @@ class BranchProbeMethodVisitor(
             super.visitJumpInsn(opcode, label)
             return
         }
+        val slot = allocateSlots(2)
+        if (slot == NO_SLOT) {
+            super.visitJumpInsn(opcode, label)
+            return
+        }
 
-        val base = probeIndexBase + allocateSlots(2)
+        val base = probeIndexBase + slot
         val taken = Label()
         val continuation = Label()
 
@@ -67,10 +73,15 @@ class BranchProbeMethodVisitor(
         dflt: Label,
         vararg labels: Label,
     ) {
+        val slot = allocateSlots(labels.size + 1)
+        if (slot == NO_SLOT) {
+            super.visitTableSwitchInsn(min, max, dflt, *labels)
+            return
+        }
         val newDefault = Label()
         val newLabels = Array(labels.size) { Label() }
         super.visitTableSwitchInsn(min, max, newDefault, *newLabels)
-        emitSwitchEdges(labels.asList(), dflt, newDefault, newLabels.asList())
+        emitSwitchEdges(slot, labels.asList(), dflt, newDefault, newLabels.asList())
     }
 
     override fun visitLookupSwitchInsn(
@@ -78,19 +89,25 @@ class BranchProbeMethodVisitor(
         keys: IntArray,
         labels: Array<out Label>,
     ) {
+        val slot = allocateSlots(labels.size + 1)
+        if (slot == NO_SLOT) {
+            super.visitLookupSwitchInsn(dflt, keys, labels)
+            return
+        }
         val newDefault = Label()
         val newLabels = Array(labels.size) { Label() }
         super.visitLookupSwitchInsn(newDefault, keys, newLabels)
-        emitSwitchEdges(labels.asList(), dflt, newDefault, newLabels.asList())
+        emitSwitchEdges(slot, labels.asList(), dflt, newDefault, newLabels.asList())
     }
 
     private fun emitSwitchEdges(
+        slot: Int,
         originalLabels: List<Label>,
         originalDefault: Label,
         newDefault: Label,
         newLabels: List<Label>,
     ) {
-        val base = probeIndexBase + allocateSlots(originalLabels.size + 1)
+        val base = probeIndexBase + slot
         newLabels.forEachIndexed { i, block ->
             super.visitLabel(block)
             emitProbeIncrement(base + i)
@@ -118,5 +135,10 @@ class BranchProbeMethodVisitor(
             in Short.MIN_VALUE..Short.MAX_VALUE -> super.visitIntInsn(Opcodes.SIPUSH, value)
             else -> super.visitLdcInsn(value)
         }
+    }
+
+    companion object {
+        /** Returned by an allocator that has no slots left for a site. */
+        const val NO_SLOT = -1
     }
 }
