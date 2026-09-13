@@ -54,3 +54,46 @@ data class ProbeManifest(
     val probes: List<ProbeLocation>,
     val skippedClasses: List<SkippedClass> = emptyList(),
 )
+
+/** No line field, unlike [ProbeLocation]: method-level probes never carry a real line number today. */
+data class DeclaredMethod(
+    val methodName: String,
+    val methodDescriptor: String,
+)
+
+data class DeclaredClass(
+    val className: String,
+    val methods: List<DeclaredMethod>,
+)
+
+/**
+ * A class the static scanner found on the classpath but judged unsafe to instrument without
+ * loading it. Kept separate from [DeclaredClass] so it is never conflated with a confidently-dead
+ * class.
+ */
+data class StaticallyUnsafeClass(
+    val className: String,
+    val reason: String,
+)
+
+/**
+ * A class file the scanner found but could not read. [className] is best-effort, derived from its
+ * path within the classpath root rather than from parsed bytecode.
+ */
+data class UnreadableClass(
+    val className: String,
+    val reason: String,
+)
+
+/**
+ * Sent once per process, independent of [ProbeManifest]: a load-independent inventory of what
+ * exists on the classpath under `includePackages`, built by reading bytecode directly rather than
+ * waiting for the JVM to load it.
+ */
+data class StaticBaseline(
+    val resource: ResourceAttributes,
+    val declaredClasses: List<DeclaredClass>,
+    val staticallyUnsafeClasses: List<StaticallyUnsafeClass> = emptyList(),
+    val unreadableClasses: List<UnreadableClass> = emptyList(),
+    val scannedAt: Long,
+)

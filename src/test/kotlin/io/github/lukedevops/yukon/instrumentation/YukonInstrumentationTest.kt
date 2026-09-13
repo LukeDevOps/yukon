@@ -2,6 +2,7 @@ package io.github.lukedevops.yukon.instrumentation
 
 import io.github.lukedevops.yukon.config.AgentConfig
 import io.github.lukedevops.yukon.export.ResourceAttributes
+import io.github.lukedevops.yukon.instrumentation.staticscan.StaticBaselineMismatchDetector
 import io.github.lukedevops.yukon.registry.ProbeRegistry
 import net.bytebuddy.agent.ByteBuddyAgent
 import net.bytebuddy.agent.builder.AgentBuilder
@@ -10,6 +11,7 @@ import java.io.File
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class YukonInstrumentationTest {
@@ -32,9 +34,10 @@ class YukonInstrumentationTest {
     private fun install(
         registry: ProbeRegistry,
         config: AgentConfig,
+        staticBaselineMismatchDetector: StaticBaselineMismatchDetector = StaticBaselineMismatchDetector(),
     ): Any {
         val instrumentation = ByteBuddyAgent.install()
-        installedTransformer = YukonInstrumentation(config, registry).install(instrumentation)
+        installedTransformer = YukonInstrumentation(config, registry, staticBaselineMismatchDetector).install(instrumentation)
         return loadFixtureFresh()
     }
 
@@ -81,5 +84,19 @@ class YukonInstrumentationTest {
 
         assertEquals(3L, byIndex.getValue(pingProbeIndex).hitsSinceLastFlush)
         assertEquals(2L, byIndex.getValue(neverCalledProbeIndex).hitsSinceLastFlush)
+    }
+
+    @Test
+    fun `flags a class that registers dynamically but was absent from the static baseline`() {
+        val registry = ProbeRegistry()
+        val config = AgentConfig.parse("includePackages=com.example.target")
+        val detector = StaticBaselineMismatchDetector()
+        detector.knownDeclaredClassNames = emptySet()
+
+        install(registry, config, detector)
+
+        // shouldWarnAbout only returns true the first time a given class name is found missing.
+        // If install() already consumed that for this class, this call must now return false.
+        assertFalse(detector.shouldWarnAbout("com.example.target.SampleTarget"))
     }
 }

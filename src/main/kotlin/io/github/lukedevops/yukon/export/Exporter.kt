@@ -9,4 +9,6 @@ interface Exporter {
     fun exportDeltaBatch(batch: DeltaBatch)
 
     fun exportManifest(manifest: ProbeManifest)
+
+    fun exportStaticBaseline(baseline: StaticBaseline)
 }

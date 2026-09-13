@@ -16,6 +16,19 @@ class AgentConfigTest {
         assertEquals(Duration.ofSeconds(60), config.flushInterval)
         assertEquals("http://localhost:4319", config.collectorEndpoint)
         assertEquals(emptyList(), config.instrumentedPackagePrefixes)
+        assertEquals(false, config.staticBaselineEnabled)
+    }
+
+    @Test
+    fun `staticBaselineEnabled defaults to false and can be opted into`() {
+        assertEquals(false, AgentConfig.parse("serviceName=checkout").staticBaselineEnabled)
+        assertEquals(true, AgentConfig.parse("staticBaselineEnabled=true").staticBaselineEnabled)
+    }
+
+    @Test
+    fun `staticBaselineEnabled is case-insensitive and treats any non-'true' value as false`() {
+        assertEquals(true, AgentConfig.parse("staticBaselineEnabled=TRUE").staticBaselineEnabled)
+        assertEquals(false, AgentConfig.parse("staticBaselineEnabled=yes").staticBaselineEnabled)
     }
 
     @Test

@@ -46,6 +46,7 @@ separate multiple prefixes):
 | `endpoint` | `http://localhost:4319` | Collector base URL. |
 | `flushIntervalSeconds` | `60` | How often deltas/manifest updates are sent. |
 | `includePackages` | *(all)* | Only instrument types whose name starts with one of these prefixes, `;`-separated. |
+| `staticBaselineEnabled` | `false` | Scan the classpath once at startup (async, off the critical path) for classes under `includePackages` that never load at all. Off by default: unlike every other option here, a full classpath walk has a cost that scales with the classpath's size. |
 
 Yukon needs somewhere to send data to. See the `demo` module below for a
 minimal stub, or point it at a real collector.

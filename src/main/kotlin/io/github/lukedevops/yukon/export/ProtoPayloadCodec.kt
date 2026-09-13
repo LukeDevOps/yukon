@@ -1,5 +1,7 @@
 package io.github.lukedevops.yukon.export
 
+import io.github.lukedevops.yukon.proto.DeclaredClass as ProtoDeclaredClass
+import io.github.lukedevops.yukon.proto.DeclaredMethod as ProtoDeclaredMethod
 import io.github.lukedevops.yukon.proto.DeltaBatch as ProtoDeltaBatch
 import io.github.lukedevops.yukon.proto.ProbeDelta as ProtoProbeDelta
 import io.github.lukedevops.yukon.proto.ProbeKind as ProtoProbeKind
@@ -7,16 +9,27 @@ import io.github.lukedevops.yukon.proto.ProbeLocation as ProtoProbeLocation
 import io.github.lukedevops.yukon.proto.ProbeManifest as ProtoProbeManifest
 import io.github.lukedevops.yukon.proto.ResourceAttributes as ProtoResourceAttributes
 import io.github.lukedevops.yukon.proto.SkippedClass as ProtoSkippedClass
+import io.github.lukedevops.yukon.proto.StaticBaseline as ProtoStaticBaseline
+import io.github.lukedevops.yukon.proto.StaticallyUnsafeClass as ProtoStaticallyUnsafeClass
+import io.github.lukedevops.yukon.proto.UnreadableClass as ProtoUnreadableClass
 
 /**
- * Encodes [DeltaBatch] and [ProbeManifest] to the wire schema defined in
- * `yukon.proto`. This lets an [Exporter] implementation send them without
- * depending on the generated protobuf classes directly.
+ * Encodes and decodes [DeltaBatch], [ProbeManifest], and [StaticBaseline] to and from the wire
+ * schema defined in `yukon.proto`. This lets an [Exporter] implementation, or anything reading
+ * what one sent, work without depending on the generated protobuf classes directly.
  */
 object ProtoPayloadCodec {
     fun encode(batch: DeltaBatch): ByteArray = toProto(batch).toByteArray()
 
     fun encode(manifest: ProbeManifest): ByteArray = toProto(manifest).toByteArray()
+
+    fun encode(baseline: StaticBaseline): ByteArray = toProto(baseline).toByteArray()
+
+    fun decodeDeltaBatch(bytes: ByteArray): DeltaBatch = fromProto(ProtoDeltaBatch.parseFrom(bytes))
+
+    fun decodeProbeManifest(bytes: ByteArray): ProbeManifest = fromProto(ProtoProbeManifest.parseFrom(bytes))
+
+    fun decodeStaticBaseline(bytes: ByteArray): StaticBaseline = fromProto(ProtoStaticBaseline.parseFrom(bytes))
 
     private fun toProto(batch: DeltaBatch): ProtoDeltaBatch =
         ProtoDeltaBatch
@@ -24,6 +37,12 @@ object ProtoPayloadCodec {
             .setResource(toProto(batch.resource))
             .addAllDeltas(batch.deltas.map { toProto(it) })
             .build()
+
+    private fun fromProto(batch: ProtoDeltaBatch): DeltaBatch =
+        DeltaBatch(
+            resource = fromProto(batch.resource),
+            deltas = batch.deltasList.map { fromProto(it) },
+        )
 
     private fun toProto(resource: ResourceAttributes): ProtoResourceAttributes {
         val builder =
@@ -36,6 +55,14 @@ object ProtoPayloadCodec {
         return builder.build()
     }
 
+    private fun fromProto(resource: ProtoResourceAttributes): ResourceAttributes =
+        ResourceAttributes(
+            serviceName = resource.serviceName,
+            serviceVersion = if (resource.hasServiceVersion()) resource.serviceVersion else null,
+            serviceInstanceId = resource.serviceInstanceId,
+            environment = if (resource.hasEnvironment()) resource.environment else null,
+        )
+
     private fun toProto(delta: ProbeDelta): ProtoProbeDelta =
         ProtoProbeDelta
             .newBuilder()
@@ -45,6 +72,15 @@ object ProtoPayloadCodec {
             .setFirstSeenAt(delta.firstSeenAt)
             .setHitsSinceLastFlush(delta.hitsSinceLastFlush)
             .build()
+
+    private fun fromProto(delta: ProtoProbeDelta): ProbeDelta =
+        ProbeDelta(
+            classId = delta.classId,
+            probeIndex = delta.probeIndex,
+            kind = fromProto(delta.kind),
+            firstSeenAt = delta.firstSeenAt,
+            hitsSinceLastFlush = delta.hitsSinceLastFlush,
+        )
 
     private fun toProto(manifest: ProbeManifest): ProtoProbeManifest {
         val builder =
@@ -57,6 +93,14 @@ object ProtoPayloadCodec {
         return builder.build()
     }
 
+    private fun fromProto(manifest: ProtoProbeManifest): ProbeManifest =
+        ProbeManifest(
+            serviceName = manifest.serviceName,
+            serviceVersion = if (manifest.hasServiceVersion()) manifest.serviceVersion else null,
+            probes = manifest.probesList.map { fromProto(it) },
+            skippedClasses = manifest.skippedClassesList.map { fromProto(it) },
+        )
+
     private fun toProto(skippedClass: SkippedClass): ProtoSkippedClass =
         ProtoSkippedClass
             .newBuilder()
@@ -64,6 +108,13 @@ object ProtoPayloadCodec {
             .setReason(skippedClass.reason)
             .setSkippedAt(skippedClass.skippedAt)
             .build()
+
+    private fun fromProto(skippedClass: ProtoSkippedClass): SkippedClass =
+        SkippedClass(
+            className = skippedClass.className,
+            reason = skippedClass.reason,
+            skippedAt = skippedClass.skippedAt,
+        )
 
     private fun toProto(location: ProbeLocation): ProtoProbeLocation {
         val builder =
@@ -80,9 +131,107 @@ object ProtoPayloadCodec {
         return builder.build()
     }
 
+    private fun fromProto(location: ProtoProbeLocation): ProbeLocation =
+        ProbeLocation(
+            classId = location.classId,
+            probeIndex = location.probeIndex,
+            kind = fromProto(location.kind),
+            className = location.className,
+            methodName = location.methodName,
+            methodDescriptor = location.methodDescriptor,
+            line = location.line,
+            branchIndex = if (location.hasBranchIndex()) location.branchIndex else null,
+        )
+
     private fun toProto(kind: ProbeKind): ProtoProbeKind =
         when (kind) {
             ProbeKind.METHOD -> ProtoProbeKind.METHOD
             ProbeKind.BRANCH -> ProtoProbeKind.BRANCH
         }
+
+    private fun fromProto(kind: ProtoProbeKind): ProbeKind =
+        when (kind) {
+            ProtoProbeKind.METHOD -> {
+                ProbeKind.METHOD
+            }
+
+            ProtoProbeKind.BRANCH -> {
+                ProbeKind.BRANCH
+            }
+
+            ProtoProbeKind.PROBE_KIND_UNSPECIFIED, ProtoProbeKind.UNRECOGNIZED -> {
+                throw IllegalArgumentException("unrecognized probe kind on the wire: $kind")
+            }
+        }
+
+    private fun toProto(baseline: StaticBaseline): ProtoStaticBaseline =
+        ProtoStaticBaseline
+            .newBuilder()
+            .setResource(toProto(baseline.resource))
+            .addAllDeclaredClasses(baseline.declaredClasses.map { toProto(it) })
+            .addAllStaticallyUnsafeClasses(baseline.staticallyUnsafeClasses.map { toProto(it) })
+            .addAllUnreadableClasses(baseline.unreadableClasses.map { toProto(it) })
+            .setScannedAt(baseline.scannedAt)
+            .build()
+
+    private fun fromProto(baseline: ProtoStaticBaseline): StaticBaseline =
+        StaticBaseline(
+            resource = fromProto(baseline.resource),
+            declaredClasses = baseline.declaredClassesList.map { fromProto(it) },
+            staticallyUnsafeClasses = baseline.staticallyUnsafeClassesList.map { fromProto(it) },
+            unreadableClasses = baseline.unreadableClassesList.map { fromProto(it) },
+            scannedAt = baseline.scannedAt,
+        )
+
+    private fun toProto(declaredClass: DeclaredClass): ProtoDeclaredClass =
+        ProtoDeclaredClass
+            .newBuilder()
+            .setClassName(declaredClass.className)
+            .addAllMethods(declaredClass.methods.map { toProto(it) })
+            .build()
+
+    private fun fromProto(declaredClass: ProtoDeclaredClass): DeclaredClass =
+        DeclaredClass(
+            className = declaredClass.className,
+            methods = declaredClass.methodsList.map { fromProto(it) },
+        )
+
+    private fun toProto(method: DeclaredMethod): ProtoDeclaredMethod =
+        ProtoDeclaredMethod
+            .newBuilder()
+            .setMethodName(method.methodName)
+            .setMethodDescriptor(method.methodDescriptor)
+            .build()
+
+    private fun fromProto(method: ProtoDeclaredMethod): DeclaredMethod =
+        DeclaredMethod(
+            methodName = method.methodName,
+            methodDescriptor = method.methodDescriptor,
+        )
+
+    private fun toProto(unsafeClass: StaticallyUnsafeClass): ProtoStaticallyUnsafeClass =
+        ProtoStaticallyUnsafeClass
+            .newBuilder()
+            .setClassName(unsafeClass.className)
+            .setReason(unsafeClass.reason)
+            .build()
+
+    private fun fromProto(unsafeClass: ProtoStaticallyUnsafeClass): StaticallyUnsafeClass =
+        StaticallyUnsafeClass(
+            className = unsafeClass.className,
+            reason = unsafeClass.reason,
+        )
+
+    private fun toProto(unreadableClass: UnreadableClass): ProtoUnreadableClass =
+        ProtoUnreadableClass
+            .newBuilder()
+            .setClassName(unreadableClass.className)
+            .setReason(unreadableClass.reason)
+            .build()
+
+    private fun fromProto(unreadableClass: ProtoUnreadableClass): UnreadableClass =
+        UnreadableClass(
+            className = unreadableClass.className,
+            reason = unreadableClass.reason,
+        )
 }
