@@ -12,10 +12,14 @@ import java.time.Duration
  * dependency.
  *
  * Each send retries up to [maxAttempts] times, with capped exponential
- * backoff. If every attempt fails, the exception propagates to the caller.
- * The caller is expected to be [ExportScheduler]. It treats the exception as
- * a signal to leave the registry baseline untouched, and retries the whole
- * delta on the next flush.
+ * backoff, but only for failures that a retry can plausibly fix: a
+ * connection or timeout error, a 5xx, a 408, or a 429. Any other 4xx fails
+ * at once. The collector has already read the bytes and rejected them, so
+ * resending the same bytes a moment later cannot change its answer; it only
+ * burns the flush budget. If every attempt fails, the exception propagates
+ * to the caller. The caller is expected to be [ExportScheduler]. It treats
+ * the exception as a signal to leave the registry baseline untouched, and
+ * retries the whole delta on the next flush.
  *
  * [httpClient]'s connect timeout and each request's [requestTimeout] are both
  * bounded by default. Without a timeout, a collector that accepts a
@@ -52,19 +56,25 @@ class HttpOtlpStyleExporter(
         var backoff = initialBackoff
         var lastError: Exception? = null
         for (attempt in 1..maxAttempts) {
-            try {
-                val request =
-                    HttpRequest
-                        .newBuilder(URI.create(uri))
-                        .timeout(requestTimeout)
-                        .header("Content-Type", "application/x-protobuf")
-                        .POST(HttpRequest.BodyPublishers.ofByteArray(body))
-                        .build()
-                val response = httpClient.send(request, HttpResponse.BodyHandlers.discarding())
-                if (response.statusCode() in 200..299) return
-                lastError = ExportFailedException("yukon: unexpected status ${response.statusCode()} from $uri")
-            } catch (e: Exception) {
-                lastError = e
+            val status =
+                try {
+                    val request =
+                        HttpRequest
+                            .newBuilder(URI.create(uri))
+                            .timeout(requestTimeout)
+                            .header("Content-Type", "application/x-protobuf")
+                            .POST(HttpRequest.BodyPublishers.ofByteArray(body))
+                            .build()
+                    httpClient.send(request, HttpResponse.BodyHandlers.discarding()).statusCode()
+                } catch (e: Exception) {
+                    lastError = e
+                    null
+                }
+            if (status != null) {
+                if (status in 200..299) return
+                val failure = ExportFailedException("yukon: unexpected status $status from $uri", status)
+                if (!isRetryable(status)) throw failure
+                lastError = failure
             }
             if (attempt < maxAttempts) {
                 Thread.sleep(backoff.toMillis())
@@ -74,11 +84,16 @@ class HttpOtlpStyleExporter(
         throw lastError ?: ExportFailedException("yukon: export to $uri failed")
     }
 
+    /** 408 and 429 are the two 4xx codes that describe the server's state at that moment, not the request itself. */
+    private fun isRetryable(status: Int): Boolean = status >= 500 || status == 408 || status == 429
+
     private companion object {
         val DEFAULT_TIMEOUT: Duration = Duration.ofSeconds(10)
     }
 }
 
+/** [statusCode] is null when the failure was not an HTTP response at all (for example, every attempt threw). */
 class ExportFailedException(
     message: String,
+    val statusCode: Int? = null,
 ) : RuntimeException(message)

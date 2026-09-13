@@ -194,7 +194,10 @@ class ExportSchedulerTest {
     fun `an exception thrown while computing the delta batch does not stop future flushes`() {
         val registry =
             object : ProbeRegistry() {
-                override fun computeDeltaBatch(resource: ResourceAttributes): ProbeRegistry.DeltaSnapshot = throw RuntimeException("boom")
+                override fun computeDeltaBatches(
+                    resource: ResourceAttributes,
+                    maxDeltasPerBatch: Int,
+                ): List<ProbeRegistry.DeltaSnapshot> = throw RuntimeException("boom")
             }
         val exporter = RecordingExporter()
         val scheduler = ExportScheduler(config, registry, exporter)
@@ -211,11 +214,12 @@ class ExportSchedulerTest {
     fun `an exception thrown while computing the manifest delta does not stop future flushes`() {
         val registry =
             object : ProbeRegistry() {
-                override fun computeManifestDelta(
+                override fun computeManifestDeltas(
                     serviceName: String,
                     serviceVersion: String?,
                     serviceInstanceId: String,
-                ): ProbeRegistry.ManifestSnapshot = throw RuntimeException("boom")
+                    maxEntriesPerChunk: Int,
+                ): List<ProbeRegistry.ManifestSnapshot> = throw RuntimeException("boom")
             }
         val exporter = RecordingExporter()
         val scheduler = ExportScheduler(config, registry, exporter)
@@ -259,6 +263,76 @@ class ExportSchedulerTest {
 
         scheduler.flush()
         assertEquals(2, exporter.manifestSends)
+    }
+
+    @Test
+    fun `a flush sends the manifest and deltas in capped chunks, advancing each one as it is confirmed`() {
+        val registry = ProbeRegistry()
+        for (name in listOf("Foo", "Bar", "Baz")) {
+            val probes = registry.register("com.example.$name", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "m", "()V", 1)))
+            probes[0] = 1
+        }
+        val exporter = RecordingExporter()
+        val scheduler = ExportScheduler(config, registry, exporter, maxDeltasPerBatch = 2, maxManifestEntriesPerChunk = 2)
+
+        scheduler.flush()
+
+        assertEquals(listOf(2, 1), exporter.deltaBatches.map { it.deltas.size })
+        assertEquals(listOf(2, 1), exporter.manifests.map { it.probes.size })
+        assertTrue(
+            registry
+                .computeDeltaBatch(resource)
+                .batch.deltas
+                .isEmpty(),
+        )
+        assertTrue(
+            registry
+                .computeManifestDelta("checkout", null, "instance-1")
+                .manifest.probes
+                .isEmpty(),
+        )
+    }
+
+    @Test
+    fun `a chunk that fails mid-way leaves only the unconfirmed chunks pending for the next flush`() {
+        val registry = ProbeRegistry()
+        for (name in listOf("Foo", "Bar", "Baz")) {
+            val probes = registry.register("com.example.$name", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "m", "()V", 1)))
+            probes[0] = 1
+        }
+        val exporter =
+            object : Exporter {
+                var deltaSends = 0
+                var manifestSends = 0
+
+                override fun exportDeltaBatch(batch: DeltaBatch) {
+                    if (++deltaSends == 2) throw RuntimeException("collector unreachable")
+                }
+
+                override fun exportManifest(manifest: ProbeManifest) {
+                    if (++manifestSends == 2) throw RuntimeException("collector unreachable")
+                }
+
+                override fun exportStaticBaseline(baseline: StaticBaseline) {}
+            }
+        val scheduler = ExportScheduler(config, registry, exporter, maxDeltasPerBatch = 1, maxManifestEntriesPerChunk = 1)
+
+        scheduler.flush()
+
+        assertEquals(2, exporter.deltaSends, "the loop stops at the first failure")
+        assertEquals(
+            2,
+            registry
+                .computeDeltaBatch(resource)
+                .batch.deltas.size,
+            "the failed chunk and the unsent one remain",
+        )
+        assertEquals(
+            2,
+            registry
+                .computeManifestDelta("checkout", null, "instance-1")
+                .manifest.probes.size,
+        )
     }
 
     /** Returns 0 from every `nextLong(bound)`, so the first scheduled flush runs immediately on start(). */

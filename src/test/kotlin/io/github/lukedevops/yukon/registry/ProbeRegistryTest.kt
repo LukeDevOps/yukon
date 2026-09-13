@@ -519,6 +519,136 @@ class ProbeRegistryTest {
     }
 
     @Test
+    fun `computeDeltaBatches packs whole classes into chunks up to the cap`() {
+        val registry = ProbeRegistry()
+        val foo = registry.register("com.example.Foo", layoutHash = 1L, probes = methodProbes(3))
+        val bar = registry.register("com.example.Bar", layoutHash = 1L, probes = methodProbes(3))
+        val baz = registry.register("com.example.Baz", layoutHash = 1L, probes = methodProbes(3))
+        for (array in listOf(foo, bar, baz)) for (i in array.indices) array[i] = 1
+
+        val chunks = registry.computeDeltaBatches(resource, maxDeltasPerBatch = 4)
+
+        // 9 changed probes, 3 per class, cap 4: a class is never split across chunks, so each
+        // chunk carries exactly one class rather than filling to 4.
+        assertEquals(listOf(3, 3, 3), chunks.map { it.batch.deltas.size })
+        assertEquals(3, chunks.flatMap { chunk -> chunk.batch.deltas.map { it.classId } }.toSet().size)
+        chunks.forEach { chunk ->
+            assertEquals(
+                1,
+                chunk.batch.deltas
+                    .map { it.classId }
+                    .toSet()
+                    .size,
+            )
+        }
+    }
+
+    @Test
+    fun `a class whose changed probes alone exceed the cap gets its own oversized chunk`() {
+        val registry = ProbeRegistry()
+        val big = registry.register("com.example.Big", layoutHash = 1L, probes = methodProbes(10))
+        for (i in big.indices) big[i] = 1
+
+        val chunks = registry.computeDeltaBatches(resource, maxDeltasPerBatch = 4)
+
+        assertEquals(1, chunks.size)
+        assertEquals(
+            10,
+            chunks
+                .single()
+                .batch.deltas.size,
+        )
+    }
+
+    @Test
+    fun `computeDeltaBatches with nothing changed still returns one empty batch for the heartbeat`() {
+        val registry = ProbeRegistry()
+        registry.register("com.example.Foo", layoutHash = 1L, probes = methodProbes(3))
+
+        val chunks = registry.computeDeltaBatches(resource, maxDeltasPerBatch = 4)
+
+        assertEquals(1, chunks.size)
+        assertTrue(
+            chunks
+                .single()
+                .batch.deltas
+                .isEmpty(),
+        )
+    }
+
+    @Test
+    fun `advancing one delta chunk leaves the other chunks' classes pending`() {
+        val registry = ProbeRegistry()
+        val foo = registry.register("com.example.Foo", layoutHash = 1L, probes = methodProbes(2))
+        val bar = registry.register("com.example.Bar", layoutHash = 1L, probes = methodProbes(2))
+        foo[0] = 1
+        bar[0] = 1
+        val chunks = registry.computeDeltaBatches(resource, maxDeltasPerBatch = 1)
+        assertEquals(2, chunks.size)
+
+        registry.advanceBaseline(chunks[0])
+
+        val pending = registry.computeDeltaBatch(resource).batch.deltas
+        assertEquals(1, pending.size)
+        assertEquals(
+            chunks[1]
+                .batch.deltas
+                .single()
+                .classId,
+            pending.single().classId,
+        )
+    }
+
+    @Test
+    fun `computeManifestDeltas packs whole classes and counts skipped classes toward the cap`() {
+        val registry = ProbeRegistry()
+        registry.register("com.example.Foo", layoutHash = 1L, probes = methodProbes(3))
+        registry.register("com.example.Bar", layoutHash = 1L, probes = methodProbes(3))
+        registry.recordSkipped("com.example.Skipped", reason = "unsafe")
+
+        val chunks = registry.computeManifestDeltas("checkout", null, "instance-1", maxEntriesPerChunk = 4)
+
+        // Foo (3) fills the first chunk on its own, since Bar (3) would push it past 4. Bar and
+        // the skipped class (1) then fit together in the second, exactly at the cap.
+        assertEquals(2, chunks.size)
+        assertEquals(
+            setOf("com.example.Foo", "com.example.Bar"),
+            chunks.flatMap { it.manifest.probes.map { p -> p.className } }.toSet(),
+        )
+        assertEquals(listOf("com.example.Skipped"), chunks.flatMap { it.manifest.skippedClasses.map { s -> s.className } })
+        chunks.forEach { assertTrue(it.manifest.probes.size + it.manifest.skippedClasses.size <= 4) }
+    }
+
+    @Test
+    fun `computeManifestDeltas returns no chunks when there is nothing to send`() {
+        val registry = ProbeRegistry()
+        registry.register("com.example.Foo", layoutHash = 1L, probes = methodProbes(1))
+        registry.advanceManifestBaseline(registry.computeManifestDelta("checkout", null, "instance-1"))
+
+        assertTrue(registry.computeManifestDeltas("checkout", null, "instance-1", maxEntriesPerChunk = 4).isEmpty())
+    }
+
+    @Test
+    fun `advancing one manifest chunk leaves the other chunks' classes pending`() {
+        val registry = ProbeRegistry()
+        registry.register("com.example.Foo", layoutHash = 1L, probes = methodProbes(1))
+        registry.register("com.example.Bar", layoutHash = 1L, probes = methodProbes(1))
+        val chunks = registry.computeManifestDeltas("checkout", null, "instance-1", maxEntriesPerChunk = 1)
+        assertEquals(2, chunks.size)
+
+        registry.advanceManifestBaseline(chunks[0])
+
+        val pending = registry.computeManifestDelta("checkout", null, "instance-1").manifest.probes
+        assertEquals(
+            chunks[1]
+                .manifest.probes
+                .single()
+                .className,
+            pending.single().className,
+        )
+    }
+
+    @Test
     fun `advancing a manifest snapshot only marks the skipped classes that snapshot staged`() {
         val registry = ProbeRegistry()
         registry.recordSkipped("com.example.Foo", reason = "first")
