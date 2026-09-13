@@ -203,7 +203,11 @@ class ExportSchedulerTest {
         scheduler.flush()
         scheduler.flush()
 
-        assertEquals(2, exporter.deltaBatches.size, "the delta batch send should still happen on every flush even if the manifest side failed")
+        assertEquals(
+            2,
+            exporter.deltaBatches.size,
+            "the delta batch send should still happen on every flush even if the manifest side failed",
+        )
     }
 
     @Test
