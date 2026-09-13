@@ -1,0 +1,21 @@
+Yukon
+Copyright 2026 Luke Killick
+
+Licensed under the Apache License, Version 2.0. See LICENSE.
+
+The agent jar bundles the following third-party components, relocated
+under the io.github.lukedevops.yukon.shaded package so they cannot
+collide with copies on the instrumented application's classpath. Their
+licence texts are under META-INF/licenses/ in the jar and under
+licenses/ in the source tree.
+
+- Byte Buddy (net.bytebuddy:byte-buddy)
+  Apache License 2.0. Copyright 2014 - Present Rafael Winterhalter.
+  Byte Buddy itself bundles ASM (org.ow2.asm), BSD 3-Clause;
+  see licenses/asm/LICENSE.
+- Protocol Buffers Java runtime (com.google.protobuf:protobuf-java)
+  BSD 3-Clause. Copyright 2008 Google Inc.
+- Kotlin Standard Library (org.jetbrains.kotlin:kotlin-stdlib)
+  Apache License 2.0.
+- JetBrains Java Annotations (org.jetbrains:annotations)
+  Apache License 2.0.

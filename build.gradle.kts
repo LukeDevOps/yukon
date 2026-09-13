@@ -78,12 +78,22 @@ sourceSets.main {
     resources.srcDir(embedBootstrapJar)
 }
 
+// Licence texts for the dependencies relocated into the shaded jar, one directory per
+// component. Byte Buddy is the only one of them that ships its own LICENSE and NOTICE entries;
+// the rest carry nothing, so the texts are checked in here rather than extracted at build time.
+val bundledLicensesDir = layout.projectDirectory.dir("licenses")
+val bundledLicenseEntries =
+    fileTree(bundledLicensesDir).files.map { it.relativeTo(bundledLicensesDir.asFile).invariantSeparatorsPath }.sorted()
+
 // Fails the build if the shaded jar does not have the shape premain relies on: the embedded
-// holder jar present as one resource, and none of the holder's classes present loose.
+// holder jar present as one resource, and none of the holder's classes present loose. Also
+// checks that META-INF/NOTICE is this project's own and that every vendored third-party licence
+// made it under META-INF/licenses/.
 val verifyAgentJar by tasks.registering {
     dependsOn(tasks.shadowJar)
     val jarFile = tasks.shadowJar.flatMap { it.archiveFile }
     inputs.file(jarFile)
+    inputs.property("bundledLicenseEntries", bundledLicenseEntries)
     doLast {
         ZipFile(jarFile.get().asFile).use { zip ->
             val names =
@@ -98,6 +108,16 @@ val verifyAgentJar by tasks.registering {
             val loose = names.filter { it.startsWith("io/github/lukedevops/yukon/bootstrap/") && it.endsWith(".class") }
             check(loose.isEmpty()) {
                 "agent jar must not carry the bootstrap holder as loose classes, found: $loose"
+            }
+            val notice = checkNotNull(zip.getEntry("META-INF/NOTICE")) { "agent jar is missing META-INF/NOTICE" }
+            val noticeFirstLine = zip.getInputStream(notice).bufferedReader().use { it.readLine() }
+            check(noticeFirstLine == "Yukon") {
+                "agent jar's META-INF/NOTICE is not this project's own; first line is \"$noticeFirstLine\""
+            }
+            check("META-INF/LICENSE" in names) { "agent jar is missing META-INF/LICENSE" }
+            val missingLicenses = bundledLicenseEntries.map { "META-INF/licenses/$it" }.filterNot { it in names }
+            check(missingLicenses.isEmpty()) {
+                "agent jar is missing vendored third-party licence entries: $missingLicenses"
             }
         }
     }
@@ -152,6 +172,20 @@ tasks.shadowJar {
     // them unshaded either.
     relocate("org.jetbrains.annotations", "io.github.lukedevops.yukon.shaded.annotations")
     relocate("org.intellij.lang.annotations", "io.github.lukedevops.yukon.shaded.intellij.annotations")
+
+    // META-INF/LICENSE and META-INF/NOTICE must describe this jar, not whichever dependency's
+    // entries shadow happened to copy first, so every dependency's own copies are dropped and
+    // the vendored texts under licenses/ go in under META-INF/licenses/ instead. The exclude
+    // patterns match a dependency entry's path inside its jar; the from() blocks below are
+    // matched against their own source paths (LICENSE, byte-buddy/NOTICE), which the patterns
+    // do not cover, so they land where into() sends them.
+    exclude("META-INF/LICENSE", "META-INF/LICENSE.txt", "META-INF/NOTICE", "META-INF/NOTICE.txt", "META-INF/licenses/**")
+    from(layout.projectDirectory.files("LICENSE", "NOTICE")) {
+        into("META-INF")
+    }
+    from(bundledLicensesDir) {
+        into("META-INF/licenses")
+    }
 
     manifest {
         attributes(
