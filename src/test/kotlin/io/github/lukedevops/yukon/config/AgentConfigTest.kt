@@ -16,7 +16,9 @@ class AgentConfigTest {
         assertEquals(Duration.ofSeconds(60), config.flushInterval)
         assertEquals("http://localhost:4319", config.collectorEndpoint)
         assertEquals(emptyList(), config.instrumentedPackagePrefixes)
+        assertEquals(emptyList(), config.excludedPackagePrefixes)
         assertEquals(false, config.staticBaselineEnabled)
+        assertEquals(true, config.enabled)
         assertEquals(null, config.authToken)
     }
 
@@ -27,9 +29,34 @@ class AgentConfigTest {
     }
 
     @Test
-    fun `staticBaselineEnabled is case-insensitive and treats any non-'true' value as false`() {
+    fun `staticBaselineEnabled is case-insensitive, and an unparseable value warns and falls back to the default of false`() {
         assertEquals(true, AgentConfig.parse("staticBaselineEnabled=TRUE").staticBaselineEnabled)
         assertEquals(false, AgentConfig.parse("staticBaselineEnabled=yes").staticBaselineEnabled)
+    }
+
+    @Test
+    fun `enabled defaults to true and can be turned off`() {
+        assertEquals(true, AgentConfig.parse(null).enabled)
+        assertEquals(true, AgentConfig.parse("enabled=true").enabled)
+        assertEquals(false, AgentConfig.parse("enabled=false").enabled)
+    }
+
+    @Test
+    fun `enabled is case-insensitive, and an unparseable value warns and falls back to the default of true`() {
+        assertEquals(false, AgentConfig.parse("enabled=FALSE").enabled)
+        assertEquals(true, AgentConfig.parse("enabled=maybe").enabled)
+    }
+
+    @Test
+    fun `excludePackages splits on semicolons, trims whitespace, and drops a trailing dot`() {
+        val config = AgentConfig.parse("excludePackages=com.acme.internal ; com.acme.legacy.;com.other")
+
+        assertEquals(listOf("com.acme.internal", "com.acme.legacy", "com.other"), config.excludedPackagePrefixes)
+    }
+
+    @Test
+    fun `excludePackages defaults to empty`() {
+        assertEquals(emptyList(), AgentConfig.parse("serviceName=checkout").excludedPackagePrefixes)
     }
 
     @Test
@@ -174,5 +201,60 @@ class AgentConfigTest {
         val config = AgentConfig.parse("serviceName=checkout", env = env::get)
 
         assertEquals(null, config.authToken)
+    }
+
+    @Test
+    fun `an option can be set from a system property`() {
+        val properties = mapOf("yukon.service.name" to "from-property")
+        val config = AgentConfig.parse(null, systemProperties = properties::get)
+
+        assertEquals("from-property", config.serviceName)
+    }
+
+    @Test
+    fun `an option can be set from an environment variable`() {
+        val env = mapOf("YUKON_SERVICE_NAME" to "from-env")
+        val config = AgentConfig.parse(null, env = env::get)
+
+        assertEquals("from-env", config.serviceName)
+    }
+
+    @Test
+    fun `the agent option wins over a system property, which wins over an environment variable`() {
+        val allThree =
+            AgentConfig.parse(
+                "serviceName=from-option",
+                systemProperties = mapOf("yukon.service.name" to "from-property")::get,
+                env = mapOf("YUKON_SERVICE_NAME" to "from-env")::get,
+            )
+        assertEquals("from-option", allThree.serviceName)
+
+        val propertyAndEnv =
+            AgentConfig.parse(
+                null,
+                systemProperties = mapOf("yukon.service.name" to "from-property")::get,
+                env = mapOf("YUKON_SERVICE_NAME" to "from-env")::get,
+            )
+        assertEquals("from-property", propertyAndEnv.serviceName)
+    }
+
+    @Test
+    fun `a blank value at any source falls through to the next source instead of masking it`() {
+        val config =
+            AgentConfig.parse(
+                "serviceName=  ",
+                systemProperties = mapOf("yukon.service.name" to "  ")::get,
+                env = mapOf("YUKON_SERVICE_NAME" to "from-env")::get,
+            )
+
+        assertEquals("from-env", config.serviceName)
+    }
+
+    @Test
+    fun `enabled can be turned off through the environment, for example to disable the agent per deployment`() {
+        val env = mapOf("YUKON_ENABLED" to "false")
+        val config = AgentConfig.parse(null, env = env::get)
+
+        assertEquals(false, config.enabled)
     }
 }

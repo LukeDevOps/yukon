@@ -182,6 +182,18 @@ class StaticBaselineScannerTest {
     }
 
     @Test
+    fun `a class under excludePackages lands in no bucket, even though it matches includePackages`() {
+        val root = directoryRoot("com/example/target/SampleTarget.class" to sampleTargetBytes)
+        val scanner =
+            StaticBaselineScanner(listOf("com.example.target"), excludedPackagePrefixes = listOf("com.example.target.SampleTarget"))
+
+        val result = scanner.scan(listOf(root))
+
+        assertTrue(result.declaredClasses.none { it.className == "com.example.target.SampleTarget" })
+        assertTrue("com.example.target.SampleTarget" !in result.allClassNames())
+    }
+
+    @Test
     fun `a nonexistent classpath entry is skipped rather than failing the whole scan`() {
         val scanner = StaticBaselineScanner(listOf("com.example.target"))
 

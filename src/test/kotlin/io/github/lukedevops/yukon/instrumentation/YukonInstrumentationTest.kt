@@ -91,6 +91,17 @@ class YukonInstrumentationTest {
         assertEquals(2L, byIndex.getValue(neverCalledProbeIndex).hitsTotal)
     }
 
+    @Test
+    fun `a class under excludePackages is left uninstrumented even though it also matches includePackages`() {
+        val registry = ProbeRegistry()
+        val config = AgentConfig.parse("includePackages=com.example.target,excludePackages=com.example.target.SampleTarget")
+
+        val target = install(registry, config)
+        target.javaClass.getMethod("ping").invoke(target)
+
+        assertTrue("com.example.target.SampleTarget" !in registry.registeredClassNames())
+    }
+
     private fun fixtureLoader() = FixtureClassLoader(arrayOf(File("build/classes/java/test").toURI().toURL()), javaClass.classLoader)
 
     @Test

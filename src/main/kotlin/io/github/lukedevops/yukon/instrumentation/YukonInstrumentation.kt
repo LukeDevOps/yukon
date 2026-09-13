@@ -110,7 +110,7 @@ class YukonInstrumentation(
 
     /** String-only pre-filter for the capture, the package part of [typeMatcher] without resolving a type. */
     private fun isCandidateInternalName(internalName: String): Boolean =
-        TypeMatchPolicy.isIncluded(internalName.replace('/', '.'), config.instrumentedPackagePrefixes)
+        TypeMatchPolicy.isIncluded(internalName.replace('/', '.'), config.instrumentedPackagePrefixes, config.excludedPackagePrefixes)
 
     /**
      * A class transform can still fail after [instrument] has already called
@@ -138,7 +138,7 @@ class YukonInstrumentation(
 
     private fun typeMatcher(): ElementMatcher.Junction<TypeDescription> =
         TypeMatchPolicy
-            .typeNameMatcher(config.instrumentedPackagePrefixes)
+            .typeNameMatcher(config.instrumentedPackagePrefixes, config.excludedPackagePrefixes)
             .and { typeDescription -> isSafeToInstrument(typeDescription) }
 
     /**

@@ -41,15 +41,20 @@ data class StaticScanResult(
  * being declared: declaring it would invite a collector to report it "never loaded" when the
  * agent simply had nothing to say about it.
  *
+ * [excludedPackagePrefixes] is threaded through to [TypeMatchPolicy] the same way
+ * [instrumentedPackagePrefixes] is, so a class excluded from the reactive tier never lands in any
+ * bucket of the baseline either.
+ *
  * [supportingTypesLocator] resolves types a scanned class refers to but its own root does not
  * contain, such as an annotation's own class; see [withSupportingTypesFallback].
  */
 class StaticBaselineScanner(
     private val instrumentedPackagePrefixes: List<String>,
+    private val excludedPackagePrefixes: List<String> = emptyList(),
     private val supportingTypesLocator: ClassFileLocator = ClassFileLocator.ForClassLoader.ofSystemLoader(),
 ) {
     private val log = System.getLogger(StaticBaselineScanner::class.java.name)
-    private val typeNameMatcher = TypeMatchPolicy.typeNameMatcher(instrumentedPackagePrefixes)
+    private val typeNameMatcher = TypeMatchPolicy.typeNameMatcher(instrumentedPackagePrefixes, excludedPackagePrefixes)
 
     private class Buckets {
         val declared = mutableListOf<DeclaredClass>()
@@ -170,7 +175,8 @@ class StaticBaselineScanner(
             .map { DeclaredMethod(it.internalName, it.descriptor) }
 
     /** Cheap, string-only pre-filter, applied before resolving a [TypeDescription] at all. */
-    private fun looksInScope(className: String): Boolean = TypeMatchPolicy.isIncluded(className, instrumentedPackagePrefixes)
+    private fun looksInScope(className: String): Boolean =
+        TypeMatchPolicy.isIncluded(className, instrumentedPackagePrefixes, excludedPackagePrefixes)
 
     /**
      * A root's own locator only has the bytes for classes physically inside that root. Resolving
