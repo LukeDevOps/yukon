@@ -87,7 +87,7 @@ class ProbeRegistryTest {
     }
 
     @Test
-    fun `computeDeltaBatch reports only probes hit since the last baseline`() {
+    fun `computeDeltaBatch reports the cumulative count for probes that changed since the last send`() {
         val registry = ProbeRegistry()
         val probes = registry.register("com.example.Foo", layoutHash = 1L, probes = methodProbes(3))
         probes[0] += 5
@@ -97,13 +97,13 @@ class ProbeRegistryTest {
 
         assertEquals(2, batch.deltas.size)
         val byIndex = batch.deltas.associateBy { it.probeIndex }
-        assertEquals(5L, byIndex.getValue(0).hitsSinceLastFlush)
-        assertEquals(2L, byIndex.getValue(2).hitsSinceLastFlush)
+        assertEquals(5L, byIndex.getValue(0).hitsTotal)
+        assertEquals(2L, byIndex.getValue(2).hitsTotal)
         assertEquals(resource, batch.resource)
     }
 
     @Test
-    fun `probes with no hits since baseline are omitted`() {
+    fun `probes with no hits since the last send are omitted`() {
         val registry = ProbeRegistry()
         registry.register("com.example.Foo", layoutHash = 1L, probes = methodProbes(3))
 
@@ -113,7 +113,7 @@ class ProbeRegistryTest {
     }
 
     @Test
-    fun `advanceBaseline resets deltas for hits already reported`() {
+    fun `advanceBaseline omits probes whose count already reached the collector`() {
         val registry = ProbeRegistry()
         val probes = registry.register("com.example.Foo", layoutHash = 1L, probes = methodProbes(1))
         probes[0] += 3
@@ -138,7 +138,7 @@ class ProbeRegistryTest {
 
         val retryBatch = registry.computeDeltaBatch(resource)
 
-        assertEquals(5L, retryBatch.deltas.single().hitsSinceLastFlush)
+        assertEquals(5L, retryBatch.deltas.single().hitsTotal)
     }
 
     @Test
@@ -153,7 +153,43 @@ class ProbeRegistryTest {
 
         val nextBatch = registry.computeDeltaBatch(resource)
 
-        assertEquals(2L, nextBatch.deltas.single().hitsSinceLastFlush)
+        // The live count (5) is what gets reported once it is next seen as changed, since
+        // hitsTotal is the current cumulative count, not a delta computed against 3.
+        assertEquals(5L, nextBatch.deltas.single().hitsTotal)
+    }
+
+    @Test
+    fun `a decreased count is still reported, not silently treated as no change`() {
+        val registry = ProbeRegistry()
+        val probes = registry.register("com.example.Foo", layoutHash = 1L, probes = methodProbes(1))
+        probes[0] = 5
+        registry.computeDeltaBatch(resource)
+        registry.advanceBaseline()
+
+        // Only reachable in practice via a changed-layout array swap (see "a changed layout hash
+        // allocates a fresh array" above); simulated directly here since that path is not
+        // reachable through this v1 static-attach agent's own register() calls.
+        probes[0] = 2
+
+        val batch = registry.computeDeltaBatch(resource)
+
+        assertEquals(2L, batch.deltas.single().hitsTotal)
+    }
+
+    @Test
+    fun `after a reported decrease, an unchanged value is omitted again on the next flush`() {
+        val registry = ProbeRegistry()
+        val probes = registry.register("com.example.Foo", layoutHash = 1L, probes = methodProbes(1))
+        probes[0] = 5
+        registry.computeDeltaBatch(resource)
+        registry.advanceBaseline()
+        probes[0] = 2
+        registry.computeDeltaBatch(resource)
+        registry.advanceBaseline()
+
+        val batch = registry.computeDeltaBatch(resource)
+
+        assertTrue(batch.deltas.isEmpty())
     }
 
     @Test

@@ -53,11 +53,16 @@ val agentMainClass = "io.github.lukedevops.yukon.Agent"
 // path as shadowJar below (its classifier is cleared to make that the single
 // distributable file), and whichever task happened to run last would win,
 // silently overwriting the shaded agent jar with one missing the
-// Premain-Class manifest attribute and the relocated dependencies. Only
-// shadowJar's output is ever meant to be distributed or used as the
-// -javaagent jar, so the plain jar task is disabled outright.
+// Premain-Class manifest attribute and the relocated dependencies. Giving the
+// plain jar its own classifier keeps the two outputs apart without disabling
+// the task outright: disabling it previously broke `project(":")` consumers
+// (the demo module's compile classpath), which resolve a local project
+// dependency's default `apiElements`/`runtimeElements` variant back to this
+// task's output. Only shadowJar's output is ever meant to be distributed or
+// used as the -javaagent jar; the plain jar exists solely so in-repo project
+// dependencies keep working.
 tasks.jar {
-    enabled = false
+    archiveClassifier.set("plain")
 }
 
 tasks.shadowJar {

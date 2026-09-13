@@ -22,16 +22,20 @@ message ResourceAttributes {
   optional string environment = 4;
 }
 
+// hits_total is a cumulative count from process start, not the count since
+// the last flush. A collector merges it with max() across retries and
+// reordering, so a re-delivered or reordered value cannot double-count.
 message ProbeDelta {
   int32 class_id = 1;
   int32 probe_index = 2;
   ProbeKind kind = 3;
   int64 first_seen_at = 4;
-  int64 hits_since_last_flush = 5;
+  int64 hits_total = 5;
 }
 
-// Sent frequently (every 30-60s). Delta-only, not a full snapshot, so
-// payload size stays independent of total probe count.
+// Sent frequently (every 30-60s). Only carries probes whose hits_total
+// changed since the last successfully delivered batch, not a full
+// snapshot, so payload size stays independent of total probe count.
 message DeltaBatch {
   ResourceAttributes resource = 1;
   repeated ProbeDelta deltas = 2;

@@ -16,8 +16,8 @@ class ProtoPayloadCodecTest {
                 resource = ResourceAttributes("checkout", "1.0.0", "instance-1", "prod"),
                 deltas =
                     listOf(
-                        ProbeDelta(classId = 0, probeIndex = 1, kind = ProbeKind.METHOD, firstSeenAt = 1000L, hitsSinceLastFlush = 5L),
-                        ProbeDelta(classId = 0, probeIndex = 2, kind = ProbeKind.BRANCH, firstSeenAt = 1200L, hitsSinceLastFlush = 1L),
+                        ProbeDelta(classId = 0, probeIndex = 1, kind = ProbeKind.METHOD, firstSeenAt = 1000L, hitsTotal = 5L),
+                        ProbeDelta(classId = 0, probeIndex = 2, kind = ProbeKind.BRANCH, firstSeenAt = 1200L, hitsTotal = 1L),
                     ),
             )
 
@@ -32,7 +32,7 @@ class ProtoPayloadCodecTest {
         assertEquals(1, decoded.deltasList[0].probeIndex)
         assertEquals(ProtoProbeKind.METHOD, decoded.deltasList[0].kind)
         assertEquals(1000L, decoded.deltasList[0].firstSeenAt)
-        assertEquals(5L, decoded.deltasList[0].hitsSinceLastFlush)
+        assertEquals(5L, decoded.deltasList[0].hitsTotal)
         assertEquals(ProtoProbeKind.BRANCH, decoded.deltasList[1].kind)
     }
 
@@ -115,8 +115,8 @@ class ProtoPayloadCodecTest {
                 resource = ResourceAttributes("checkout", "1.0.0", "instance-1", "prod"),
                 deltas =
                     listOf(
-                        ProbeDelta(classId = 0, probeIndex = 1, kind = ProbeKind.METHOD, firstSeenAt = 1000L, hitsSinceLastFlush = 5L),
-                        ProbeDelta(classId = 0, probeIndex = 2, kind = ProbeKind.BRANCH, firstSeenAt = 1200L, hitsSinceLastFlush = 1L),
+                        ProbeDelta(classId = 0, probeIndex = 1, kind = ProbeKind.METHOD, firstSeenAt = 1000L, hitsTotal = 5L),
+                        ProbeDelta(classId = 0, probeIndex = 2, kind = ProbeKind.BRANCH, firstSeenAt = 1200L, hitsTotal = 1L),
                     ),
             )
 

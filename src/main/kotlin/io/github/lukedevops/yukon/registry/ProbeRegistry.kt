@@ -6,6 +6,7 @@ import io.github.lukedevops.yukon.export.ProbeLocation
 import io.github.lukedevops.yukon.export.ProbeManifest
 import io.github.lukedevops.yukon.export.ResourceAttributes
 import io.github.lukedevops.yukon.export.SkippedClass
+import java.lang.System.Logger.Level
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -48,6 +49,8 @@ import java.util.concurrent.atomic.AtomicInteger
  * as described in the design notes for the export payloads.
  */
 open class ProbeRegistry {
+    private val log = System.getLogger(ProbeRegistry::class.java.name)
+
     private data class RegistryKey(
         val className: String,
         val layoutHash: Long,
@@ -60,9 +63,13 @@ open class ProbeRegistry {
         val probes: List<ProbeMeta>,
         val counts: LongArray,
     ) {
-        var baseline: LongArray = LongArray(counts.size)
-        var pendingBaseline: LongArray? = null
+        /** The last cumulative count successfully delivered to the collector, per probe. */
+        var lastSent: LongArray = LongArray(counts.size)
+        var pendingLastSent: LongArray? = null
         val firstSeenAt: LongArray = LongArray(counts.size)
+
+        /** Tracks which probes have already logged the one-time decrease warning. */
+        val decreaseWarned: BooleanArray = BooleanArray(counts.size)
         var manifestIncluded: Boolean = false
         var pendingManifestInclusion: Boolean = false
     }
@@ -142,20 +149,31 @@ open class ProbeRegistry {
     }
 
     /**
-     * Compares current counts against each entry's baseline, and returns only what changed.
+     * Compares current counts against each entry's last successfully sent value, and returns
+     * only the probes whose count changed.
      *
-     * The snapshot is stashed as a pending baseline, not applied immediately. [advanceBaseline]
-     * must be called explicitly to apply it, and only after the batch is confirmed delivered.
+     * Each [ProbeDelta] carries the current cumulative count (`hits_total`), not the amount it
+     * changed by. A collector merges cumulative counts with max(), so a batch that arrives twice
+     * or out of order cannot double-count. This differs from an operation like "add 5 hits":
+     * applying that twice, or out of order against a concurrent update, corrupts the total.
+     *
+     * The snapshot is stashed as a pending last-sent value, not applied immediately.
+     * [advanceBaseline] must be called explicitly to apply it, and only after the batch is
+     * confirmed delivered.
      */
     open fun computeDeltaBatch(resource: ResourceAttributes): DeltaBatch {
         val deltas = mutableListOf<ProbeDelta>()
         for (entry in entriesByKey.values) {
             val snapshot = entry.counts.copyOf()
-            entry.pendingBaseline = snapshot
+            entry.pendingLastSent = snapshot
             for (index in snapshot.indices) {
-                val delta = snapshot[index] - entry.baseline[index]
-                if (delta <= 0) continue
-                if (entry.firstSeenAt[index] == 0L) {
+                val current = snapshot[index]
+                val lastSent = entry.lastSent[index]
+                if (current == lastSent) continue
+                if (current < lastSent) {
+                    warnOnceAboutDecrease(entry, index, lastSent, current)
+                }
+                if (current > 0 && entry.firstSeenAt[index] == 0L) {
                     entry.firstSeenAt[index] = System.currentTimeMillis()
                 }
                 deltas +=
@@ -164,7 +182,7 @@ open class ProbeRegistry {
                         probeIndex = index,
                         kind = entry.probes[index].kind,
                         firstSeenAt = entry.firstSeenAt[index],
-                        hitsSinceLastFlush = delta,
+                        hitsTotal = current,
                     )
             }
         }
@@ -172,16 +190,39 @@ open class ProbeRegistry {
     }
 
     /**
-     * Advances every entry's baseline to its last-computed snapshot. It never advances to the
-     * live counts: those may have moved further ahead, for example while a POST was in flight.
+     * Logs a one-time warning the first time a probe's count is seen to drop. This should never
+     * happen through this v1 static-attach agent's own [register] calls: the only path that
+     * allocates a new, lower-starting array is a changed probe layout hash, and static attach
+     * never retransforms an already-loaded class. Logging instead of silently sending the lower
+     * value anyway means a future bug that does trigger this is visible, not hidden the way the
+     * `@JvmName` transform failure was before it had its own explicit check.
+     */
+    private fun warnOnceAboutDecrease(
+        entry: ClassEntry,
+        index: Int,
+        lastSent: Long,
+        current: Long,
+    ) {
+        if (entry.decreaseWarned[index]) return
+        entry.decreaseWarned[index] = true
+        log.log(
+            Level.WARNING,
+            "yukon: probe count went backward for ${entry.className}#$index " +
+                "(was $lastSent, now $current); reporting it as-is",
+        )
+    }
+
+    /**
+     * Advances every entry's last-sent value to its last-computed snapshot. It never advances to
+     * the live counts: those may have moved further ahead, for example while a POST was in
+     * flight.
      *
      * Call this only after a flush is confirmed delivered. A failed flush must leave the
-     * baseline untouched, so the next attempt's delta naturally includes everything accrued
-     * since the last success.
+     * last-sent value untouched, so the next attempt naturally reports the live count again.
      */
     fun advanceBaseline() {
         for (entry in entriesByKey.values) {
-            entry.pendingBaseline?.let { entry.baseline = it }
+            entry.pendingLastSent?.let { entry.lastSent = it }
         }
     }
 

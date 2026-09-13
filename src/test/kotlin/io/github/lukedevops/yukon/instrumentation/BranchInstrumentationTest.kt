@@ -55,7 +55,7 @@ class BranchInstrumentationTest {
 
         val hitBranches = branchIndices.filter { it in byIndex }
         assertEquals(1, hitBranches.size, "exactly one of the two outcomes should ever have fired")
-        assertEquals(3L, byIndex.getValue(hitBranches.single()).hitsSinceLastFlush)
+        assertEquals(3L, byIndex.getValue(hitBranches.single()).hitsTotal)
     }
 
     @Test
@@ -73,7 +73,7 @@ class BranchInstrumentationTest {
         val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null)).deltas
         val byIndex = deltas.associateBy { it.probeIndex }
 
-        val counts = branchIndices.map { byIndex.getValue(it).hitsSinceLastFlush }.sorted()
+        val counts = branchIndices.map { byIndex.getValue(it).hitsTotal }.sorted()
         assertEquals(listOf(2L, 3L), counts)
     }
 
@@ -95,7 +95,7 @@ class BranchInstrumentationTest {
 
         val hitBranches = branchIndices.filter { it in byIndex }
         assertEquals(1, hitBranches.size, "only the exercised case should have fired")
-        assertEquals(4L, byIndex.getValue(hitBranches.single()).hitsSinceLastFlush)
+        assertEquals(4L, byIndex.getValue(hitBranches.single()).hitsTotal)
     }
 
     @Test
@@ -117,7 +117,7 @@ class BranchInstrumentationTest {
         val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null)).deltas
         val byIndex = deltas.associateBy { it.probeIndex }
 
-        val counts = branchIndices.map { byIndex.getValue(it).hitsSinceLastFlush }.sorted()
+        val counts = branchIndices.map { byIndex.getValue(it).hitsTotal }.sorted()
         assertEquals(listOf(1L, 2L, 3L, 4L), counts)
     }
 
@@ -139,7 +139,7 @@ class BranchInstrumentationTest {
 
         val hitBranches = branchIndices.filter { it in byIndex }
         assertEquals(1, hitBranches.size, "only the exercised case should have fired")
-        assertEquals(5L, byIndex.getValue(hitBranches.single()).hitsSinceLastFlush)
+        assertEquals(5L, byIndex.getValue(hitBranches.single()).hitsTotal)
     }
 
     @Test
@@ -162,11 +162,11 @@ class BranchInstrumentationTest {
 
         val hitClassifyBranches = classifyBranches.filter { it in byIndex }
         assertEquals(1, hitClassifyBranches.size)
-        assertEquals(1L, byIndex.getValue(hitClassifyBranches.single()).hitsSinceLastFlush)
+        assertEquals(1L, byIndex.getValue(hitClassifyBranches.single()).hitsTotal)
 
         val hitDenseBranches = denseBranches.filter { it in byIndex }
         assertEquals(1, hitDenseBranches.size)
-        assertEquals(2L, byIndex.getValue(hitDenseBranches.single()).hitsSinceLastFlush)
+        assertEquals(2L, byIndex.getValue(hitDenseBranches.single()).hitsTotal)
     }
 
     @Test
@@ -184,6 +184,6 @@ class BranchInstrumentationTest {
         val byIndex = deltas.associateBy { it.probeIndex }
 
         assertTrue(methodProbeIndex in byIndex)
-        assertEquals(1L, byIndex.getValue(methodProbeIndex).hitsSinceLastFlush)
+        assertEquals(1L, byIndex.getValue(methodProbeIndex).hitsTotal)
     }
 }

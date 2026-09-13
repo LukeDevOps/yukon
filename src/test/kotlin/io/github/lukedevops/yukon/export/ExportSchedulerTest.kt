@@ -72,7 +72,7 @@ class ExportSchedulerTest {
                 .single()
                 .deltas
                 .single()
-                .hitsSinceLastFlush,
+                .hitsTotal,
         )
         assertTrue(registry.computeDeltaBatch(resource).deltas.isEmpty())
     }
@@ -92,7 +92,7 @@ class ExportSchedulerTest {
                 .computeDeltaBatch(resource)
                 .deltas
                 .single()
-                .hitsSinceLastFlush,
+                .hitsTotal,
         )
     }
 
