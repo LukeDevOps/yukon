@@ -28,9 +28,13 @@ import java.time.Duration
  * packets. An indefinite block would stall [ExportScheduler]'s single flush
  * thread, including its liveness heartbeat, instead of failing into the
  * retry/backoff path above.
+ *
+ * The collector may require a bearer token, passed as [authToken]. A 401 or 403 is a permanent
+ * failure like any other 4xx: resending with the same token cannot change the answer.
  */
 class HttpOtlpStyleExporter(
     private val endpoint: String,
+    private val authToken: String? = null,
     private val httpClient: HttpClient = HttpClient.newBuilder().connectTimeout(DEFAULT_TIMEOUT).build(),
     private val maxAttempts: Int = 5,
     private val initialBackoff: Duration = Duration.ofMillis(200),
@@ -58,13 +62,14 @@ class HttpOtlpStyleExporter(
         for (attempt in 1..maxAttempts) {
             val status =
                 try {
-                    val request =
+                    val requestBuilder =
                         HttpRequest
                             .newBuilder(URI.create(uri))
                             .timeout(requestTimeout)
                             .header("Content-Type", "application/x-protobuf")
                             .POST(HttpRequest.BodyPublishers.ofByteArray(body))
-                            .build()
+                    if (authToken != null) requestBuilder.header("Authorization", "Bearer $authToken")
+                    val request = requestBuilder.build()
                     httpClient.send(request, HttpResponse.BodyHandlers.discarding()).statusCode()
                 } catch (e: Exception) {
                     lastError = e

@@ -44,6 +44,7 @@ separate multiple prefixes):
 | `serviceInstanceId` | random UUID | Reported to the collector. |
 | `environment` | *(none)* | Reported to the collector. |
 | `endpoint` | `http://localhost:4319` | Collector base URL. |
+| `authToken` | *(none)* | Bearer token sent to the collector as `Authorization: Bearer <token>`. Prefer the `YUKON_AUTH_TOKEN` environment variable: agent arguments are visible to every user on the host via `ps`, and the option only exists for setups where the environment cannot carry it. |
 | `flushIntervalSeconds` | `60` | How often deltas/manifest updates are sent. |
 | `includePackages` | *(all)* | Only instrument types whose name starts with one of these prefixes, `;`-separated. |
 | `staticBaselineEnabled` | `false` | Scan the classpath once at startup (async, off the critical path) for classes under `includePackages` that never load at all. Off by default: unlike every other option here, a full classpath walk has a cost that scales with the classpath's size. |
