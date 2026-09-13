@@ -62,9 +62,48 @@ one way; `/promo`, never called), and a client that drives the server, all as
 separate JVM processes. On shutdown, the stub collector prints a report of
 probes that were never hit and any classes it had to skip.
 
+## Test your app against the agent
+
+The `testkit` module is an embeddable collector for your own tests. It
+speaks the agent's real wire protocol, so the agent under test runs exactly
+as it does in production: start the collector, point the agent's `endpoint=`
+at it, exercise your app, then ask the collector what it saw.
+
+```kotlin
+YukonTestCollector.start().use { collector ->
+    // Launch your app with
+    // -javaagent:yukon.jar=endpoint=${collector.endpoint},flushIntervalSeconds=1,includePackages=com.acme
+    // and exercise it, then:
+    collector.awaitProbe("com.acme.OrderService", "checkout", Duration.ofSeconds(10))
+    collector.awaitNextFlush(Duration.ofSeconds(10))
+
+    assertTrue(collector.wasHit("com.acme.OrderService", "checkout"))
+    assertFalse(collector.wasHit("com.acme.OrderService", "applyLegacyPromo"))
+    assertTrue(collector.neverHit().isEmpty())
+}
+```
+
+Class names are the dotted binary names the manifest carries
+(`com.acme.OrdersKt` for a Kotlin file's top-level functions,
+`com.acme.Outer$Inner` for a nested class).
+
+Queries are `wasHit`, `hitCount`, `neverHit`, `skippedClasses`, and, when
+the agent runs with `staticBaselineEnabled=true`, `neverLoaded`. Asking
+about a probe the collector has never seen throws `UnknownProbeException`
+rather than answering `false`; the message says whether the class was
+skipped, declared by the static baseline but never loaded, instrumented but
+without that method, or never mentioned at all. That keeps "genuinely dead"
+and "no idea" from ever looking the same.
+
+The module isn't published yet. Use it from a multi-project build as
+`testImplementation(project(":testkit"))`, or build the jar with
+`./gradlew :testkit:jar`.
+
 ## Status
 
 - Static attach (`-javaagent`) only; no dynamic/runtime attach yet.
+- Nothing is published to a package repository yet, the agent jar and
+  `testkit` included; both are built from this repo.
 - Branch tracking covers two-outcome conditional jumps and
   `TABLESWITCH`/`LOOKUPSWITCH`; `GOTO`/`JSR` aren't tracked (no second
   outcome to observe).
