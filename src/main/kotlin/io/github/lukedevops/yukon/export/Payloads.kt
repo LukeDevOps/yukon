@@ -100,14 +100,31 @@ data class UnreadableClass(
 )
 
 /**
+ * An in-scope class with no concrete method to put a probe in: an interface with only abstract
+ * methods, an annotation type. The agent never registers such a class dynamically, so it can
+ * never appear in a [ProbeManifest]; a collector must not read that absence as "never loaded".
+ */
+data class UnprobedClass(
+    val className: String,
+    val reason: String,
+)
+
+/**
  * Sent once per process, independent of [ProbeManifest]: a load-independent inventory of what
  * exists on the classpath under `includePackages`, built by reading bytecode directly rather than
  * waiting for the JVM to load it.
+ *
+ * One scan may be delivered as several of these. Every chunk of the same scan carries the same
+ * [resource] and [scannedAt]; [chunkIndex] (0-based) and [chunkCount] say which part this is and
+ * how many to expect. A collector should only diff a scan once it holds every chunk.
  */
 data class StaticBaseline(
     val resource: ResourceAttributes,
     val declaredClasses: List<DeclaredClass>,
     val staticallyUnsafeClasses: List<StaticallyUnsafeClass> = emptyList(),
     val unreadableClasses: List<UnreadableClass> = emptyList(),
+    val unprobedClasses: List<UnprobedClass> = emptyList(),
     val scannedAt: Long,
+    val chunkIndex: Int = 0,
+    val chunkCount: Int = 1,
 )

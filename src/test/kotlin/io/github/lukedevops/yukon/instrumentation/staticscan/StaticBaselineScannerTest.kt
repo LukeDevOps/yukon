@@ -1,5 +1,6 @@
 package io.github.lukedevops.yukon.instrumentation.staticscan
 
+import net.bytebuddy.dynamic.ClassFileLocator
 import java.io.File
 import java.util.jar.JarOutputStream
 import java.util.zip.ZipEntry
@@ -99,6 +100,39 @@ class StaticBaselineScannerTest {
         val unsafe = result.staticallyUnsafeClasses.single { it.className == "com.example.target.WeirdName" }
         assertTrue("JvmName" in unsafe.reason)
         assertTrue(result.declaredClasses.none { it.className == "com.example.target.WeirdName" })
+    }
+
+    @Test
+    fun `an annotation whose type cannot be resolved leaves the class declared, not unsafe or unreadable`() {
+        // Stands in for a Spring Boot fat jar, where the system loader cannot see the annotation
+        // types packed under BOOT-INF/lib: ByteBuddy's type pool drops the unresolvable annotation
+        // rather than failing, so @JvmName is invisible here and the class is judged safe.
+        val root = directoryRoot("com/example/target/WeirdName.class" to weirdNameBytes)
+        val scanner = StaticBaselineScanner(listOf("com.example.target"), supportingTypesLocator = ClassFileLocator.NoOp.INSTANCE)
+
+        val result = scanner.scan(listOf(root))
+
+        assertTrue(result.declaredClasses.any { it.className == "com.example.target.WeirdName" })
+        assertTrue(result.staticallyUnsafeClasses.isEmpty())
+        assertTrue(result.unreadableClasses.isEmpty())
+    }
+
+    @Test
+    fun `an in-scope class with no concrete methods is reported as unprobed, not declared`() {
+        val root =
+            directoryRoot(
+                "com/example/target/AbstractOnlyInterface.class" to classBytes("java/test/com/example/target/AbstractOnlyInterface.class"),
+                "com/example/target/SampleTarget.class" to sampleTargetBytes,
+            )
+        val scanner = StaticBaselineScanner(listOf("com.example.target"))
+
+        val result = scanner.scan(listOf(root))
+
+        val unprobed = result.unprobedClasses.single()
+        assertEquals("com.example.target.AbstractOnlyInterface", unprobed.className)
+        assertTrue(result.declaredClasses.none { it.className == "com.example.target.AbstractOnlyInterface" })
+        assertTrue(result.declaredClasses.all { it.methods.isNotEmpty() }, "a declared class always has something to probe")
+        assertTrue("com.example.target.AbstractOnlyInterface" in result.allClassNames())
     }
 
     @Test

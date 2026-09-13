@@ -95,7 +95,7 @@ class YukonInstrumentationTest {
         val registry = ProbeRegistry()
         val config = AgentConfig.parse("includePackages=com.example.target")
         val detector = StaticBaselineMismatchDetector()
-        detector.knownDeclaredClassNames = emptySet()
+        detector.knownClassNames = emptySet()
 
         install(registry, config, detector)
 

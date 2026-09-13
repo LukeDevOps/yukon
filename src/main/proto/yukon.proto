@@ -112,16 +112,37 @@ message UnreadableClass {
   string reason = 2;
 }
 
+// An in-scope class with no concrete method to put a probe in: an
+// interface with only abstract methods, an annotation type. The agent
+// never registers such a class dynamically, so it can never appear in a
+// ProbeManifest, and a collector must not read its absence there as
+// "never loaded". Kept as its own bucket so it stays visible rather than
+// silently dropped from the inventory.
+message UnprobedClass {
+  string class_name = 1;
+  string reason = 2;
+}
+
 // Sent once per process, independent of the reactive ProbeManifest: a
 // load-independent inventory of what exists on the classpath under
 // includePackages, built by reading bytecode directly rather than
 // waiting for the JVM to load it. The collector diffs this against
 // classes that actually register dynamically; one declared here and
 // never reported dynamically was never even constructed.
+//
+// One scan may arrive as several messages. Every chunk of the same scan
+// carries the same resource and scanned_at, so (service_instance_id,
+// scanned_at) identifies the scan; chunk_index (0-based) and chunk_count
+// say which part this is and how many to expect. A collector should only
+// diff a scan once it holds every chunk; a partial scan can only say
+// "declared" for the classes it has, never "never loaded" for the rest.
 message StaticBaseline {
   ResourceAttributes resource = 1;
   repeated DeclaredClass declared_classes = 2;
   repeated StaticallyUnsafeClass statically_unsafe_classes = 3;
   repeated UnreadableClass unreadable_classes = 4;
   int64 scanned_at = 5;
+  repeated UnprobedClass unprobed_classes = 6;
+  int32 chunk_index = 7;
+  int32 chunk_count = 8;
 }

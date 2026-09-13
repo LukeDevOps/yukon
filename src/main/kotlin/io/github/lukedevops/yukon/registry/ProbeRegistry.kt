@@ -135,6 +135,9 @@ open class ProbeRegistry {
         return entry.counts
     }
 
+    /** Names of every class currently registered, across all classloaders. */
+    fun registeredClassNames(): Set<String> = entriesByKey.keys.mapTo(HashSet()) { it.className }
+
     /**
      * Removes the entry registered for [className] by this specific [classLoader], if any.
      *

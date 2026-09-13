@@ -5,12 +5,11 @@ import io.github.lukedevops.yukon.export.ExportScheduler
 import io.github.lukedevops.yukon.export.Exporter
 import io.github.lukedevops.yukon.export.HttpOtlpStyleExporter
 import io.github.lukedevops.yukon.export.ResourceAttributes
-import io.github.lukedevops.yukon.export.StaticBaseline
 import io.github.lukedevops.yukon.instrumentation.YukonInstrumentation
 import io.github.lukedevops.yukon.instrumentation.staticscan.StaticBaselineMismatchDetector
+import io.github.lukedevops.yukon.instrumentation.staticscan.StaticBaselinePublisher
 import io.github.lukedevops.yukon.instrumentation.staticscan.StaticBaselineScanner
 import io.github.lukedevops.yukon.registry.ProbeRegistry
-import java.lang.System.Logger.Level
 import java.lang.instrument.Instrumentation
 import java.time.Duration
 
@@ -35,7 +34,7 @@ object Agent {
         scheduler.start()
 
         if (config.staticBaselineEnabled) {
-            startStaticBaselineScan(config, exporter, staticBaselineMismatchDetector)
+            startStaticBaselineScan(config, exporter, registry, staticBaselineMismatchDetector)
         }
 
         Runtime.getRuntime().addShutdownHook(
@@ -46,43 +45,24 @@ object Agent {
     /**
      * Runs on its own background thread, off `premain`, so a full classpath walk never adds
      * latency to the target app's startup. Fires once per process: no periodic re-scan, matching
-     * "static" in the name. A failed send is not retried beyond [HttpOtlpStyleExporter]'s own
-     * backoff, since there is no next flush to naturally retry it on, unlike the delta batch and
-     * manifest.
+     * "static" in the name. See [StaticBaselinePublisher] for what happens once the scan is done.
      */
     private fun startStaticBaselineScan(
         config: AgentConfig,
         exporter: Exporter,
+        registry: ProbeRegistry,
         mismatchDetector: StaticBaselineMismatchDetector,
     ) {
-        val worker =
-            Thread({
-                val result = StaticBaselineScanner(config.instrumentedPackagePrefixes).scan()
-                mismatchDetector.knownDeclaredClassNames = result.declaredClasses.map { it.className }.toSet()
-                val baseline =
-                    StaticBaseline(
-                        resource =
-                            ResourceAttributes(
-                                config.serviceName,
-                                config.serviceVersion,
-                                config.serviceInstanceId,
-                                config.environment,
-                            ),
-                        declaredClasses = result.declaredClasses,
-                        staticallyUnsafeClasses = result.staticallyUnsafeClasses,
-                        unreadableClasses = result.unreadableClasses,
-                        scannedAt = System.currentTimeMillis(),
-                    )
-                try {
-                    exporter.exportStaticBaseline(baseline)
-                } catch (e: Exception) {
-                    log.log(
-                        Level.WARNING,
-                        "yukon: failed to send the static baseline; it will not be retried until the next process start",
-                        e,
-                    )
-                }
-            }, "yukon-static-baseline-scan")
+        val scanner = StaticBaselineScanner(config.instrumentedPackagePrefixes)
+        val publisher = StaticBaselinePublisher(scanner::scan, exporter, registry, mismatchDetector)
+        val resource =
+            ResourceAttributes(
+                config.serviceName,
+                config.serviceVersion,
+                config.serviceInstanceId,
+                config.environment,
+            )
+        val worker = Thread({ publisher.run(resource) }, "yukon-static-baseline-scan")
         worker.isDaemon = true
         worker.start()
     }

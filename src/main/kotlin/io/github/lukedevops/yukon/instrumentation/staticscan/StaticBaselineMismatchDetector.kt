@@ -9,19 +9,23 @@ import java.util.concurrent.ConcurrentHashMap
  * arguments (an app server's own deploy config, a plugin loader scanning a directory). See
  * "Static baseline" in this project's `CLAUDE.md`.
  *
- * This is a purely local, diagnostic signal. It needs no collector: [knownDeclaredClassNames] is
- * this same process's own scan result, not anything received back over the wire.
+ * This is a purely local, diagnostic signal. It needs no collector: [knownClassNames] is this
+ * same process's own scan result, not anything received back over the wire.
  */
 class StaticBaselineMismatchDetector {
-    /** Null until the static scan for this process completes. No comparison is possible before then. */
+    /**
+     * Every class name the static scan saw, in any bucket (declared, unsafe, unreadable, unprobed).
+     * A class the scan saw but could not classify is still not a blind spot. Null until the scan
+     * for this process completes; no comparison is possible before then.
+     */
     @Volatile
-    var knownDeclaredClassNames: Set<String>? = null
+    var knownClassNames: Set<String>? = null
 
     private val alreadyWarned = ConcurrentHashMap.newKeySet<String>()
 
-    /** True the first time [className] is found missing from [knownDeclaredClassNames]; false every time after. */
+    /** True the first time [className] is found missing from [knownClassNames]; false every time after. */
     fun shouldWarnAbout(className: String): Boolean {
-        val known = knownDeclaredClassNames ?: return false
+        val known = knownClassNames ?: return false
         if (className in known) return false
         return alreadyWarned.add(className)
     }
