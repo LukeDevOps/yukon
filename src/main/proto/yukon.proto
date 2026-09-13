@@ -66,11 +66,21 @@ message SkippedClass {
 // Sent once per (service, version), not per flush, so the collector can
 // resolve probe IDs to source locations without the agent repeating this
 // metadata on every delta batch.
+//
+// service_instance_id is required, unlike the rest of this message's
+// (service, version) scoping. class_id is assigned independently by each
+// instance's own registry, in whatever order that process's own classes
+// happen to load, so the same class_id can mean a different class in two
+// instances of the same (service, version). Without an instance to key on,
+// a collector correlating manifests or delta batches from more than one
+// instance of the same service and version risks attributing one instance's
+// probe metadata, or hit count, to the wrong class from another instance.
 message ProbeManifest {
   string service_name = 1;
   optional string service_version = 2;
   repeated ProbeLocation probes = 3;
   repeated SkippedClass skipped_classes = 4;
+  string service_instance_id = 5;
 }
 
 // No line field, unlike ProbeLocation: method-level probes never carry a

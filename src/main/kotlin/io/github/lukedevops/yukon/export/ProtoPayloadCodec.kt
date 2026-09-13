@@ -89,6 +89,7 @@ object ProtoPayloadCodec {
                 .setServiceName(manifest.serviceName)
                 .addAllProbes(manifest.probes.map { toProto(it) })
                 .addAllSkippedClasses(manifest.skippedClasses.map { toProto(it) })
+                .setServiceInstanceId(manifest.serviceInstanceId)
         manifest.serviceVersion?.let { builder.serviceVersion = it }
         return builder.build()
     }
@@ -99,6 +100,7 @@ object ProtoPayloadCodec {
             serviceVersion = if (manifest.hasServiceVersion()) manifest.serviceVersion else null,
             probes = manifest.probesList.map { fromProto(it) },
             skippedClasses = manifest.skippedClassesList.map { fromProto(it) },
+            serviceInstanceId = manifest.serviceInstanceId,
         )
 
     private fun toProto(skippedClass: SkippedClass): ProtoSkippedClass =

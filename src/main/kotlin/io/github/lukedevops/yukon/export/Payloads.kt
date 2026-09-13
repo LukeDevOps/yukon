@@ -53,11 +53,20 @@ data class SkippedClass(
     val skippedAt: Long,
 )
 
+/**
+ * [serviceInstanceId] is required, unlike the rest of this payload's (service, version) scoping.
+ * `class_id` is assigned independently by each instance's own registry, in whatever order that
+ * process's own classes happen to load, so the same `class_id` can mean a different class in two
+ * instances of the same (service, version). A collector correlating manifests or delta batches
+ * across instances needs an instance to key on to avoid attributing one instance's probe
+ * metadata, or hit count, to the wrong class from another instance.
+ */
 data class ProbeManifest(
     val serviceName: String,
     val serviceVersion: String?,
     val probes: List<ProbeLocation>,
     val skippedClasses: List<SkippedClass> = emptyList(),
+    val serviceInstanceId: String = "",
 )
 
 /** No line field, unlike [ProbeLocation]: method-level probes never carry a real line number today. */

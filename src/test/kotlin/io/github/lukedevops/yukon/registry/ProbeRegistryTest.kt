@@ -66,7 +66,7 @@ class ProbeRegistryTest {
 
         registry.unregister("com.example.Foo", loaderA)
 
-        val remaining = registry.manifest(serviceName = "checkout", serviceVersion = null).probes
+        val remaining = registry.manifest(serviceName = "checkout", serviceVersion = null, serviceInstanceId = "instance-1").probes
         assertEquals(
             1,
             remaining.size,
@@ -230,13 +230,29 @@ class ProbeRegistryTest {
             probes = listOf(ProbeMeta(ProbeKind.METHOD, "bar", "()V", line = 10)),
         )
 
-        val manifest = registry.manifest(serviceName = "checkout", serviceVersion = "1.0.0")
+        val manifest = registry.manifest(serviceName = "checkout", serviceVersion = "1.0.0", serviceInstanceId = "instance-1")
 
         val location = manifest.probes.single()
         assertEquals("com.example.Foo", location.className)
         assertEquals("bar", location.methodName)
         assertEquals(10, location.line)
         assertEquals(ProbeKind.METHOD, location.kind)
+    }
+
+    @Test
+    fun `manifest and computeManifestDelta carry the service instance id`() {
+        val registry = ProbeRegistry()
+        registry.register("com.example.Foo", layoutHash = 1L, probes = methodProbes(1))
+
+        val manifest = registry.manifest(serviceName = "checkout", serviceVersion = null, serviceInstanceId = "instance-1")
+        val delta = registry.computeManifestDelta(serviceName = "checkout", serviceVersion = null, serviceInstanceId = "instance-1")
+
+        assertEquals(
+            "instance-1",
+            manifest.serviceInstanceId,
+            "class_id is assigned independently per instance, so a collector needs an instance to key on",
+        )
+        assertEquals("instance-1", delta.serviceInstanceId)
     }
 
     @Test
@@ -248,7 +264,7 @@ class ProbeRegistryTest {
             probes = listOf(ProbeMeta(ProbeKind.METHOD, "bar", "()V", line = 10)),
         )
 
-        val delta = registry.computeManifestDelta(serviceName = "checkout", serviceVersion = "1.0.0")
+        val delta = registry.computeManifestDelta(serviceName = "checkout", serviceVersion = "1.0.0", serviceInstanceId = "instance-1")
 
         assertEquals("com.example.Foo", delta.probes.single().className)
     }
@@ -258,9 +274,9 @@ class ProbeRegistryTest {
         val registry = ProbeRegistry()
         registry.register("com.example.Foo", layoutHash = 1L, probes = methodProbes(1))
 
-        registry.computeManifestDelta(serviceName = "checkout", serviceVersion = null)
+        registry.computeManifestDelta(serviceName = "checkout", serviceVersion = null, serviceInstanceId = "instance-1")
         registry.advanceManifestBaseline()
-        val secondDelta = registry.computeManifestDelta(serviceName = "checkout", serviceVersion = null)
+        val secondDelta = registry.computeManifestDelta(serviceName = "checkout", serviceVersion = null, serviceInstanceId = "instance-1")
 
         assertTrue(secondDelta.probes.isEmpty())
     }
@@ -269,11 +285,11 @@ class ProbeRegistryTest {
     fun `a class registered after the manifest baseline advances appears in the next delta`() {
         val registry = ProbeRegistry()
         registry.register("com.example.Foo", layoutHash = 1L, probes = methodProbes(1))
-        registry.computeManifestDelta(serviceName = "checkout", serviceVersion = null)
+        registry.computeManifestDelta(serviceName = "checkout", serviceVersion = null, serviceInstanceId = "instance-1")
         registry.advanceManifestBaseline()
 
         registry.register("com.example.Bar", layoutHash = 1L, probes = methodProbes(1))
-        val secondDelta = registry.computeManifestDelta(serviceName = "checkout", serviceVersion = null)
+        val secondDelta = registry.computeManifestDelta(serviceName = "checkout", serviceVersion = null, serviceInstanceId = "instance-1")
 
         assertEquals("com.example.Bar", secondDelta.probes.single().className)
     }
@@ -283,9 +299,9 @@ class ProbeRegistryTest {
         val registry = ProbeRegistry()
         registry.register("com.example.Foo", layoutHash = 1L, probes = methodProbes(1))
 
-        registry.computeManifestDelta(serviceName = "checkout", serviceVersion = null)
+        registry.computeManifestDelta(serviceName = "checkout", serviceVersion = null, serviceInstanceId = "instance-1")
         // advanceManifestBaseline is never called here, simulating a failed send.
-        val retryDelta = registry.computeManifestDelta(serviceName = "checkout", serviceVersion = null)
+        val retryDelta = registry.computeManifestDelta(serviceName = "checkout", serviceVersion = null, serviceInstanceId = "instance-1")
 
         assertEquals("com.example.Foo", retryDelta.probes.single().className)
     }
@@ -297,7 +313,7 @@ class ProbeRegistryTest {
 
         registry.unregister("com.example.Foo")
 
-        assertTrue(registry.manifest(serviceName = "checkout", serviceVersion = null).probes.isEmpty())
+        assertTrue(registry.manifest(serviceName = "checkout", serviceVersion = null, serviceInstanceId = "instance-1").probes.isEmpty())
     }
 
     @Test
@@ -311,7 +327,7 @@ class ProbeRegistryTest {
         assertEquals(
             "com.example.Bar",
             registry
-                .manifest(serviceName = "checkout", serviceVersion = null)
+                .manifest(serviceName = "checkout", serviceVersion = null, serviceInstanceId = "instance-1")
                 .probes
                 .single()
                 .className,
@@ -324,7 +340,7 @@ class ProbeRegistryTest {
 
         registry.recordSkipped("com.example.Foo", reason = "annotation not supported on TYPE")
 
-        val manifest = registry.manifest(serviceName = "checkout", serviceVersion = null)
+        val manifest = registry.manifest(serviceName = "checkout", serviceVersion = null, serviceInstanceId = "instance-1")
         val skipped = manifest.skippedClasses.single()
         assertEquals("com.example.Foo", skipped.className)
         assertEquals("annotation not supported on TYPE", skipped.reason)
@@ -338,7 +354,14 @@ class ProbeRegistryTest {
         registry.recordSkipped("com.example.Foo", reason = "first reason")
         registry.recordSkipped("com.example.Foo", reason = "second reason")
 
-        val skipped = registry.manifest(serviceName = "checkout", serviceVersion = null).skippedClasses.single()
+        val skipped =
+            registry
+                .manifest(
+                    serviceName = "checkout",
+                    serviceVersion = null,
+                    serviceInstanceId = "instance-1",
+                ).skippedClasses
+                .single()
         assertEquals("first reason", skipped.reason)
     }
 
@@ -347,7 +370,7 @@ class ProbeRegistryTest {
         val registry = ProbeRegistry()
         registry.recordSkipped("com.example.Foo", reason = "annotation not supported on TYPE")
 
-        val delta = registry.computeManifestDelta(serviceName = "checkout", serviceVersion = null)
+        val delta = registry.computeManifestDelta(serviceName = "checkout", serviceVersion = null, serviceInstanceId = "instance-1")
 
         assertEquals("com.example.Foo", delta.skippedClasses.single().className)
     }
@@ -357,9 +380,9 @@ class ProbeRegistryTest {
         val registry = ProbeRegistry()
         registry.recordSkipped("com.example.Foo", reason = "annotation not supported on TYPE")
 
-        registry.computeManifestDelta(serviceName = "checkout", serviceVersion = null)
+        registry.computeManifestDelta(serviceName = "checkout", serviceVersion = null, serviceInstanceId = "instance-1")
         registry.advanceManifestBaseline()
-        val secondDelta = registry.computeManifestDelta(serviceName = "checkout", serviceVersion = null)
+        val secondDelta = registry.computeManifestDelta(serviceName = "checkout", serviceVersion = null, serviceInstanceId = "instance-1")
 
         assertTrue(secondDelta.skippedClasses.isEmpty())
     }
@@ -369,9 +392,9 @@ class ProbeRegistryTest {
         val registry = ProbeRegistry()
         registry.recordSkipped("com.example.Foo", reason = "annotation not supported on TYPE")
 
-        registry.computeManifestDelta(serviceName = "checkout", serviceVersion = null)
+        registry.computeManifestDelta(serviceName = "checkout", serviceVersion = null, serviceInstanceId = "instance-1")
         // advanceManifestBaseline is never called here, simulating a failed send.
-        val retryDelta = registry.computeManifestDelta(serviceName = "checkout", serviceVersion = null)
+        val retryDelta = registry.computeManifestDelta(serviceName = "checkout", serviceVersion = null, serviceInstanceId = "instance-1")
 
         assertEquals("com.example.Foo", retryDelta.skippedClasses.single().className)
     }

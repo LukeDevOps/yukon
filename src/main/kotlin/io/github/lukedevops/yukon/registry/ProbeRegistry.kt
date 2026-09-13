@@ -226,10 +226,19 @@ open class ProbeRegistry {
         }
     }
 
-    /** Sent once per (service, version) so the collector can resolve probe IDs to source. */
+    /**
+     * Sent once per (service, version) so the collector can resolve probe IDs to source.
+     *
+     * [serviceInstanceId] is carried on every manifest even though this method is otherwise
+     * scoped to (service, version): `class_id` is assigned independently by each instance's own
+     * registry, so a collector needs an instance to key on to avoid conflating two instances'
+     * unrelated classes that happen to share a `class_id`. See the class-level doc on
+     * [io.github.lukedevops.yukon.export.ProbeManifest].
+     */
     fun manifest(
         serviceName: String,
         serviceVersion: String?,
+        serviceInstanceId: String,
     ): ProbeManifest {
         val locations =
             entriesByKey.values.flatMap { entry ->
@@ -250,7 +259,7 @@ open class ProbeRegistry {
             skippedByClassName.map { (className, entry) ->
                 SkippedClass(className, entry.reason, entry.skippedAt)
             }
-        return ProbeManifest(serviceName, serviceVersion, locations, skipped)
+        return ProbeManifest(serviceName, serviceVersion, locations, skipped, serviceInstanceId)
     }
 
     /**
@@ -265,6 +274,7 @@ open class ProbeRegistry {
     open fun computeManifestDelta(
         serviceName: String,
         serviceVersion: String?,
+        serviceInstanceId: String,
     ): ProbeManifest {
         val locations = mutableListOf<ProbeLocation>()
         for (entry in entriesByKey.values) {
@@ -290,7 +300,7 @@ open class ProbeRegistry {
             if (!entry.pendingManifestInclusion) continue
             skipped += SkippedClass(className, entry.reason, entry.skippedAt)
         }
-        return ProbeManifest(serviceName, serviceVersion, locations, skipped)
+        return ProbeManifest(serviceName, serviceVersion, locations, skipped, serviceInstanceId)
     }
 
     /**

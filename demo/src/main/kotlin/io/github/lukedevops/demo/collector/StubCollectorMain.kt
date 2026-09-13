@@ -11,22 +11,23 @@ import java.net.InetSocketAddress
 import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 
-private data class ProbeKey(
-    val classId: Int,
-    val probeIndex: Int,
-)
-
 /**
  * [classId] is assigned independently by each agent instance's own registry, in that process's
  * own class-loading order, so the same [classId] can mean a different class in two different
- * instances. Hit tracking includes [serviceInstanceId] for that reason; a bare [ProbeKey] is only
- * safe to use where the data already comes from a single instance at a time, or where the wire
- * format gives no instance to key on at all (see the comment on [manifestProbes]).
+ * instances. Every probe key used by this stub collector is scoped to [serviceInstanceId] for
+ * that reason: `ProbeManifest` now carries its own `service_instance_id`, the same as
+ * `DeltaBatch`'s resource, so there is always an instance to key on.
  */
 private data class InstanceProbeKey(
     val serviceInstanceId: String,
     val classId: Int,
     val probeIndex: Int,
+)
+
+/** Scopes a skipped class's name to the instance that reported it, for the same reason as [InstanceProbeKey]. */
+private data class InstanceClassKey(
+    val serviceInstanceId: String,
+    val className: String,
 )
 
 private data class ProbeInfo(
@@ -47,20 +48,13 @@ private data class DeclaredMethodInfo(
     val methodDescriptor: String,
 )
 
-// ProbeManifest carries no service_instance_id (it is scoped to service name + version, not to a
-// single instance), so there is no instance to key manifestProbes/everHit on even if two
-// instances of the same service disagree on class_id assignment. That makes the "never hit"
-// report below meaningful for a single instance talking to this stub, which is all the demo ever
-// runs, but not a pattern to copy for a collector meant to serve a fleet of instances.
-private val manifestProbes = ConcurrentHashMap<ProbeKey, ProbeInfo>()
-private val everHit = Collections.newSetFromMap(ConcurrentHashMap<ProbeKey, Boolean>())
-private val skippedClasses = ConcurrentHashMap<String, SkippedInfo>()
+private val manifestProbes = ConcurrentHashMap<InstanceProbeKey, ProbeInfo>()
+private val everHit = Collections.newSetFromMap(ConcurrentHashMap<InstanceProbeKey, Boolean>())
+private val skippedClasses = ConcurrentHashMap<InstanceClassKey, SkippedInfo>()
 
 // hits_total is cumulative from process start, not the count since the last flush. Merging with
 // max() is what makes this safe against a re-delivered or reordered batch: applying the same or
-// an older value again is a no-op instead of double-counting. Keyed per instance (unlike
-// manifestProbes above) because DeltaBatch's resource does carry service_instance_id, so two
-// instances' unrelated hit counts for the same class_id never merge into each other.
+// an older value again is a no-op instead of double-counting.
 private val latestHitsTotal = ConcurrentHashMap<InstanceProbeKey, Long>()
 
 // Any class name the reactive manifest has ever mentioned, whether it got probes or was skipped.
@@ -107,8 +101,9 @@ private fun handleDeltaBatch(exchange: HttpExchange) {
     val batch = DeltaBatch.parseFrom(exchange.requestBody.readBytes())
     val instanceId = batch.resource.serviceInstanceId
     for (delta in batch.deltasList) {
-        everHit += ProbeKey(delta.classId, delta.probeIndex)
-        latestHitsTotal.merge(InstanceProbeKey(instanceId, delta.classId, delta.probeIndex), delta.hitsTotal, ::maxOf)
+        val key = InstanceProbeKey(instanceId, delta.classId, delta.probeIndex)
+        everHit += key
+        latestHitsTotal.merge(key, delta.hitsTotal, ::maxOf)
     }
     val totalHits = latestHitsTotal.values.sum()
     println(
@@ -120,8 +115,9 @@ private fun handleDeltaBatch(exchange: HttpExchange) {
 
 private fun handleManifest(exchange: HttpExchange) {
     val manifest = ProbeManifest.parseFrom(exchange.requestBody.readBytes())
+    val instanceId = manifest.serviceInstanceId
     for (location in manifest.probesList) {
-        manifestProbes[ProbeKey(location.classId, location.probeIndex)] =
+        manifestProbes[InstanceProbeKey(instanceId, location.classId, location.probeIndex)] =
             ProbeInfo(
                 className = location.className,
                 methodName = location.methodName,
@@ -132,11 +128,11 @@ private fun handleManifest(exchange: HttpExchange) {
         dynamicallyKnownClassNames += location.className
     }
     for (skipped in manifest.skippedClassesList) {
-        skippedClasses[skipped.className] = SkippedInfo(skipped.reason, skipped.skippedAt)
+        skippedClasses[InstanceClassKey(instanceId, skipped.className)] = SkippedInfo(skipped.reason, skipped.skippedAt)
         dynamicallyKnownClassNames += skipped.className
     }
     println(
-        "[manifest] received ${manifest.probesList.size} probe locations " +
+        "[manifest] instance=$instanceId received ${manifest.probesList.size} probe locations " +
             "(known total: ${manifestProbes.size}) and ${manifest.skippedClassesList.size} skipped classes " +
             "(known total: ${skippedClasses.size})",
     )
@@ -182,14 +178,14 @@ private fun printNeverHitReport() {
             val branchSuffix = info.branchIndex?.let { " branch#$it" } ?: ""
             println(
                 "  NEVER HIT: ${info.className}#${info.methodName}:${info.line} " +
-                    "[${info.kind}$branchSuffix] (class ${key.classId}, probe ${key.probeIndex})",
+                    "[${info.kind}$branchSuffix] (instance ${key.serviceInstanceId}, class ${key.classId}, probe ${key.probeIndex})",
             )
         }
     if (skippedClasses.isNotEmpty()) {
         println("skipped (matched but could not be instrumented): ${skippedClasses.size}")
         skippedClasses.entries
-            .sortedBy { it.key }
-            .forEach { (className, info) -> println("  SKIPPED: $className - ${info.reason}") }
+            .sortedWith(compareBy({ it.key.serviceInstanceId }, { it.key.className }))
+            .forEach { (key, info) -> println("  SKIPPED: ${key.className} (instance ${key.serviceInstanceId}) - ${info.reason}") }
     }
     println("=====================================")
 }

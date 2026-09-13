@@ -46,7 +46,7 @@ class BranchInstrumentationTest {
         val target = install(registry, config)
         repeat(3) { target.javaClass.getMethod("classify", Int::class.java).invoke(target, 5) }
 
-        val manifest = registry.manifest("test", null)
+        val manifest = registry.manifest("test", null, "instance-1")
         val branchIndices = manifest.probes.filter { it.methodName == "classify" && it.kind == ProbeKind.BRANCH }.map { it.probeIndex }
         assertEquals(2, branchIndices.size)
 
@@ -67,7 +67,7 @@ class BranchInstrumentationTest {
         repeat(2) { target.javaClass.getMethod("classify", Int::class.java).invoke(target, 5) }
         repeat(3) { target.javaClass.getMethod("classify", Int::class.java).invoke(target, -1) }
 
-        val manifest = registry.manifest("test", null)
+        val manifest = registry.manifest("test", null, "instance-1")
         val branchIndices = manifest.probes.filter { it.methodName == "classify" && it.kind == ProbeKind.BRANCH }.map { it.probeIndex }
 
         val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null)).deltas
@@ -85,7 +85,7 @@ class BranchInstrumentationTest {
         val target = install(registry, config)
         repeat(4) { target.javaClass.getMethod("classifyDense", Int::class.java).invoke(target, 1) }
 
-        val manifest = registry.manifest("test", null)
+        val manifest = registry.manifest("test", null, "instance-1")
         val branchIndices =
             manifest.probes.filter { it.methodName == "classifyDense" && it.kind == ProbeKind.BRANCH }.map { it.probeIndex }
         assertEquals(4, branchIndices.size, "3 cases + 1 default")
@@ -110,7 +110,7 @@ class BranchInstrumentationTest {
         repeat(3) { method.invoke(target, 2) }
         repeat(4) { method.invoke(target, 99) } // falls to default
 
-        val manifest = registry.manifest("test", null)
+        val manifest = registry.manifest("test", null, "instance-1")
         val branchIndices =
             manifest.probes.filter { it.methodName == "classifyDense" && it.kind == ProbeKind.BRANCH }.map { it.probeIndex }
 
@@ -129,7 +129,7 @@ class BranchInstrumentationTest {
         val target = install(registry, config)
         repeat(5) { target.javaClass.getMethod("classifySparse", Int::class.java).invoke(target, 1000) }
 
-        val manifest = registry.manifest("test", null)
+        val manifest = registry.manifest("test", null, "instance-1")
         val branchIndices =
             manifest.probes.filter { it.methodName == "classifySparse" && it.kind == ProbeKind.BRANCH }.map { it.probeIndex }
         assertEquals(3, branchIndices.size, "2 cases + 1 default")
@@ -151,7 +151,7 @@ class BranchInstrumentationTest {
         target.javaClass.getMethod("classify", Int::class.java).invoke(target, 5)
         repeat(2) { target.javaClass.getMethod("classifyDense", Int::class.java).invoke(target, 2) }
 
-        val manifest = registry.manifest("test", null)
+        val manifest = registry.manifest("test", null, "instance-1")
         val classifyBranches =
             manifest.probes.filter { it.methodName == "classify" && it.kind == ProbeKind.BRANCH }.map { it.probeIndex }
         val denseBranches =
@@ -177,7 +177,7 @@ class BranchInstrumentationTest {
         val target = install(registry, config)
         target.javaClass.getMethod("classify", Int::class.java).invoke(target, 5)
 
-        val manifest = registry.manifest("test", null)
+        val manifest = registry.manifest("test", null, "instance-1")
         val methodProbeIndex = manifest.probes.single { it.methodName == "classify" && it.kind == ProbeKind.METHOD }.probeIndex
 
         val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null)).deltas
