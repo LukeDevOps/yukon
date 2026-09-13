@@ -2,6 +2,7 @@ package io.github.lukedevops.yukon.instrumentation
 
 import io.github.lukedevops.yukon.advice.MethodEntryAdvice
 import io.github.lukedevops.yukon.advice.ProbeIndex
+import io.github.lukedevops.yukon.bootstrap.YukonProbeArrays
 import io.github.lukedevops.yukon.config.AgentConfig
 import io.github.lukedevops.yukon.export.ProbeKind
 import io.github.lukedevops.yukon.instrumentation.branch.BranchProbeAsmVisitorWrapper
@@ -13,17 +14,30 @@ import io.github.lukedevops.yukon.registry.ProbeRegistry
 import net.bytebuddy.agent.builder.AgentBuilder
 import net.bytebuddy.agent.builder.ResettableClassFileTransformer
 import net.bytebuddy.asm.Advice
+import net.bytebuddy.description.field.FieldDescription
 import net.bytebuddy.description.method.MethodDescription
 import net.bytebuddy.description.method.MethodList
+import net.bytebuddy.description.modifier.FieldManifestation
 import net.bytebuddy.description.modifier.Ownership
 import net.bytebuddy.description.modifier.SyntheticState
 import net.bytebuddy.description.modifier.Visibility
 import net.bytebuddy.description.type.TypeDescription
 import net.bytebuddy.dynamic.ClassFileLocator
 import net.bytebuddy.dynamic.DynamicType
-import net.bytebuddy.implementation.LoadedTypeInitializer
+import net.bytebuddy.implementation.Implementation
+import net.bytebuddy.implementation.bytecode.ByteCodeAppender
+import net.bytebuddy.implementation.bytecode.StackManipulation
+import net.bytebuddy.implementation.bytecode.constant.ClassConstant
+import net.bytebuddy.implementation.bytecode.constant.IntegerConstant
+import net.bytebuddy.implementation.bytecode.constant.LongConstant
+import net.bytebuddy.implementation.bytecode.constant.TextConstant
+import net.bytebuddy.implementation.bytecode.member.FieldAccess
+import net.bytebuddy.implementation.bytecode.member.MethodInvocation
+import net.bytebuddy.jar.asm.MethodVisitor
 import net.bytebuddy.matcher.ElementMatcher
 import net.bytebuddy.matcher.ElementMatchers.`is`
+import net.bytebuddy.matcher.ElementMatchers.named
+import net.bytebuddy.matcher.ElementMatchers.takesArguments
 import net.bytebuddy.utility.JavaModule
 import java.io.IOException
 import java.lang.System.Logger.Level
@@ -31,12 +45,20 @@ import java.lang.instrument.Instrumentation
 
 /**
  * Wires method-entry probes into every type matched by [AgentConfig.instrumentedPackagePrefixes].
- * If that list is empty, every non-agent type is matched instead.
+ * If that list is empty, every type outside the agent's own package is matched, less the
+ * bootstrap and platform loaders' classes that ByteBuddy's `AgentBuilder` ignores by default.
  *
- * Each matched type is registered with [ProbeRegistry] once. It gets its own synthetic static
- * field, holding the resulting counts array. Every probe in that class then reaches
- * [MethodEntryAdvice] with a direct reference to its own array and a constant slot index. No
- * lookup by class or method name is involved.
+ * Each matched type is registered with [ProbeRegistry] once, at transform time. It gets its own
+ * `public static final long[]` field, and a `<clinit>` prelude that fills it with one call to the
+ * bootstrap-resident [YukonProbeArrays], which asks the registry for the array registered a
+ * moment earlier. Every probe in that class then reaches [MethodEntryAdvice] with a direct read
+ * of its own array and a constant slot index. No lookup by class or method name is involved on
+ * any hot path; the one lookup happens once per class, at initialisation.
+ *
+ * Interfaces are instrumented the same way. The JVM only allows public static final fields on an
+ * interface, which rules out setting the field reflectively after load (the JDK refuses
+ * reflective writes to static finals); a woven `<clinit>` is the one mechanism that works for
+ * classes and interfaces alike, so it is the only one used.
  *
  * This registers a transformer for classes as they load. It does not retransform classes already
  * loaded when [install] runs. That matches the agent's static `premain` attach model, where the
@@ -51,16 +73,26 @@ class YukonInstrumentation(
     private val classBytesCapture = ClassBytesCapture(::isCandidateInternalName)
 
     /**
-     * Registers two transformers, in this order: [ClassBytesCapture], then ByteBuddy's. Both are
-     * registered as not retransformation-capable, so the JVM calls them in registration order and
-     * the capture always runs just before ByteBuddy for the same class on the same thread.
+     * Installs the bootstrap holder, points it at this registry, then registers two transformers
+     * in this order: [ClassBytesCapture], then ByteBuddy's. Both are registered as not
+     * retransformation-capable, so the JVM calls them in registration order and the capture
+     * always runs just before ByteBuddy for the same class on the same thread.
+     *
+     * Throws [BootstrapInstallException], before registering anything, if the holder cannot be
+     * made bootstrap-visible. Without it every instrumented class would fail in its own
+     * `<clinit>`, so not instrumenting at all is the only safe answer.
      *
      * The returned transformer's `reset` only removes ByteBuddy's; call [uninstall] to remove both.
      */
     fun install(instrumentation: Instrumentation): ResettableClassFileTransformer {
+        BootstrapHolder.install(instrumentation)
+        YukonProbeArrays.install { className, layoutHash, _, classLoader -> registry.lookup(className, layoutHash, classLoader) }
         instrumentation.addTransformer(classBytesCapture, false)
         return AgentBuilder
             .Default()
+            // No LoadedTypeInitializer is ever used, so ByteBuddy has nothing to run after load
+            // and no reason to inject its Nexus class into the bootstrap loader via Unsafe.
+            .with(AgentBuilder.InitializationStrategy.NoOp.INSTANCE)
             .with(TransformFailureListener())
             .type(typeMatcher())
             .transform { builder, typeDescription, classLoader, _, _ -> instrument(builder, typeDescription, classLoader) }
@@ -182,10 +214,11 @@ class YukonInstrumentation(
                 .defineField(
                     MethodEntryAdvice.PROBE_ARRAY_FIELD,
                     LongArray::class.java,
-                    Visibility.PRIVATE,
+                    Visibility.PUBLIC,
                     Ownership.STATIC,
+                    FieldManifestation.FINAL,
                     SyntheticState.SYNTHETIC,
-                ).initializer(LoadedTypeInitializer.ForStaticField(MethodEntryAdvice.PROBE_ARRAY_FIELD, counts))
+                ).initializer(ProbeArrayInitializer(typeDescription.name, layoutHash, counts.size))
 
         methods.forEachIndexed { index, method ->
             instrumented =
@@ -262,4 +295,63 @@ class YukonInstrumentation(
     }
 
     private fun methodMatcher(): ElementMatcher.Junction<MethodDescription> = TypeMatchPolicy.methodMatcher()
+
+    /**
+     * The `<clinit>` prelude that fills the counts field. It compiles to:
+     *
+     * ```
+     * ldc        "<class name>"
+     * ldc2_w     <layout hash>
+     * ldc        <probe count>
+     * ldc        <this class>
+     * invokevirtual java/lang/Class.getClassLoader()
+     * invokestatic  YukonProbeArrays.resolve(String, long, int, ClassLoader) long[]
+     * putstatic  <this class>.$yukonProbeCounts
+     * ```
+     *
+     * Every argument is a constant known at transform time. ByteBuddy runs this ahead of the
+     * class's own original static initializer, so a static method probed in this class can be
+     * called from that initializer and find the field already set.
+     */
+    private class ProbeArrayInitializer(
+        private val className: String,
+        private val layoutHash: Long,
+        private val probeCount: Int,
+    ) : ByteCodeAppender {
+        override fun apply(
+            methodVisitor: MethodVisitor,
+            implementationContext: Implementation.Context,
+            instrumentedMethod: MethodDescription,
+        ): ByteCodeAppender.Size {
+            val instrumentedType = implementationContext.instrumentedType
+            val field = instrumentedType.declaredFields.filter(named<FieldDescription>(MethodEntryAdvice.PROBE_ARRAY_FIELD)).only
+            val size =
+                StackManipulation
+                    .Compound(
+                        TextConstant(className),
+                        LongConstant.forValue(layoutHash),
+                        IntegerConstant.forValue(probeCount),
+                        ClassConstant.of(instrumentedType),
+                        MethodInvocation.invoke(GET_CLASS_LOADER),
+                        MethodInvocation.invoke(RESOLVE),
+                        FieldAccess.forField(field).write(),
+                    ).apply(methodVisitor, implementationContext)
+            return ByteCodeAppender.Size(size.maximalSize, instrumentedMethod.stackSize)
+        }
+
+        private companion object {
+            val GET_CLASS_LOADER: MethodDescription.InDefinedShape =
+                TypeDescription.ForLoadedType
+                    .of(Class::class.java)
+                    .declaredMethods
+                    .filter(named<MethodDescription>("getClassLoader").and(takesArguments(0)))
+                    .only
+            val RESOLVE: MethodDescription.InDefinedShape =
+                TypeDescription.ForLoadedType
+                    .of(YukonProbeArrays::class.java)
+                    .declaredMethods
+                    .filter(named<MethodDescription>("resolve"))
+                    .only
+        }
+    }
 }

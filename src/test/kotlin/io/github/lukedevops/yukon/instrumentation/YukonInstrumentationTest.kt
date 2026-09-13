@@ -8,6 +8,7 @@ import net.bytebuddy.agent.ByteBuddyAgent
 import net.bytebuddy.agent.builder.AgentBuilder
 import net.bytebuddy.agent.builder.ResettableClassFileTransformer
 import java.io.File
+import java.lang.reflect.Modifier
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -88,6 +89,88 @@ class YukonInstrumentationTest {
 
         assertEquals(3L, byIndex.getValue(pingProbeIndex).hitsTotal)
         assertEquals(2L, byIndex.getValue(neverCalledProbeIndex).hitsTotal)
+    }
+
+    private fun fixtureLoader() = FixtureClassLoader(arrayOf(File("build/classes/java/test").toURI().toURL()), javaClass.classLoader)
+
+    @Test
+    fun `an interface's default and static methods are probed, and its abstract method is not`() {
+        val registry = ProbeRegistry()
+        val config = AgentConfig.parse("includePackages=com.example.target")
+        install(registry, config)
+        val loader = fixtureLoader()
+
+        val iface = Class.forName("com.example.target.DefaultMethodTarget", true, loader)
+        val impl = Class.forName("com.example.target.DefaultMethodImpl", true, loader)
+        val instance = impl.getDeclaredConstructor().newInstance()
+        repeat(2) { iface.getMethod("defaultThing").invoke(instance) }
+        iface.getMethod("staticThing").invoke(null)
+
+        val manifest = registry.manifest("test", null, "instance-1")
+        val ifaceProbes = manifest.probes.filter { it.className == "com.example.target.DefaultMethodTarget" }
+        assertEquals(setOf("defaultThing", "staticThing"), ifaceProbes.map { it.methodName }.toSet())
+        assertTrue(manifest.skippedClasses.none { it.className == "com.example.target.DefaultMethodTarget" })
+
+        // Two classes are loaded here, so key on the interface's own class id, not probe index alone.
+        val ifaceClassId = ifaceProbes.first().classId
+        val byIndex =
+            registry
+                .computeDeltaBatch(ResourceAttributes("test", null, "i-1", null))
+                .batch.deltas
+                .filter { it.classId == ifaceClassId }
+                .associateBy { it.probeIndex }
+        assertEquals(2L, byIndex.getValue(ifaceProbes.single { it.methodName == "defaultThing" }.probeIndex).hitsTotal)
+        assertEquals(1L, byIndex.getValue(ifaceProbes.single { it.methodName == "staticThing" }.probeIndex).hitsTotal)
+    }
+
+    @Test
+    fun `the probe array is in place before the class's own static initializer runs`() {
+        val registry = ProbeRegistry()
+        val config = AgentConfig.parse("includePackages=com.example.target")
+        install(registry, config)
+
+        val target = Class.forName("com.example.target.StaticInitTarget", true, fixtureLoader())
+        assertEquals(7, target.getField("TOUCHED").get(null))
+
+        val manifest = registry.manifest("test", null, "instance-1")
+        val pokeIndex =
+            manifest.probes
+                .single { it.className == "com.example.target.StaticInitTarget" && it.methodName == "poke" }
+                .probeIndex
+        val byIndex =
+            registry
+                .computeDeltaBatch(ResourceAttributes("test", null, "i-1", null))
+                .batch.deltas
+                .associateBy { it.probeIndex }
+        assertEquals(1L, byIndex.getValue(pokeIndex).hitsTotal, "the call from <clinit> must be counted, not lost or crash")
+    }
+
+    @Test
+    fun `the counts field is public static final and holds the registry's own array`() {
+        val registry = ProbeRegistry()
+        val config = AgentConfig.parse("includePackages=com.example.target")
+        val target = install(registry, config)
+
+        val field = target.javaClass.getDeclaredField("\$yukonProbeCounts")
+        val modifiers = field.modifiers
+        assertTrue(Modifier.isPublic(modifiers) && Modifier.isStatic(modifiers) && Modifier.isFinal(modifiers))
+        target.javaClass.getMethod("ping").invoke(target)
+        val counts = field.get(null) as LongArray
+        val pingIndex =
+            registry
+                .manifest("test", null, "instance-1")
+                .probes
+                .single { it.methodName == "ping" }
+                .probeIndex
+        assertEquals(1L, counts[pingIndex], "the field's array saw the hit")
+        // A miss in the bootstrap holder would hand the class a fresh array and leave the
+        // registry's own at zero; both views agreeing proves they are the same array.
+        val reported =
+            registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null)).batch.deltas.single {
+                it.probeIndex ==
+                    pingIndex
+            }
+        assertEquals(1L, reported.hitsTotal, "the registry's array saw the same hit")
     }
 
     @Test

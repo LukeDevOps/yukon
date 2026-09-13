@@ -3,4 +3,5 @@ plugins {
 }
 rootProject.name = "yukon"
 
+include("bootstrap")
 include("demo")

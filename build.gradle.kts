@@ -1,3 +1,5 @@
+import java.util.zip.ZipFile
+
 plugins {
     kotlin("jvm") version "2.2.21"
     id("com.gradleup.shadow") version "8.3.11"
@@ -11,7 +13,14 @@ repositories {
     mavenCentral()
 }
 
+evaluationDependsOn(":bootstrap")
+
 dependencies {
+    // Compile-time only: at runtime the holder class comes from the target JVM's bootstrap
+    // classloader, where BootstrapHolder appends the embedded jar below. Shipping it as loose
+    // classes in this jar too would put a second copy on the system loader.
+    compileOnly(project(":bootstrap"))
+
     // Main artifact ships ASM shaded under net.bytebuddy.jar.asm.*, which the
     // branch-tracking tier's AsmVisitorWrapper uses directly instead of pulling
     // in a second, independently-versioned ASM dependency.
@@ -40,6 +49,62 @@ kotlin {
 java {
     sourceCompatibility = JavaVersion.VERSION_21
     targetCompatibility = JavaVersion.VERSION_21
+}
+
+// The bootstrap module's jar rides inside this one as a plain resource. premain writes it to a
+// temp file and hands it to Instrumentation.appendToBootstrapClassLoaderSearch, which takes a jar
+// on disk and nothing else. Embedding the finished jar rather than its classes is what keeps the
+// holder out of this jar's own class tree, so the shadow relocation below never touches it and
+// the system loader never sees a second copy.
+//
+// The resource deliberately does not end in ".jar": shadowJar explodes every file with that
+// extension it copies, dependency or not, which would scatter the holder's classes into this
+// jar as loose files and drop the resource itself. The demo would not have caught that, since
+// its classpath also carries the plain jar where the resource survives; verifyAgentJar below
+// checks the shaded jar directly.
+val bootstrapResourcePath = "META-INF/yukon/bootstrap-jar.bin"
+
+val embedBootstrapJar by tasks.registering(Sync::class) {
+    from(project(":bootstrap").tasks.named<Jar>("jar")) {
+        into(bootstrapResourcePath.substringBeforeLast('/'))
+        rename { bootstrapResourcePath.substringAfterLast('/') }
+    }
+    // This directory becomes a resource root, so the META-INF/yukon prefix above is what the
+    // resource path inside the agent jar ends up being.
+    into(layout.buildDirectory.dir("generated-resources/bootstrap"))
+}
+
+sourceSets.main {
+    resources.srcDir(embedBootstrapJar)
+}
+
+// Fails the build if the shaded jar does not have the shape premain relies on: the embedded
+// holder jar present as one resource, and none of the holder's classes present loose.
+val verifyAgentJar by tasks.registering {
+    dependsOn(tasks.shadowJar)
+    val jarFile = tasks.shadowJar.flatMap { it.archiveFile }
+    inputs.file(jarFile)
+    doLast {
+        ZipFile(jarFile.get().asFile).use { zip ->
+            val names =
+                zip
+                    .entries()
+                    .asSequence()
+                    .map { it.name }
+                    .toList()
+            check(bootstrapResourcePath in names) {
+                "agent jar is missing the embedded bootstrap holder at $bootstrapResourcePath"
+            }
+            val loose = names.filter { it.startsWith("io/github/lukedevops/yukon/bootstrap/") && it.endsWith(".class") }
+            check(loose.isEmpty()) {
+                "agent jar must not carry the bootstrap holder as loose classes, found: $loose"
+            }
+        }
+    }
+}
+
+tasks.shadowJar {
+    finalizedBy(verifyAgentJar)
 }
 
 tasks.test {

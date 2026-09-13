@@ -75,6 +75,18 @@ class ProbeRegistryTest {
     }
 
     @Test
+    fun `lookup returns the registered array for the exact key and null otherwise`() {
+        val registry = ProbeRegistry()
+        val loader = URLClassLoader(emptyArray())
+        val registered = registry.register("com.example.Foo", layoutHash = 1L, probes = methodProbes(2), classLoader = loader)
+
+        assertSame(registered, registry.lookup("com.example.Foo", 1L, loader))
+        assertEquals(null, registry.lookup("com.example.Foo", 2L, loader), "a different layout is a different array")
+        assertEquals(null, registry.lookup("com.example.Foo", 1L, URLClassLoader(emptyArray())), "a different loader too")
+        assertEquals(null, registry.lookup("com.example.Bar", 1L, loader))
+    }
+
+    @Test
     fun `a changed layout hash allocates a fresh array instead of merging`() {
         val registry = ProbeRegistry()
 

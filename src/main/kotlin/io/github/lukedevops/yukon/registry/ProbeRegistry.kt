@@ -135,6 +135,17 @@ open class ProbeRegistry {
         return entry.counts
     }
 
+    /**
+     * The array [register] handed out for this exact (className, layoutHash, classLoader), or null
+     * if none is registered. This is what an instrumented class's woven `<clinit>` calls, through
+     * the bootstrap holder, to pick up the array its probes then increment directly.
+     */
+    fun lookup(
+        className: String,
+        layoutHash: Long,
+        classLoader: ClassLoader?,
+    ): LongArray? = entriesByKey[RegistryKey(className, layoutHash, System.identityHashCode(classLoader))]?.counts
+
     /** Names of every class currently registered, across all classloaders. */
     fun registeredClassNames(): Set<String> = entriesByKey.keys.mapTo(HashSet()) { it.className }
 
