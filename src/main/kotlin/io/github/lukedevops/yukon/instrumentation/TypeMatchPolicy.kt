@@ -18,39 +18,52 @@ import java.lang.annotation.ElementType
  * Shared between [YukonInstrumentation] (matching a type as it loads) and the static baseline
  * scanner (matching a type read directly from bytecode, never loaded). Both need the exact same
  * answer for the exact same type, or a class could be classified as confidently dead by one tier
- * while the other tier would have skipped it as unsafe to instrument.
+ * while the other tier would have skipped it as unsafe to instrument. This is also why
+ * [isIncluded] and [typeNameMatcher] take both an include list and an exclude list rather than
+ * offering an include-only overload: an overload that silently ignored excludes would be exactly
+ * how the two tiers could drift apart.
  */
 object TypeMatchPolicy {
     /** The agent's own classes are never instrumented, whatever `includePackages` says. */
     const val AGENT_PACKAGE_PREFIX = "io.github.lukedevops.yukon."
 
     /**
-     * Whether a fully qualified [className] is in scope for [instrumentedPackagePrefixes]. This is
-     * the string-only half of [typeNameMatcher], usable before a [TypeDescription] exists at all
-     * (the class-bytes capture, the static scanner's pre-filter).
+     * Whether a fully qualified [className] is in scope: matched by [instrumentedPackagePrefixes]
+     * and not matched by [excludedPackagePrefixes]. This is the string-only half of
+     * [typeNameMatcher], usable before a [TypeDescription] exists at all (the class-bytes capture,
+     * the static scanner's pre-filter).
      *
-     * An empty prefix list means everything outside the agent's own package.
+     * An empty include list means everything outside the agent's own package. Exclusion always
+     * wins: a class matched by both lists is not included.
      */
     fun isIncluded(
         className: String,
         instrumentedPackagePrefixes: List<String>,
+        excludedPackagePrefixes: List<String>,
     ): Boolean {
         if (className.startsWith(AGENT_PACKAGE_PREFIX)) return false
-        return instrumentedPackagePrefixes.isEmpty() || instrumentedPackagePrefixes.any { isUnderPrefix(className, it) }
+        val matchedByIncludes = instrumentedPackagePrefixes.isEmpty() || instrumentedPackagePrefixes.any { isUnderPrefix(className, it) }
+        if (!matchedByIncludes) return false
+        return excludedPackagePrefixes.none { isUnderPrefix(className, it) }
     }
 
     /**
      * A prefix matches on a package or class boundary only: `com.acme` matches `com.acme.Foo` and
      * the class `com.acme` itself with its nested classes, but not `com.acmeinternal.Foo`. A plain
-     * `startsWith` would match the latter, silently widening the instrumented set.
+     * `startsWith` would match the latter, silently widening the instrumented or excluded set.
+     * Both [isIncluded]'s include and exclude lists use this same rule.
      */
     fun isUnderPrefix(
         className: String,
         prefix: String,
     ): Boolean = className == prefix || className.startsWith("$prefix.") || className.startsWith("$prefix$")
 
-    fun typeNameMatcher(instrumentedPackagePrefixes: List<String>): ElementMatcher.Junction<TypeDescription> =
-        not(isSynthetic<TypeDescription>()).and { typeDescription -> isIncluded(typeDescription.name, instrumentedPackagePrefixes) }
+    fun typeNameMatcher(
+        instrumentedPackagePrefixes: List<String>,
+        excludedPackagePrefixes: List<String>,
+    ): ElementMatcher.Junction<TypeDescription> =
+        not(isSynthetic<TypeDescription>())
+            .and { typeDescription -> isIncluded(typeDescription.name, instrumentedPackagePrefixes, excludedPackagePrefixes) }
 
     /**
      * Native methods are excluded along with abstract ones: neither has a body to plant a probe in.

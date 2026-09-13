@@ -34,8 +34,8 @@ the target application's classpath.
 -javaagent:/path/to/yukon-<version>.jar=serviceName=my-service,endpoint=http://localhost:4319
 ```
 
-Options (comma-separated `key=value`, `includePackages` uses `;` to
-separate multiple prefixes):
+Options (comma-separated `key=value`, `includePackages`/`excludePackages` use
+`;` to separate multiple prefixes):
 
 | Option | Default | Meaning |
 |---|---|---|
@@ -44,10 +44,27 @@ separate multiple prefixes):
 | `serviceInstanceId` | random UUID | Reported to the collector. |
 | `environment` | *(none)* | Reported to the collector. |
 | `endpoint` | `http://localhost:4319` | Collector base URL. |
-| `authToken` | *(none)* | Bearer token sent to the collector as `Authorization: Bearer <token>`. Prefer the `YUKON_AUTH_TOKEN` environment variable: agent arguments are visible to every user on the host via `ps`, and the option only exists for setups where the environment cannot carry it. |
+| `authToken` | *(none)* | Bearer token sent to the collector as `Authorization: Bearer <token>`. Prefer setting it through `YUKON_AUTH_TOKEN` rather than this option: agent arguments are visible to every user on the host via `ps`, and an environment variable is not. |
 | `flushIntervalSeconds` | `60` | How often deltas/manifest updates are sent. |
 | `includePackages` | *(all)* | Only instrument types whose name starts with one of these prefixes, `;`-separated. |
+| `excludePackages` | *(none)* | Never instrument types whose name starts with one of these prefixes, `;`-separated, even if `includePackages` also matches them. Exclusion always wins. |
 | `staticBaselineEnabled` | `false` | Scan the classpath once at startup (async, off the critical path) for classes under `includePackages` that never load at all. Off by default: unlike every other option here, a full classpath walk has a cost that scales with the classpath's size. |
+| `enabled` | `true` | Set to `false` to turn the agent off entirely: nothing is instrumented and nothing is exported. Meant to be set from `YUKON_ENABLED` so a deployment can disable the agent without rebuilding the image that bakes in `-javaagent`. |
+
+## Where an option's value comes from
+
+Every option above can be set three ways, in this precedence order: the
+agent-args string wins, then a JVM system property, then an environment
+variable, then the option's own default. A blank value at any level counts
+as unset and falls through to the next one.
+
+The property and environment variable names are derived mechanically from
+the option name: split it on camelCase boundaries, then join with `.` and
+lowercase it for the property (prefixed `yukon.`), or join with `_` and
+uppercase it for the environment variable (prefixed `YUKON_`). For example:
+
+- `serviceName` → system property `yukon.service.name`, environment variable `YUKON_SERVICE_NAME`
+- `flushIntervalSeconds` → system property `yukon.flush.interval.seconds`, environment variable `YUKON_FLUSH_INTERVAL_SECONDS`
 
 Yukon needs somewhere to send data to. See the `demo` module below for a
 minimal stub, or point it at a real collector.

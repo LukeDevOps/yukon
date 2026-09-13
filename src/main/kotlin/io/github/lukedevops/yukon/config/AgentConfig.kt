@@ -27,11 +27,23 @@ data class AgentConfig(
     /** Only types whose name starts with one of these prefixes are instrumented. Empty means every type is. */
     val instrumentedPackagePrefixes: List<String>,
     /**
+     * A type under one of these prefixes is never instrumented, even if [instrumentedPackagePrefixes]
+     * also matches it. Exclusion always wins over inclusion.
+     */
+    val excludedPackagePrefixes: List<String>,
+    /**
      * Off unless explicitly enabled. Unlike every other capability here, a full classpath scan
      * has a cost that genuinely scales with an adopter's classpath size, so it does not inherit
      * this agent's usual "on unless configured otherwise" default.
      */
     val staticBaselineEnabled: Boolean,
+    /**
+     * On by default. When false, [io.github.lukedevops.yukon.Agent] logs one line and does
+     * nothing else: no bootstrap holder, no transformer, no exporter, no scheduler. Lets an
+     * adopter bake `-javaagent` into a container image and switch the agent off per deployment
+     * with `YUKON_ENABLED=false`, with no image rebuild.
+     */
+    val enabled: Boolean,
 ) {
     companion object {
         private const val DEFAULT_ENDPOINT = "http://localhost:4319"
@@ -48,18 +60,33 @@ data class AgentConfig(
                 "authToken",
                 "flushIntervalSeconds",
                 "includePackages",
+                "excludePackages",
                 "staticBaselineEnabled",
+                "enabled",
             )
 
+        /**
+         * Every option in [KNOWN_KEYS] resolves the same way: the agent-args string wins, then a
+         * JVM system property, then an environment variable, then the option's own built-in
+         * default. [OptionNames] derives the property and environment variable names from the
+         * option name itself, so the three sources can never drift apart from each other.
+         *
+         * A blank value at any source counts as unset and falls through to the next one, the
+         * same way a blank `authToken` option already fell through to `YUKON_AUTH_TOKEN`.
+         */
         fun parse(
             agentArgs: String?,
             env: (String) -> String? = System::getenv,
+            systemProperties: (String) -> String? = System::getProperty,
         ): AgentConfig {
             val options = parseOptions(agentArgs)
             for (key in options.keys - KNOWN_KEYS) {
                 log.log(Level.WARNING, "yukon: ignoring unknown agent option '$key' (known options: ${KNOWN_KEYS.sorted()})")
             }
-            val prefixes = parseIncludePackages(options["includePackages"])
+
+            fun resolve(key: String): String? = resolveOption(key, options, systemProperties, env)
+
+            val prefixes = parsePackagePrefixes(resolve("includePackages"))
             if (prefixes.isEmpty()) {
                 log.log(
                     Level.WARNING,
@@ -67,40 +94,71 @@ data class AgentConfig(
                         "libraries included; set includePackages to your application's own packages",
                 )
             }
-            val endpoint = parseEndpoint(options["endpoint"])
-            val authToken = parseAuthToken(options["authToken"], env)
+            val excludedPrefixes = parsePackagePrefixes(resolve("excludePackages"))
+            val endpoint = parseEndpoint(resolve("endpoint"))
+            val authToken = resolve("authToken")
             if (authToken != null && endpoint.startsWith("http://")) {
                 log.log(Level.WARNING, "yukon: endpoint uses plain http, so the auth token is sent unencrypted")
             }
             return AgentConfig(
-                serviceName = options["serviceName"] ?: "unknown-service",
-                serviceVersion = options["serviceVersion"],
-                serviceInstanceId = options["serviceInstanceId"] ?: UUID.randomUUID().toString(),
-                environment = options["environment"],
+                serviceName = resolve("serviceName") ?: "unknown-service",
+                serviceVersion = resolve("serviceVersion"),
+                serviceInstanceId = resolve("serviceInstanceId") ?: UUID.randomUUID().toString(),
+                environment = resolve("environment"),
                 collectorEndpoint = endpoint,
                 authToken = authToken,
-                flushInterval = parseFlushInterval(options["flushIntervalSeconds"]),
+                flushInterval = parseFlushInterval(resolve("flushIntervalSeconds")),
                 instrumentedPackagePrefixes = prefixes,
-                staticBaselineEnabled = options["staticBaselineEnabled"]?.toBoolean() ?: false,
+                excludedPackagePrefixes = excludedPrefixes,
+                staticBaselineEnabled = parseBoolean("staticBaselineEnabled", resolve("staticBaselineEnabled"), default = false),
+                enabled = parseBoolean("enabled", resolve("enabled"), default = true),
             )
         }
 
         /**
-         * The `authToken` option wins when both sources are set. A blank value from either
-         * source counts as unset, so a blank option falls through to the environment variable
-         * instead of masking it.
+         * Walks the three sources for [key] in precedence order: the agent-args option, then the
+         * matching system property, then the matching environment variable. A blank value at any
+         * source is treated as unset, so it falls through instead of masking a value from a
+         * lower-precedence source.
          */
-        private fun parseAuthToken(
-            option: String?,
+        private fun resolveOption(
+            key: String,
+            options: Map<String, String>,
+            systemProperties: (String) -> String?,
             env: (String) -> String?,
-        ): String? = option?.trim()?.ifBlank { null } ?: env("YUKON_AUTH_TOKEN")?.trim()?.ifBlank { null }
+        ): String? =
+            valueOrNull(options[key])
+                ?: valueOrNull(systemProperties(OptionNames.systemProperty(key)))
+                ?: valueOrNull(env(OptionNames.environmentVariable(key)))
+
+        private fun valueOrNull(raw: String?): String? = raw?.trim()?.ifBlank { null }
+
+        /**
+         * Accepts `true`/`false` case-insensitively. Any other non-blank value logs a WARNING
+         * and falls back to [default], the same way an out-of-range [parseFlushInterval] value
+         * does, rather than silently reading as false.
+         */
+        private fun parseBoolean(
+            key: String,
+            raw: String?,
+            default: Boolean,
+        ): Boolean {
+            if (raw == null) return default
+            val parsed = raw.lowercase().toBooleanStrictOrNull()
+            if (parsed == null) {
+                log.log(Level.WARNING, "yukon: $key must be 'true' or 'false', ignoring '$raw' and using the default of $default")
+                return default
+            }
+            return parsed
+        }
 
         /**
          * A trailing dot on a prefix is dropped so `com.acme.` and `com.acme` mean the same thing;
          * [io.github.lukedevops.yukon.instrumentation.TypeMatchPolicy] matches on package boundaries
-         * either way, so `com.acme` never also matches `com.acmeinternal`.
+         * either way, so `com.acme` never also matches `com.acmeinternal`. Shared by
+         * `includePackages` and `excludePackages`, which use the same `;`-separated syntax.
          */
-        private fun parseIncludePackages(raw: String?): List<String> =
+        private fun parsePackagePrefixes(raw: String?): List<String> =
             raw
                 ?.split(";")
                 ?.map { it.trim().trimEnd('.') }
