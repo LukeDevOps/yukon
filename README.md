@@ -100,6 +100,14 @@ The module isn't published yet. Use it from a multi-project build as
 `testImplementation(project(":testkit"))`, or build the jar with
 `./gradlew :testkit:jar`.
 
+## Design notes
+
+`docs/adr/` records the decisions behind the agent that are hard to reverse
+or surprising without context (why probes are a dense per-class array, why
+counts are cumulative and merged with `max()`, why some classes are skipped
+and reported rather than silently zero). `CONTEXT.md` is the glossary the
+agent, the collector, and those records share.
+
 ## Status
 
 - Static attach (`-javaagent`) only; no dynamic/runtime attach yet.
@@ -114,3 +122,10 @@ The module isn't published yet. Use it from a multi-project build as
 - Wire schema (`src/main/proto/yukon.proto`) is published to the Buf Schema
   Registry as `buf.build/lukedevops-oss/yukon` for external consumers (e.g.
   a separately-versioned collector).
+
+## Licence
+
+Apache License 2.0; see `LICENSE`. The agent jar bundles Byte Buddy (with
+ASM), protobuf-java, the Kotlin standard library, and the JetBrains
+annotations, relocated; their licence texts are under `licenses/` here and
+`META-INF/licenses/` in the jar, and `NOTICE` lists them.
