@@ -15,6 +15,7 @@ import kotlin.test.assertTrue
 
 class BranchInstrumentationTest {
     private var installedTransformer: ResettableClassFileTransformer? = null
+    private var installedYukon: YukonInstrumentation? = null
 
     private fun loadFixtureFresh(): Any {
         val classesDir = File("build/classes/java/test")
@@ -28,14 +29,17 @@ class BranchInstrumentationTest {
         config: AgentConfig,
     ): Any {
         val instrumentation = ByteBuddyAgent.install()
-        installedTransformer = YukonInstrumentation(config, registry).install(instrumentation)
+        val yukon = YukonInstrumentation(config, registry)
+        installedYukon = yukon
+        installedTransformer = yukon.install(instrumentation)
         return loadFixtureFresh()
     }
 
     @AfterTest
     fun tearDown() {
-        installedTransformer?.reset(ByteBuddyAgent.install(), AgentBuilder.RedefinitionStrategy.DISABLED)
+        installedTransformer?.let { installedYukon?.uninstall(ByteBuddyAgent.install(), it) }
         installedTransformer = null
+        installedYukon = null
     }
 
     @Test

@@ -48,14 +48,41 @@ class YukonInstrumentation(
     private val staticBaselineMismatchDetector: StaticBaselineMismatchDetector = StaticBaselineMismatchDetector(),
 ) {
     private val log = System.getLogger(YukonInstrumentation::class.java.name)
+    private val classBytesCapture = ClassBytesCapture(::isCandidateInternalName)
 
-    fun install(instrumentation: Instrumentation): ResettableClassFileTransformer =
-        AgentBuilder
+    /**
+     * Registers two transformers, in this order: [ClassBytesCapture], then ByteBuddy's. Both are
+     * registered as not retransformation-capable, so the JVM calls them in registration order and
+     * the capture always runs just before ByteBuddy for the same class on the same thread.
+     *
+     * The returned transformer's `reset` only removes ByteBuddy's; call [uninstall] to remove both.
+     */
+    fun install(instrumentation: Instrumentation): ResettableClassFileTransformer {
+        instrumentation.addTransformer(classBytesCapture, false)
+        return AgentBuilder
             .Default()
             .with(TransformFailureListener())
             .type(typeMatcher())
             .transform { builder, typeDescription, classLoader, _, _ -> instrument(builder, typeDescription, classLoader) }
             .installOn(instrumentation)
+    }
+
+    /** Removes both transformers [install] registered. */
+    fun uninstall(
+        instrumentation: Instrumentation,
+        transformer: ResettableClassFileTransformer,
+    ) {
+        transformer.reset(instrumentation, AgentBuilder.RedefinitionStrategy.DISABLED)
+        instrumentation.removeTransformer(classBytesCapture)
+    }
+
+    /** String-only pre-filter for the capture, mirroring the package part of [typeMatcher] without resolving a type. */
+    private fun isCandidateInternalName(internalName: String): Boolean {
+        val name = internalName.replace('/', '.')
+        if (name.startsWith(TypeMatchPolicy.AGENT_PACKAGE_PREFIX)) return false
+        val prefixes = config.instrumentedPackagePrefixes
+        return prefixes.isEmpty() || prefixes.any { name.startsWith(it) }
+    }
 
     /**
      * A class transform can still fail after [instrument] has already called
@@ -178,6 +205,16 @@ class YukonInstrumentation(
                     BranchProbeAsmVisitorWrapper(
                         eligibleMethods = { name, descriptor -> (name to descriptor) in eligible },
                         probeIndexBase = methodProbes.size,
+                        branchSlotCapacity = branchProbes.size,
+                        onSiteCountMismatch = { expected, actual ->
+                            log.log(
+                                Level.WARNING,
+                                "yukon: ${typeDescription.name} has $actual branch probe slots at rewrite time but " +
+                                    "$expected were sized from its analysed bytecode; the bytes being rewritten differ " +
+                                    "from the bytes analysed, so its branch probes are unreliable and any site past " +
+                                    "capacity is left uninstrumented",
+                            )
+                        },
                     ),
                 )
         }
@@ -186,30 +223,41 @@ class YukonInstrumentation(
     }
 
     /**
-     * Re-reads the class's own original bytecode to find its conditional jumps. ByteBuddy's
-     * transform callback only hands over type metadata, not the class bytes themselves.
+     * Finds the class's conditional jumps in the bytes the JVM is actually about to define, as
+     * captured by [ClassBytesCapture] just before ByteBuddy's transform. ByteBuddy's own callback
+     * only hands over type metadata, not the class bytes themselves.
      *
-     * If the bytes cannot be located or read, this class just gets no branch probes.
-     * Method-entry tracking is unaffected.
+     * Falls back to the class's own classloader resource when nothing was captured (a class
+     * defined outside the ordinary transformer chain, or loaded by a test harness that bypasses
+     * [install]). If the bytes cannot be located or read at all, this class just gets no branch
+     * probes. Method-entry tracking is unaffected.
      */
     private fun findBranchSites(
         typeDescription: TypeDescription,
         classLoader: ClassLoader?,
         methods: MethodList<*>,
     ): List<BranchSite> {
+        val eligible = methods.map { it.internalName to it.descriptor }.toSet()
+        val bytes =
+            classBytesCapture.take(typeDescription.internalName) ?: locateClassBytes(typeDescription, classLoader) ?: return emptyList()
+        return BranchSiteAnalyzer.analyze(bytes) { name, descriptor -> (name to descriptor) in eligible }
+    }
+
+    private fun locateClassBytes(
+        typeDescription: TypeDescription,
+        classLoader: ClassLoader?,
+    ): ByteArray? {
         val locator =
             if (classLoader != null) {
                 ClassFileLocator.ForClassLoader.of(classLoader)
             } else {
                 ClassFileLocator.ForClassLoader.ofBootLoader()
             }
-        val eligible = methods.map { it.internalName to it.descriptor }.toSet()
         return try {
             val resolution = locator.locate(typeDescription.name)
-            if (!resolution.isResolved) return emptyList()
-            BranchSiteAnalyzer.analyze(resolution.resolve()) { name, descriptor -> (name to descriptor) in eligible }
+            if (resolution.isResolved) resolution.resolve() else null
         } catch (_: IOException) {
-            emptyList()
+            null
         }
     }
 
