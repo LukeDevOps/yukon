@@ -24,6 +24,10 @@ class ExportScheduler(
     private val exporter: Exporter,
     /** Source of the first-flush jitter. Injectable so a test can pin the initial delay to zero. */
     private val random: Random = Random.Default,
+    /** Upper bound on changed probes per delta POST; see [ProbeRegistry.computeDeltaBatches]. */
+    private val maxDeltasPerBatch: Int = DEFAULT_MAX_DELTAS_PER_BATCH,
+    /** Upper bound on probe locations plus skipped classes per manifest POST; see [ProbeRegistry.computeManifestDeltas]. */
+    private val maxManifestEntriesPerChunk: Int = DEFAULT_MAX_MANIFEST_ENTRIES_PER_CHUNK,
 ) {
     private val log = System.getLogger(ExportScheduler::class.java.name)
     private var executor: ScheduledExecutorService? = null
@@ -113,11 +117,17 @@ class ExportScheduler(
         deltaThread.join()
     }
 
+    /**
+     * Sends the changed probes in batches of at most [maxDeltasPerBatch], advancing the registry
+     * after each confirmed batch. A failure stops the loop: the batches already confirmed stay
+     * advanced, the rest are recomputed and resent on the next flush.
+     */
     private fun sendDeltaBatch() {
         try {
-            val snapshot = registry.computeDeltaBatch(resourceAttributes())
-            exporter.exportDeltaBatch(snapshot.batch)
-            registry.advanceBaseline(snapshot)
+            for (snapshot in registry.computeDeltaBatches(resourceAttributes(), maxDeltasPerBatch)) {
+                exporter.exportDeltaBatch(snapshot.batch)
+                registry.advanceBaseline(snapshot)
+            }
         } catch (e: Exception) {
             log.log(Level.WARNING, "yukon: delta export failed, will retry next flush", e)
         }
@@ -136,11 +146,17 @@ class ExportScheduler(
      */
     private fun sendManifestDelta() {
         try {
-            val snapshot = registry.computeManifestDelta(config.serviceName, config.serviceVersion, config.serviceInstanceId)
-            val manifest = snapshot.manifest
-            if (manifest.probes.isEmpty() && manifest.skippedClasses.isEmpty()) return
-            exporter.exportManifest(manifest)
-            registry.advanceManifestBaseline(snapshot)
+            val chunks =
+                registry.computeManifestDeltas(
+                    config.serviceName,
+                    config.serviceVersion,
+                    config.serviceInstanceId,
+                    maxManifestEntriesPerChunk,
+                )
+            for (snapshot in chunks) {
+                exporter.exportManifest(snapshot.manifest)
+                registry.advanceManifestBaseline(snapshot)
+            }
         } catch (e: Exception) {
             log.log(Level.WARNING, "yukon: manifest export failed, will retry next flush", e)
         }
@@ -153,4 +169,12 @@ class ExportScheduler(
             serviceInstanceId = config.serviceInstanceId,
             environment = config.environment,
         )
+
+    companion object {
+        /** A delta is a few dozen bytes on the wire, so this is well under a megabyte per POST. */
+        const val DEFAULT_MAX_DELTAS_PER_BATCH: Int = 20_000
+
+        /** A probe location carries class and method strings, so it is roughly ten times a delta's size. */
+        const val DEFAULT_MAX_MANIFEST_ENTRIES_PER_CHUNK: Int = 5_000
+    }
 }

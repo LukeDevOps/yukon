@@ -185,34 +185,75 @@ open class ProbeRegistry {
      * Nothing is marked as sent here. The returned [DeltaSnapshot] carries the per-class
      * snapshots it was built from, and [advanceBaseline] must be called with it explicitly, only
      * after the batch is confirmed delivered.
+     *
+     * This is the single-batch form of [computeDeltaBatches], with no size cap.
      */
-    open fun computeDeltaBatch(resource: ResourceAttributes): DeltaSnapshot {
-        val deltas = mutableListOf<ProbeDelta>()
-        val staged = mutableListOf<Pair<Any, LongArray>>()
+    open fun computeDeltaBatch(resource: ResourceAttributes): DeltaSnapshot = computeDeltaBatches(resource, Int.MAX_VALUE).single()
+
+    /**
+     * Like [computeDeltaBatch], but splits the changed probes into batches of at most
+     * [maxDeltasPerBatch] each, so a burst of activity (a busy startup, a long collector outage
+     * ending) never produces one unbounded POST.
+     *
+     * Classes are never split across batches: each [DeltaSnapshot] stages whole classes, so
+     * [advanceBaseline] on one batch marks exactly that batch's classes as delivered and nothing
+     * else. A single class whose changed probes alone exceed the cap gets a batch of its own,
+     * larger than the cap. Classes with nothing changed are staged nowhere, since there is
+     * nothing to advance for them.
+     *
+     * Always returns at least one batch. An empty one is the liveness heartbeat described in
+     * [io.github.lukedevops.yukon.export.ExportScheduler.flush].
+     */
+    open fun computeDeltaBatches(
+        resource: ResourceAttributes,
+        maxDeltasPerBatch: Int,
+    ): List<DeltaSnapshot> {
+        val batches = mutableListOf<DeltaSnapshot>()
+        var deltas = mutableListOf<ProbeDelta>()
+        var staged = mutableListOf<Pair<Any, LongArray>>()
+
+        fun seal() {
+            batches += DeltaSnapshot(DeltaBatch(resource, deltas), nextSnapshotSequence.incrementAndGet(), staged)
+            deltas = mutableListOf()
+            staged = mutableListOf()
+        }
         for (entry in entriesByKey.values) {
             val snapshot = entry.counts.copyOf()
+            val entryDeltas = changedProbesOf(entry, snapshot)
+            if (entryDeltas.isEmpty()) continue
+            if (deltas.isNotEmpty() && deltas.size + entryDeltas.size > maxDeltasPerBatch) seal()
+            deltas += entryDeltas
             staged += entry to snapshot
-            for (index in snapshot.indices) {
-                val current = snapshot[index]
-                val lastSent = entry.lastSent[index]
-                if (current == lastSent) continue
-                if (current < lastSent) {
-                    warnOnceAboutDecrease(entry, index, lastSent, current)
-                }
-                if (current > 0 && entry.firstSeenAt[index] == 0L) {
-                    entry.firstSeenAt[index] = System.currentTimeMillis()
-                }
-                deltas +=
-                    ProbeDelta(
-                        classId = entry.classId,
-                        probeIndex = index,
-                        kind = entry.probes[index].kind,
-                        firstSeenAt = entry.firstSeenAt[index],
-                        hitsTotal = current,
-                    )
-            }
         }
-        return DeltaSnapshot(DeltaBatch(resource, deltas), nextSnapshotSequence.incrementAndGet(), staged)
+        if (deltas.isNotEmpty() || batches.isEmpty()) seal()
+        return batches
+    }
+
+    private fun changedProbesOf(
+        entry: ClassEntry,
+        snapshot: LongArray,
+    ): List<ProbeDelta> {
+        val deltas = mutableListOf<ProbeDelta>()
+        for (index in snapshot.indices) {
+            val current = snapshot[index]
+            val lastSent = entry.lastSent[index]
+            if (current == lastSent) continue
+            if (current < lastSent) {
+                warnOnceAboutDecrease(entry, index, lastSent, current)
+            }
+            if (current > 0 && entry.firstSeenAt[index] == 0L) {
+                entry.firstSeenAt[index] = System.currentTimeMillis()
+            }
+            deltas +=
+                ProbeDelta(
+                    classId = entry.classId,
+                    probeIndex = index,
+                    kind = entry.probes[index].kind,
+                    firstSeenAt = entry.firstSeenAt[index],
+                    hitsTotal = current,
+                )
+        }
+        return deltas
     }
 
     /**
@@ -306,16 +347,61 @@ open class ProbeRegistry {
      *
      * A class that registers after an earlier successful send is picked up on a later call, not
      * left out of every manifest for the rest of the process's life.
+     *
+     * This is the single-chunk form of [computeManifestDeltas], with no size cap. Unlike that
+     * method it always returns a snapshot, possibly with nothing in it.
      */
     open fun computeManifestDelta(
         serviceName: String,
         serviceVersion: String?,
         serviceInstanceId: String,
-    ): ManifestSnapshot {
-        val locations = mutableListOf<ProbeLocation>()
-        val stagedEntries = mutableListOf<Any>()
+    ): ManifestSnapshot =
+        computeManifestDeltas(serviceName, serviceVersion, serviceInstanceId, Int.MAX_VALUE).singleOrNull()
+            ?: ManifestSnapshot(
+                ProbeManifest(serviceName, serviceVersion, emptyList(), emptyList(), serviceInstanceId),
+                emptyList(),
+                emptyList(),
+            )
+
+    /**
+     * Like [computeManifestDelta], but splits the not-yet-sent classes into chunks of at most
+     * [maxEntriesPerChunk] entries each, counting every probe location and every skipped class
+     * as one entry. The first manifest after a busy startup can otherwise carry every probe in
+     * the app in one POST.
+     *
+     * Classes are never split across chunks, so [advanceManifestBaseline] on one chunk marks
+     * exactly that chunk's classes as included. A single class with more locations than the cap
+     * gets a chunk of its own. Returns an empty list when there is nothing to send.
+     */
+    open fun computeManifestDeltas(
+        serviceName: String,
+        serviceVersion: String?,
+        serviceInstanceId: String,
+        maxEntriesPerChunk: Int,
+    ): List<ManifestSnapshot> {
+        val chunks = mutableListOf<ManifestSnapshot>()
+        var locations = mutableListOf<ProbeLocation>()
+        var skipped = mutableListOf<SkippedClass>()
+        var stagedEntries = mutableListOf<Any>()
+        var stagedSkipped = mutableListOf<Any>()
+
+        fun size() = locations.size + skipped.size
+
+        fun seal() {
+            chunks +=
+                ManifestSnapshot(
+                    ProbeManifest(serviceName, serviceVersion, locations, skipped, serviceInstanceId),
+                    stagedEntries,
+                    stagedSkipped,
+                )
+            locations = mutableListOf()
+            skipped = mutableListOf()
+            stagedEntries = mutableListOf()
+            stagedSkipped = mutableListOf()
+        }
         for (entry in entriesByKey.values) {
             if (entry.manifestIncluded) continue
+            if (size() > 0 && size() + entry.probes.size > maxEntriesPerChunk) seal()
             stagedEntries += entry
             entry.probes.forEachIndexed { index, meta ->
                 locations +=
@@ -331,18 +417,14 @@ open class ProbeRegistry {
                     )
             }
         }
-        val skipped = mutableListOf<SkippedClass>()
-        val stagedSkipped = mutableListOf<Any>()
         for ((className, entry) in skippedByClassName) {
             if (entry.manifestIncluded) continue
+            if (size() > 0 && size() + 1 > maxEntriesPerChunk) seal()
             stagedSkipped += entry
             skipped += SkippedClass(className, entry.reason, entry.skippedAt)
         }
-        return ManifestSnapshot(
-            ProbeManifest(serviceName, serviceVersion, locations, skipped, serviceInstanceId),
-            stagedEntries,
-            stagedSkipped,
-        )
+        if (size() > 0) seal()
+        return chunks
     }
 
     /**

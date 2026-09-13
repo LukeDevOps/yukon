@@ -143,4 +143,48 @@ class HttpOtlpStyleExporterTest {
 
         assertTrue(elapsed < 5_000, "expected the request timeout to bound the failure, took ${elapsed}ms")
     }
+
+    @Test
+    fun `a 400 is not retried, since resending the same bytes cannot change the answer`() {
+        val endpoint = startServer { 400 }
+        val exporter = exporterFor(endpoint)
+
+        val failure =
+            assertFailsWith<ExportFailedException> {
+                exporter.exportDeltaBatch(DeltaBatch(ResourceAttributes("checkout", null, "i-1", null), emptyList()))
+            }
+
+        assertEquals(1, requestCount.get())
+        assertEquals(400, failure.statusCode)
+    }
+
+    @Test
+    fun `a 404 and a 413 are not retried either`() {
+        for (status in listOf(404, 413)) {
+            requestCount.set(0)
+            val endpoint = startServer { status }
+            val exporter = exporterFor(endpoint)
+
+            assertFailsWith<ExportFailedException> {
+                exporter.exportDeltaBatch(DeltaBatch(ResourceAttributes("checkout", null, "i-1", null), emptyList()))
+            }
+
+            assertEquals(1, requestCount.get(), "status $status should fail fast")
+            server?.stop(0)
+        }
+    }
+
+    @Test
+    fun `a 408 and a 429 are retried like a server error`() {
+        for (status in listOf(408, 429)) {
+            requestCount.set(0)
+            val endpoint = startServer { requestNumber -> if (requestNumber < 3) status else 200 }
+            val exporter = exporterFor(endpoint)
+
+            exporter.exportDeltaBatch(DeltaBatch(ResourceAttributes("checkout", null, "i-1", null), emptyList()))
+
+            assertEquals(3, requestCount.get(), "status $status should be retried")
+            server?.stop(0)
+        }
+    }
 }
