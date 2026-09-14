@@ -37,6 +37,9 @@ dependencies {
     // merge their advice into the shaded jar: depending the other way would be a cycle.
     implementation(project(":endpoints-api"))
 
+    // The first real endpoint module: the JDK's own com.sun.net.httpserver.HttpServer.
+    implementation(project(":endpoints-jdk-httpserver"))
+
     // Wire schema for the delta batch and probe manifest payloads
     // (see src/main/proto/yukon.proto). Generated classes are shaded under
     // io.github.lukedevops.yukon.shaded.protobuf below, same rationale as

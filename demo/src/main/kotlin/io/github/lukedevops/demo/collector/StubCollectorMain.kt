@@ -4,6 +4,7 @@ import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
 import io.github.lukedevops.demo.DemoPorts
 import io.github.lukedevops.yukon.proto.DeltaBatch
+import io.github.lukedevops.yukon.proto.EndpointDiscoverySource
 import io.github.lukedevops.yukon.proto.ProbeKind
 import io.github.lukedevops.yukon.proto.ProbeManifest
 import io.github.lukedevops.yukon.proto.StaticBaseline
@@ -30,6 +31,18 @@ private data class InstanceClassKey(
     val className: String,
 )
 
+/** Scopes an endpoint id to the instance that reported it, for the same reason as [InstanceProbeKey]. */
+private data class InstanceEndpointKey(
+    val serviceInstanceId: String,
+    val endpointId: Int,
+)
+
+/** Scopes a disabled endpoint module's name to the instance that reported it. */
+private data class InstanceModuleKey(
+    val serviceInstanceId: String,
+    val module: String,
+)
+
 private data class ProbeInfo(
     val className: String,
     val methodName: String,
@@ -48,6 +61,15 @@ private data class DeclaredMethodInfo(
     val methodDescriptor: String,
 )
 
+private data class EndpointInfo(
+    val verb: String,
+    val routeTemplate: String,
+    val verbatimTemplate: String,
+    val framework: String,
+    val discoverySource: EndpointDiscoverySource,
+    val handlerClass: String?,
+)
+
 private val manifestProbes = ConcurrentHashMap<InstanceProbeKey, ProbeInfo>()
 private val everHit = Collections.newSetFromMap(ConcurrentHashMap<InstanceProbeKey, Boolean>())
 private val skippedClasses = ConcurrentHashMap<InstanceClassKey, SkippedInfo>()
@@ -56,6 +78,15 @@ private val skippedClasses = ConcurrentHashMap<InstanceClassKey, SkippedInfo>()
 // max() is what makes this safe against a re-delivered or reordered batch: applying the same or
 // an older value again is a no-op instead of double-counting.
 private val latestHitsTotal = ConcurrentHashMap<InstanceProbeKey, Long>()
+
+// An endpoint record can be re-sent after its first delivery (a discovery-source upgrade, a
+// handler join learned later), unlike a class's probe locations, so this upserts rather than
+// only ever inserting once.
+private val manifestEndpoints = ConcurrentHashMap<InstanceEndpointKey, EndpointInfo>()
+private val disabledEndpointModules = ConcurrentHashMap<InstanceModuleKey, String>()
+
+// Same cumulative, max()-merged semantics as latestHitsTotal, for endpoint hit counts.
+private val latestEndpointHitsTotal = ConcurrentHashMap<InstanceEndpointKey, Long>()
 
 // Any class name the reactive manifest has ever mentioned, whether it got probes or was skipped.
 // Either way, it was loaded and reached the transform stage - the opposite of what the static
@@ -102,6 +133,7 @@ fun main() {
     Runtime.getRuntime().addShutdownHook(
         Thread {
             printNeverHitReport()
+            printEndpointReport()
             printNeverLoadedReport()
         },
     )
@@ -121,10 +153,16 @@ private fun handleDeltaBatch(exchange: HttpExchange) {
         everHit += key
         latestHitsTotal.merge(key, delta.hitsTotal, ::maxOf)
     }
+    for (delta in batch.endpointDeltasList) {
+        val key = InstanceEndpointKey(instanceId, delta.endpointId)
+        latestEndpointHitsTotal.merge(key, delta.hitsTotal, ::maxOf)
+    }
     val totalHits = latestHitsTotal.values.sum()
+    val totalEndpointHits = latestEndpointHitsTotal.values.sum()
     println(
         "[flush] service=${batch.resource.serviceName} instance=${batch.resource.serviceInstanceId} " +
-            "probes_with_activity=${batch.deltasList.size} total_hits=$totalHits",
+            "probes_with_activity=${batch.deltasList.size} total_hits=$totalHits " +
+            "endpoints_with_activity=${batch.endpointDeltasList.size} total_endpoint_hits=$totalEndpointHits",
     )
     respondOk(exchange)
 }
@@ -147,10 +185,25 @@ private fun handleManifest(exchange: HttpExchange) {
         skippedClasses[InstanceClassKey(instanceId, skipped.className)] = SkippedInfo(skipped.reason, skipped.skippedAt)
         dynamicallyKnownClassNames += skipped.className
     }
+    for (endpoint in manifest.endpointsList) {
+        manifestEndpoints[InstanceEndpointKey(instanceId, endpoint.endpointId)] =
+            EndpointInfo(
+                verb = endpoint.verb,
+                routeTemplate = endpoint.routeTemplate,
+                verbatimTemplate = endpoint.verbatimTemplate,
+                framework = endpoint.framework,
+                discoverySource = endpoint.discoverySource,
+                handlerClass = if (endpoint.hasHandlerClass()) endpoint.handlerClass else null,
+            )
+    }
+    for (disabled in manifest.disabledEndpointModulesList) {
+        disabledEndpointModules[InstanceModuleKey(instanceId, disabled.module)] = disabled.reason
+    }
     println(
         "[manifest] instance=$instanceId received ${manifest.probesList.size} probe locations " +
             "(known total: ${manifestProbes.size}) and ${manifest.skippedClassesList.size} skipped classes " +
-            "(known total: ${skippedClasses.size})",
+            "(known total: ${skippedClasses.size}), ${manifest.endpointsList.size} endpoints " +
+            "(known total: ${manifestEndpoints.size}) and ${manifest.disabledEndpointModulesList.size} disabled endpoint modules",
     )
     respondOk(exchange)
 }
@@ -212,6 +265,38 @@ private fun printNeverHitReport() {
             .forEach { (key, info) -> println("  SKIPPED: ${key.className} (instance ${key.serviceInstanceId}) - ${info.reason}") }
     }
     println("=====================================")
+}
+
+/**
+ * Reports every declared endpoint, called or not. An endpoint's own hit count, not the method
+ * tier's, is what says "called": a handler can back an endpoint the method tier never sees on its
+ * own (a lambda invoked through a hidden class, a handler in an excluded package), so this report
+ * is the only one able to say `/promo` was never called.
+ */
+private fun printEndpointReport() {
+    println()
+    println("=== yukon demo: endpoint report ===")
+    val calledCount = manifestEndpoints.count { (key, _) -> (latestEndpointHitsTotal[key] ?: 0L) > 0L }
+    println("known endpoints: ${manifestEndpoints.size}, called: $calledCount, never called: ${manifestEndpoints.size - calledCount}")
+    manifestEndpoints.entries
+        .sortedWith(compareBy({ it.value.routeTemplate }, { it.value.verb }))
+        .forEach { (key, info) ->
+            val hits = latestEndpointHitsTotal[key] ?: 0L
+            val handlerSuffix = info.handlerClass?.let { " handler=$it" } ?: ""
+            val tag = "[${info.framework}, ${info.discoverySource}]"
+            if (hits > 0L) {
+                println("  CALLED: ${info.verb} ${info.routeTemplate} calls=$hits $tag$handlerSuffix")
+            } else {
+                println("  NEVER CALLED: ${info.verb} ${info.routeTemplate} $tag$handlerSuffix")
+            }
+        }
+    if (disabledEndpointModules.isNotEmpty()) {
+        println("disabled endpoint modules: ${disabledEndpointModules.size}")
+        disabledEndpointModules.entries
+            .sortedWith(compareBy({ it.key.serviceInstanceId }, { it.key.module }))
+            .forEach { (key, reason) -> println("  DISABLED: ${key.module} (instance ${key.serviceInstanceId}) - $reason") }
+    }
+    println("====================================")
 }
 
 /**
