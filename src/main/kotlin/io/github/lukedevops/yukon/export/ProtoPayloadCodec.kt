@@ -3,6 +3,10 @@ package io.github.lukedevops.yukon.export
 import io.github.lukedevops.yukon.proto.DeclaredClass as ProtoDeclaredClass
 import io.github.lukedevops.yukon.proto.DeclaredMethod as ProtoDeclaredMethod
 import io.github.lukedevops.yukon.proto.DeltaBatch as ProtoDeltaBatch
+import io.github.lukedevops.yukon.proto.DisabledEndpointModule as ProtoDisabledEndpointModule
+import io.github.lukedevops.yukon.proto.EndpointDelta as ProtoEndpointDelta
+import io.github.lukedevops.yukon.proto.EndpointDiscoverySource as ProtoEndpointDiscoverySource
+import io.github.lukedevops.yukon.proto.EndpointLocation as ProtoEndpointLocation
 import io.github.lukedevops.yukon.proto.ProbeDelta as ProtoProbeDelta
 import io.github.lukedevops.yukon.proto.ProbeKind as ProtoProbeKind
 import io.github.lukedevops.yukon.proto.ProbeLocation as ProtoProbeLocation
@@ -37,12 +41,14 @@ object ProtoPayloadCodec {
             .newBuilder()
             .setResource(toProto(batch.resource))
             .addAllDeltas(batch.deltas.map { toProto(it) })
+            .addAllEndpointDeltas(batch.endpointDeltas.map { toProto(it) })
             .build()
 
     private fun fromProto(batch: ProtoDeltaBatch): DeltaBatch =
         DeltaBatch(
             resource = fromProto(batch.resource),
             deltas = batch.deltasList.map { fromProto(it) },
+            endpointDeltas = batch.endpointDeltasList.map { fromProto(it) },
         )
 
     private fun toProto(resource: ResourceAttributes): ProtoResourceAttributes {
@@ -91,6 +97,8 @@ object ProtoPayloadCodec {
                 .addAllProbes(manifest.probes.map { toProto(it) })
                 .addAllSkippedClasses(manifest.skippedClasses.map { toProto(it) })
                 .setServiceInstanceId(manifest.serviceInstanceId)
+                .addAllEndpoints(manifest.endpoints.map { toProto(it) })
+                .addAllDisabledEndpointModules(manifest.disabledEndpointModules.map { toProto(it) })
         manifest.serviceVersion?.let { builder.serviceVersion = it }
         return builder.build()
     }
@@ -102,6 +110,8 @@ object ProtoPayloadCodec {
             probes = manifest.probesList.map { fromProto(it) },
             skippedClasses = manifest.skippedClassesList.map { fromProto(it) },
             serviceInstanceId = manifest.serviceInstanceId,
+            endpoints = manifest.endpointsList.map { fromProto(it) },
+            disabledEndpointModules = manifest.disabledEndpointModulesList.map { fromProto(it) },
         )
 
     private fun toProto(skippedClass: SkippedClass): ProtoSkippedClass =
@@ -255,5 +265,85 @@ object ProtoPayloadCodec {
         UnreadableClass(
             className = unreadableClass.className,
             reason = unreadableClass.reason,
+        )
+
+    private fun toProto(location: EndpointLocation): ProtoEndpointLocation {
+        val builder =
+            ProtoEndpointLocation
+                .newBuilder()
+                .setEndpointId(location.endpointId)
+                .setVerb(location.verb)
+                .setRouteTemplate(location.routeTemplate)
+                .setVerbatimTemplate(location.verbatimTemplate)
+                .setFramework(location.framework)
+                .setDiscoverySource(toProto(location.discoverySource))
+        location.handlerClass?.let { builder.handlerClass = it }
+        location.handlerMethod?.let { builder.handlerMethod = it }
+        location.handlerDescriptor?.let { builder.handlerDescriptor = it }
+        return builder.build()
+    }
+
+    private fun fromProto(location: ProtoEndpointLocation): EndpointLocation =
+        EndpointLocation(
+            endpointId = location.endpointId,
+            verb = location.verb,
+            routeTemplate = location.routeTemplate,
+            verbatimTemplate = location.verbatimTemplate,
+            framework = location.framework,
+            discoverySource = fromProto(location.discoverySource),
+            handlerClass = if (location.hasHandlerClass()) location.handlerClass else null,
+            handlerMethod = if (location.hasHandlerMethod()) location.handlerMethod else null,
+            handlerDescriptor = if (location.hasHandlerDescriptor()) location.handlerDescriptor else null,
+        )
+
+    private fun toProto(source: EndpointDiscoverySource): ProtoEndpointDiscoverySource =
+        when (source) {
+            EndpointDiscoverySource.REGISTRATION -> ProtoEndpointDiscoverySource.REGISTRATION
+            EndpointDiscoverySource.DISPATCH -> ProtoEndpointDiscoverySource.DISPATCH
+        }
+
+    private fun fromProto(source: ProtoEndpointDiscoverySource): EndpointDiscoverySource =
+        when (source) {
+            ProtoEndpointDiscoverySource.REGISTRATION -> {
+                EndpointDiscoverySource.REGISTRATION
+            }
+
+            ProtoEndpointDiscoverySource.DISPATCH -> {
+                EndpointDiscoverySource.DISPATCH
+            }
+
+            ProtoEndpointDiscoverySource.ENDPOINT_DISCOVERY_SOURCE_UNSPECIFIED, ProtoEndpointDiscoverySource.UNRECOGNIZED -> {
+                throw IllegalArgumentException("unrecognized endpoint discovery source on the wire: $source")
+            }
+        }
+
+    private fun toProto(delta: EndpointDelta): ProtoEndpointDelta =
+        ProtoEndpointDelta
+            .newBuilder()
+            .setEndpointId(delta.endpointId)
+            .setFirstSeenAt(delta.firstSeenAt)
+            .setHitsTotal(delta.hitsTotal)
+            .build()
+
+    private fun fromProto(delta: ProtoEndpointDelta): EndpointDelta =
+        EndpointDelta(
+            endpointId = delta.endpointId,
+            firstSeenAt = delta.firstSeenAt,
+            hitsTotal = delta.hitsTotal,
+        )
+
+    private fun toProto(module: DisabledEndpointModule): ProtoDisabledEndpointModule =
+        ProtoDisabledEndpointModule
+            .newBuilder()
+            .setModule(module.module)
+            .setReason(module.reason)
+            .setDisabledAt(module.disabledAt)
+            .build()
+
+    private fun fromProto(module: ProtoDisabledEndpointModule): DisabledEndpointModule =
+        DisabledEndpointModule(
+            module = module.module,
+            reason = module.reason,
+            disabledAt = module.disabledAt,
         )
 }
