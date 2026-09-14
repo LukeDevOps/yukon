@@ -1,6 +1,7 @@
 package io.github.lukedevops.yukon.export
 
 import io.github.lukedevops.yukon.config.AgentConfig
+import io.github.lukedevops.yukon.registry.EndpointRegistry
 import io.github.lukedevops.yukon.registry.ProbeMeta
 import io.github.lukedevops.yukon.registry.ProbeRegistry
 import java.time.Duration
@@ -49,7 +50,7 @@ class ExportSchedulerTest {
         val registry = ProbeRegistry()
         registry.register("com.example.Foo", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "bar", "()V", 1)))
         val exporter = RecordingExporter()
-        val scheduler = ExportScheduler(config, registry, exporter)
+        val scheduler = ExportScheduler(config, registry, EndpointRegistry(), exporter)
 
         scheduler.flush()
 
@@ -68,7 +69,7 @@ class ExportSchedulerTest {
         val probes = registry.register("com.example.Foo", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "bar", "()V", 1)))
         probes[0] += 4
         val exporter = RecordingExporter()
-        val scheduler = ExportScheduler(config, registry, exporter)
+        val scheduler = ExportScheduler(config, registry, EndpointRegistry(), exporter)
 
         scheduler.flush()
 
@@ -94,7 +95,7 @@ class ExportSchedulerTest {
         val registry = ProbeRegistry()
         val probes = registry.register("com.example.Foo", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "bar", "()V", 1)))
         probes[0] += 4
-        val scheduler = ExportScheduler(config, registry, FailingExporter())
+        val scheduler = ExportScheduler(config, registry, EndpointRegistry(), FailingExporter())
 
         scheduler.flush()
 
@@ -114,7 +115,7 @@ class ExportSchedulerTest {
         val registry = ProbeRegistry()
         registry.register("com.example.Foo", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "bar", "()V", 1)))
         val exporter = RecordingExporter()
-        val scheduler = ExportScheduler(config, registry, exporter)
+        val scheduler = ExportScheduler(config, registry, EndpointRegistry(), exporter)
 
         scheduler.flush()
 
@@ -140,7 +141,7 @@ class ExportSchedulerTest {
         val registry = ProbeRegistry()
         registry.register("com.example.Foo", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "bar", "()V", 1)))
         val exporter = RecordingExporter()
-        val scheduler = ExportScheduler(config, registry, exporter)
+        val scheduler = ExportScheduler(config, registry, EndpointRegistry(), exporter)
 
         scheduler.flush()
         scheduler.flush()
@@ -154,7 +155,7 @@ class ExportSchedulerTest {
         val registry = ProbeRegistry()
         registry.register("com.example.Foo", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "bar", "()V", 1)))
         val exporter = RecordingExporter()
-        val scheduler = ExportScheduler(config, registry, exporter)
+        val scheduler = ExportScheduler(config, registry, EndpointRegistry(), exporter)
 
         scheduler.flush()
         registry.register("com.example.Bar", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "baz", "()V", 1)))
@@ -175,7 +176,7 @@ class ExportSchedulerTest {
         val registry = ProbeRegistry()
         registry.recordSkipped("com.example.Foo", reason = "annotation not supported on TYPE")
         val exporter = RecordingExporter()
-        val scheduler = ExportScheduler(config, registry, exporter)
+        val scheduler = ExportScheduler(config, registry, EndpointRegistry(), exporter)
 
         scheduler.flush()
 
@@ -200,7 +201,7 @@ class ExportSchedulerTest {
                 ): List<ProbeRegistry.DeltaSnapshot> = throw RuntimeException("boom")
             }
         val exporter = RecordingExporter()
-        val scheduler = ExportScheduler(config, registry, exporter)
+        val scheduler = ExportScheduler(config, registry, EndpointRegistry(), exporter)
 
         // A ScheduledExecutorService running scheduleAtFixedRate stops calling a task forever,
         // the first time it lets an exception escape, with nothing logged. So flush() must never
@@ -222,7 +223,7 @@ class ExportSchedulerTest {
                 ): List<ProbeRegistry.ManifestSnapshot> = throw RuntimeException("boom")
             }
         val exporter = RecordingExporter()
-        val scheduler = ExportScheduler(config, registry, exporter)
+        val scheduler = ExportScheduler(config, registry, EndpointRegistry(), exporter)
 
         scheduler.flush()
         scheduler.flush()
@@ -252,7 +253,7 @@ class ExportSchedulerTest {
 
                 override fun exportStaticBaseline(baseline: StaticBaseline) {}
             }
-        val scheduler = ExportScheduler(config, registry, exporter)
+        val scheduler = ExportScheduler(config, registry, EndpointRegistry(), exporter)
 
         scheduler.flush()
         assertEquals(1, exporter.manifestSends)
@@ -273,7 +274,8 @@ class ExportSchedulerTest {
             probes[0] = 1
         }
         val exporter = RecordingExporter()
-        val scheduler = ExportScheduler(config, registry, exporter, maxDeltasPerBatch = 2, maxManifestEntriesPerChunk = 2)
+        val scheduler =
+            ExportScheduler(config, registry, EndpointRegistry(), exporter, maxDeltasPerBatch = 2, maxManifestEntriesPerChunk = 2)
 
         scheduler.flush()
 
@@ -315,7 +317,8 @@ class ExportSchedulerTest {
 
                 override fun exportStaticBaseline(baseline: StaticBaseline) {}
             }
-        val scheduler = ExportScheduler(config, registry, exporter, maxDeltasPerBatch = 1, maxManifestEntriesPerChunk = 1)
+        val scheduler =
+            ExportScheduler(config, registry, EndpointRegistry(), exporter, maxDeltasPerBatch = 1, maxManifestEntriesPerChunk = 1)
 
         scheduler.flush()
 
@@ -363,7 +366,7 @@ class ExportSchedulerTest {
         val registry = ProbeRegistry()
         registry.register("com.example.Foo", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "bar", "()V", 1)))
         val exporter = GatedExporter()
-        val scheduler = ExportScheduler(config, registry, exporter, noJitter)
+        val scheduler = ExportScheduler(config, registry, EndpointRegistry(), exporter, noJitter)
         scheduler.start()
         assertTrue(exporter.inFlight.await(5, TimeUnit.SECONDS), "the first scheduled flush should start immediately")
 
@@ -382,7 +385,7 @@ class ExportSchedulerTest {
         val registry = ProbeRegistry()
         registry.register("com.example.Foo", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "bar", "()V", 1)))
         val exporter = GatedExporter()
-        val scheduler = ExportScheduler(config, registry, exporter, noJitter)
+        val scheduler = ExportScheduler(config, registry, EndpointRegistry(), exporter, noJitter)
         scheduler.start()
         assertTrue(exporter.inFlight.await(5, TimeUnit.SECONDS))
 
@@ -397,10 +400,134 @@ class ExportSchedulerTest {
     fun `flushOnShutdown with no scheduler started still runs one final flush`() {
         val registry = ProbeRegistry()
         val exporter = RecordingExporter()
-        val scheduler = ExportScheduler(config, registry, exporter)
+        val scheduler = ExportScheduler(config, registry, EndpointRegistry(), exporter)
 
         scheduler.flushOnShutdown(Duration.ofSeconds(5))
 
         assertEquals(1, exporter.deltaBatches.size)
+    }
+
+    @Test
+    fun `endpoint deltas ride in the same batch as probe deltas when there is room`() {
+        val registry = ProbeRegistry()
+        val probes = registry.register("com.example.Foo", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "bar", "()V", 1)))
+        probes[0] += 1
+        val endpointRegistry = EndpointRegistry()
+        endpointRegistry.register(key = Any(), framework = "http-server", verb = "GET", verbatimTemplate = "/health").hit()
+        val exporter = RecordingExporter()
+        val scheduler = ExportScheduler(config, registry, endpointRegistry, exporter)
+
+        scheduler.flush()
+
+        assertEquals(1, exporter.deltaBatches.size, "one batch, not one per source, when everything fits")
+        val batch = exporter.deltaBatches.single()
+        assertEquals(1, batch.deltas.size)
+        assertEquals(1, batch.endpointDeltas.size)
+    }
+
+    @Test
+    fun `an endpoint snapshot that does not fit becomes its own delta batch`() {
+        val registry = ProbeRegistry()
+        val probes = registry.register("com.example.Foo", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "bar", "()V", 1)))
+        probes[0] += 1
+        val endpointRegistry = EndpointRegistry()
+        endpointRegistry.register(key = Any(), framework = "http-server", verb = "GET", verbatimTemplate = "/health").hit()
+        val exporter = RecordingExporter()
+        val scheduler = ExportScheduler(config, registry, endpointRegistry, exporter, maxDeltasPerBatch = 1)
+
+        scheduler.flush()
+
+        assertEquals(2, exporter.deltaBatches.size, "the probe batch is already full, so the endpoint delta gets its own")
+        assertEquals(listOf(1, 0), exporter.deltaBatches.map { it.deltas.size })
+        assertEquals(listOf(0, 1), exporter.deltaBatches.map { it.endpointDeltas.size })
+    }
+
+    @Test
+    fun `a flush with only endpoint activity still sends exactly one delta batch, carrying the heartbeat and the endpoint deltas`() {
+        val registry = ProbeRegistry()
+        val endpointRegistry = EndpointRegistry()
+        endpointRegistry.register(key = Any(), framework = "http-server", verb = "GET", verbatimTemplate = "/health").hit()
+        val exporter = RecordingExporter()
+        val scheduler = ExportScheduler(config, registry, endpointRegistry, exporter)
+
+        scheduler.flush()
+
+        assertEquals(1, exporter.deltaBatches.size)
+        val batch = exporter.deltaBatches.single()
+        assertTrue(batch.deltas.isEmpty(), "no probe changed, so the batch still carries the liveness heartbeat")
+        assertEquals(1, batch.endpointDeltas.size)
+    }
+
+    @Test
+    fun `a failed delta send leaves endpoint counts unadvanced, so the next flush reports them again`() {
+        val registry = ProbeRegistry()
+        val endpointRegistry = EndpointRegistry()
+        endpointRegistry.register(key = Any(), framework = "http-server", verb = "GET", verbatimTemplate = "/health").hit()
+        val scheduler = ExportScheduler(config, registry, endpointRegistry, FailingExporter())
+
+        scheduler.flush()
+
+        assertEquals(
+            1,
+            endpointRegistry
+                .computeDeltas(maxPerBatch = 10)
+                .single()
+                .deltas.size,
+            "the failed send must not advance the endpoint delta baseline",
+        )
+    }
+
+    @Test
+    fun `endpoint manifest entries ride in the class manifest chunk when there is room`() {
+        val registry = ProbeRegistry()
+        registry.register("com.example.Foo", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "bar", "()V", 1)))
+        val endpointRegistry = EndpointRegistry()
+        endpointRegistry.register(key = Any(), framework = "http-server", verb = "GET", verbatimTemplate = "/health")
+        val exporter = RecordingExporter()
+        val scheduler = ExportScheduler(config, registry, endpointRegistry, exporter)
+
+        scheduler.flush()
+
+        assertEquals(1, exporter.manifests.size, "one manifest, not one per source, when everything fits")
+        val manifest = exporter.manifests.single()
+        assertEquals(1, manifest.probes.size)
+        assertEquals(1, manifest.endpoints.size)
+    }
+
+    @Test
+    fun `endpoint manifest entries stand alone when there are no class chunks to ride on`() {
+        val registry = ProbeRegistry()
+        val endpointRegistry = EndpointRegistry()
+        endpointRegistry.register(key = Any(), framework = "http-server", verb = "GET", verbatimTemplate = "/health")
+        val exporter = RecordingExporter()
+        val scheduler = ExportScheduler(config, registry, endpointRegistry, exporter)
+
+        scheduler.flush()
+
+        assertEquals(1, exporter.manifests.size)
+        val manifest = exporter.manifests.single()
+        assertTrue(manifest.probes.isEmpty())
+        assertEquals(1, manifest.endpoints.size)
+        assertEquals("instance-1", manifest.serviceInstanceId)
+    }
+
+    @Test
+    fun `disabled endpoint modules reach the wire`() {
+        val registry = ProbeRegistry()
+        val endpointRegistry = EndpointRegistry()
+        endpointRegistry.recordDisabledModule("spring-mvc", reason = "linkage error against an unexpected framework version")
+        val exporter = RecordingExporter()
+        val scheduler = ExportScheduler(config, registry, endpointRegistry, exporter)
+
+        scheduler.flush()
+
+        assertEquals(
+            "spring-mvc",
+            exporter.manifests
+                .single()
+                .disabledEndpointModules
+                .single()
+                .module,
+        )
     }
 }

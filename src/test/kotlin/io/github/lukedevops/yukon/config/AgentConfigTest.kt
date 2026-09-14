@@ -19,6 +19,7 @@ class AgentConfigTest {
         assertEquals(emptyList(), config.excludedPackagePrefixes)
         assertEquals(false, config.staticBaselineEnabled)
         assertEquals(true, config.enabled)
+        assertEquals(true, config.endpointsEnabled)
         assertEquals(null, config.authToken)
     }
 
@@ -45,6 +46,28 @@ class AgentConfigTest {
     fun `enabled is case-insensitive, and an unparseable value warns and falls back to the default of true`() {
         assertEquals(false, AgentConfig.parse("enabled=FALSE").enabled)
         assertEquals(true, AgentConfig.parse("enabled=maybe").enabled)
+    }
+
+    @Test
+    fun `endpointsEnabled defaults to true and can be turned off`() {
+        assertEquals(true, AgentConfig.parse(null).endpointsEnabled)
+        assertEquals(true, AgentConfig.parse("endpointsEnabled=true").endpointsEnabled)
+        assertEquals(false, AgentConfig.parse("endpointsEnabled=false").endpointsEnabled)
+    }
+
+    @Test
+    fun `endpointsEnabled is case-insensitive, and an unparseable value warns and falls back to the default of true`() {
+        assertEquals(false, AgentConfig.parse("endpointsEnabled=FALSE").endpointsEnabled)
+        assertEquals(true, AgentConfig.parse("endpointsEnabled=maybe").endpointsEnabled)
+    }
+
+    @Test
+    fun `endpointsEnabled resolves from a system property and an environment variable`() {
+        val fromProperty = AgentConfig.parse(null, systemProperties = mapOf("yukon.endpoints.enabled" to "false")::get)
+        assertEquals(false, fromProperty.endpointsEnabled)
+
+        val fromEnv = AgentConfig.parse(null, env = mapOf("YUKON_ENDPOINTS_ENABLED" to "false")::get)
+        assertEquals(false, fromEnv.endpointsEnabled)
     }
 
     @Test

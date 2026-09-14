@@ -1,6 +1,7 @@
 package io.github.lukedevops.yukon.export
 
 import io.github.lukedevops.yukon.config.AgentConfig
+import io.github.lukedevops.yukon.registry.EndpointRegistry
 import io.github.lukedevops.yukon.registry.ProbeRegistry
 import java.lang.System.Logger.Level
 import java.time.Duration
@@ -22,6 +23,8 @@ import kotlin.random.Random
 class ExportScheduler(
     private val config: AgentConfig,
     private val registry: ProbeRegistry,
+    /** Endpoint hit and manifest state; see [EndpointRegistry] and ADR 0017. */
+    private val endpointRegistry: EndpointRegistry,
     private val exporter: Exporter,
     /** Source of the first-flush jitter. Injectable so a test can pin the initial delay to zero. */
     private val random: Random = Random.Default,
@@ -126,15 +129,29 @@ class ExportScheduler(
     }
 
     /**
-     * Sends the changed probes in batches of at most [maxDeltasPerBatch], advancing the registry
-     * after each confirmed batch. A failure stops the loop: the batches already confirmed stay
-     * advanced, the rest are recomputed and resent on the next flush.
+     * One outgoing [DeltaBatch], together with the probe and endpoint snapshots it carries. A
+     * confirmed send advances exactly these, and nothing else.
+     */
+    private class DeltaSend(
+        val batch: DeltaBatch,
+        val probeSnapshot: ProbeRegistry.DeltaSnapshot?,
+        val endpointSnapshots: List<EndpointRegistry.DeltaSnapshot>,
+    )
+
+    /**
+     * Sends probe and endpoint deltas together, advancing each snapshot only once its send is
+     * confirmed. A failure stops the loop: the sends already confirmed stay advanced, the rest
+     * are recomputed and resent on the next flush.
      */
     private fun sendDeltaBatch() {
         try {
-            for (snapshot in registry.computeDeltaBatches(resourceAttributes(), maxDeltasPerBatch)) {
-                exporter.exportDeltaBatch(snapshot.batch)
-                registry.advanceBaseline(snapshot)
+            val resource = resourceAttributes()
+            val probeBatches = registry.computeDeltaBatches(resource, maxDeltasPerBatch)
+            val endpointBatches = endpointRegistry.computeDeltas(maxDeltasPerBatch)
+            for (send in composeDeltaSends(resource, probeBatches, endpointBatches)) {
+                exporter.exportDeltaBatch(send.batch)
+                send.probeSnapshot?.let(registry::advanceBaseline)
+                send.endpointSnapshots.forEach(endpointRegistry::advanceDeltas)
             }
         } catch (e: Exception) {
             log.log(Level.WARNING, "yukon: delta export failed, will retry next flush", e)
@@ -142,32 +159,142 @@ class ExportScheduler(
     }
 
     /**
-     * Sends only the probes not yet included in a successfully delivered
-     * manifest.
+     * Packs endpoint delta snapshots onto probe delta batches. Each endpoint snapshot goes on the
+     * first probe batch with room for it, room being [maxDeltasPerBatch] minus the probe deltas
+     * and any endpoint snapshot already packed onto that batch; a snapshot that fits nowhere
+     * becomes its own [DeltaBatch] with no probe deltas.
+     *
+     * [probeBatches] is never empty: [ProbeRegistry.computeDeltaBatches] always returns at least
+     * one batch as the liveness heartbeat. That batch is where every endpoint snapshot lands when
+     * nothing else changed, so a flush with only endpoint activity still sends exactly one
+     * [DeltaBatch], carrying both the heartbeat and the endpoint deltas.
+     */
+    private fun composeDeltaSends(
+        resource: ResourceAttributes,
+        probeBatches: List<ProbeRegistry.DeltaSnapshot>,
+        endpointBatches: List<EndpointRegistry.DeltaSnapshot>,
+    ): List<DeltaSend> {
+        val builders = probeBatches.map { DeltaSendBuilder(it.batch, it) }.toMutableList()
+        val standalone = mutableListOf<DeltaSendBuilder>()
+
+        for (endpointSnapshot in endpointBatches) {
+            val target = builders.firstOrNull { it.size + endpointSnapshot.deltas.size <= maxDeltasPerBatch }
+            if (target != null) {
+                target.batch = target.batch.copy(endpointDeltas = target.batch.endpointDeltas + endpointSnapshot.deltas)
+                target.size += endpointSnapshot.deltas.size
+                target.endpointSnapshots += endpointSnapshot
+            } else {
+                standalone +=
+                    DeltaSendBuilder(DeltaBatch(resource, emptyList(), endpointSnapshot.deltas), null).apply {
+                        endpointSnapshots += endpointSnapshot
+                    }
+            }
+        }
+        return (builders + standalone).map { DeltaSend(it.batch, it.probeSnapshot, it.endpointSnapshots) }
+    }
+
+    private class DeltaSendBuilder(
+        var batch: DeltaBatch,
+        val probeSnapshot: ProbeRegistry.DeltaSnapshot?,
+    ) {
+        var size = batch.deltas.size
+        val endpointSnapshots = mutableListOf<EndpointRegistry.DeltaSnapshot>()
+    }
+
+    /**
+     * One outgoing [ProbeManifest], together with the probe and endpoint snapshots it carries. A
+     * confirmed send advances exactly these, and nothing else.
+     */
+    private class ManifestSend(
+        val manifest: ProbeManifest,
+        val probeSnapshot: ProbeRegistry.ManifestSnapshot?,
+        val endpointSnapshots: List<EndpointRegistry.ManifestSnapshot>,
+    )
+
+    /**
+     * Sends only the probes and endpoints not yet included in a successfully delivered manifest.
      *
      * This runs on the first flush, not at agent startup. By the first
      * flush, classes have actually started loading, so there are probes to
      * send. Classes that register later (lazy singletons, or a code path
      * run for the first time) are still picked up on a later flush. They
      * are not permanently left out just because an earlier send already
-     * succeeded.
+     * succeeded. The same holds for endpoints: a discovery-source upgrade
+     * or a handler join learned after an earlier delivery is picked up the
+     * same way.
      */
     private fun sendManifestDelta() {
         try {
-            val chunks =
+            val classChunks =
                 registry.computeManifestDeltas(
                     config.serviceName,
                     config.serviceVersion,
                     config.serviceInstanceId,
                     maxManifestEntriesPerChunk,
                 )
-            for (snapshot in chunks) {
-                exporter.exportManifest(snapshot.manifest)
-                registry.advanceManifestBaseline(snapshot)
+            val endpointChunks = endpointRegistry.computeManifestEntries(maxManifestEntriesPerChunk)
+            for (send in composeManifestSends(classChunks, endpointChunks)) {
+                exporter.exportManifest(send.manifest)
+                send.probeSnapshot?.let(registry::advanceManifestBaseline)
+                send.endpointSnapshots.forEach(endpointRegistry::advanceManifest)
             }
         } catch (e: Exception) {
             log.log(Level.WARNING, "yukon: manifest export failed, will retry next flush", e)
         }
+    }
+
+    /**
+     * Packs endpoint manifest chunks onto class manifest chunks. Each endpoint chunk goes on the
+     * first class chunk with room for it, room being [maxManifestEntriesPerChunk] minus probes,
+     * skipped classes, and any endpoint chunk already packed onto that chunk. A chunk that fits
+     * nowhere, including when there are no class chunks at all, becomes its own [ProbeManifest]
+     * with no probes or skipped classes.
+     */
+    private fun composeManifestSends(
+        classChunks: List<ProbeRegistry.ManifestSnapshot>,
+        endpointChunks: List<EndpointRegistry.ManifestSnapshot>,
+    ): List<ManifestSend> {
+        val builders = classChunks.map { ManifestSendBuilder(it.manifest, it) }.toMutableList()
+        val standalone = mutableListOf<ManifestSendBuilder>()
+
+        for (endpointChunk in endpointChunks) {
+            val chunkSize = endpointChunk.endpoints.size + endpointChunk.disabledModules.size
+            val target = builders.firstOrNull { it.size + chunkSize <= maxManifestEntriesPerChunk }
+            if (target != null) {
+                target.manifest =
+                    target.manifest.copy(
+                        endpoints = target.manifest.endpoints + endpointChunk.endpoints,
+                        disabledEndpointModules = target.manifest.disabledEndpointModules + endpointChunk.disabledModules,
+                    )
+                target.size += chunkSize
+                target.endpointSnapshots += endpointChunk
+            } else {
+                standalone +=
+                    ManifestSendBuilder(standaloneEndpointManifest(endpointChunk), null).apply {
+                        endpointSnapshots += endpointChunk
+                    }
+            }
+        }
+        return (builders + standalone).map { ManifestSend(it.manifest, it.probeSnapshot, it.endpointSnapshots) }
+    }
+
+    private fun standaloneEndpointManifest(endpointChunk: EndpointRegistry.ManifestSnapshot): ProbeManifest =
+        ProbeManifest(
+            serviceName = config.serviceName,
+            serviceVersion = config.serviceVersion,
+            probes = emptyList(),
+            skippedClasses = emptyList(),
+            serviceInstanceId = config.serviceInstanceId,
+            endpoints = endpointChunk.endpoints,
+            disabledEndpointModules = endpointChunk.disabledModules,
+        )
+
+    private class ManifestSendBuilder(
+        var manifest: ProbeManifest,
+        val probeSnapshot: ProbeRegistry.ManifestSnapshot?,
+    ) {
+        var size = manifest.probes.size + manifest.skippedClasses.size + manifest.endpoints.size + manifest.disabledEndpointModules.size
+        val endpointSnapshots = mutableListOf<EndpointRegistry.ManifestSnapshot>()
     }
 
     private fun resourceAttributes() =

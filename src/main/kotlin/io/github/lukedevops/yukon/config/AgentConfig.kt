@@ -44,6 +44,11 @@ data class AgentConfig(
      * with `YUKON_ENABLED=false`, with no image rebuild.
      */
     val enabled: Boolean,
+    /**
+     * On by default. One switch for every endpoint module (Spring, Ktor, `jdk.httpserver`,
+     * JAX-RS); there are no per-framework flags, by design. See ADR 0017.
+     */
+    val endpointsEnabled: Boolean,
 ) {
     companion object {
         private const val DEFAULT_ENDPOINT = "http://localhost:4319"
@@ -63,6 +68,7 @@ data class AgentConfig(
                 "excludePackages",
                 "staticBaselineEnabled",
                 "enabled",
+                "endpointsEnabled",
             )
 
         /**
@@ -112,6 +118,7 @@ data class AgentConfig(
                 excludedPackagePrefixes = excludedPrefixes,
                 staticBaselineEnabled = parseBoolean("staticBaselineEnabled", resolve("staticBaselineEnabled"), default = false),
                 enabled = parseBoolean("enabled", resolve("enabled"), default = true),
+                endpointsEnabled = parseBoolean("endpointsEnabled", resolve("endpointsEnabled"), default = true),
             )
         }
 
