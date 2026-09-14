@@ -1,3 +1,4 @@
+import java.nio.ByteBuffer
 import java.util.zip.ZipFile
 
 plugins {
@@ -147,38 +148,157 @@ val verifyAgentJar by tasks.registering {
                 "agent jar is missing vendored third-party licence entries: $missingLicenses"
             }
 
-            // Endpoint advice classes are inlined into framework bytecode by ByteBuddy, not
-            // loaded as ordinary agent classes, so any Kotlin-typed reference in them would be
-            // rewritten by the relocation above to a shaded class the framework does not have,
-            // producing a NoClassDefFoundError inside the target application. Passes trivially
-            // while this package holds no classes yet.
-            val relocatedKotlinMarker = "io/github/lukedevops/yukon/shaded/kotlin".toByteArray(Charsets.US_ASCII)
-            val endpointClassesWithShadedKotlin =
-                names
-                    .filter { it.startsWith("io/github/lukedevops/yukon/endpoints/") && it.endsWith(".class") }
-                    .filter { name ->
-                        val bytes = zip.getInputStream(zip.getEntry(name)).use { it.readBytes() }
-                        indexOf(bytes, relocatedKotlinMarker) >= 0
+            // Endpoint advice classes are inlined into framework bytecode by ByteBuddy, never
+            // loaded as ordinary agent classes. Only the annotated method's own bytecode is
+            // copied; anything else the advice touches stays a reference the target's own
+            // classloader has to resolve, and from a bootstrap-loaded target, or an isolating
+            // container loader, that resolution fails with NoClassDefFoundError and the module
+            // disables itself at the first request. Each class under this package must therefore
+            // reference no agent class except itself and the bootstrap seam, call no method on
+            // itself (a private helper is a real call at the woven site), carry no synthetic
+            // member (a lambda, a switch over an enum, or an assert compiles to one), and never
+            // mention the relocated Kotlin stdlib. Passes trivially while the package is empty.
+            val adviceClassNames = names.filter { it.startsWith("io/github/lukedevops/yukon/endpoints/") && it.endsWith(".class") }
+            val adviceProblems =
+                adviceClassNames.flatMap { entryName ->
+                    val shape = parseClassShape(zip.getInputStream(zip.getEntry(entryName)).use { it.readBytes() })
+                    val problems = mutableListOf<String>()
+                    if (shape.utf8Constants.any { "io/github/lukedevops/yukon/shaded/kotlin" in it }) {
+                        problems += "references the shaded Kotlin stdlib"
                     }
-            check(endpointClassesWithShadedKotlin.isEmpty()) {
-                "endpoint advice classes must never reference the shaded Kotlin stdlib, found in: $endpointClassesWithShadedKotlin"
+                    val foreignAgentClasses =
+                        shape.referencedClasses.filter {
+                            it.startsWith("io/github/lukedevops/yukon/") &&
+                                it != shape.name &&
+                                it != "io/github/lukedevops/yukon/bootstrap/YukonEndpoints" &&
+                                !it.startsWith("io/github/lukedevops/yukon/shaded/bytebuddy/")
+                        }
+                    if (foreignAgentClasses.isNotEmpty()) problems += "references agent classes $foreignAgentClasses"
+                    if (shape.selfMethodCalls.isNotEmpty()) problems += "calls its own methods ${shape.selfMethodCalls}"
+                    if (shape.syntheticMembers.isNotEmpty()) problems += "declares synthetic members ${shape.syntheticMembers}"
+                    problems.map { "${shape.name}: $it" }
+                }
+            check(adviceProblems.isEmpty()) {
+                "endpoint advice classes must be self-contained (see the comment in verifyAgentJar):\n  " +
+                    adviceProblems.joinToString("\n  ")
             }
         }
     }
 }
 
-/** Naive substring search over raw bytes, used to check a class file for a relocated package name. */
-fun indexOf(
-    haystack: ByteArray,
-    needle: ByteArray,
-): Int {
-    outer@ for (i in 0..haystack.size - needle.size) {
-        for (j in needle.indices) {
-            if (haystack[i + j] != needle[j]) continue@outer
+/** The parts of a class file the advice check reads; see [parseClassShape]. */
+class ClassShape(
+    val name: String,
+    val utf8Constants: List<String>,
+    val referencedClasses: Set<String>,
+    val selfMethodCalls: Set<String>,
+    val syntheticMembers: List<String>,
+)
+
+/**
+ * Reads a class file's constant pool and member tables, enough to know which classes it
+ * references, which of its own methods it calls, and whether it declares a synthetic member.
+ * Written here rather than through ASM because the build script has no bytecode library on its
+ * classpath, and the class-file format's constant pool is a short, fixed set of tagged entries.
+ */
+fun parseClassShape(bytes: ByteArray): ClassShape {
+    val buf = ByteBuffer.wrap(bytes)
+
+    fun u2(): Int = buf.short.toInt() and 0xFFFF
+    check(buf.int == 0xCAFEBABE.toInt()) { "not a class file" }
+    u2()
+    u2()
+    val poolCount = u2()
+    val utf8 = arrayOfNulls<String>(poolCount)
+    val classNameIndex = IntArray(poolCount)
+    val refClassIndex = IntArray(poolCount)
+    val refNameAndTypeIndex = IntArray(poolCount)
+    val nameAndTypeNameIndex = IntArray(poolCount)
+    val methodRefs = mutableListOf<Int>()
+    var i = 1
+    while (i < poolCount) {
+        when (val tag = buf.get().toInt()) {
+            1 -> {
+                val length = u2()
+                val raw = ByteArray(length)
+                buf.get(raw)
+                utf8[i] = String(raw, Charsets.UTF_8)
+            }
+
+            3, 4 -> {
+                buf.int
+            }
+
+            5, 6 -> {
+                buf.long
+                i++
+            }
+
+            7 -> {
+                classNameIndex[i] = u2()
+            }
+
+            8, 16, 19, 20 -> {
+                u2()
+            }
+
+            9, 10, 11 -> {
+                refClassIndex[i] = u2()
+                refNameAndTypeIndex[i] = u2()
+                if (tag == 10 || tag == 11) methodRefs += i
+            }
+
+            12 -> {
+                nameAndTypeNameIndex[i] = u2()
+                u2()
+            }
+
+            15 -> {
+                buf.get()
+                u2()
+            }
+
+            17, 18 -> {
+                u2()
+                u2()
+            }
+
+            else -> {
+                error("unknown constant pool tag $tag")
+            }
         }
-        return i
+        i++
     }
-    return -1
+    u2()
+    val thisClass = u2()
+    u2()
+    repeat(u2()) { u2() }
+    val name = checkNotNull(utf8[classNameIndex[thisClass]])
+    val synthetic = mutableListOf<String>()
+    repeat(2) {
+        repeat(u2()) {
+            val access = u2()
+            val memberName = checkNotNull(utf8[u2()])
+            u2()
+            repeat(u2()) {
+                u2()
+                val attributeLength = buf.int
+                buf.position(buf.position() + attributeLength)
+            }
+            if (access and 0x1000 != 0 || memberName.startsWith("lambda$") || memberName.startsWith("$")) {
+                synthetic += memberName
+            }
+        }
+    }
+    val referencedClasses =
+        (1 until poolCount).filter { classNameIndex[it] != 0 }.mapTo(
+            HashSet(),
+        ) { checkNotNull(utf8[classNameIndex[it]]) }
+    val selfMethodCalls =
+        methodRefs
+            .filter { utf8[classNameIndex[refClassIndex[it]]] == name }
+            .mapTo(HashSet()) { checkNotNull(utf8[nameAndTypeNameIndex[refNameAndTypeIndex[it]]]) }
+    return ClassShape(name, utf8.filterNotNull(), referencedClasses, selfMethodCalls, synthetic)
 }
 
 tasks.shadowJar {
