@@ -4,6 +4,7 @@ import io.github.lukedevops.yukon.config.AgentConfig
 import io.github.lukedevops.yukon.export.ExportScheduler
 import io.github.lukedevops.yukon.export.HttpOtlpStyleExporter
 import io.github.lukedevops.yukon.instrumentation.YukonInstrumentation
+import io.github.lukedevops.yukon.registry.EndpointRegistry
 import io.github.lukedevops.yukon.registry.ProbeRegistry
 import net.bytebuddy.agent.ByteBuddyAgent
 import net.bytebuddy.agent.builder.ResettableClassFileTransformer
@@ -61,7 +62,7 @@ class YukonTestCollectorEndToEndTest {
         fixtureClass.getMethod("exercised").invoke(fixture)
 
         val exporter = HttpOtlpStyleExporter(target.endpoint)
-        val exportScheduler = ExportScheduler(config, registry, exporter)
+        val exportScheduler = ExportScheduler(config, registry, EndpointRegistry(), exporter)
         scheduler = exportScheduler
         exportScheduler.start()
 

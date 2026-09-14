@@ -10,6 +10,7 @@ import io.github.lukedevops.yukon.instrumentation.YukonInstrumentation
 import io.github.lukedevops.yukon.instrumentation.staticscan.StaticBaselineMismatchDetector
 import io.github.lukedevops.yukon.instrumentation.staticscan.StaticBaselinePublisher
 import io.github.lukedevops.yukon.instrumentation.staticscan.StaticBaselineScanner
+import io.github.lukedevops.yukon.registry.EndpointRegistry
 import io.github.lukedevops.yukon.registry.ProbeRegistry
 import net.bytebuddy.agent.builder.ResettableClassFileTransformer
 import java.lang.System.Logger.Level
@@ -74,6 +75,7 @@ object Agent {
         }
 
         val registry = ProbeRegistry()
+        val endpointRegistry = EndpointRegistry()
         val staticBaselineMismatchDetector = StaticBaselineMismatchDetector()
 
         val yukonInstrumentation = YukonInstrumentation(config, registry, staticBaselineMismatchDetector)
@@ -88,7 +90,7 @@ object Agent {
             }
 
         val exporter = HttpOtlpStyleExporter(config.collectorEndpoint, config.authToken)
-        val scheduler = ExportScheduler(config, registry, exporter)
+        val scheduler = ExportScheduler(config, registry, endpointRegistry, exporter)
         scheduler.start()
 
         if (config.staticBaselineEnabled) {
