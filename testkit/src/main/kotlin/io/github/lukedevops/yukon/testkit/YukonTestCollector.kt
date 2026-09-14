@@ -2,9 +2,12 @@ package io.github.lukedevops.yukon.testkit
 
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
+import io.github.lukedevops.yukon.export.DisabledEndpointModule
+import io.github.lukedevops.yukon.export.EndpointDiscoverySource
 import io.github.lukedevops.yukon.export.ProbeKind
 import io.github.lukedevops.yukon.export.ProtoPayloadCodec
 import io.github.lukedevops.yukon.export.SkippedClass
+import io.github.lukedevops.yukon.registry.RouteTemplateNormalizer
 import java.net.InetSocketAddress
 import java.time.Duration
 import java.util.concurrent.ConcurrentHashMap
@@ -29,6 +32,13 @@ import kotlin.concurrent.withLock
  * [UnknownProbeException] rather than reading as "confirmed never hit". Collapsing "genuinely
  * dead" and "we have no idea" into the same `false` would be exactly the silent, confident, wrong
  * failure mode the rest of this agent is built to avoid.
+ *
+ * Endpoint queries ([wasCalled], [callCount], [neverCalled], [endpoints]) follow the same rule,
+ * throwing [UnknownEndpointException] for a `(verb, route template)` no manifest has mentioned.
+ * An endpoint's identity is the pair alone, never `endpoint_id`: `endpoint_id` is assigned
+ * independently by each instance's own registry, so an endpoint registered by several instances
+ * merges into one [EndpointRef] whose call count sums every instance's latest total, the same
+ * cross-instance aggregation [hitCount] already does for method probes by class and method name.
  *
  * Close this with [close], typically from a `.use { }` block, once a test is done with it.
  */
@@ -56,6 +66,17 @@ class YukonTestCollector private constructor(
         val scannedAt: Long,
     )
 
+    /** Cross-instance endpoint identity: the pair alone, never `endpoint_id`. See the class KDoc. */
+    private data class EndpointIdentity(
+        val verb: String,
+        val routeTemplate: String,
+    )
+
+    private data class InstanceEndpointKey(
+        val serviceInstanceId: String,
+        val endpointId: Int,
+    )
+
     /** Accumulates one static baseline scan's chunks. Only merged into [consultedDeclaredNames] once complete. */
     private class ScanProgress(
         val chunkCount: Int,
@@ -80,6 +101,14 @@ class YukonTestCollector private constructor(
     private val scans = ConcurrentHashMap<ScanKey, ScanProgress>()
     private val completedScans: MutableSet<ScanKey> = ConcurrentHashMap.newKeySet()
     private val consultedDeclaredNames: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+    /** Latest delivered record per endpoint identity, across every instance; see [handleManifest]. */
+    private val endpointRefsByIdentity = ConcurrentHashMap<EndpointIdentity, EndpointRef>()
+
+    /** Every `(instance, endpoint_id)` ever reported for an identity, so [callCount] can sum each instance's latest total. */
+    private val endpointKeysByIdentity = ConcurrentHashMap<EndpointIdentity, MutableSet<InstanceEndpointKey>>()
+    private val endpointHitsByKey = ConcurrentHashMap<InstanceEndpointKey, Long>()
+    private val disabledEndpointModulesByName = ConcurrentHashMap<String, DisabledEndpointModule>()
 
     /** Base URL to pass as an agent's `endpoint=` option, for example `http://localhost:54321`. */
     val endpoint: String = "http://localhost:${server.address.port}"
@@ -226,6 +255,87 @@ class YukonTestCollector private constructor(
         return consultedDeclaredNames.filter { it !in dynamicallyKnownClassNames }.sorted()
     }
 
+    /**
+     * True if the endpoint identified by [verb] and [routeTemplate] has a summed call count above
+     * zero. Both arguments are normalised with [RouteTemplateNormalizer.normalizeVerb] and
+     * [RouteTemplateNormalizer.normalize] before lookup, so `wasCalled("get", "/checkout/")` finds
+     * the same endpoint a manifest reported as `GET /checkout`.
+     *
+     * Throws [UnknownEndpointException] if no manifest ever mentioned this endpoint.
+     */
+    fun wasCalled(
+        verb: String,
+        routeTemplate: String,
+    ): Boolean = callCount(verb, routeTemplate) > 0L
+
+    /**
+     * The endpoint's call count, summed across every instance that reported it: each instance's
+     * own `hits_total` is already merged with max() against every redelivered value it sent, and
+     * this sums one such total per instance, mirroring how [hitCount] aggregates method probes
+     * across instances by class and method name. [verb] and [routeTemplate] are normalised the
+     * same way [wasCalled] normalises them.
+     *
+     * Throws [UnknownEndpointException] if no manifest ever mentioned this endpoint.
+     */
+    fun callCount(
+        verb: String,
+        routeTemplate: String,
+    ): Long {
+        val identity = normalizeEndpointIdentity(verb, routeTemplate)
+        val keys = endpointKeysByIdentity[identity] ?: throw unknownEndpoint(identity)
+        return keys.sumOf { endpointHitsByKey[it] ?: 0L }
+    }
+
+    /**
+     * Every endpoint at least one instance reported, of any [EndpointDiscoverySource], whose
+     * summed call count is zero, sorted by route template then verb. An endpoint discovered by
+     * dispatch is by construction called at least once, so it can never appear here.
+     */
+    fun neverCalled(): List<EndpointRef> =
+        endpointRefsByIdentity
+            .filterKeys { identity -> (endpointKeysByIdentity[identity]?.sumOf { endpointHitsByKey[it] ?: 0L } ?: 0L) <= 0L }
+            .values
+            .sortedWith(compareBy({ it.routeTemplate }, { it.verb }))
+
+    /** Every endpoint any instance ever reported, sorted by route template then verb. */
+    fun endpoints(): List<EndpointRef> = endpointRefsByIdentity.values.sortedWith(compareBy({ it.routeTemplate }, { it.verb }))
+
+    /** Every endpoint module reported as disabled by any instance, distinct by module name, sorted by module name. */
+    fun disabledEndpointModules(): List<DisabledEndpointModule> = disabledEndpointModulesByName.values.sortedBy { it.module }
+
+    /**
+     * Blocks until some manifest, from any instance, has mentioned the endpoint identified by
+     * [verb] and [routeTemplate], normalised the same way [wasCalled] normalises its arguments.
+     * Throws [java.util.concurrent.TimeoutException] if [timeout] elapses first.
+     */
+    fun awaitEndpoint(
+        verb: String,
+        routeTemplate: String,
+        timeout: Duration,
+    ) {
+        val identity = normalizeEndpointIdentity(verb, routeTemplate)
+        awaitUntil(timeout, "no manifest ever mentioned endpoint $verb $routeTemplate within $timeout") {
+            endpointRefsByIdentity.containsKey(identity)
+        }
+    }
+
+    private fun normalizeEndpointIdentity(
+        verb: String,
+        routeTemplate: String,
+    ): EndpointIdentity = EndpointIdentity(RouteTemplateNormalizer.normalizeVerb(verb), RouteTemplateNormalizer.normalize(routeTemplate))
+
+    private fun unknownEndpoint(identity: EndpointIdentity): UnknownEndpointException {
+        val disabled = disabledEndpointModulesByName.values.sortedBy { it.module }
+        if (disabled.isNotEmpty()) {
+            val listed = disabled.joinToString(", ") { "${it.module}: ${it.reason}" }
+            return UnknownEndpointException(
+                "${identity.verb} ${identity.routeTemplate}: never mentioned by any manifest; " +
+                    "an endpoint module reported itself disabled and may be why: $listed",
+            )
+        }
+        return UnknownEndpointException("${identity.verb} ${identity.routeTemplate}: never mentioned by any manifest")
+    }
+
     override fun close() {
         server.stop(0)
         executor.shutdown()
@@ -244,6 +354,10 @@ class YukonTestCollector private constructor(
         for (delta in batch.deltas) {
             val key = ProbeKey(instanceId, delta.classId, delta.probeIndex)
             hitsByKey.merge(key, delta.hitsTotal, ::maxOf)
+        }
+        for (delta in batch.endpointDeltas) {
+            val key = InstanceEndpointKey(instanceId, delta.endpointId)
+            endpointHitsByKey.merge(key, delta.hitsTotal, ::maxOf)
         }
         deltaBatchSeq.incrementAndGet()
         respond(exchange, 200)
@@ -277,6 +391,27 @@ class YukonTestCollector private constructor(
         for (skipped in manifest.skippedClasses) {
             skippedByClassName.putIfAbsent(skipped.className, skipped)
             dynamicallyKnownClassNames += skipped.className
+        }
+        for (endpointLocation in manifest.endpoints) {
+            val identity = EndpointIdentity(endpointLocation.verb, endpointLocation.routeTemplate)
+            val key = InstanceEndpointKey(instanceId, endpointLocation.endpointId)
+            endpointKeysByIdentity.computeIfAbsent(identity) { ConcurrentHashMap.newKeySet() }.add(key)
+            // Upserts unconditionally: a re-delivered record carries a newer handler join or
+            // discovery source, and the latest delivery, from any instance, wins.
+            endpointRefsByIdentity[identity] =
+                EndpointRef(
+                    verb = endpointLocation.verb,
+                    routeTemplate = endpointLocation.routeTemplate,
+                    verbatimTemplate = endpointLocation.verbatimTemplate,
+                    framework = endpointLocation.framework,
+                    discoverySource = endpointLocation.discoverySource,
+                    handlerClass = endpointLocation.handlerClass,
+                    handlerMethod = endpointLocation.handlerMethod,
+                    handlerDescriptor = endpointLocation.handlerDescriptor,
+                )
+        }
+        for (module in manifest.disabledEndpointModules) {
+            disabledEndpointModulesByName.putIfAbsent(module.module, module)
         }
         respond(exchange, 200)
         signalAll()
@@ -361,5 +496,35 @@ data class ProbeRef(
  *    or simply not loaded yet.
  */
 class UnknownProbeException(
+    message: String,
+) : RuntimeException(message)
+
+/**
+ * One endpoint's identity and display fields, as reported by a manifest. [verb] and
+ * [routeTemplate] are the normalised identity; [verbatimTemplate] keeps the framework's own
+ * spelling for display. [handlerClass], [handlerMethod], and [handlerDescriptor] are null until a
+ * framework hook joins a handler to the endpoint; see CONTEXT.md, "Handler".
+ */
+data class EndpointRef(
+    val verb: String,
+    val routeTemplate: String,
+    val verbatimTemplate: String,
+    val framework: String,
+    val discoverySource: EndpointDiscoverySource,
+    val handlerClass: String?,
+    val handlerMethod: String?,
+    val handlerDescriptor: String?,
+)
+
+/**
+ * Thrown when a query names a `(verb, route template)` [YukonTestCollector] has no endpoint for,
+ * instead of reading as "confirmed never called". The message names one of two cases, checked in
+ * this order:
+ *
+ * 1. At least one endpoint module reported itself disabled. The message names every disabled
+ *    module and its reason, since the unmentioned endpoint may belong to one of them.
+ * 2. No manifest, from any instance, ever mentioned this endpoint.
+ */
+class UnknownEndpointException(
     message: String,
 ) : RuntimeException(message)
