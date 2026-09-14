@@ -24,6 +24,7 @@ class BootstrapInstallException(
 object BootstrapHolder {
     const val DEFAULT_RESOURCE = "META-INF/yukon/bootstrap-jar.bin"
     const val HOLDER_CLASS_NAME = "io.github.lukedevops.yukon.bootstrap.YukonProbeArrays"
+    const val ENDPOINTS_CLASS_NAME = "io.github.lukedevops.yukon.bootstrap.YukonEndpoints"
 
     /**
      * Idempotent: a JVM where the holder is already bootstrap-visible (a second install call, a
@@ -58,9 +59,17 @@ object BootstrapHolder {
             ?.use { it.readBytes() }
             ?: throw BootstrapInstallException("yukon: bootstrap holder jar not found on the agent classpath at $resourceName")
 
-    fun isInstalled(): Boolean =
+    /**
+     * True only when every bootstrap-resident class is loadable from the bootstrap loader, not
+     * just the first one. A stale embedded jar missing a class this agent added later would
+     * otherwise pass this check and fail as a [NoClassDefFoundError] inside a framework class much
+     * further downstream.
+     */
+    fun isInstalled(): Boolean = isLoadableFromBootstrap(HOLDER_CLASS_NAME) && isLoadableFromBootstrap(ENDPOINTS_CLASS_NAME)
+
+    private fun isLoadableFromBootstrap(className: String): Boolean =
         try {
-            Class.forName(HOLDER_CLASS_NAME, false, null)
+            Class.forName(className, false, null)
             true
         } catch (_: ClassNotFoundException) {
             false

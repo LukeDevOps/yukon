@@ -21,6 +21,11 @@ dependencies {
     // classes in this jar too would put a second copy on the system loader.
     compileOnly(project(":bootstrap"))
 
+    // testCompileOnly does not extend compileOnly by default, so tests that reference a
+    // bootstrap-resident type directly (loaded for real via BootstrapHolder.install) need the
+    // same compile-time-only dependency repeated here.
+    testCompileOnly(project(":bootstrap"))
+
     // Main artifact ships ASM shaded under net.bytebuddy.jar.asm.*, which the
     // branch-tracking tier's AsmVisitorWrapper uses directly instead of pulling
     // in a second, independently-versioned ASM dependency.
@@ -119,8 +124,39 @@ val verifyAgentJar by tasks.registering {
             check(missingLicenses.isEmpty()) {
                 "agent jar is missing vendored third-party licence entries: $missingLicenses"
             }
+
+            // Endpoint advice classes are inlined into framework bytecode by ByteBuddy, not
+            // loaded as ordinary agent classes, so any Kotlin-typed reference in them would be
+            // rewritten by the relocation above to a shaded class the framework does not have,
+            // producing a NoClassDefFoundError inside the target application. Passes trivially
+            // while this package holds no classes yet.
+            val relocatedKotlinMarker = "io/github/lukedevops/yukon/shaded/kotlin".toByteArray(Charsets.US_ASCII)
+            val endpointClassesWithShadedKotlin =
+                names
+                    .filter { it.startsWith("io/github/lukedevops/yukon/endpoints/") && it.endsWith(".class") }
+                    .filter { name ->
+                        val bytes = zip.getInputStream(zip.getEntry(name)).use { it.readBytes() }
+                        indexOf(bytes, relocatedKotlinMarker) >= 0
+                    }
+            check(endpointClassesWithShadedKotlin.isEmpty()) {
+                "endpoint advice classes must never reference the shaded Kotlin stdlib, found in: $endpointClassesWithShadedKotlin"
+            }
         }
     }
+}
+
+/** Naive substring search over raw bytes, used to check a class file for a relocated package name. */
+fun indexOf(
+    haystack: ByteArray,
+    needle: ByteArray,
+): Int {
+    outer@ for (i in 0..haystack.size - needle.size) {
+        for (j in needle.indices) {
+            if (haystack[i + j] != needle[j]) continue@outer
+        }
+        return i
+    }
+    return -1
 }
 
 tasks.shadowJar {
