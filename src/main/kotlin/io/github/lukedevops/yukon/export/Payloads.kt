@@ -37,6 +37,7 @@ data class ProbeDelta(
 data class DeltaBatch(
     val resource: ResourceAttributes,
     val deltas: List<ProbeDelta>,
+    val endpointDeltas: List<EndpointDelta> = emptyList(),
 )
 
 data class ProbeLocation(
@@ -71,6 +72,8 @@ data class ProbeManifest(
     val probes: List<ProbeLocation>,
     val skippedClasses: List<SkippedClass> = emptyList(),
     val serviceInstanceId: String = "",
+    val endpoints: List<EndpointLocation> = emptyList(),
+    val disabledEndpointModules: List<DisabledEndpointModule> = emptyList(),
 )
 
 /** No line field, unlike [ProbeLocation]: method-level probes never carry a real line number today. */
@@ -131,4 +134,49 @@ data class StaticBaseline(
     val scannedAt: Long,
     val chunkIndex: Int = 0,
     val chunkCount: Int = 1,
+)
+
+/** How the agent learned of an endpoint. See CONTEXT.md, "Discovery source". */
+enum class EndpointDiscoverySource { REGISTRATION, DISPATCH }
+
+/**
+ * One endpoint the framework serves. [endpointId] is per instance, like `classId`; cross-instance
+ * identity is ([verb], [routeTemplate]), never [endpointId].
+ *
+ * A record may be re-sent when [handlerClass]/[handlerMethod]/[handlerDescriptor] are learned or
+ * change after the endpoint was first reported; a collector upserts by (service instance,
+ * [endpointId]). [handlerClass] alone is set when only the handler object's class is known; all
+ * three are set when the framework hands over a method.
+ */
+data class EndpointLocation(
+    val endpointId: Int,
+    val verb: String,
+    val routeTemplate: String,
+    val verbatimTemplate: String,
+    val framework: String,
+    val discoverySource: EndpointDiscoverySource,
+    val handlerClass: String? = null,
+    val handlerMethod: String? = null,
+    val handlerDescriptor: String? = null,
+)
+
+/**
+ * [hitsTotal] and [firstSeenAt] carry the same cumulative, max()-merged semantics as
+ * [ProbeDelta.hitsTotal] and [ProbeDelta.firstSeenAt].
+ */
+data class EndpointDelta(
+    val endpointId: Int,
+    val firstSeenAt: Long,
+    val hitsTotal: Long,
+)
+
+/**
+ * An endpoint module that switched itself off, typically on a linkage failure against an
+ * unexpected framework version. Reported so a collector can tell "no endpoints" from "endpoints
+ * not instrumented", the same reason [SkippedClass] exists for classes.
+ */
+data class DisabledEndpointModule(
+    val module: String,
+    val reason: String,
+    val disabledAt: Long,
 )

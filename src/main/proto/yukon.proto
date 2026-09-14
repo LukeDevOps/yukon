@@ -38,12 +38,14 @@ message ProbeDelta {
   int64 hits_total = 5;
 }
 
-// Sent frequently (every 30-60s). Only carries probes whose hits_total
-// changed since the last successfully delivered batch, not a full
-// snapshot, so payload size stays independent of total probe count.
+// Sent frequently (every 30-60s). Only carries probes and endpoints whose
+// hits_total changed since the last successfully delivered batch, not a
+// full snapshot, so payload size stays independent of total probe or
+// endpoint count.
 message DeltaBatch {
   ResourceAttributes resource = 1;
   repeated ProbeDelta deltas = 2;
+  repeated EndpointDelta endpoint_deltas = 3;
 }
 
 message ProbeLocation {
@@ -70,7 +72,10 @@ message SkippedClass {
 
 // Sent once per (service, version), not per flush, so the collector can
 // resolve probe IDs to source locations without the agent repeating this
-// metadata on every delta batch.
+// metadata on every delta batch. Endpoints and disabled endpoint modules
+// share the same incremental delivery: only entries not yet sent, or an
+// endpoint whose handler join changed since it was sent, go out on a
+// given flush.
 //
 // service_instance_id is required, unlike the rest of this message's
 // (service, version) scoping. class_id is assigned independently by each
@@ -80,12 +85,15 @@ message SkippedClass {
 // a collector correlating manifests or delta batches from more than one
 // instance of the same service and version risks attributing one instance's
 // probe metadata, or hit count, to the wrong class from another instance.
+// endpoint_id shares the same per-instance scoping as class_id.
 message ProbeManifest {
   string service_name = 1;
   optional string service_version = 2;
   repeated ProbeLocation probes = 3;
   repeated SkippedClass skipped_classes = 4;
   string service_instance_id = 5;
+  repeated EndpointLocation endpoints = 6;
+  repeated DisabledEndpointModule disabled_endpoint_modules = 7;
 }
 
 // No line field, unlike ProbeLocation: method-level probes never carry a
@@ -150,4 +158,58 @@ message StaticBaseline {
   repeated UnprobedClass unprobed_classes = 6;
   int32 chunk_index = 7;
   int32 chunk_count = 8;
+}
+
+// How the agent learned of an endpoint.
+enum EndpointDiscoverySource {
+  ENDPOINT_DISCOVERY_SOURCE_UNSPECIFIED = 0;
+  // The framework declared it: a registration hook, or, for JAX-RS,
+  // annotations read at transform time.
+  REGISTRATION = 1;
+  // A request matched an endpoint no registration had declared.
+  DISPATCH = 2;
+}
+
+// One endpoint the framework serves. endpoint_id is per instance, like
+// class_id: cross-instance identity is (verb, route_template), never
+// endpoint_id.
+//
+// A record may be re-sent when a field learned later (the handler join)
+// changes; a collector upserts by (service_instance_id, endpoint_id).
+message EndpointLocation {
+  int32 endpoint_id = 1;
+  // Uppercase HTTP method, or "*" when the framework leaves it unconstrained.
+  string verb = 2;
+  // Normalised identity. See CONTEXT.md, "Route template".
+  string route_template = 3;
+  // The framework's own spelling, kept for display only.
+  string verbatim_template = 4;
+  // Module name, e.g. "spring-webmvc-6", "ktor-3", "jdk-httpserver".
+  string framework = 5;
+  EndpointDiscoverySource discovery_source = 6;
+  // Handler join, set when the framework exposes one. All three are set for
+  // a method; only handler_class is set when only the handler object's
+  // class is known.
+  optional string handler_class = 7;
+  optional string handler_method = 8;
+  optional string handler_descriptor = 9;
+}
+
+// hits_total has the same cumulative, max()-merged semantics as
+// ProbeDelta.hits_total. first_seen_at has the same "first observed by a
+// flush" precision.
+message EndpointDelta {
+  int32 endpoint_id = 1;
+  int64 first_seen_at = 2;
+  int64 hits_total = 3;
+}
+
+// An endpoint module that switched itself off, typically a linkage failure
+// against an unexpected framework version. Reported so a collector can
+// tell "no endpoints" from "endpoints not instrumented", the same reason
+// SkippedClass exists for classes.
+message DisabledEndpointModule {
+  string module = 1;
+  string reason = 2;
+  int64 disabled_at = 3;
 }
