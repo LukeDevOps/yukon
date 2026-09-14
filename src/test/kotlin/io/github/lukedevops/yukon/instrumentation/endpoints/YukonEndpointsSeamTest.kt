@@ -22,13 +22,18 @@ import kotlin.test.assertTrue
 // YukonEndpoints is a bootstrap-resident singleton: install() has no matching uninstall, so once
 // any test calls it the resolver stays set for the rest of this JVM. The pre-install behaviour
 // (buffering, no-op with nothing installed) is only observable before the first ever install()
-// call, so it is ordered to run first and this is the only test class that touches this class.
+// call. Other test classes now install a resolver too (EndpointInstrumentationTest directly,
+// AgentTest through Agent.start()'s default endpointsEnabled=true), so the class-level @Order
+// below, together with src/test/resources/junit-platform.properties enabling
+// ClassOrderer.OrderAnnotation, is what actually guarantees this class runs before any of them;
+// @TestMethodOrder only orders methods within this one class.
 //
 // Every Resolver used here is a java.lang.reflect.Proxy built at runtime inside a test method,
 // never a compiled class declaring "implements YukonEndpoints.Resolver": a compiled implementer
 // is verified against the interface the moment its own class file loads, and Gradle loads every
 // class on the test classpath up front to look for tests, long before any test's BeforeEach has
 // installed the bootstrap holder. A proxy defers that resolution to the moment it is built.
+@Order(Int.MIN_VALUE)
 @TestMethodOrder(MethodOrderer.OrderAnnotation::class)
 class YukonEndpointsSeamTest {
     @BeforeEach

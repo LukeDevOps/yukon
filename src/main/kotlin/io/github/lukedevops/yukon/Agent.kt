@@ -7,6 +7,8 @@ import io.github.lukedevops.yukon.export.HttpOtlpStyleExporter
 import io.github.lukedevops.yukon.export.ResourceAttributes
 import io.github.lukedevops.yukon.instrumentation.BootstrapInstallException
 import io.github.lukedevops.yukon.instrumentation.YukonInstrumentation
+import io.github.lukedevops.yukon.instrumentation.endpoints.EndpointInstrumentation
+import io.github.lukedevops.yukon.instrumentation.endpoints.EndpointModules
 import io.github.lukedevops.yukon.instrumentation.staticscan.StaticBaselineMismatchDetector
 import io.github.lukedevops.yukon.instrumentation.staticscan.StaticBaselinePublisher
 import io.github.lukedevops.yukon.instrumentation.staticscan.StaticBaselineScanner
@@ -41,8 +43,12 @@ object Agent {
 
     /**
      * Everything [start] set up in this JVM. [stop] takes it all down again: the shutdown hook,
-     * the scheduler, and both class file transformers. Nothing in a `-javaagent` launch calls
+     * the scheduler, and every class file transformer. Nothing in a `-javaagent` launch calls
      * [stop]; it exists so a test can start the agent for real and leave no trace behind.
+     *
+     * [endpointTransformer] is null exactly when [AgentConfig.endpointsEnabled] was false, or
+     * when endpoint instrumentation failed to install; either way there is nothing to uninstall
+     * for it.
      */
     internal class Running(
         val scheduler: ExportScheduler,
@@ -50,11 +56,16 @@ object Agent {
         private val yukonInstrumentation: YukonInstrumentation,
         private val transformer: ResettableClassFileTransformer,
         private val shutdownHook: Thread,
+        private val endpointInstrumentation: EndpointInstrumentation? = null,
+        val endpointTransformer: ResettableClassFileTransformer? = null,
     ) {
         fun stop() {
             Runtime.getRuntime().removeShutdownHook(shutdownHook)
             scheduler.stop()
             yukonInstrumentation.uninstall(instrumentation, transformer)
+            if (endpointInstrumentation != null && endpointTransformer != null) {
+                endpointInstrumentation.uninstall(instrumentation, endpointTransformer)
+            }
         }
     }
 
@@ -89,6 +100,23 @@ object Agent {
                 return null
             }
 
+        var endpointInstrumentation: EndpointInstrumentation? = null
+        var endpointTransformer: ResettableClassFileTransformer? = null
+        if (config.endpointsEnabled) {
+            try {
+                val modules = EndpointModules.discover()
+                val instance = EndpointInstrumentation(endpointRegistry, modules)
+                endpointTransformer = instance.install(instrumentation)
+                endpointInstrumentation = instance
+            } catch (e: Throwable) {
+                // An endpoint-path failure must never take down the method tier that already
+                // installed successfully above; it only means this JVM reports no endpoints.
+                log.log(Level.ERROR, "yukon: endpoint instrumentation failed to install, continuing without endpoint tracking", e)
+            }
+        } else {
+            log.log(Level.INFO, "yukon: endpointsEnabled=false, no framework's endpoints will be instrumented")
+        }
+
         val exporter = HttpOtlpStyleExporter(config.collectorEndpoint, config.authToken)
         val scheduler = ExportScheduler(config, registry, endpointRegistry, exporter)
         scheduler.start()
@@ -99,7 +127,15 @@ object Agent {
 
         val shutdownHook = Thread({ scheduler.flushOnShutdown(SHUTDOWN_FLUSH_TIMEOUT) }, "yukon-shutdown-hook")
         Runtime.getRuntime().addShutdownHook(shutdownHook)
-        return Running(scheduler, instrumentation, yukonInstrumentation, transformer, shutdownHook)
+        return Running(
+            scheduler,
+            instrumentation,
+            yukonInstrumentation,
+            transformer,
+            shutdownHook,
+            endpointInstrumentation,
+            endpointTransformer,
+        )
     }
 
     /**
