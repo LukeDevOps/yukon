@@ -48,6 +48,11 @@ dependencies {
     implementation(project(":endpoints-ktor-2"))
     implementation(project(":endpoints-ktor-3"))
 
+    // Endpoint module for JAX-RS, covering both the javax.ws.rs and jakarta.ws.rs namespaces with
+    // one module. JAX-RS has no registration hook to advise, so its declared list comes from
+    // reading annotations at transform time instead; see the module's own KDoc.
+    implementation(project(":endpoints-jaxrs"))
+
     // Wire schema for the delta batch and probe manifest payloads
     // (see src/main/proto/yukon.proto). Generated classes are shaded under
     // io.github.lukedevops.yukon.shaded.protobuf below, same rationale as
