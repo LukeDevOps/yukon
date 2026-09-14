@@ -92,6 +92,82 @@ tasks.register("runDemo") {
     }
 }
 
+val springDemoClientMainClass = "io.github.lukedevops.demo.client.SpringDemoClientMainKt"
+
+// Boot's context refresh is slower to reach a listening port than the plain demo server's bare
+// HttpServer.create/start, so this task gets its own, longer port-wait timeout rather than
+// sharing portWaitTimeoutSeconds.
+val springPortWaitTimeoutSeconds = 60L
+
+tasks.register("runSpringDemo") {
+    group = "application"
+    description =
+        "Runs the stub collector, the -javaagent-instrumented Spring Boot fat-jar demo, and its client end to end."
+    dependsOn(
+        rootProject.tasks.named("shadowJar"),
+        project(":demo-spring").tasks.named("bootJar"),
+        tasks.named("classes"),
+    )
+
+    doLast {
+        val javaBin = Jvm.current().javaExecutable.absolutePath
+        val demoClasspath = sourceSets["main"].runtimeClasspath.asPath
+        val agentJar =
+            rootProject.tasks
+                .named("shadowJar", Jar::class.java)
+                .get()
+                .archiveFile
+                .get()
+                .asFile
+        val springBootJar =
+            project(":demo-spring")
+                .tasks
+                .named("bootJar", Jar::class.java)
+                .get()
+                .archiveFile
+                .get()
+                .asFile
+
+        println("yukon spring demo: starting stub collector")
+        val collector = startProcess("spring-collector", javaBin, listOf("-cp", demoClasspath, stubCollectorMainClass))
+        try {
+            waitForPort(DemoPorts.COLLECTOR_PORT, portWaitTimeoutSeconds)
+
+            println("yukon spring demo: starting instrumented Spring Boot fat jar")
+            val agentArg =
+                "-javaagent:${agentJar.absolutePath}=" +
+                    "serviceName=yukon-spring-demo," +
+                    "serviceVersion=spring-demo," +
+                    "flushIntervalSeconds=$flushIntervalSeconds," +
+                    "endpoint=http://localhost:${DemoPorts.COLLECTOR_PORT}," +
+                    "includePackages=io.github.lukedevops.demo.spring," +
+                    "staticBaselineEnabled=true"
+            val server =
+                startProcess(
+                    "spring-server",
+                    javaBin,
+                    listOf(agentArg, "-jar", springBootJar.absolutePath, "--server.port=${DemoPorts.SPRING_SERVER_PORT}"),
+                )
+            try {
+                waitForPort(DemoPorts.SPRING_SERVER_PORT, springPortWaitTimeoutSeconds)
+
+                println("yukon spring demo: running spring demo client")
+                val client = startProcess("spring-client", javaBin, listOf("-cp", demoClasspath, springDemoClientMainClass))
+                client.process.waitFor()
+                client.outputThread.join()
+
+                println("yukon spring demo: waiting for one more flush and the static baseline scan before shutdown")
+                Thread.sleep((flushIntervalSeconds + 2) * 1000)
+            } finally {
+                gracefulShutdown("spring-server", server, DemoPorts.SPRING_SERVER_PORT)
+            }
+        } finally {
+            gracefulShutdown("spring-collector", collector, DemoPorts.COLLECTOR_PORT)
+        }
+        println("yukon spring demo: done")
+    }
+}
+
 val stackEndpoint = providers.gradleProperty("yukonEndpoint").getOrElse("http://localhost:4319")
 val stackAgentToken = providers.gradleProperty("yukonAgentToken").getOrElse("local-stack-agent-token")
 val stackServerUrl = providers.gradleProperty("yukonServerUrl").getOrElse("http://localhost:4320")
@@ -328,4 +404,5 @@ fun waitForPort(
 object DemoPorts {
     const val COLLECTOR_PORT = 4319
     const val SERVER_PORT = 8085
+    const val SPRING_SERVER_PORT = 8090
 }

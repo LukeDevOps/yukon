@@ -4,4 +4,5 @@ package io.github.lukedevops.demo
 object DemoPorts {
     const val COLLECTOR_PORT = 4319
     const val SERVER_PORT = 8085
+    const val SPRING_SERVER_PORT = 8090
 }

@@ -5,6 +5,7 @@ rootProject.name = "yukon"
 
 include("bootstrap")
 include("demo")
+include("demo-spring")
 include("testkit")
 include("endpoints-api")
 include("endpoints-jdk-httpserver")
