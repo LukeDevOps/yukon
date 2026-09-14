@@ -53,6 +53,37 @@ _Avoid_: node, pod, host
 Whatever receives the payloads and merges them across instances. `yukon-collector` is the production one; the demo's stub and the testkit's `YukonTestCollector` play the role in this repo.
 _Avoid_: backend, server, ingest
 
+### Endpoints
+
+**Endpoint**:
+One HTTP verb and route template a framework serves, as registered with that framework. Identity is the pair; nothing about the server, port, or handler is part of it.
+_Avoid_: route (the template is the route; the endpoint is verb plus template), mapping, handler
+
+**Route template**:
+The normalised path pattern of an endpoint: leading slash, no trailing slash, `{name}` for a path parameter with any regex dropped, `*` for any wildcard or tail. The framework's own spelling is kept beside it for display only.
+_Avoid_: path, pattern, URL
+
+**Endpoint probe**:
+The counter for one endpoint, incremented when the framework matches a request to it, before the handler runs.
+_Avoid_: route probe, request counter
+
+**Endpoint ID**:
+A small integer the registry assigns to an endpoint the first time it is seen. Unique within one service instance only, like a class ID.
+
+**Handler**:
+The method or object the framework invokes for an endpoint. Recorded on the endpoint as a label naming a manifest method where the framework exposes one, or a class name where only the object is known.
+_Avoid_: controller, action
+
+**Discovery source**:
+How the agent learned of an endpoint: registration (the framework declared it) or dispatch (a request matched an endpoint no registration had declared).
+
+**Endpoint module**:
+The per-framework unit that hooks one framework's registration and dispatch. A module that hits a linkage failure disables itself once and is reported as disabled.
+
+**Never called**:
+An endpoint that at least one instance registered and whose hit total has stayed at zero across every instance in scope. The framework would serve it; no request ever matched it.
+_Avoid_: unused endpoint (the product phrase, not the observation), dead
+
 ### Static baseline
 
 **Static baseline**:
