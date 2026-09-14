@@ -17,6 +17,8 @@ class BootstrapHolderTest {
         assertTrue(BootstrapHolder.isInstalled())
         val holder = Class.forName(BootstrapHolder.HOLDER_CLASS_NAME, false, null)
         assertNull(holder.classLoader, "the holder must be defined by the bootstrap loader, not the app loader")
+        val endpoints = Class.forName(BootstrapHolder.ENDPOINTS_CLASS_NAME, false, null)
+        assertNull(endpoints.classLoader, "the endpoints seam must be defined by the bootstrap loader, not the app loader")
     }
 
     @Test
