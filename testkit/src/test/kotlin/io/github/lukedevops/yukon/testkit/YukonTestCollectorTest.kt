@@ -3,6 +3,10 @@ package io.github.lukedevops.yukon.testkit
 import io.github.lukedevops.yukon.export.DeclaredClass
 import io.github.lukedevops.yukon.export.DeclaredMethod
 import io.github.lukedevops.yukon.export.DeltaBatch
+import io.github.lukedevops.yukon.export.DisabledEndpointModule
+import io.github.lukedevops.yukon.export.EndpointDelta
+import io.github.lukedevops.yukon.export.EndpointDiscoverySource
+import io.github.lukedevops.yukon.export.EndpointLocation
 import io.github.lukedevops.yukon.export.HttpOtlpStyleExporter
 import io.github.lukedevops.yukon.export.ProbeDelta
 import io.github.lukedevops.yukon.export.ProbeKind
@@ -52,6 +56,24 @@ class YukonTestCollectorTest {
         methodDescriptor: String,
         line: Int,
     ) = ProbeLocation(classId, probeIndex, ProbeKind.METHOD, className, methodName, methodDescriptor, line, null)
+
+    private fun endpoint(
+        endpointId: Int,
+        verb: String,
+        routeTemplate: String,
+        handlerClass: String? = null,
+        handlerMethod: String? = null,
+    ) = EndpointLocation(
+        endpointId = endpointId,
+        verb = verb,
+        routeTemplate = routeTemplate,
+        verbatimTemplate = routeTemplate,
+        framework = "jdk-httpserver",
+        discoverySource = EndpointDiscoverySource.REGISTRATION,
+        handlerClass = handlerClass,
+        handlerMethod = handlerMethod,
+        handlerDescriptor = if (handlerMethod != null) "()V" else null,
+    )
 
     @Test
     fun `wasHit is true once a manifest and a hit-bearing delta both arrive, false with the manifest alone`() {
@@ -350,5 +372,186 @@ class YukonTestCollectorTest {
 
         assertEquals(400, response.statusCode())
         assertFailsWith<TimeoutException> { target.awaitNextFlush(Duration.ofMillis(150)) }
+    }
+
+    @Test
+    fun `wasCalled and callCount reflect a hit-bearing delta, neverCalled lists exactly the other endpoint`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+        exporter.exportManifest(
+            ProbeManifest(
+                "svc",
+                null,
+                emptyList(),
+                serviceInstanceId = "i-1",
+                endpoints = listOf(endpoint(0, "GET", "/checkout"), endpoint(1, "GET", "/promo")),
+            ),
+        )
+        exporter.exportDeltaBatch(
+            DeltaBatch(
+                ResourceAttributes("svc", null, "i-1", null),
+                emptyList(),
+                endpointDeltas = listOf(EndpointDelta(0, 1L, 3L)),
+            ),
+        )
+
+        assertTrue(target.wasCalled("GET", "/checkout"))
+        assertFalse(target.wasCalled("GET", "/promo"))
+        assertEquals(3L, target.callCount("GET", "/checkout"))
+        assertEquals(0L, target.callCount("GET", "/promo"))
+        assertEquals(listOf("GET"), target.neverCalled().map { it.verb })
+        assertEquals(listOf("/promo"), target.neverCalled().map { it.routeTemplate })
+    }
+
+    @Test
+    fun `two instances registering the same endpoint sum into one EndpointRef with a combined call count`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+        exporter.exportManifest(
+            ProbeManifest("svc", null, emptyList(), serviceInstanceId = "i-1", endpoints = listOf(endpoint(0, "GET", "/checkout"))),
+        )
+        exporter.exportManifest(
+            ProbeManifest("svc", null, emptyList(), serviceInstanceId = "i-2", endpoints = listOf(endpoint(0, "GET", "/checkout"))),
+        )
+        exporter.exportDeltaBatch(
+            DeltaBatch(ResourceAttributes("svc", null, "i-1", null), emptyList(), endpointDeltas = listOf(EndpointDelta(0, 1L, 2L))),
+        )
+        exporter.exportDeltaBatch(
+            DeltaBatch(ResourceAttributes("svc", null, "i-2", null), emptyList(), endpointDeltas = listOf(EndpointDelta(0, 1L, 5L))),
+        )
+
+        assertEquals(7L, target.callCount("GET", "/checkout"))
+        assertEquals(1, target.endpoints().count { it.verb == "GET" && it.routeTemplate == "/checkout" })
+    }
+
+    @Test
+    fun `a re-delivered record carrying a handler join updates the EndpointRef`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+        exporter.exportManifest(
+            ProbeManifest("svc", null, emptyList(), serviceInstanceId = "i-1", endpoints = listOf(endpoint(0, "GET", "/checkout"))),
+        )
+        assertEquals(null, target.endpoints().single().handlerClass)
+
+        exporter.exportManifest(
+            ProbeManifest(
+                "svc",
+                null,
+                emptyList(),
+                serviceInstanceId = "i-1",
+                endpoints = listOf(endpoint(0, "GET", "/checkout", handlerClass = "com.acme.Checkout", handlerMethod = "handle")),
+            ),
+        )
+
+        val ref = target.endpoints().single()
+        assertEquals("com.acme.Checkout", ref.handlerClass)
+        assertEquals("handle", ref.handlerMethod)
+    }
+
+    @Test
+    fun `a re-delivered delta carrying a lower total does not reduce callCount`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+        exporter.exportManifest(
+            ProbeManifest("svc", null, emptyList(), serviceInstanceId = "i-1", endpoints = listOf(endpoint(0, "GET", "/checkout"))),
+        )
+        exporter.exportDeltaBatch(
+            DeltaBatch(ResourceAttributes("svc", null, "i-1", null), emptyList(), endpointDeltas = listOf(EndpointDelta(0, 1L, 5L))),
+        )
+        exporter.exportDeltaBatch(
+            DeltaBatch(ResourceAttributes("svc", null, "i-1", null), emptyList(), endpointDeltas = listOf(EndpointDelta(0, 1L, 2L))),
+        )
+
+        assertEquals(5L, target.callCount("GET", "/checkout"))
+    }
+
+    @Test
+    fun `wasCalled and callCount normalise their verb and route template arguments`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+        exporter.exportManifest(
+            ProbeManifest("svc", null, emptyList(), serviceInstanceId = "i-1", endpoints = listOf(endpoint(0, "GET", "/checkout"))),
+        )
+        exporter.exportDeltaBatch(
+            DeltaBatch(ResourceAttributes("svc", null, "i-1", null), emptyList(), endpointDeltas = listOf(EndpointDelta(0, 1L, 1L))),
+        )
+
+        assertTrue(target.wasCalled("get", "/checkout/"))
+        assertEquals(1L, target.callCount("get", "/checkout/"))
+    }
+
+    @Test
+    fun `an unknown endpoint reports it was never mentioned anywhere as a last resort`() {
+        val target = startCollector()
+
+        val failure = assertFailsWith<UnknownEndpointException> { target.wasCalled("GET", "/nowhere") }
+        assertTrue(failure.message!!.contains("never mentioned"), failure.message)
+    }
+
+    @Test
+    fun `an unknown endpoint names a disabled module reported for the same framework`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+        exporter.exportManifest(
+            ProbeManifest(
+                "svc",
+                null,
+                emptyList(),
+                serviceInstanceId = "i-1",
+                disabledEndpointModules = listOf(DisabledEndpointModule("spring-mvc", "linkage error against Spring 7", 1L)),
+            ),
+        )
+
+        val failure = assertFailsWith<UnknownEndpointException> { target.wasCalled("GET", "/checkout") }
+        assertTrue(failure.message!!.contains("spring-mvc"), failure.message)
+        assertTrue(failure.message!!.contains("linkage error against Spring 7"), failure.message)
+    }
+
+    @Test
+    fun `awaitEndpoint returns once a manifest mentions it, and times out if it never does`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+
+        thread(isDaemon = true) {
+            Thread.sleep(50)
+            exporter.exportManifest(
+                ProbeManifest("svc", null, emptyList(), serviceInstanceId = "i-1", endpoints = listOf(endpoint(0, "GET", "/checkout"))),
+            )
+        }
+        target.awaitEndpoint("GET", "/checkout", Duration.ofSeconds(2))
+
+        assertFailsWith<TimeoutException> {
+            target.awaitEndpoint("GET", "/never", Duration.ofMillis(150))
+        }
+    }
+
+    @Test
+    fun `disabledEndpointModules is distinct by module name and sorted`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+        exporter.exportManifest(
+            ProbeManifest(
+                "svc",
+                null,
+                emptyList(),
+                serviceInstanceId = "i-1",
+                disabledEndpointModules =
+                    listOf(
+                        DisabledEndpointModule("ktor", "r1", 1L),
+                        DisabledEndpointModule("jax-rs", "r2", 2L),
+                    ),
+            ),
+        )
+        exporter.exportManifest(
+            ProbeManifest(
+                "svc",
+                null,
+                emptyList(),
+                serviceInstanceId = "i-2",
+                disabledEndpointModules = listOf(DisabledEndpointModule("ktor", "r1-dup", 3L)),
+            ),
+        )
+
+        assertEquals(listOf("jax-rs", "ktor"), target.disabledEndpointModules().map { it.module })
     }
 }

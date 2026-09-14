@@ -23,6 +23,13 @@ dependencies {
     // module's compile classpath transitively.
     testImplementation("net.bytebuddy:byte-buddy-agent:1.18.12")
     testImplementation("net.bytebuddy:byte-buddy:1.18.12")
+
+    // Gives the endpoint end-to-end test JdkHttpServerModule, the real HttpServer endpoint module.
+    testImplementation(project(":endpoints-jdk-httpserver"))
+
+    // EndpointModule is only an implementation dependency of :endpoints-jdk-httpserver, so it does
+    // not arrive transitively; needed directly for EndpointInstrumentation's List<EndpointModule>.
+    testImplementation(project(":endpoints-api"))
 }
 
 kotlin {
