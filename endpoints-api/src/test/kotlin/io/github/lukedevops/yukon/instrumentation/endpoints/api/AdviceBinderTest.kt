@@ -34,7 +34,7 @@ class AdviceBinderTest {
     fun `binds an advice class by name and weaves it into a fixture method`() {
         PingAdvice.entries = 0
         val instrumentation = ByteBuddyAgent.install()
-        val binder = AdviceBinder(javaClass.classLoader)
+        val binder = AdviceBinder(javaClass.classLoader, javaClass.classLoader)
 
         transformer =
             AgentBuilder

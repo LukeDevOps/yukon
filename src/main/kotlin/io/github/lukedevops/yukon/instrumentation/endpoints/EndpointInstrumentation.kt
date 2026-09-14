@@ -13,6 +13,7 @@ import net.bytebuddy.matcher.ElementMatchers.nameStartsWith
 import net.bytebuddy.utility.JavaModule
 import java.lang.System.Logger.Level
 import java.lang.instrument.Instrumentation
+import java.util.WeakHashMap
 
 /**
  * Wires every discovered [EndpointModule]'s registration and dispatch advice into the JVM.
@@ -30,7 +31,28 @@ class EndpointInstrumentation(
     private val modules: List<EndpointModule>,
 ) {
     private val log = System.getLogger(EndpointInstrumentation::class.java.name)
-    private val adviceBinder = AdviceBinder(EndpointInstrumentation::class.java.classLoader)
+    private val agentClassLoader = EndpointInstrumentation::class.java.classLoader
+
+    /**
+     * One [AdviceBinder] per target classloader, since Spring's own types (unlike the JDK's
+     * `HttpServer`, which loads on the bootstrap loader) live on the application's classloader,
+     * for example Spring Boot's `LaunchedClassLoader`, not this agent's own. A [WeakHashMap] under
+     * [adviceBinderLock] keeps a retired classloader collectible instead of pinning it for the
+     * life of the process; the bootstrap loader is a `null` key at the JVM level, which
+     * [WeakHashMap] cannot hold, so it is cached separately in [bootLoaderAdviceBinder].
+     */
+    private val adviceBinderLock = Any()
+    private val adviceBindersByLoader = WeakHashMap<ClassLoader, AdviceBinder>()
+    private var bootLoaderAdviceBinder: AdviceBinder? = null
+
+    private fun adviceBinderFor(targetClassLoader: ClassLoader?): AdviceBinder =
+        synchronized(adviceBinderLock) {
+            if (targetClassLoader == null) {
+                bootLoaderAdviceBinder ?: AdviceBinder(agentClassLoader, null).also { bootLoaderAdviceBinder = it }
+            } else {
+                adviceBindersByLoader.getOrPut(targetClassLoader) { AdviceBinder(agentClassLoader, targetClassLoader) }
+            }
+        }
 
     /**
      * Installs the bootstrap holder (idempotent if [io.github.lukedevops.yukon.instrumentation.YukonInstrumentation]
@@ -68,9 +90,9 @@ class EndpointInstrumentation(
 
         for (module in modules) {
             builder =
-                builder.type(module.typeMatcher()).transform { typeBuilder, typeDescription, _, _, _ ->
+                builder.type(module.typeMatcher()).transform { typeBuilder, typeDescription, classLoader, _, _ ->
                     try {
-                        module.transform(typeBuilder, typeDescription, adviceBinder)
+                        module.transform(typeBuilder, typeDescription, adviceBinderFor(classLoader))
                     } catch (t: Throwable) {
                         log.log(Level.WARNING, "yukon: endpoint module ${module.name} failed to transform ${typeDescription.name}", t)
                         YukonEndpoints.moduleFailed(module.name, t)

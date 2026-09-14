@@ -40,6 +40,9 @@ dependencies {
     // The first real endpoint module: the JDK's own com.sun.net.httpserver.HttpServer.
     implementation(project(":endpoints-jdk-httpserver"))
 
+    // Endpoint module for Spring MVC, covering Spring Framework 5.3, 6.x and 7.x with one module.
+    implementation(project(":endpoints-spring-webmvc"))
+
     // Wire schema for the delta batch and probe manifest payloads
     // (see src/main/proto/yukon.proto). Generated classes are shaded under
     // io.github.lukedevops.yukon.shaded.protobuf below, same rationale as
