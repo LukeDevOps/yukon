@@ -43,6 +43,11 @@ dependencies {
     // Endpoint module for Spring MVC, covering Spring Framework 5.3, 6.x and 7.x with one module.
     implementation(project(":endpoints-spring-webmvc"))
 
+    // Endpoint modules for Ktor. Route became the interface RoutingNode between 2.x and 3.x, so
+    // the two major versions need their own module rather than one shared one.
+    implementation(project(":endpoints-ktor-2"))
+    implementation(project(":endpoints-ktor-3"))
+
     // Wire schema for the delta batch and probe manifest payloads
     // (see src/main/proto/yukon.proto). Generated classes are shaded under
     // io.github.lukedevops.yukon.shaded.protobuf below, same rationale as
