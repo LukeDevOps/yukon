@@ -29,12 +29,13 @@ class AdviceBinder(
     private val locator =
         ClassFileLocator.Compound(
             ClassFileLocator.ForClassLoader.of(agentClassLoader),
-            if (targetClassLoader ==
-                null
-            ) {
+            // Weakly referenced on purpose: EndpointInstrumentation caches one binder per target
+            // loader in a WeakHashMap keyed by that loader, and a strong reference from the value
+            // back to its own key would keep the entry alive forever.
+            if (targetClassLoader == null) {
                 ClassFileLocator.ForClassLoader.ofBootLoader()
             } else {
-                ClassFileLocator.ForClassLoader.of(targetClassLoader)
+                ClassFileLocator.ForClassLoader.WeaklyReferenced.of(targetClassLoader)
             },
         )
     private val typePool = TypePool.Default.of(locator)
