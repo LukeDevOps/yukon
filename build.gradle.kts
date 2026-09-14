@@ -31,6 +31,12 @@ dependencies {
     // in a second, independently-versioned ASM dependency.
     implementation("net.bytebuddy:byte-buddy:1.18.12")
 
+    // EndpointModule, AdviceBinder, and the ByteBuddy-facing types a per-framework endpoint
+    // module is written against. A per-framework subproject depends on this module and never on
+    // this one, the root project, since the root project depends on the per-framework modules to
+    // merge their advice into the shaded jar: depending the other way would be a cycle.
+    implementation(project(":endpoints-api"))
+
     // Wire schema for the delta batch and probe manifest payloads
     // (see src/main/proto/yukon.proto). Generated classes are shaded under
     // io.github.lukedevops.yukon.shaded.protobuf below, same rationale as
@@ -188,6 +194,12 @@ tasks.jar {
 
 tasks.shadowJar {
     archiveClassifier.set("")
+
+    // Each per-framework endpoint module subproject ships its own
+    // META-INF/services/io.github.lukedevops.yukon.instrumentation.endpoints.api.EndpointModule
+    // entry. Without this, shadow keeps only one such file (whichever dependency it copies
+    // last), so every module but one would silently vanish from ServiceLoader discovery.
+    mergeServiceFiles()
 
     // Relocate ByteBuddy so it can't collide with a possibly
     // differently-versioned copy already on the target application's classpath.

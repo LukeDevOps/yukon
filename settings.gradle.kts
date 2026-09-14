@@ -6,3 +6,4 @@ rootProject.name = "yukon"
 include("bootstrap")
 include("demo")
 include("testkit")
+include("endpoints-api")

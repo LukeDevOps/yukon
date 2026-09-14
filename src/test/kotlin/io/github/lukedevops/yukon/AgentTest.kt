@@ -50,4 +50,40 @@ class AgentTest {
             running?.stop()
         }
     }
+
+    @Test
+    fun `endpointsEnabled=false leaves Running's endpoint transformer null, and stop() still works`() {
+        val instrumentation = ByteBuddyAgent.install()
+
+        val running =
+            Agent.start(
+                "includePackages=io.github.lukedevops.yukon.neverloaded.fixture,flushIntervalSeconds=3600,endpointsEnabled=false",
+                instrumentation,
+            )
+
+        try {
+            assertNotNull(running)
+            assertNull(running.endpointTransformer)
+        } finally {
+            running?.stop()
+        }
+    }
+
+    @Test
+    fun `endpointsEnabled defaults to true, leaving Running's endpoint transformer non-null, and stop() still works`() {
+        val instrumentation = ByteBuddyAgent.install()
+
+        val running =
+            Agent.start(
+                "includePackages=io.github.lukedevops.yukon.neverloaded.fixture,flushIntervalSeconds=3600",
+                instrumentation,
+            )
+
+        try {
+            assertNotNull(running)
+            assertNotNull(running.endpointTransformer)
+        } finally {
+            running?.stop()
+        }
+    }
 }
