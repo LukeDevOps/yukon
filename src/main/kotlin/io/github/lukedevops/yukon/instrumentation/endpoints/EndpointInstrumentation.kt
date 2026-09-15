@@ -92,7 +92,7 @@ class EndpointInstrumentation(
             builder =
                 builder.type(module.typeMatcher()).transform { typeBuilder, typeDescription, classLoader, _, _ ->
                     try {
-                        module.transform(typeBuilder, typeDescription, adviceBinderFor(classLoader))
+                        module.transform(typeBuilder, typeDescription, adviceBinderFor(classLoader), classLoader)
                     } catch (t: Throwable) {
                         log.log(Level.WARNING, "yukon: endpoint module ${module.name} failed to transform ${typeDescription.name}", t)
                         YukonEndpoints.moduleFailed(module.name, t)

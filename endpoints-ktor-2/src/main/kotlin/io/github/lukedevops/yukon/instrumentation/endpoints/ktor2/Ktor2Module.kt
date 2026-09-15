@@ -40,6 +40,7 @@ class Ktor2Module : EndpointModule {
         builder: DynamicType.Builder<*>,
         typeDescription: TypeDescription,
         advice: AdviceBinder,
+        classLoader: ClassLoader?,
     ): DynamicType.Builder<*> =
         when (typeDescription.name) {
             ROUTE -> {

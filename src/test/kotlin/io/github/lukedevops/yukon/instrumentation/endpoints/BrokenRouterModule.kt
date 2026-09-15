@@ -22,6 +22,7 @@ class BrokenRouterModule : EndpointModule {
         builder: DynamicType.Builder<*>,
         typeDescription: TypeDescription,
         advice: AdviceBinder,
+        classLoader: ClassLoader?,
     ): DynamicType.Builder<*> =
         builder.visit(advice.bind("io.github.lukedevops.yukon.endpoints.fake.BrokenRouterInvokeAdvice").on(named("invoke")))
 }

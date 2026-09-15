@@ -57,6 +57,7 @@ class JdkHttpServerModule : EndpointModule {
         builder: DynamicType.Builder<*>,
         typeDescription: TypeDescription,
         advice: AdviceBinder,
+        classLoader: ClassLoader?,
     ): DynamicType.Builder<*> =
         when (typeDescription.name) {
             SERVER_IMPL -> {

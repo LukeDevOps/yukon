@@ -32,11 +32,17 @@ interface EndpointModule {
      * Advice is bound by class name through [advice], never referenced as a class literal: an
      * advice class compiled against the framework's own types does not resolve in the
      * classloader this module's own code runs in. See [AdviceBinder].
+     *
+     * [classLoader] is the classloader defining [typeDescription], null for the bootstrap loader.
+     * A module that needs to know what else is present on that loader, such as a runtime library
+     * whose presence changes what a class inherits, reads it directly rather than through
+     * [advice], which only resolves advice bytecode.
      */
     fun transform(
         builder: DynamicType.Builder<*>,
         typeDescription: TypeDescription,
         advice: AdviceBinder,
+        classLoader: ClassLoader?,
     ): DynamicType.Builder<*>
 
     /**

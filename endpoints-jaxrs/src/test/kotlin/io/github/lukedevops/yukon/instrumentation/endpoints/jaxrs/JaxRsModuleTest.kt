@@ -1,6 +1,8 @@
 package io.github.lukedevops.yukon.instrumentation.endpoints.jaxrs
 
+import com.example.jaxrs.fixture.ApiOrdersResource
 import com.example.jaxrs.fixture.OrdersResource
+import com.example.jaxrs.fixture.ReportsResource
 import io.github.lukedevops.yukon.export.EndpointDiscoverySource
 import io.github.lukedevops.yukon.export.ResourceAttributes
 import org.glassfish.jersey.jdkhttp.JdkHttpServerFactory
@@ -39,7 +41,7 @@ class JaxRsModuleTest {
         val endpointRegistry = JaxRsTestAgent.endpointRegistry
         val probeRegistry = JaxRsTestAgent.probeRegistry
 
-        val resourceConfig = ResourceConfig(OrdersResource::class.java)
+        val resourceConfig = ResourceConfig(OrdersResource::class.java, ApiOrdersResource::class.java, ReportsResource::class.java)
         val server = JdkHttpServerFactory.createHttpServer(URI.create("http://localhost:0/"), resourceConfig)
 
         try {
@@ -50,6 +52,12 @@ class JaxRsModuleTest {
             post(client, port, "/orders")
             get(client, port, "/orders/sub/leaf")
             purge(client, port, "/orders/42/purge")
+            get(client, port, "/api/orders/7")
+            post(client, port, "/api/orders")
+            get(client, port, "/reports/summary")
+            val auditStatus = status(client, port, "/api/orders/7/audit")
+
+            assertEquals(404, auditStatus, "audit inherits nothing under the all-or-nothing rule, so Jersey has no route for it")
 
             val endpoints = endpointRegistry.endpoints()
             val byIdentity = endpoints.associateBy { "${it.verb} ${it.routeTemplate}" }
@@ -62,9 +70,15 @@ class JaxRsModuleTest {
                     "* /orders/sub",
                     "GET /sub/leaf",
                     "PURGE /orders/{id}/purge",
+                    "GET /api/orders/{id}",
+                    "POST /api/orders",
+                    "GET /reports/summary",
                 ),
                 byIdentity.keys,
             )
+            assertEquals(ApiOrdersResource::class.java.name, byIdentity.getValue("GET /api/orders/{id}").handlerClass)
+            assertEquals(ApiOrdersResource::class.java.name, byIdentity.getValue("POST /api/orders").handlerClass)
+            assertEquals(ReportsResource::class.java.name, byIdentity.getValue("GET /reports/summary").handlerClass)
 
             for (endpoint in endpoints) {
                 assertEquals("jaxrs", endpoint.framework)
@@ -82,6 +96,9 @@ class JaxRsModuleTest {
             assertEquals(1L, deltasById.getValue(byIdentity.getValue("PURGE /orders/{id}/purge").endpointId).hitsTotal)
             assertTrue(byIdentity.getValue("GET /orders/{id}/invoice").endpointId !in deltasById)
             assertTrue(byIdentity.getValue("DELETE /orders/{id}").endpointId !in deltasById)
+            assertEquals(1L, deltasById.getValue(byIdentity.getValue("GET /api/orders/{id}").endpointId).hitsTotal)
+            assertEquals(1L, deltasById.getValue(byIdentity.getValue("POST /api/orders").endpointId).hitsTotal)
+            assertEquals(1L, deltasById.getValue(byIdentity.getValue("GET /reports/summary").endpointId).hitsTotal)
 
             assertTrue(endpointRegistry.disabledModules().isEmpty())
 
@@ -124,5 +141,15 @@ class JaxRsModuleTest {
     ) {
         val request = HttpRequest.newBuilder(URI.create("http://localhost:$port$path")).method("PURGE", BodyPublishers.noBody()).build()
         client.send(request, HttpResponse.BodyHandlers.discarding())
+    }
+
+    /** The HTTP status Jersey answers a `GET` to [path] with, used to prove a declared-or-not endpoint matches what actually gets served. */
+    private fun status(
+        client: HttpClient,
+        port: Int,
+        path: String,
+    ): Int {
+        val request = HttpRequest.newBuilder(URI.create("http://localhost:$port$path")).GET().build()
+        return client.send(request, HttpResponse.BodyHandlers.discarding()).statusCode()
     }
 }
