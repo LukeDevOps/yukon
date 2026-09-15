@@ -6,6 +6,7 @@ import java.util.jar.JarOutputStream
 import java.util.zip.ZipEntry
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class StaticBaselineScannerTest {
@@ -14,6 +15,7 @@ class StaticBaselineScannerTest {
     private val sampleTargetBytes = classBytes("java/test/com/example/target/SampleTarget.class")
     private val otherTargetBytes = classBytes("java/test/com/example/other/OtherTarget.class")
     private val weirdNameBytes = classBytes("kotlin/test/com/example/target/WeirdName.class")
+    private val inlineTargetBytes = classBytes("kotlin/test/com/example/target/InlineTarget.class")
 
     private fun directoryRoot(vararg entries: Pair<String, ByteArray>): File {
         val root =
@@ -53,6 +55,20 @@ class StaticBaselineScannerTest {
         assertTrue("ping" in methodNames)
         assertTrue("neverCalled" in methodNames)
         assertEquals("()Ljava/lang/String;", declared.methods.single { it.methodName == "ping" }.methodDescriptor)
+    }
+
+    @Test
+    fun `marks a declared method inline when its bytecode carries the LocalVariableTable marker`() {
+        val root = directoryRoot("com/example/target/InlineTarget.class" to inlineTargetBytes)
+        val scanner = StaticBaselineScanner(listOf("com.example.target"))
+
+        val result = scanner.scan(listOf(root))
+
+        val declared = result.declaredClasses.single { it.className == "com.example.target.InlineTarget" }
+        assertTrue(declared.methods.single { it.methodName == "member" }.inline)
+        assertFalse(declared.methods.single { it.methodName == "plain" }.inline)
+        assertFalse(declared.methods.single { it.methodName == "same" && it.methodDescriptor == "(I)I" }.inline, "not itself inline")
+        assertTrue(declared.methods.single { it.methodName == "same" && it.methodDescriptor == "(II)I" }.inline)
     }
 
     @Test

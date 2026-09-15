@@ -40,6 +40,11 @@ data class DeltaBatch(
     val endpointDeltas: List<EndpointDelta> = emptyList(),
 )
 
+/**
+ * [inline] marks a probe belonging to a Kotlin inline function, or a branch inside one: a Kotlin
+ * caller copies the body into the call site instead of invoking this method, so a zero hit total
+ * is not evidence the code never ran. See ADR 0022.
+ */
 data class ProbeLocation(
     val classId: Int,
     val probeIndex: Int,
@@ -49,6 +54,7 @@ data class ProbeLocation(
     val methodDescriptor: String,
     val line: Int,
     val branchIndex: Int?,
+    val inline: Boolean = false,
 )
 
 /** A class the agent matched but could not instrument. It never gets a classId or any probes. */
@@ -76,10 +82,15 @@ data class ProbeManifest(
     val disabledEndpointModules: List<DisabledEndpointModule> = emptyList(),
 )
 
-/** No line field, unlike [ProbeLocation]: method-level probes never carry a real line number today. */
+/**
+ * No line field, unlike [ProbeLocation]: the static scan reads a class's bytecode only for the
+ * inline marker and records no line. [inline] is read from the LocalVariableTable by the same
+ * rule [ProbeLocation.inline] uses; see ADR 0022.
+ */
 data class DeclaredMethod(
     val methodName: String,
     val methodDescriptor: String,
+    val inline: Boolean = false,
 )
 
 data class DeclaredClass(

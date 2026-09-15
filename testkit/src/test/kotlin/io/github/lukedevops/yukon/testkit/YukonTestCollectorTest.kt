@@ -313,6 +313,28 @@ class YukonTestCollectorTest {
     }
 
     @Test
+    fun `neverHit excludes an inline probe even though it was never hit`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+        exporter.exportManifest(
+            ProbeManifest(
+                "svc",
+                null,
+                listOf(
+                    methodProbe(1, 0, "com.acme.Foo", "a", "()V", 1),
+                    ProbeLocation(1, 1, ProbeKind.METHOD, "com.acme.Foo", "inl", "()V", 2, null, inline = true),
+                ),
+                serviceInstanceId = "i-1",
+            ),
+        )
+
+        val neverHit = target.neverHit()
+
+        assertEquals(listOf("a"), neverHit.map { it.methodName })
+        assertFalse(neverHit.single().inline)
+    }
+
+    @Test
     fun `skippedClasses reflects the manifest's skipped list, distinct by class name`() {
         val target = startCollector()
         val exporter = exporterFor(target)
@@ -384,6 +406,27 @@ class YukonTestCollectorTest {
         )
         exporter.exportManifest(
             ProbeManifest("svc", null, listOf(methodProbe(1, 0, "com.acme.Loaded", "m", "()V", 1)), serviceInstanceId = "i-1"),
+        )
+
+        assertEquals(listOf("com.acme.Dead"), target.neverLoaded())
+    }
+
+    @Test
+    fun `neverLoaded excludes a declared class whose every declared method is inline`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+        exporter.exportStaticBaseline(
+            StaticBaseline(
+                resource = ResourceAttributes("svc", null, "i-1", null),
+                declaredClasses =
+                    listOf(
+                        DeclaredClass("com.acme.Dead", listOf(DeclaredMethod("m", "()V"))),
+                        DeclaredClass("com.acme.AllInline", listOf(DeclaredMethod("m", "()V", inline = true))),
+                    ),
+                scannedAt = 1000L,
+                chunkIndex = 0,
+                chunkCount = 1,
+            ),
         )
 
         assertEquals(listOf("com.acme.Dead"), target.neverLoaded())

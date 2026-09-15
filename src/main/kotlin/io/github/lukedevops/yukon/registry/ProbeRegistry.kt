@@ -343,6 +343,7 @@ open class ProbeRegistry {
                         methodDescriptor = meta.methodDescriptor,
                         line = meta.line,
                         branchIndex = meta.branchIndex,
+                        inline = meta.inline,
                     )
                 }
             }
@@ -428,6 +429,7 @@ open class ProbeRegistry {
                         methodDescriptor = meta.methodDescriptor,
                         line = meta.line,
                         branchIndex = meta.branchIndex,
+                        inline = meta.inline,
                     )
             }
         }

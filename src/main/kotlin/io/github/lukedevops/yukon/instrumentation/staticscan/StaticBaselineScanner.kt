@@ -6,10 +6,12 @@ import io.github.lukedevops.yukon.export.StaticallyUnsafeClass
 import io.github.lukedevops.yukon.export.UnprobedClass
 import io.github.lukedevops.yukon.export.UnreadableClass
 import io.github.lukedevops.yukon.instrumentation.TypeMatchPolicy
+import io.github.lukedevops.yukon.instrumentation.branch.BranchSiteAnalyzer
 import net.bytebuddy.description.type.TypeDescription
 import net.bytebuddy.dynamic.ClassFileLocator
 import net.bytebuddy.pool.TypePool
 import java.io.File
+import java.io.IOException
 import java.lang.System.Logger.Level
 import java.util.jar.JarFile
 
@@ -83,8 +85,9 @@ class StaticBaselineScanner(
     ) {
         if (!root.exists()) return
         if (root.isDirectory) {
-            val pool = TypePool.Default.of(withSupportingTypesFallback(ClassFileLocator.ForFolder(root)))
-            candidateClassNamesInFolder(root).forEach { className -> classify(className, pool, buckets) }
+            val locator = withSupportingTypesFallback(ClassFileLocator.ForFolder(root))
+            val pool = TypePool.Default.of(locator)
+            candidateClassNamesInFolder(root).forEach { className -> classify(className, pool, locator, buckets) }
             return
         }
         if (root.extension != "jar") return
@@ -101,22 +104,36 @@ class StaticBaselineScanner(
         jarFile: JarFile,
         buckets: Buckets,
     ) {
-        val flatPool = TypePool.Default.of(withSupportingTypesFallback(ClassFileLocator.ForJarFile(jarFile)))
-        val nestedPools =
+        val flatLocator = withSupportingTypesFallback(ClassFileLocator.ForJarFile(jarFile))
+        val flatPool = TypePool.Default.of(flatLocator)
+        val nestedLocators =
             NESTED_CLASSES_PREFIXES.associateWith { prefix ->
-                TypePool.Default.of(withSupportingTypesFallback(PrefixedJarClassFileLocator(jarFile, prefix)))
+                withSupportingTypesFallback(PrefixedJarClassFileLocator(jarFile, prefix))
             }
+        val nestedPools = nestedLocators.mapValues { (_, locator) -> TypePool.Default.of(locator) }
         val entries = jarFile.entries().asSequence().filter { !it.isDirectory && it.name.endsWith(".class") }
         for (entry in entries) {
             val nestedPrefix = NESTED_CLASSES_PREFIXES.firstOrNull { entry.name.startsWith(it) }
-            val (relativeName, pool) =
+            val (relativeName, pool, locator) =
                 when {
-                    nestedPrefix != null -> entry.name.removePrefix(nestedPrefix) to nestedPools.getValue(nestedPrefix)
-                    NESTED_JAR_PREFIXES.any { entry.name.startsWith(it) } -> continue
-                    else -> entry.name to flatPool
+                    nestedPrefix != null -> {
+                        Triple(
+                            entry.name.removePrefix(nestedPrefix),
+                            nestedPools.getValue(nestedPrefix),
+                            nestedLocators.getValue(nestedPrefix),
+                        )
+                    }
+
+                    NESTED_JAR_PREFIXES.any { entry.name.startsWith(it) } -> {
+                        continue
+                    }
+
+                    else -> {
+                        Triple(entry.name, flatPool, flatLocator)
+                    }
                 }
             val className = relativeName.removeSuffix(".class").replace('/', '.')
-            classify(className, pool, buckets)
+            classify(className, pool, locator, buckets)
         }
     }
 
@@ -135,6 +152,7 @@ class StaticBaselineScanner(
     private fun classify(
         className: String,
         pool: TypePool,
+        locator: ClassFileLocator,
         buckets: Buckets,
     ) {
         if (!looksInScope(className)) return
@@ -155,7 +173,7 @@ class StaticBaselineScanner(
                     )
                 return
             }
-            val methods = declaredMethodsOf(typeDescription)
+            val methods = declaredMethodsOf(typeDescription, className, locator)
             if (methods.isEmpty()) {
                 buckets.unprobed += UnprobedClass(className, "no concrete methods to probe")
                 return
@@ -169,10 +187,37 @@ class StaticBaselineScanner(
         }
     }
 
-    private fun declaredMethodsOf(typeDescription: TypeDescription): List<DeclaredMethod> =
-        typeDescription.declaredMethods
-            .filter(TypeMatchPolicy.methodMatcher())
-            .map { DeclaredMethod(it.internalName, it.descriptor) }
+    /**
+     * Reads [className]'s bytes through [locator] to detect inline functions with the same
+     * LocalVariableTable rule [BranchSiteAnalyzer] uses at transform time, and merges the result
+     * into each method it declares.
+     *
+     * A class whose bytes cannot be resolved here is not itself unreadable: its [TypeDescription]
+     * already resolved successfully through [pool][TypePool], so it is still declared, just with
+     * every method's [DeclaredMethod.inline] left false. This can only happen if the two disagree
+     * about what is readable, which does not happen for any locator this scanner builds today.
+     */
+    private fun declaredMethodsOf(
+        typeDescription: TypeDescription,
+        className: String,
+        locator: ClassFileLocator,
+    ): List<DeclaredMethod> {
+        val methods = typeDescription.declaredMethods.filter(TypeMatchPolicy.methodMatcher())
+        if (methods.isEmpty()) return emptyList()
+        val eligible = methods.map { it.internalName to it.descriptor }.toSet()
+        val analysis =
+            try {
+                val resolution = locator.locate(className)
+                if (resolution.isResolved) {
+                    BranchSiteAnalyzer.analyze(resolution.resolve()) { name, descriptor -> (name to descriptor) in eligible }
+                } else {
+                    BranchSiteAnalyzer.Analysis.EMPTY
+                }
+            } catch (_: IOException) {
+                BranchSiteAnalyzer.Analysis.EMPTY
+            }
+        return methods.map { DeclaredMethod(it.internalName, it.descriptor, analysis.isInline(it.internalName, it.descriptor)) }
+    }
 
     /** Cheap, string-only pre-filter, applied before resolving a [TypeDescription] at all. */
     private fun looksInScope(className: String): Boolean =

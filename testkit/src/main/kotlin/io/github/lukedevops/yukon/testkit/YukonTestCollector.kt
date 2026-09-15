@@ -59,6 +59,7 @@ class YukonTestCollector private constructor(
         val line: Int,
         val kind: ProbeKind,
         val branchIndex: Int?,
+        val inline: Boolean,
     )
 
     private data class ScanKey(
@@ -83,6 +84,9 @@ class YukonTestCollector private constructor(
     ) {
         val received: MutableSet<Int> = ConcurrentHashMap.newKeySet()
         val declaredNames: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+        /** Declared classes whose every declared method is inline; see [YukonTestCollector.neverLoaded]. */
+        val allInlineNames: MutableSet<String> = ConcurrentHashMap.newKeySet()
         val complete: Boolean get() = received.size >= chunkCount
     }
 
@@ -101,6 +105,9 @@ class YukonTestCollector private constructor(
     private val scans = ConcurrentHashMap<ScanKey, ScanProgress>()
     private val completedScans: MutableSet<ScanKey> = ConcurrentHashMap.newKeySet()
     private val consultedDeclaredNames: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+    /** Declared classes, from a complete scan, whose every declared method is inline. */
+    private val consultedAllInlineNames: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
     /** Latest delivered record per endpoint identity, across every instance; see [handleManifest]. */
     private val endpointRefsByIdentity = ConcurrentHashMap<EndpointIdentity, EndpointRef>()
@@ -240,10 +247,14 @@ class YukonTestCollector private constructor(
     /**
      * Every manifest probe, method or branch, with no hit ever reported by any instance, sorted
      * by class name, method name, line, then branch index.
+     *
+     * A probe belonging to a Kotlin inline function, or a branch inside one, is left out: a
+     * Kotlin caller copies the body into its own call site instead of invoking it, so a zero hit
+     * total is not evidence the code never ran. See ADR 0022.
      */
     fun neverHit(): List<ProbeRef> =
         probesByKey.entries
-            .filter { (key, _) -> (hitsByKey[key] ?: 0L) <= 0L }
+            .filter { (key, probe) -> !probe.inline && (hitsByKey[key] ?: 0L) <= 0L }
             .map { (key, probe) ->
                 ProbeRef(
                     key.serviceInstanceId,
@@ -253,6 +264,7 @@ class YukonTestCollector private constructor(
                     probe.line,
                     probe.kind,
                     probe.branchIndex,
+                    probe.inline,
                 )
             }.sortedWith(compareBy({ it.className }, { it.methodName }, { it.line }, { it.branchIndex ?: -1 }))
 
@@ -266,11 +278,13 @@ class YukonTestCollector private constructor(
      * Throws [IllegalStateException] if no static baseline scan has ever completed: an empty list
      * would read as "nothing is dead", when the real answer is "no idea yet". A class in the
      * unsafe, unreadable, or unprobed baseline buckets is never counted as declared here, so it
-     * never appears in this list either.
+     * never appears in this list either. A declared class whose every declared method is inline
+     * is also excluded: Kotlin callers never invoke such a class's methods directly, so it never
+     * loading at all is not evidence it is dead. See ADR 0022.
      */
     fun neverLoaded(): List<String> {
         check(completedScans.isNotEmpty()) { "no complete static baseline scan has been received yet" }
-        return consultedDeclaredNames.filter { it !in dynamicallyKnownClassNames }.sorted()
+        return consultedDeclaredNames.filter { it !in dynamicallyKnownClassNames && it !in consultedAllInlineNames }.sorted()
     }
 
     /**
@@ -402,6 +416,7 @@ class YukonTestCollector private constructor(
                     location.line,
                     location.kind,
                     location.branchIndex,
+                    location.inline,
                 )
             nameIndex.computeIfAbsent(location.className) { ConcurrentHashMap.newKeySet() }.add(key)
             dynamicallyKnownClassNames += location.className
@@ -449,8 +464,11 @@ class YukonTestCollector private constructor(
         val wasComplete = progress.complete
         progress.received += baseline.chunkIndex
         progress.declaredNames += baseline.declaredClasses.map { it.className }
+        progress.allInlineNames +=
+            baseline.declaredClasses.filter { it.methods.isNotEmpty() && it.methods.all { method -> method.inline } }.map { it.className }
         if (!wasComplete && progress.complete) {
             consultedDeclaredNames += progress.declaredNames
+            consultedAllInlineNames += progress.allInlineNames
             completedScans += scanKey
         }
         respond(exchange, 200)
@@ -503,7 +521,11 @@ class YukonTestCollector private constructor(
     }
 }
 
-/** One probe's identity and location, as reported by a manifest. See [YukonTestCollector] for the class name format. */
+/**
+ * One probe's identity and location, as reported by a manifest. See [YukonTestCollector] for the
+ * class name format. [inline] marks a Kotlin inline function, or a branch inside one; see ADR
+ * 0022.
+ */
 data class ProbeRef(
     val serviceInstanceId: String,
     val className: String,
@@ -512,6 +534,7 @@ data class ProbeRef(
     val line: Int,
     val kind: ProbeKind,
     val branchIndex: Int?,
+    val inline: Boolean = false,
 )
 
 /**

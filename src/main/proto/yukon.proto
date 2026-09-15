@@ -58,6 +58,10 @@ message ProbeLocation {
   int32 line = 7;
   // Unset for method-level probes; set for branch-level probes.
   optional int32 branch_index = 8;
+  // A Kotlin inline function, or a branch inside one. A Kotlin caller copies the body into its
+  // own call site instead of invoking this method, so a zero hits_total is not evidence of dead
+  // code.
+  bool inline = 9;
 }
 
 // A class the agent matched but could not instrument (e.g. bytecode
@@ -98,12 +102,15 @@ message ProbeManifest {
 
 // No line field, unlike ProbeLocation. A method's first source line is
 // read from the LineNumberTable at transform time, alongside the branch
-// analysis; the static scan does not walk method bodies, so it has no
-// line to report. Identity is (class, method_name, method_descriptor),
-// which is how a collector joins a declared method to a manifest probe.
+// analysis; the static scan reads a class's bytecode only for the inline
+// marker and records no line. Identity is (class, method_name,
+// method_descriptor), which is how a collector joins a declared method to
+// a manifest probe.
 message DeclaredMethod {
   string method_name = 1;
   string method_descriptor = 2;
+  // Read from the LocalVariableTable, the same rule as ProbeLocation.inline.
+  bool inline = 3;
 }
 
 message DeclaredClass {

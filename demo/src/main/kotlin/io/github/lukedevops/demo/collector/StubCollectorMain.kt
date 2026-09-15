@@ -49,6 +49,7 @@ private data class ProbeInfo(
     val line: Int,
     val kind: ProbeKind,
     val branchIndex: Int?,
+    val inline: Boolean,
 )
 
 private data class SkippedInfo(
@@ -59,6 +60,7 @@ private data class SkippedInfo(
 private data class DeclaredMethodInfo(
     val methodName: String,
     val methodDescriptor: String,
+    val inline: Boolean,
 )
 
 private data class EndpointInfo(
@@ -178,6 +180,7 @@ private fun handleManifest(exchange: HttpExchange) {
                 line = location.line,
                 kind = location.kind,
                 branchIndex = if (location.hasBranchIndex()) location.branchIndex else null,
+                inline = location.inline,
             )
         dynamicallyKnownClassNames += location.className
     }
@@ -212,7 +215,7 @@ private fun handleStaticBaseline(exchange: HttpExchange) {
     val baseline = StaticBaseline.parseFrom(exchange.requestBody.readBytes())
     for (declaredClass in baseline.declaredClassesList) {
         staticallyDeclaredClasses[declaredClass.className] =
-            declaredClass.methodsList.map { DeclaredMethodInfo(it.methodName, it.methodDescriptor) }
+            declaredClass.methodsList.map { DeclaredMethodInfo(it.methodName, it.methodDescriptor, it.inline) }
     }
     for (unsafe in baseline.staticallyUnsafeClassesList) {
         staticallyUnsafeClasses[unsafe.className] = unsafe.reason
@@ -241,14 +244,16 @@ private fun respondOk(exchange: HttpExchange) {
 }
 
 private fun printNeverHitReport() {
-    val neverHit = manifestProbes.keys.filter { it !in everHit }
+    val neverHitKeys = manifestProbes.keys.filter { it !in everHit }
+    val (inlineNeverHit, judgeable) = neverHitKeys.partition { manifestProbes[it]?.inline == true }
+    val judgeableTotal = manifestProbes.values.count { !it.inline }
     println()
     println("=== yukon demo: dead code report ===")
-    println("known probes: ${manifestProbes.size}, ever hit: ${everHit.size}, never hit: ${neverHit.size}")
-    if (manifestProbes.isNotEmpty()) {
-        println("dead: %.1f%%".format(100.0 * neverHit.size / manifestProbes.size))
+    println("known probes: ${manifestProbes.size}, ever hit: ${everHit.size}, never hit: ${judgeable.size}")
+    if (judgeableTotal > 0) {
+        println("dead: %.1f%%".format(100.0 * judgeable.size / judgeableTotal))
     }
-    neverHit
+    judgeable
         .mapNotNull { key -> manifestProbes[key]?.let { key to it } }
         .sortedWith(compareBy({ it.second.className }, { it.second.methodName }, { it.second.line }))
         .forEach { (key, info) ->
@@ -258,6 +263,9 @@ private fun printNeverHitReport() {
                     "[${info.kind}$branchSuffix] (instance ${key.serviceInstanceId}, class ${key.classId}, probe ${key.probeIndex})",
             )
         }
+    // Kotlin inline functions copy their body into the caller, so their own probe reads near
+    // zero however often they run: no "never hit" claim is made about them. See ADR 0022.
+    println("inline (not judged): ${inlineNeverHit.size}")
     if (skippedClasses.isNotEmpty()) {
         println("skipped (matched but could not be instrumented): ${skippedClasses.size}")
         skippedClasses.entries
@@ -322,17 +330,24 @@ private fun printNeverLoadedReport() {
         println("===========================================================")
         return
     }
-    val neverLoaded = staticallyDeclaredClasses.filterKeys { it !in dynamicallyKnownClassNames }
+    val neverLoadedAll = staticallyDeclaredClasses.filterKeys { it !in dynamicallyKnownClassNames }
+    val (allInline, neverLoaded) = neverLoadedAll.entries.partition { (_, methods) -> methods.isNotEmpty() && methods.all { it.inline } }
     println(
         "statically declared: ${staticallyDeclaredClasses.size}, confirmed loaded: " +
             "${staticallyDeclaredClasses.keys.count { it in dynamicallyKnownClassNames }}, never loaded: ${neverLoaded.size}",
     )
-    neverLoaded.entries
+    neverLoaded
         .sortedBy { it.key }
         .forEach { (className, methods) ->
             val methodNames = methods.joinToString(", ") { it.methodName }
             println("  NEVER LOADED: $className (methods: $methodNames)")
         }
+    // A class made only of inline functions is never loaded by a Kotlin caller at all, so its
+    // absence here is not evidence it is dead. See ADR 0022.
+    if (allInline.isNotEmpty()) {
+        println("all inline (not judged): ${allInline.size}")
+        allInline.sortedBy { it.key }.forEach { (className, _) -> println("  ALL INLINE: $className") }
+    }
     if (staticallyUnprobedClasses.isNotEmpty()) {
         println("nothing to probe (in scope, but no concrete methods): ${staticallyUnprobedClasses.size}")
         staticallyUnprobedClasses.entries
