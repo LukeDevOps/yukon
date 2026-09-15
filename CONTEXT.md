@@ -91,6 +91,28 @@ _Avoid_: OTel module, adapter
 **Inherited annotation**:
 A JAX-RS annotation a resource method takes from the method it overrides or implements because it carries none of its own. Only a method the concrete class declares can inherit.
 
+### Optional parameters
+
+**Optional parameter**:
+A value parameter declared with a default, so a caller may leave it out.
+_Avoid_: default argument, defaulted parameter
+
+**Omission**:
+One call that left an optional parameter to its default.
+
+**Omission probe**:
+The counter for one optional parameter, incremented in the compiler's default-filling method when a call omits it. It reports the function the parameter belongs to, not the synthetic method it sits in.
+_Avoid_: argument probe, default probe
+
+**Never supplied**:
+An optional parameter whose omission total equals its function's hit total. Every caller took the default; the parameter can go. Only claimed for a function that cannot be overridden.
+
+**Always supplied**:
+An optional parameter whose omission total stayed at zero while its function was called. The default value is dead.
+
+**Inline method**:
+A Kotlin `inline` function, whose body is copied into Kotlin callers so its own probe only counts calls from Java or through a reference. Marked in the manifest and the baseline; never reported as never hit.
+
 ### Testkit
 
 **Settled**:
