@@ -124,6 +124,24 @@ class YukonTestCollector private constructor(
     }
 
     /**
+     * Blocks until two delta batches, from any instance, have arrived after this call began.
+     * Waiting for two, not one, closes two gaps a single [awaitNextFlush] leaves open: a flush
+     * can already be mid-compute when the caller's last action completes, so it can land without
+     * that action's hits, and the same flush tick sends its manifest and its delta batch
+     * concurrently, so a probe a caller just triggered for the first time may not have a manifest
+     * entry yet even once its delta batch arrives. A second batch means at least one full tick
+     * started after the action, and gives that tick's concurrent manifest send a whole interval
+     * to land. A test that needs the manifest entry itself, not just the count, can still call
+     * [awaitProbe] or [awaitEndpoint] for that exact guarantee.
+     *
+     * Throws [TimeoutException] if [timeout] elapses before two batches arrive.
+     */
+    fun awaitSettled(timeout: Duration) {
+        val start = deltaBatchSeq.get()
+        awaitUntil(timeout, "fewer than two delta batches arrived within $timeout") { deltaBatchSeq.get() >= start + 2 }
+    }
+
+    /**
      * Blocks until some manifest, from any instance, has mentioned a probe for [className] and
      * [methodName]. A manifest and a delta batch from the same flush tick are sent concurrently by
      * the agent, so a newly loaded class's manifest entry can land after that tick's delta batch;
@@ -465,8 +483,22 @@ class YukonTestCollector private constructor(
             httpServer.createContext("/v1/yukon/deltas", collector::handleDeltaBatch)
             httpServer.createContext("/v1/yukon/manifest", collector::handleManifest)
             httpServer.createContext("/v1/yukon/static-baseline", collector::handleStaticBaseline)
-            httpServer.start()
+            startDaemon(httpServer)
             return collector
+        }
+
+        /**
+         * A Java thread inherits daemon status from the thread that creates it, and
+         * `HttpServer.start()` creates its dispatcher thread on whichever thread calls it. A
+         * JUnit extension that called `httpServer.start()` directly would leave that dispatcher
+         * thread non-daemon, which alone would keep the JVM from exiting even after every other
+         * thread finished. Starting the server from a short-lived daemon thread, and joining it
+         * before returning, makes the dispatcher thread daemon too.
+         */
+        private fun startDaemon(httpServer: HttpServer) {
+            val starter = Thread({ httpServer.start() }, "yukon-testkit-http-starter").apply { isDaemon = true }
+            starter.start()
+            starter.join()
         }
     }
 }

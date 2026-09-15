@@ -170,6 +170,38 @@ class YukonTestCollectorTest {
     }
 
     @Test
+    fun `awaitSettled returns once two delta batches are sent after the call, and times out with only one`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+
+        thread(isDaemon = true) {
+            Thread.sleep(50)
+            exporter.exportDeltaBatch(DeltaBatch(ResourceAttributes("svc", null, "i-1", null), emptyList()))
+            Thread.sleep(50)
+            exporter.exportDeltaBatch(DeltaBatch(ResourceAttributes("svc", null, "i-1", null), emptyList()))
+        }
+        target.awaitSettled(Duration.ofSeconds(2))
+
+        thread(isDaemon = true) {
+            Thread.sleep(50)
+            exporter.exportDeltaBatch(DeltaBatch(ResourceAttributes("svc", null, "i-1", null), emptyList()))
+        }
+        assertFailsWith<TimeoutException> {
+            target.awaitSettled(Duration.ofMillis(150))
+        }
+    }
+
+    @Test
+    fun `start runs the HTTP dispatcher as a daemon thread so it cannot pin the JVM`() {
+        startCollector()
+
+        val dispatcherThreads = Thread.getAllStackTraces().keys.filter { it.name == "HTTP-Dispatcher" }
+
+        assertTrue(dispatcherThreads.isNotEmpty(), "expected an HTTP-Dispatcher thread to exist after start()")
+        assertTrue(dispatcherThreads.all { it.isDaemon }, "every HTTP-Dispatcher thread must be a daemon thread")
+    }
+
+    @Test
     fun `awaitProbe returns once a manifest mentions the class and method, and times out if it never does`() {
         val target = startCollector()
         val exporter = exporterFor(target)

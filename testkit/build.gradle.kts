@@ -1,5 +1,8 @@
+import org.gradle.api.tasks.bundling.Jar
+
 plugins {
     kotlin("jvm") version "2.2.21"
+    `jvm-test-suite`
 }
 
 group = "io.github.lukedevops"
@@ -13,6 +16,13 @@ dependencies {
     // rather than duplicating the wire-mapping code in a separately published module.
     implementation(project(":"))
     implementation("com.google.protobuf:protobuf-java:3.25.5")
+
+    // compileOnly: an adopter who does not use JUnit pays nothing for YukonExtension, the same
+    // shape OpenTelemetry uses for opentelemetry-sdk-testing. JUnit's own launcher supplies the
+    // real jar at test time for anyone who does add it. Pinned to the version already resolved
+    // on this module's test classpath (checked with `./gradlew :testkit:dependencies
+    // --configuration testRuntimeClasspath`), so main and test code compile against the same API.
+    compileOnly("org.junit.jupiter:junit-jupiter-api:5.10.1")
 
     testImplementation(kotlin("test"))
 
@@ -48,4 +58,61 @@ tasks.jar {
 tasks.test {
     useJUnitPlatform()
     jvmArgs("-Djdk.attach.allowAttachSelf=true")
+}
+
+// Proves YukonExtension against the real, shaded agent jar rather than hand-built payloads or a
+// self-attach. A distinct port (4329) and a distinct source set keep this suite from colliding
+// with anything an adopter runs on the agent's own default port (4319), and from putting
+// -javaagent on the plain `test` suite above, whose tests self-attach instead and must stay
+// that way.
+val agentTestCollectorPort = 4329
+
+testing {
+    suites {
+        register<JvmTestSuite>("agentTest") {
+            useJUnitJupiter("5.10.1")
+            sources {
+                kotlin.srcDir("src/agentTest/kotlin")
+            }
+            dependencies {
+                // A registered suite, unlike the built-in `test` suite, does not inherit this
+                // project's own main output automatically: project() gives it YukonTestCollector
+                // and YukonExtension. kotlin("test") is a build-script-scoped helper, not
+                // available inside a suite's own dependencies block, so this names the same
+                // artifact directly, as the endpoints-spring-webmvc and endpoints-jaxrs suites
+                // already do.
+                implementation(project())
+                implementation("org.jetbrains.kotlin:kotlin-test-junit5:2.2.21")
+            }
+            targets {
+                all {
+                    testTask.configure {
+                        dependsOn(rootProject.tasks.named("shadowJar"))
+                        doFirst {
+                            val agentJar =
+                                rootProject.tasks
+                                    .named("shadowJar", Jar::class.java)
+                                    .get()
+                                    .archiveFile
+                                    .get()
+                                    .asFile
+                            jvmArgs(
+                                "-javaagent:${agentJar.absolutePath}=" +
+                                    "includePackages=com.example.agenttarget," +
+                                    "flushIntervalSeconds=1," +
+                                    "serviceName=testkit-agent-test," +
+                                    "endpointsEnabled=false," +
+                                    "endpoint=http://localhost:$agentTestCollectorPort",
+                                "-Dyukon.testkit.port=$agentTestCollectorPort",
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+tasks.check {
+    dependsOn(testing.suites.named("agentTest"))
 }
