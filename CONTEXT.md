@@ -84,6 +84,19 @@ The per-framework unit that hooks one framework's registration and dispatch. A m
 An endpoint that at least one instance registered and whose hit total has stayed at zero across every instance in scope. The framework would serve it; no request ever matched it.
 _Avoid_: unused endpoint (the product phrase, not the observation), dead
 
+**Route bridge**:
+An endpoint module that counts the route another instrumentation already resolved for a request, rather than hooking the framework itself. It only ever discovers endpoints by dispatch and never declares one.
+_Avoid_: OTel module, adapter
+
+**Inherited annotation**:
+A JAX-RS annotation a resource method takes from the method it overrides or implements because it carries none of its own. Only a method the concrete class declares can inherit.
+
+### Testkit
+
+**Settled**:
+The state in which every hit made before a given moment has reached the test collector: two consecutive heartbeats have arrived since then.
+_Avoid_: flushed, synced
+
 ### Static baseline
 
 **Static baseline**:
