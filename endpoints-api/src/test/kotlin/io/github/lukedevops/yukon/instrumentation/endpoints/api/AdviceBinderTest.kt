@@ -4,11 +4,15 @@ import io.github.lukedevops.yukon.instrumentation.endpoints.api.fixture.PingAdvi
 import net.bytebuddy.agent.ByteBuddyAgent
 import net.bytebuddy.agent.builder.AgentBuilder
 import net.bytebuddy.agent.builder.ResettableClassFileTransformer
+import net.bytebuddy.dynamic.ClassFileLocator
 import net.bytebuddy.matcher.ElementMatchers.named
 import java.io.File
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
 
 /**
  * Proves [AdviceBinder] resolves an advice class by name and that the resulting [net.bytebuddy.asm.Advice]
@@ -55,5 +59,40 @@ class AdviceBinderTest {
         target.getMethod("ping").invoke(instance)
 
         assertEquals(2, PingAdvice.entries)
+    }
+
+    @Test
+    fun `bind with remap prefixes rewrites a referenced type's internal name`() {
+        val adviceClassName = "io.github.lukedevops.yukon.instrumentation.endpoints.api.fixture.RemapAdvice"
+        val originalBytes =
+            ClassFileLocator.ForClassLoader
+                .of(javaClass.classLoader)
+                .locate(adviceClassName)
+                .resolve()
+
+        val remapped = remapClassBytes(originalBytes, mapOf("com/example/remap/" to "com/example/remapped/"))
+
+        val remappedText = String(remapped, Charsets.ISO_8859_1)
+        assertFalse("com/example/remap/Before" in remappedText, "the original reference must not survive the remap")
+        assertTrue("com/example/remapped/Before" in remappedText, "the rewritten reference must name the remapped type")
+
+        // The remapped bytecode must also resolve and bind cleanly, proving AdviceBinder's own
+        // TypePool can describe the advice once the type it references only exists under its
+        // remapped name.
+        val binder = AdviceBinder(javaClass.classLoader, javaClass.classLoader)
+        val advice = binder.bind(adviceClassName, mapOf("com/example/remap/" to "com/example/remapped/"))
+        assertNotNull(advice)
+    }
+
+    @Test
+    fun `bind with an empty remap map behaves exactly like the single-argument bind`() {
+        PingAdvice.entries = 0
+        val binder = AdviceBinder(javaClass.classLoader, javaClass.classLoader)
+
+        val withoutMap = binder.bind("io.github.lukedevops.yukon.instrumentation.endpoints.api.fixture.PingAdvice")
+        val withEmptyMap = binder.bind("io.github.lukedevops.yukon.instrumentation.endpoints.api.fixture.PingAdvice", emptyMap())
+
+        assertNotNull(withoutMap)
+        assertNotNull(withEmptyMap)
     }
 }

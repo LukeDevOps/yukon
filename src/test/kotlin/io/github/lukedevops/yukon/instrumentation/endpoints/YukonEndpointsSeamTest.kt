@@ -57,9 +57,10 @@ class YukonEndpointsSeamTest {
 
     @Test
     @Order(2)
-    fun `register, recordDispatch and declare buffer before install, replay in order once installed, and drop beyond the 4096 cap`() {
+    fun `register, recordDispatch, recordDispatchIfUnowned, declare buffer before install and replay in order, dropping past the cap`() {
         val registerModule = uniqueModule("cap-register")
         val dispatchModule = uniqueModule("cap-dispatch")
+        val dispatchIfUnownedModule = uniqueModule("cap-dispatch-if-unowned")
         val declareModule = uniqueModule("cap-declare")
         val failureModule = uniqueModule("cap-failure")
 
@@ -69,7 +70,7 @@ class YukonEndpointsSeamTest {
         val firstRegisterReturn =
             YukonEndpoints.register(registerModule, "key-0", "GET", "/cap-test/register/0", null, null, null, null)
         assertNull(firstRegisterReturn, "register must return null before a resolver is installed")
-        for (i in 1 until 4089) {
+        for (i in 1 until 4088) {
             assertNull(YukonEndpoints.register(registerModule, "key-$i", "GET", "/cap-test/register/$i", null, null, null, null))
         }
 
@@ -79,11 +80,15 @@ class YukonEndpointsSeamTest {
             assertNull(YukonEndpoints.recordDispatch(dispatchModule, "dispatch-key-$i", "GET", "/cap-test/dispatch/$i", null, null))
         }
 
-        // 1 declare + 4089 register + 5 dispatch + 1 failure records exactly fill the 4096-record cap.
+        val firstDispatchIfUnownedReturn =
+            YukonEndpoints.recordDispatchIfUnowned(dispatchIfUnownedModule, "unowned-key-0", "GET", "/cap-test/unowned/0", null, null)
+        assertNull(firstDispatchIfUnownedReturn, "recordDispatchIfUnowned must return null before a resolver is installed")
+
+        // 1 declare + 4088 register + 5 dispatch + 1 dispatchIfUnowned + 1 failure records exactly fill the 4096-record cap.
         YukonEndpoints.moduleFailed(failureModule, RuntimeException("linkage boom"))
 
         // Every one of these arrives after the buffer is already full, so all must be dropped.
-        for (i in 4089 until 4109) {
+        for (i in 4088 until 4108) {
             assertNull(YukonEndpoints.register(registerModule, "overflow-key-$i", "GET", "/cap-test/register/$i", null, null, null, null))
         }
         // Must not throw, and must not be replayed once installed below.
@@ -92,13 +97,15 @@ class YukonEndpointsSeamTest {
         val resolver = RecordingResolver()
         YukonEndpoints.install(resolver.asResolver() as YukonEndpoints.Resolver)
 
-        assertEquals(4089, resolver.registerCalls.size, "only the first 4089 register records should have survived the cap")
+        assertEquals(4088, resolver.registerCalls.size, "only the first 4088 register records should have survived the cap")
         assertEquals("/cap-test/register/0", resolver.registerCalls.first().verbatimTemplate)
-        assertEquals("/cap-test/register/4088", resolver.registerCalls.last().verbatimTemplate)
-        assertTrue(resolver.registerCalls.none { it.verbatimTemplate == "/cap-test/register/4089" }, "overflow records must not replay")
+        assertEquals("/cap-test/register/4087", resolver.registerCalls.last().verbatimTemplate)
+        assertTrue(resolver.registerCalls.none { it.verbatimTemplate == "/cap-test/register/4088" }, "overflow records must not replay")
 
         assertEquals(5, resolver.dispatchCalls.size)
-        assertEquals(5, resolver.hitCalls.size, "each replayed dispatch must be followed by exactly one hit")
+        assertEquals(1, resolver.dispatchIfUnownedCalls.size)
+        assertEquals("/cap-test/unowned/0", resolver.dispatchIfUnownedCalls.single().verbatimTemplate)
+        assertEquals(6, resolver.hitCalls.size, "each replayed dispatch and dispatchIfUnowned must be followed by exactly one hit")
 
         assertEquals(1, resolver.declareCalls.size, "only the declare record buffered before the cap filled should survive")
         val declareCall = resolver.declareCalls.single()
@@ -218,6 +225,43 @@ class YukonEndpointsSeamTest {
         assertSame(frameworkObject, declareCall.frameworkObject)
     }
 
+    @Test
+    @Order(8)
+    fun `recordDispatchIfUnowned delegates directly once installed, and short-circuits for a disabled module`() {
+        val module = uniqueModule("dispatch-if-unowned-delegate")
+        val resolver = RecordingResolver()
+        YukonEndpoints.install(resolver.asResolver() as YukonEndpoints.Resolver)
+
+        val entry = YukonEndpoints.recordDispatchIfUnowned(module, "key", "GET", "/bridge/test", null, null)
+
+        assertNotNull(entry)
+        assertEquals(1, resolver.dispatchIfUnownedCalls.size)
+
+        YukonEndpoints.moduleFailed(module, RuntimeException("linkage boom"))
+        val afterDisabled = YukonEndpoints.recordDispatchIfUnowned(module, "key2", "GET", "/bridge/test2", null, null)
+
+        assertNull(afterDisabled)
+        assertEquals(1, resolver.dispatchIfUnownedCalls.size, "a disabled module must never reach the resolver")
+    }
+
+    @Test
+    @Order(9)
+    fun `wired to a real EndpointRegistry, recordDispatchIfUnowned refuses an identity another framework already owns`() {
+        val registry = EndpointRegistry()
+        YukonEndpoints.install(endpointRegistryResolver(registry) as YukonEndpoints.Resolver)
+        val ownerModule = uniqueModule("owner")
+        val bridgeModule = uniqueModule("bridge")
+
+        val ownedEntry = YukonEndpoints.register(ownerModule, Any(), "GET", "/bridge-owned", null, null, null, null)
+        assertNotNull(ownedEntry)
+
+        val bridgeResult = YukonEndpoints.recordDispatchIfUnowned(bridgeModule, Any(), "GET", "/bridge-owned", null, null)
+
+        assertNull(bridgeResult)
+        val endpoint = registry.endpoints().single()
+        assertEquals(ownerModule, endpoint.framework)
+    }
+
     private companion object {
         val MODULE_SEQUENCE = AtomicLong()
 
@@ -258,6 +302,12 @@ private class RecordingResolver {
         val verbatimTemplate: String,
     )
 
+    data class DispatchIfUnownedCall(
+        val key: Any,
+        val framework: String,
+        val verbatimTemplate: String,
+    )
+
     data class DisableCall(
         val module: String,
         val reason: String,
@@ -270,6 +320,7 @@ private class RecordingResolver {
 
     val registerCalls = mutableListOf<RegisterCall>()
     val dispatchCalls = mutableListOf<DispatchCall>()
+    val dispatchIfUnownedCalls = mutableListOf<DispatchIfUnownedCall>()
     val hitCalls = mutableListOf<Any>()
     val attachCalls = mutableListOf<Any>()
     val disableCalls = mutableListOf<DisableCall>()
@@ -292,6 +343,11 @@ private class RecordingResolver {
 
                 "recordDispatch" -> {
                     dispatchCalls += DispatchCall(args[0]!!, args[1] as String, args[3] as String)
+                    "entry-${nextEntryId++}"
+                }
+
+                "recordDispatchIfUnowned" -> {
+                    dispatchIfUnownedCalls += DispatchIfUnownedCall(args[0]!!, args[1] as String, args[3] as String)
                     "entry-${nextEntryId++}"
                 }
 
@@ -366,6 +422,17 @@ private fun endpointRegistryResolver(registry: EndpointRegistry): Any =
 
             "recordDispatch" -> {
                 registry.recordDispatch(
+                    key = args[0]!!,
+                    framework = args[1] as String,
+                    verb = args[2] as String?,
+                    verbatimTemplate = args[3] as String,
+                    contextPath = args[4] as String?,
+                    handlerClass = args[5] as String?,
+                )
+            }
+
+            "recordDispatchIfUnowned" -> {
+                registry.recordDispatchIfUnowned(
                     key = args[0]!!,
                     framework = args[1] as String,
                     verb = args[2] as String?,

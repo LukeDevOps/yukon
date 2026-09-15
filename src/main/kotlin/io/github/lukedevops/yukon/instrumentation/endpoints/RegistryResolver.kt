@@ -55,6 +55,15 @@ class RegistryResolver(
         handlerClass: String?,
     ): Any = registry.recordDispatch(key, framework, verb, verbatimTemplate, contextPath, handlerClass)
 
+    override fun recordDispatchIfUnowned(
+        key: Any,
+        framework: String,
+        verb: String?,
+        verbatimTemplate: String,
+        contextPath: String?,
+        handlerClass: String?,
+    ): Any? = registry.recordDispatchIfUnowned(key, framework, verb, verbatimTemplate, contextPath, handlerClass)
+
     /**
      * Routes [frameworkObject] to the [EndpointModule] named [module], which walks it and
      * registers whatever it finds through [YukonEndpoints.register].

@@ -48,6 +48,9 @@ public final class YukonEndpoints {
         Object recordDispatch(
                 Object key, String framework, String verb, String verbatimTemplate, String contextPath, String handlerClass);
 
+        Object recordDispatchIfUnowned(
+                Object key, String framework, String verb, String verbatimTemplate, String contextPath, String handlerClass);
+
         void declare(String module, Object frameworkObject);
 
         void hit(Object entry);
@@ -60,6 +63,7 @@ public final class YukonEndpoints {
     private enum RecordKind {
         REGISTER,
         DISPATCH,
+        DISPATCH_IF_UNOWNED,
         DECLARE,
         FAILURE,
     }
@@ -130,6 +134,22 @@ public final class YukonEndpoints {
                 String module, Object key, String verb, String verbatimTemplate, String contextPath, String handlerClass) {
             return new BufferedRecord(
                     RecordKind.DISPATCH, module, key, verb, verbatimTemplate, contextPath, handlerClass, null, null, null, null);
+        }
+
+        static BufferedRecord forDispatchIfUnowned(
+                String module, Object key, String verb, String verbatimTemplate, String contextPath, String handlerClass) {
+            return new BufferedRecord(
+                    RecordKind.DISPATCH_IF_UNOWNED,
+                    module,
+                    key,
+                    verb,
+                    verbatimTemplate,
+                    contextPath,
+                    handlerClass,
+                    null,
+                    null,
+                    null,
+                    null);
         }
 
         static BufferedRecord forDeclare(String module, Object frameworkObject) {
@@ -239,6 +259,32 @@ public final class YukonEndpoints {
             return current.recordDispatch(key, module, verb, verbatimTemplate, contextPath, handlerClass);
         } catch (Throwable t) {
             logDelegateFailure(module, "recordDispatch", t);
+            return null;
+        }
+    }
+
+    /**
+     * Like {@link #recordDispatch}, but for a route bridge module reading an identity another
+     * instrumentation layer already resolved rather than one it matched itself: the identity
+     * might already belong to an endpoint a framework module owns. Returns null and binds nothing
+     * when it does; otherwise behaves exactly like {@link #recordDispatch}. Buffers before a
+     * resolver is installed, the same as {@link #recordDispatch}.
+     */
+    public static Object recordDispatchIfUnowned(
+            String module, Object key, String verb, String verbatimTemplate, String contextPath, String handlerClass) {
+        if (isDisabledFast(module)) return null;
+        Resolver current;
+        synchronized (BUFFER_LOCK) {
+            current = resolver;
+            if (current == null) {
+                buffer(BufferedRecord.forDispatchIfUnowned(module, key, verb, verbatimTemplate, contextPath, handlerClass));
+                return null;
+            }
+        }
+        try {
+            return current.recordDispatchIfUnowned(key, module, verb, verbatimTemplate, contextPath, handlerClass);
+        } catch (Throwable t) {
+            logDelegateFailure(module, "recordDispatchIfUnowned", t);
             return null;
         }
     }
@@ -369,6 +415,14 @@ public final class YukonEndpoints {
                                     record.key, record.module, record.verb, record.verbatimTemplate, record.contextPath, record.handlerClass);
                     if (entry != null) {
                         target.hit(entry);
+                    }
+                    break;
+                case DISPATCH_IF_UNOWNED:
+                    Object unownedEntry =
+                            target.recordDispatchIfUnowned(
+                                    record.key, record.module, record.verb, record.verbatimTemplate, record.contextPath, record.handlerClass);
+                    if (unownedEntry != null) {
+                        target.hit(unownedEntry);
                     }
                     break;
                 case DECLARE:

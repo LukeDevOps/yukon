@@ -13,6 +13,7 @@ class OptionNamesTest {
         assertEquals("yukon.include.packages", OptionNames.systemProperty("includePackages"))
         assertEquals("yukon.exclude.packages", OptionNames.systemProperty("excludePackages"))
         assertEquals("yukon.enabled", OptionNames.systemProperty("enabled"))
+        assertEquals("yukon.otel.bridge.enabled", OptionNames.systemProperty("otelBridgeEnabled"))
     }
 
     @Test
@@ -28,5 +29,6 @@ class OptionNamesTest {
         assertEquals("YUKON_INCLUDE_PACKAGES", OptionNames.environmentVariable("includePackages"))
         assertEquals("YUKON_EXCLUDE_PACKAGES", OptionNames.environmentVariable("excludePackages"))
         assertEquals("YUKON_ENABLED", OptionNames.environmentVariable("enabled"))
+        assertEquals("YUKON_OTEL_BRIDGE_ENABLED", OptionNames.environmentVariable("otelBridgeEnabled"))
     }
 }

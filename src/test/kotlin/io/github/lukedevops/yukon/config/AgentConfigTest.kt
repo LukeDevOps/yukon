@@ -20,6 +20,7 @@ class AgentConfigTest {
         assertEquals(false, config.staticBaselineEnabled)
         assertEquals(true, config.enabled)
         assertEquals(true, config.endpointsEnabled)
+        assertEquals(false, config.otelBridgeEnabled)
         assertEquals(null, config.authToken)
     }
 
@@ -68,6 +69,28 @@ class AgentConfigTest {
 
         val fromEnv = AgentConfig.parse(null, env = mapOf("YUKON_ENDPOINTS_ENABLED" to "false")::get)
         assertEquals(false, fromEnv.endpointsEnabled)
+    }
+
+    @Test
+    fun `otelBridgeEnabled defaults to false and can be opted into`() {
+        assertEquals(false, AgentConfig.parse(null).otelBridgeEnabled)
+        assertEquals(false, AgentConfig.parse("otelBridgeEnabled=false").otelBridgeEnabled)
+        assertEquals(true, AgentConfig.parse("otelBridgeEnabled=true").otelBridgeEnabled)
+    }
+
+    @Test
+    fun `otelBridgeEnabled is case-insensitive, and an unparseable value warns and falls back to the default of false`() {
+        assertEquals(true, AgentConfig.parse("otelBridgeEnabled=TRUE").otelBridgeEnabled)
+        assertEquals(false, AgentConfig.parse("otelBridgeEnabled=maybe").otelBridgeEnabled)
+    }
+
+    @Test
+    fun `otelBridgeEnabled resolves from a system property and an environment variable`() {
+        val fromProperty = AgentConfig.parse(null, systemProperties = mapOf("yukon.otel.bridge.enabled" to "true")::get)
+        assertEquals(true, fromProperty.otelBridgeEnabled)
+
+        val fromEnv = AgentConfig.parse(null, env = mapOf("YUKON_OTEL_BRIDGE_ENABLED" to "true")::get)
+        assertEquals(true, fromEnv.otelBridgeEnabled)
     }
 
     @Test
