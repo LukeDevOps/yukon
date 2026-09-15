@@ -214,6 +214,45 @@ class EndpointRegistry {
         return entry
     }
 
+    /**
+     * Like [recordDispatch], but for a route bridge module that reads an identity another
+     * instrumentation layer already resolved, rather than one it matched itself: the identity
+     * might belong to an endpoint a framework module already owns. When an entry for the
+     * normalised identity already exists under a different [framework], this binds nothing and
+     * returns null, so the caller counts nothing and the other module's entry is left untouched.
+     * When the entry exists under the same [framework], or does not exist yet, this behaves
+     * exactly like [recordDispatch].
+     *
+     * The ownership check and the eventual creation are not one atomic step: a second thread
+     * racing to create the same identity under a different framework between the two could still
+     * end up owning it. This is the same non-atomic tradeoff the rest of this registry already
+     * accepts for a plain count race, and correcting it would need a lock this hot path does not
+     * otherwise need.
+     */
+    fun recordDispatchIfUnowned(
+        key: Any,
+        framework: String,
+        verb: String?,
+        verbatimTemplate: String,
+        contextPath: String? = null,
+        handlerClass: String? = null,
+    ): EndpointEntry? {
+        val identity = identityOf(verb, verbatimTemplate, contextPath)
+        val existing = entriesByIdentity[identity]
+        if (existing != null && existing.framework != framework) return null
+        return recordDispatch(key, framework, verb, verbatimTemplate, contextPath, handlerClass)
+    }
+
+    private fun identityOf(
+        verb: String?,
+        verbatimTemplate: String,
+        contextPath: String?,
+    ): Identity =
+        Identity(
+            RouteTemplateNormalizer.normalizeVerb(verb),
+            RouteTemplateNormalizer.normalize(verbatimTemplate, contextPath),
+        )
+
     private fun findOrCreate(
         framework: String,
         verb: String?,
@@ -221,11 +260,7 @@ class EndpointRegistry {
         contextPath: String?,
         initialSource: EndpointDiscoverySource,
     ): EndpointEntry {
-        val identity =
-            Identity(
-                RouteTemplateNormalizer.normalizeVerb(verb),
-                RouteTemplateNormalizer.normalize(verbatimTemplate, contextPath),
-            )
+        val identity = identityOf(verb, verbatimTemplate, contextPath)
         return entriesByIdentity.computeIfAbsent(identity) {
             EndpointEntry(
                 endpointId = nextEndpointId.getAndIncrement(),

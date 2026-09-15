@@ -9,6 +9,7 @@ import io.github.lukedevops.yukon.instrumentation.BootstrapInstallException
 import io.github.lukedevops.yukon.instrumentation.YukonInstrumentation
 import io.github.lukedevops.yukon.instrumentation.endpoints.EndpointInstrumentation
 import io.github.lukedevops.yukon.instrumentation.endpoints.EndpointModules
+import io.github.lukedevops.yukon.instrumentation.endpoints.api.EndpointModule
 import io.github.lukedevops.yukon.instrumentation.staticscan.StaticBaselineMismatchDetector
 import io.github.lukedevops.yukon.instrumentation.staticscan.StaticBaselinePublisher
 import io.github.lukedevops.yukon.instrumentation.staticscan.StaticBaselineScanner
@@ -22,6 +23,7 @@ import java.time.Duration
 /** `-javaagent:yukon-agent.jar` entry point. */
 object Agent {
     private val SHUTDOWN_FLUSH_TIMEOUT: Duration = Duration.ofSeconds(10)
+    private const val OTEL_BRIDGE_MODULE_NAME = "otel"
     private val log = System.getLogger(Agent::class.java.name)
 
     /**
@@ -104,7 +106,7 @@ object Agent {
         var endpointTransformer: ResettableClassFileTransformer? = null
         if (config.endpointsEnabled) {
             try {
-                val modules = EndpointModules.discover()
+                val modules = filterEndpointModules(EndpointModules.discover(), config.otelBridgeEnabled)
                 val instance = EndpointInstrumentation(endpointRegistry, modules)
                 endpointTransformer = instance.install(instrumentation)
                 endpointInstrumentation = instance
@@ -137,6 +139,19 @@ object Agent {
             endpointTransformer,
         )
     }
+
+    /**
+     * Drops the route bridge module, named `"otel"`, from [modules] unless [otelBridgeEnabled]
+     * opts into it. Every other discovered module passes through untouched.
+     *
+     * `internal` rather than `private` so a test can pin this rule directly against fake
+     * [EndpointModule] instances, without installing a real agent and inspecting which framework
+     * classes it ended up matching.
+     */
+    internal fun filterEndpointModules(
+        modules: List<EndpointModule>,
+        otelBridgeEnabled: Boolean,
+    ): List<EndpointModule> = if (otelBridgeEnabled) modules else modules.filterNot { it.name == OTEL_BRIDGE_MODULE_NAME }
 
     /**
      * Runs on its own background thread, off `premain`, so a full classpath walk never adds

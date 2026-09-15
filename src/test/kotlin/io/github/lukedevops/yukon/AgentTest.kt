@@ -1,7 +1,14 @@
 package io.github.lukedevops.yukon
 
+import io.github.lukedevops.yukon.instrumentation.endpoints.api.AdviceBinder
+import io.github.lukedevops.yukon.instrumentation.endpoints.api.EndpointModule
 import net.bytebuddy.agent.ByteBuddyAgent
+import net.bytebuddy.description.type.TypeDescription
+import net.bytebuddy.dynamic.DynamicType
+import net.bytebuddy.matcher.ElementMatcher
+import net.bytebuddy.matcher.ElementMatchers
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -86,4 +93,36 @@ class AgentTest {
             running?.stop()
         }
     }
+
+    @Test
+    fun `filterEndpointModules drops the otel module unless otelBridgeEnabled, and keeps every other module either way`() {
+        val otelModule = fakeEndpointModule("otel")
+        val jdkModule = fakeEndpointModule("jdk-httpserver")
+        val modules = listOf(jdkModule, otelModule)
+
+        assertEquals(listOf(jdkModule), Agent.filterEndpointModules(modules, otelBridgeEnabled = false))
+        assertEquals(listOf(jdkModule, otelModule), Agent.filterEndpointModules(modules, otelBridgeEnabled = true))
+    }
+
+    @Test
+    fun `filterEndpointModules is a no-op when no module is named otel`() {
+        val modules = listOf(fakeEndpointModule("jdk-httpserver"), fakeEndpointModule("spring-mvc"))
+
+        assertEquals(modules, Agent.filterEndpointModules(modules, otelBridgeEnabled = false))
+    }
 }
+
+/** A minimal [EndpointModule] whose only meaningful behaviour is its [EndpointModule.name]. */
+private fun fakeEndpointModule(moduleName: String): EndpointModule =
+    object : EndpointModule {
+        override val name: String = moduleName
+
+        override fun typeMatcher(): ElementMatcher<in TypeDescription> = ElementMatchers.any()
+
+        override fun transform(
+            builder: DynamicType.Builder<*>,
+            typeDescription: TypeDescription,
+            advice: AdviceBinder,
+            classLoader: ClassLoader?,
+        ): DynamicType.Builder<*> = builder
+    }

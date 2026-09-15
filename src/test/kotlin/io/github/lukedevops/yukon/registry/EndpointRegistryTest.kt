@@ -477,4 +477,43 @@ class EndpointRegistryTest {
 
         assertEquals("/app/orders", entry.routeTemplate)
     }
+
+    @Test
+    fun `recordDispatchIfUnowned binds nothing and returns null for an identity another framework already owns`() {
+        val registry = EndpointRegistry()
+        val ownedEntry = registry.register(key = Any(), framework = "spring-mvc", verb = "GET", verbatimTemplate = "/users/{id}")
+        val bridgeKey = Any()
+
+        val result = registry.recordDispatchIfUnowned(key = bridgeKey, framework = "otel", verb = "GET", verbatimTemplate = "/users/{id}")
+
+        assertNull(result)
+        assertNull(registry.lookup(bridgeKey))
+        assertEquals(0L, ownedEntry.count)
+        assertEquals("spring-mvc", registry.endpoints().single().framework)
+    }
+
+    @Test
+    fun `recordDispatchIfUnowned binds and returns the entry when the existing owner is the same framework`() {
+        val registry = EndpointRegistry()
+        val firstKey = Any()
+        val existing = registry.recordDispatch(key = firstKey, framework = "otel", verb = "GET", verbatimTemplate = "/users/{id}")
+        val secondKey = Any()
+
+        val result = registry.recordDispatchIfUnowned(key = secondKey, framework = "otel", verb = "GET", verbatimTemplate = "/users/{id}")
+
+        assertSame(existing, result)
+        assertSame(existing, registry.lookup(secondKey))
+    }
+
+    @Test
+    fun `recordDispatchIfUnowned creates a dispatch-discovered entry when no identity exists yet`() {
+        val registry = EndpointRegistry()
+        val key = Any()
+
+        val result = registry.recordDispatchIfUnowned(key = key, framework = "otel", verb = "GET", verbatimTemplate = "/users/{id}")
+
+        assertEquals("otel", result?.framework)
+        assertEquals(EndpointDiscoverySource.DISPATCH, result?.discoverySource)
+        assertSame(result, registry.lookup(key))
+    }
 }

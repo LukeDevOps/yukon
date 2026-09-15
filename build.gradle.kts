@@ -54,6 +54,11 @@ dependencies {
     // reading annotations at transform time instead; see the module's own KDoc.
     implementation(project(":endpoints-jaxrs"))
 
+    // Route bridge endpoint module: counts the route OpenTelemetry's own HTTP server
+    // instrumentation resolved, for a framework none of the modules above cover. Off by default
+    // (AgentConfig.otelBridgeEnabled); see ADR 0019.
+    implementation(project(":endpoints-otel-bridge"))
+
     // Wire schema for the delta batch and probe manifest payloads
     // (see src/main/proto/yukon.proto). Generated classes are shaded under
     // io.github.lukedevops.yukon.shaded.protobuf below, same rationale as

@@ -49,6 +49,14 @@ data class AgentConfig(
      * JAX-RS); there are no per-framework flags, by design. See ADR 0017.
      */
     val endpointsEnabled: Boolean,
+    /**
+     * Off by default, unlike [endpointsEnabled]: the route bridge module hooks OpenTelemetry
+     * instrumentation internals rather than a framework's own public registration hooks, so its
+     * correctness is tied to the OpenTelemetry version present, a coupling ADR 0017 declined for
+     * every other module. An adopter opts in knowingly, for a framework no other module covers.
+     * See ADR 0019.
+     */
+    val otelBridgeEnabled: Boolean,
 ) {
     companion object {
         private const val DEFAULT_ENDPOINT = "http://localhost:4319"
@@ -69,6 +77,7 @@ data class AgentConfig(
                 "staticBaselineEnabled",
                 "enabled",
                 "endpointsEnabled",
+                "otelBridgeEnabled",
             )
 
         /**
@@ -119,6 +128,7 @@ data class AgentConfig(
                 staticBaselineEnabled = parseBoolean("staticBaselineEnabled", resolve("staticBaselineEnabled"), default = false),
                 enabled = parseBoolean("enabled", resolve("enabled"), default = true),
                 endpointsEnabled = parseBoolean("endpointsEnabled", resolve("endpointsEnabled"), default = true),
+                otelBridgeEnabled = parseBoolean("otelBridgeEnabled", resolve("otelBridgeEnabled"), default = false),
             )
         }
 
