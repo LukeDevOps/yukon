@@ -3,10 +3,14 @@ package io.github.lukedevops.yukon.instrumentation.branch
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class BranchSiteAnalyzerTest {
     private fun readFixtureBytes(): ByteArray = File("build/classes/java/test/com/example/target/BranchTarget.class").readBytes()
+
+    private fun readInlineTargetBytes(simpleName: String): ByteArray =
+        File("build/classes/kotlin/test/com/example/target/$simpleName.class").readBytes()
 
     @Test
     fun `finds the one conditional jump in a method with a single if`() {
@@ -83,5 +87,50 @@ class BranchSiteAnalyzerTest {
         assertTrue(classify > 0)
         assertTrue(dense > classify, "classifyDense is declared after classify")
         assertEquals(-1, analysis.firstLineOf("noSuchMethod", "()V"))
+    }
+
+    @Test
+    fun `an inline member function is marked inline`() {
+        val analysis = BranchSiteAnalyzer.analyze(readInlineTargetBytes("InlineTarget")) { _, _ -> true }
+
+        assertTrue(analysis.isInline("member", "(II)I"))
+    }
+
+    @Test
+    fun `an inline top-level function is marked inline`() {
+        val analysis = BranchSiteAnalyzer.analyze(readInlineTargetBytes("InlineTargetKt")) { _, _ -> true }
+
+        assertTrue(analysis.isInline("topLevelInline", "(I)I"))
+    }
+
+    @Test
+    fun `a plain function is not marked inline`() {
+        val member = BranchSiteAnalyzer.analyze(readInlineTargetBytes("InlineTarget")) { _, _ -> true }
+        val topLevel = BranchSiteAnalyzer.analyze(readInlineTargetBytes("InlineTargetKt")) { _, _ -> true }
+
+        assertFalse(member.isInline("plain", "(I)I"))
+        assertFalse(topLevel.isInline("topLevelPlain", "(I)I"))
+    }
+
+    @Test
+    fun `a non-inline overload that inlines a same-named sibling is not itself marked inline`() {
+        val analysis = BranchSiteAnalyzer.analyze(readInlineTargetBytes("InlineTarget")) { _, _ -> true }
+
+        // same(int) is not inline; it merely calls the inline same(int, int), whose inlined copy
+        // plants the same "$i$f$same" local name, but only over a sub-range of same(int)'s code.
+        assertFalse(analysis.isInline("same", "(I)I"))
+        assertTrue(analysis.isInline("same", "(II)I"))
+    }
+
+    @Test
+    fun `isInline is false for every method on an empty analysis`() {
+        assertFalse(BranchSiteAnalyzer.Analysis.EMPTY.isInline("member", "(II)I"))
+    }
+
+    @Test
+    fun `a method the filter rejects is not marked inline`() {
+        val analysis = BranchSiteAnalyzer.analyze(readInlineTargetBytes("InlineTarget")) { name, _ -> name != "member" }
+
+        assertFalse(analysis.isInline("member", "(II)I"))
     }
 }

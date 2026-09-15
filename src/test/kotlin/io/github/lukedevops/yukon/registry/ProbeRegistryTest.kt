@@ -5,6 +5,7 @@ import io.github.lukedevops.yukon.export.ResourceAttributes
 import java.net.URLClassLoader
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
@@ -252,6 +253,27 @@ class ProbeRegistryTest {
         assertEquals("bar", location.methodName)
         assertEquals(10, location.line)
         assertEquals(ProbeKind.METHOD, location.kind)
+        assertFalse(location.inline)
+    }
+
+    @Test
+    fun `manifest and computeManifestDelta both carry the inline flag`() {
+        val registry = ProbeRegistry()
+        registry.register(
+            "com.example.Foo",
+            layoutHash = 1L,
+            probes = listOf(ProbeMeta(ProbeKind.METHOD, "bar", "()V", line = 10, inline = true)),
+        )
+
+        val manifestLocation = registry.manifest("checkout", "1.0.0", "instance-1").probes.single()
+        val deltaLocation =
+            registry
+                .computeManifestDelta("checkout", "1.0.0", "instance-1")
+                .manifest.probes
+                .single()
+
+        assertTrue(manifestLocation.inline)
+        assertTrue(deltaLocation.inline)
     }
 
     @Test

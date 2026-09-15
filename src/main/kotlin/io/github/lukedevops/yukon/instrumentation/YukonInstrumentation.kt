@@ -181,16 +181,30 @@ class YukonInstrumentation(
 
         val methodProbes =
             methods.map {
-                ProbeMeta(ProbeKind.METHOD, it.internalName, it.descriptor, line = analysis.firstLineOf(it.internalName, it.descriptor))
+                ProbeMeta(
+                    ProbeKind.METHOD,
+                    it.internalName,
+                    it.descriptor,
+                    line = analysis.firstLineOf(it.internalName, it.descriptor),
+                    inline = analysis.isInline(it.internalName, it.descriptor),
+                )
             }
         // Each site contributes `outcomeCount` adjacent slots: 2 for a conditional jump, or the
         // case count plus one for a switch. BranchProbeAsmVisitorWrapper allocates them in this
-        // same order.
+        // same order. A branch inside an inline method's body is just as invisible to a Kotlin
+        // caller as the method probe itself, so it inherits the same flag.
         val branchProbes =
             branchSites
                 .flatMap { site -> List(site.outcomeCount) { site } }
                 .mapIndexed { branchIndex, site ->
-                    ProbeMeta(ProbeKind.BRANCH, site.methodName, site.methodDescriptor, site.line, branchIndex = branchIndex)
+                    ProbeMeta(
+                        ProbeKind.BRANCH,
+                        site.methodName,
+                        site.methodDescriptor,
+                        site.line,
+                        branchIndex = branchIndex,
+                        inline = analysis.isInline(site.methodName, site.methodDescriptor),
+                    )
                 }
         val probes = methodProbes + branchProbes
 

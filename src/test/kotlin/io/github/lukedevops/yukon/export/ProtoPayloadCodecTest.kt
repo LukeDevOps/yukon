@@ -211,6 +211,45 @@ class ProtoPayloadCodecTest {
     }
 
     @Test
+    fun `a probe location's inline flag round-trips through the wire`() {
+        val manifest =
+            ProbeManifest(
+                serviceName = "checkout",
+                serviceVersion = "1.0.0",
+                probes =
+                    listOf(
+                        ProbeLocation(
+                            classId = 0,
+                            probeIndex = 0,
+                            kind = ProbeKind.METHOD,
+                            className = "com.example.Foo",
+                            methodName = "bar",
+                            methodDescriptor = "()V",
+                            line = 10,
+                            branchIndex = null,
+                            inline = true,
+                        ),
+                        ProbeLocation(
+                            classId = 0,
+                            probeIndex = 1,
+                            kind = ProbeKind.METHOD,
+                            className = "com.example.Foo",
+                            methodName = "baz",
+                            methodDescriptor = "()V",
+                            line = 20,
+                            branchIndex = null,
+                        ),
+                    ),
+            )
+
+        val decoded = ProtoPayloadCodec.decodeProbeManifest(ProtoPayloadCodec.encode(manifest))
+
+        assertEquals(manifest, decoded)
+        assertTrue(decoded.probes.single { it.methodName == "bar" }.inline)
+        assertFalse(decoded.probes.single { it.methodName == "baz" }.inline)
+    }
+
+    @Test
     fun `encodes and decodes a static baseline with declared classes and methods`() {
         val baseline =
             StaticBaseline(
@@ -232,6 +271,33 @@ class ProtoPayloadCodecTest {
         val decoded = ProtoPayloadCodec.decodeStaticBaseline(ProtoPayloadCodec.encode(baseline))
 
         assertEquals(baseline, decoded)
+    }
+
+    @Test
+    fun `a declared method's inline flag round-trips through the wire`() {
+        val baseline =
+            StaticBaseline(
+                resource = ResourceAttributes("checkout", "1.0.0", "instance-1", "prod"),
+                declaredClasses =
+                    listOf(
+                        DeclaredClass(
+                            className = "com.example.Foo",
+                            methods =
+                                listOf(
+                                    DeclaredMethod(methodName = "bar", methodDescriptor = "()V", inline = true),
+                                    DeclaredMethod(methodName = "baz", methodDescriptor = "(I)Z"),
+                                ),
+                        ),
+                    ),
+                scannedAt = 1000L,
+            )
+
+        val decoded = ProtoPayloadCodec.decodeStaticBaseline(ProtoPayloadCodec.encode(baseline))
+
+        assertEquals(baseline, decoded)
+        val methods = decoded.declaredClasses.single().methods
+        assertTrue(methods.single { it.methodName == "bar" }.inline)
+        assertFalse(methods.single { it.methodName == "baz" }.inline)
     }
 
     @Test

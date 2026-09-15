@@ -140,6 +140,7 @@ object ProtoPayloadCodec {
                 .setMethodName(location.methodName)
                 .setMethodDescriptor(location.methodDescriptor)
                 .setLine(location.line)
+                .setInline(location.inline)
         location.branchIndex?.let { builder.branchIndex = it }
         return builder.build()
     }
@@ -154,6 +155,7 @@ object ProtoPayloadCodec {
             methodDescriptor = location.methodDescriptor,
             line = location.line,
             branchIndex = if (location.hasBranchIndex()) location.branchIndex else null,
+            inline = location.inline,
         )
 
     private fun toProto(kind: ProbeKind): ProtoProbeKind =
@@ -233,12 +235,14 @@ object ProtoPayloadCodec {
             .newBuilder()
             .setMethodName(method.methodName)
             .setMethodDescriptor(method.methodDescriptor)
+            .setInline(method.inline)
             .build()
 
     private fun fromProto(method: ProtoDeclaredMethod): DeclaredMethod =
         DeclaredMethod(
             methodName = method.methodName,
             methodDescriptor = method.methodDescriptor,
+            inline = method.inline,
         )
 
     private fun toProto(unsafeClass: StaticallyUnsafeClass): ProtoStaticallyUnsafeClass =

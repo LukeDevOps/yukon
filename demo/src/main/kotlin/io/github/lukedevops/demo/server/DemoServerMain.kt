@@ -40,12 +40,19 @@ private fun handleCheckout(exchange: HttpExchange) {
         }
     val message =
         if (discounted > FREE_SHIPPING_THRESHOLD) {
-            "order of $discounted qualifies for free shipping"
+            "${describeOrder(discounted)} qualifies for free shipping"
         } else {
-            "order of $discounted does not qualify for free shipping"
+            "${describeOrder(discounted)} does not qualify for free shipping"
         }
     respond(exchange, message)
 }
+
+/**
+ * Inline so every call from Kotlin, including [handleCheckout]'s, copies this body into the
+ * caller instead of invoking this method. Its own probe reads zero no matter how often a request
+ * comes in, so the demo report shows it under neither `NEVER HIT` nor a hit count.
+ */
+private inline fun describeOrder(total: Double): String = "order of $total"
 
 private fun handlePromo(exchange: HttpExchange) {
     respond(exchange, "promo code applied")
