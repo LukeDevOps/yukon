@@ -14,5 +14,5 @@ The JAX-RS module resolves annotations for a concrete resource class the way the
 
 ## Consequences
 
-- The type matcher walks supertypes for every class load, bounded by skipping bootstrap-loader classes, where no resource can live. Descriptions are cached per loader by ByteBuddy's type pool, so each supertype resolves once.
+- The type matcher walks supertypes for every class load, bounded by never descending into a `java.`, `jdk.`, `sun.`, `com.sun.`, `kotlin.`, `jakarta.` or `javax.` supertype, where no resource can live. ByteBuddy's default pool strategy builds a fresh type pool per transform, so a supertype is re-read for every class that extends it; if that ever shows in a startup profile, a shared per-loader `PoolStrategy.WithTypePoolCache` on the endpoint pipeline is the mitigation.
 - Which runtime is present changes what is declared. That is deliberate: the module reports what the runtime in front of it would serve.

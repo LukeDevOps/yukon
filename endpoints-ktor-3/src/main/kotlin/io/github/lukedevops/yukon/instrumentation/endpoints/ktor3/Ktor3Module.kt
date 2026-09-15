@@ -42,6 +42,7 @@ class Ktor3Module : EndpointModule {
         builder: DynamicType.Builder<*>,
         typeDescription: TypeDescription,
         advice: AdviceBinder,
+        classLoader: ClassLoader?,
     ): DynamicType.Builder<*> =
         when (typeDescription.name) {
             ROUTING_NODE -> {
