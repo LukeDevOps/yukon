@@ -62,7 +62,7 @@ class EndpointInstrumentation(
      */
     fun install(instrumentation: Instrumentation): ResettableClassFileTransformer {
         BootstrapHolder.install(instrumentation)
-        YukonEndpoints.install(RegistryResolver(registry))
+        YukonEndpoints.install(RegistryResolver(registry, modules))
         addSeamReadEdges(instrumentation)
 
         if (modules.isEmpty()) {

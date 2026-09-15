@@ -57,15 +57,19 @@ class YukonEndpointsSeamTest {
 
     @Test
     @Order(2)
-    fun `register and recordDispatch buffer before install, replay in order once installed, and drop beyond the 4096 cap`() {
+    fun `register, recordDispatch and declare buffer before install, replay in order once installed, and drop beyond the 4096 cap`() {
         val registerModule = uniqueModule("cap-register")
         val dispatchModule = uniqueModule("cap-dispatch")
+        val declareModule = uniqueModule("cap-declare")
         val failureModule = uniqueModule("cap-failure")
+
+        val declareObject = Any()
+        YukonEndpoints.declare(declareModule, declareObject)
 
         val firstRegisterReturn =
             YukonEndpoints.register(registerModule, "key-0", "GET", "/cap-test/register/0", null, null, null, null)
         assertNull(firstRegisterReturn, "register must return null before a resolver is installed")
-        for (i in 1 until 4090) {
+        for (i in 1 until 4089) {
             assertNull(YukonEndpoints.register(registerModule, "key-$i", "GET", "/cap-test/register/$i", null, null, null, null))
         }
 
@@ -75,24 +79,31 @@ class YukonEndpointsSeamTest {
             assertNull(YukonEndpoints.recordDispatch(dispatchModule, "dispatch-key-$i", "GET", "/cap-test/dispatch/$i", null, null))
         }
 
-        // 4090 register + 5 dispatch + 1 failure records exactly fill the 4096-record cap.
+        // 1 declare + 4089 register + 5 dispatch + 1 failure records exactly fill the 4096-record cap.
         YukonEndpoints.moduleFailed(failureModule, RuntimeException("linkage boom"))
 
         // Every one of these arrives after the buffer is already full, so all must be dropped.
-        for (i in 4090 until 4110) {
+        for (i in 4089 until 4109) {
             assertNull(YukonEndpoints.register(registerModule, "overflow-key-$i", "GET", "/cap-test/register/$i", null, null, null, null))
         }
+        // Must not throw, and must not be replayed once installed below.
+        YukonEndpoints.declare(uniqueModule("cap-declare-overflow"), Any())
 
         val resolver = RecordingResolver()
         YukonEndpoints.install(resolver.asResolver() as YukonEndpoints.Resolver)
 
-        assertEquals(4090, resolver.registerCalls.size, "only the first 4090 register records should have survived the cap")
+        assertEquals(4089, resolver.registerCalls.size, "only the first 4089 register records should have survived the cap")
         assertEquals("/cap-test/register/0", resolver.registerCalls.first().verbatimTemplate)
-        assertEquals("/cap-test/register/4089", resolver.registerCalls.last().verbatimTemplate)
-        assertTrue(resolver.registerCalls.none { it.verbatimTemplate == "/cap-test/register/4090" }, "overflow records must not replay")
+        assertEquals("/cap-test/register/4088", resolver.registerCalls.last().verbatimTemplate)
+        assertTrue(resolver.registerCalls.none { it.verbatimTemplate == "/cap-test/register/4089" }, "overflow records must not replay")
 
         assertEquals(5, resolver.dispatchCalls.size)
         assertEquals(5, resolver.hitCalls.size, "each replayed dispatch must be followed by exactly one hit")
+
+        assertEquals(1, resolver.declareCalls.size, "only the declare record buffered before the cap filled should survive")
+        val declareCall = resolver.declareCalls.single()
+        assertEquals(declareModule, declareCall.module)
+        assertSame(declareObject, declareCall.frameworkObject)
 
         val disableCall = resolver.disableCalls.single()
         assertEquals(failureModule, disableCall.module)
@@ -117,13 +128,20 @@ class YukonEndpointsSeamTest {
         assertNull(YukonEndpoints.register(brokenModule, "key", "GET", "/dead", null, null, null, null))
         assertNull(YukonEndpoints.recordDispatch(brokenModule, "key2", "GET", "/dead2", null, null))
         YukonEndpoints.attachHandler(brokenModule, "some-entry", "com.example.Handler", "handle", "()V")
+        YukonEndpoints.declare(brokenModule, Any())
         assertTrue(resolver.registerCalls.none { it.framework == brokenModule })
         assertTrue(resolver.attachCalls.isEmpty())
+        assertTrue(resolver.declareCalls.none { it.module == brokenModule })
 
         val entry = YukonEndpoints.register(healthyModule, "key3", "GET", "/alive", null, null, null, null)
         assertNotNull(entry)
         YukonEndpoints.hit(entry)
         assertTrue(resolver.hitCalls.contains(entry))
+
+        val declareObject = Any()
+        YukonEndpoints.declare(healthyModule, declareObject)
+        val declareCall = resolver.declareCalls.single { it.module == healthyModule }
+        assertSame(declareObject, declareCall.frameworkObject)
     }
 
     @Test
@@ -137,6 +155,10 @@ class YukonEndpointsSeamTest {
 
         YukonEndpoints.hit("some-entry")
         YukonEndpoints.hit("some-entry")
+
+        // Must not throw, either the first time (which also logs) or the second (which must not log again).
+        YukonEndpoints.declare(module, Any())
+        YukonEndpoints.declare(module, Any())
 
         // A resolver bug never disables the module on its own; only moduleFailed does that.
         assertFalse(YukonEndpoints.isDisabled(module))
@@ -179,6 +201,21 @@ class YukonEndpointsSeamTest {
                 .deltas
                 .single()
         assertEquals(1L, delta.hitsTotal)
+    }
+
+    @Test
+    @Order(7)
+    fun `declare delegates straight to the resolver once one is installed, with no buffering`() {
+        val module = uniqueModule("declare-delegate")
+        val resolver = RecordingResolver()
+        YukonEndpoints.install(resolver.asResolver() as YukonEndpoints.Resolver)
+        val frameworkObject = Any()
+
+        YukonEndpoints.declare(module, frameworkObject)
+
+        val declareCall = resolver.declareCalls.single()
+        assertEquals(module, declareCall.module)
+        assertSame(frameworkObject, declareCall.frameworkObject)
     }
 
     private companion object {
@@ -226,11 +263,17 @@ private class RecordingResolver {
         val reason: String,
     )
 
+    data class DeclareCall(
+        val module: String,
+        val frameworkObject: Any,
+    )
+
     val registerCalls = mutableListOf<RegisterCall>()
     val dispatchCalls = mutableListOf<DispatchCall>()
     val hitCalls = mutableListOf<Any>()
     val attachCalls = mutableListOf<Any>()
     val disableCalls = mutableListOf<DisableCall>()
+    val declareCalls = mutableListOf<DeclareCall>()
 
     private var nextEntryId = 0
 
@@ -264,6 +307,11 @@ private class RecordingResolver {
 
                 "disableModule" -> {
                     disableCalls += DisableCall(args[0] as String, args[1] as String)
+                    null
+                }
+
+                "declare" -> {
+                    declareCalls += DeclareCall(args[0] as String, args[1]!!)
                     null
                 }
 

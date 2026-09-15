@@ -22,11 +22,12 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * <p>A framework can register or dispatch to an endpoint before the agent has installed its
  * resolver: a class can initialise during premain, or this seam can be reachable from the
- * bootstrap loader before {@code Agent.start} finishes wiring the registry. {@link #register} and
- * {@link #recordDispatch} buffer a small record for that window instead of dropping the call on
- * the floor, and {@link #install} replays the buffer in order once a resolver is in hand. The
- * buffer is bounded, since an adopter who never installs an agent at all (a dependency pulled in
- * by mistake, a misconfigured attach) must not leak memory for the life of the process.
+ * bootstrap loader before {@code Agent.start} finishes wiring the registry. {@link #register},
+ * {@link #recordDispatch}, and {@link #declare} buffer a small record for that window instead of
+ * dropping the call on the floor, and {@link #install} replays the buffer in order once a
+ * resolver is in hand. The buffer is bounded, since an adopter who never installs an agent at all
+ * (a dependency pulled in by mistake, a misconfigured attach) must not leak memory for the life of
+ * the process.
  */
 public final class YukonEndpoints {
 
@@ -47,6 +48,8 @@ public final class YukonEndpoints {
         Object recordDispatch(
                 Object key, String framework, String verb, String verbatimTemplate, String contextPath, String handlerClass);
 
+        void declare(String module, Object frameworkObject);
+
         void hit(Object entry);
 
         void attachHandler(Object entry, String handlerClass, String handlerMethod, String handlerDescriptor);
@@ -57,6 +60,7 @@ public final class YukonEndpoints {
     private enum RecordKind {
         REGISTER,
         DISPATCH,
+        DECLARE,
         FAILURE,
     }
 
@@ -72,6 +76,7 @@ public final class YukonEndpoints {
         final String handlerMethod;
         final String handlerDescriptor;
         final String reason;
+        final Object frameworkObject;
 
         private BufferedRecord(
                 RecordKind kind,
@@ -83,7 +88,8 @@ public final class YukonEndpoints {
                 String handlerClass,
                 String handlerMethod,
                 String handlerDescriptor,
-                String reason) {
+                String reason,
+                Object frameworkObject) {
             this.kind = kind;
             this.module = module;
             this.key = key;
@@ -94,6 +100,7 @@ public final class YukonEndpoints {
             this.handlerMethod = handlerMethod;
             this.handlerDescriptor = handlerDescriptor;
             this.reason = reason;
+            this.frameworkObject = frameworkObject;
         }
 
         static BufferedRecord forRegister(
@@ -115,17 +122,22 @@ public final class YukonEndpoints {
                     handlerClass,
                     handlerMethod,
                     handlerDescriptor,
+                    null,
                     null);
         }
 
         static BufferedRecord forDispatch(
                 String module, Object key, String verb, String verbatimTemplate, String contextPath, String handlerClass) {
             return new BufferedRecord(
-                    RecordKind.DISPATCH, module, key, verb, verbatimTemplate, contextPath, handlerClass, null, null, null);
+                    RecordKind.DISPATCH, module, key, verb, verbatimTemplate, contextPath, handlerClass, null, null, null, null);
+        }
+
+        static BufferedRecord forDeclare(String module, Object frameworkObject) {
+            return new BufferedRecord(RecordKind.DECLARE, module, null, null, null, null, null, null, null, null, frameworkObject);
         }
 
         static BufferedRecord forFailure(String module, String reason) {
-            return new BufferedRecord(RecordKind.FAILURE, module, null, null, null, null, null, null, null, reason);
+            return new BufferedRecord(RecordKind.FAILURE, module, null, null, null, null, null, null, null, reason, null);
         }
     }
 
@@ -231,6 +243,35 @@ public final class YukonEndpoints {
         }
     }
 
+    /**
+     * Hands a framework object to a module for it to walk on its own, for a framework whose
+     * routes are not readable from a registration hook's own arguments and instead require
+     * visiting an object the framework builds internally, such as Spring's {@code
+     * RouterFunction}. Buffers before a resolver is installed.
+     *
+     * <p>Unlike {@link #register} and {@link #recordDispatch}, this does not itself record an
+     * endpoint. It only delivers {@code frameworkObject} to the module named by {@code module},
+     * which is expected to call {@link #register} itself for whatever it finds. A buffered call
+     * holds a strong reference to {@code frameworkObject} until {@link #install} replays it,
+     * bounded the same way the rest of the buffer already is.
+     */
+    public static void declare(String module, Object frameworkObject) {
+        if (isDisabledFast(module)) return;
+        Resolver current;
+        synchronized (BUFFER_LOCK) {
+            current = resolver;
+            if (current == null) {
+                buffer(BufferedRecord.forDeclare(module, frameworkObject));
+                return;
+            }
+        }
+        try {
+            current.declare(module, frameworkObject);
+        } catch (Throwable t) {
+            logDelegateFailure(module, "declare", t);
+        }
+    }
+
     /** Increments an endpoint's hit count. A no-op for a null entry, which is what every other method above returns on failure. */
     public static void hit(Object entry) {
         if (entry == null) return;
@@ -329,6 +370,9 @@ public final class YukonEndpoints {
                     if (entry != null) {
                         target.hit(entry);
                     }
+                    break;
+                case DECLARE:
+                    target.declare(record.module, record.frameworkObject);
                     break;
                 case FAILURE:
                     target.disableModule(record.module, record.reason);

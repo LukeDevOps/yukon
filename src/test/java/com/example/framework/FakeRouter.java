@@ -46,6 +46,20 @@ public class FakeRouter {
         routes.add(new Route(verb, path, handler));
     }
 
+    /** Exposes every route this router holds, for a module's declare walk to read reflectively. */
+    public List<Route> routes() {
+        return routes;
+    }
+
+    /**
+     * Marks the route table as finished building. The fixture's stand-in for a framework that
+     * only reveals its routes as a whole object, late, such as Spring's {@code RouterFunction}:
+     * advice on this method hands the router itself to {@code YukonEndpoints.declare} rather than
+     * reporting one route at a time the way {@link #addRoute}'s advice does.
+     */
+    public void publishRoutes() {
+    }
+
     public boolean dispatch(String verb, String path) {
         for (Route route : routes) {
             if (route.verb.equals(verb) && route.path.equals(path)) {

@@ -38,4 +38,16 @@ interface EndpointModule {
         typeDescription: TypeDescription,
         advice: AdviceBinder,
     ): DynamicType.Builder<*>
+
+    /**
+     * Called with a framework object a module's advice handed to `YukonEndpoints.declare`, on the
+     * agent's own loader; the module walks it, typically reflectively, and registers what it
+     * finds through `YukonEndpoints.register`.
+     *
+     * A framework whose routes are only readable from a registration hook's own arguments never
+     * needs this and keeps the default no-op body. It exists for a framework such as Spring's
+     * functional routing, whose routes are declared as a `RouterFunction` object that reveals its
+     * routes only to a visitor implemented in real code, something advice itself cannot define.
+     */
+    fun declare(frameworkObject: Any) {}
 }
