@@ -96,8 +96,11 @@ message ProbeManifest {
   repeated DisabledEndpointModule disabled_endpoint_modules = 7;
 }
 
-// No line field, unlike ProbeLocation: method-level probes never carry a
-// real line number today, so this does not propagate a placeholder value.
+// No line field, unlike ProbeLocation. A method's first source line is
+// read from the LineNumberTable at transform time, alongside the branch
+// analysis; the static scan does not walk method bodies, so it has no
+// line to report. Identity is (class, method_name, method_descriptor),
+// which is how a collector joins a declared method to a manifest probe.
 message DeclaredMethod {
   string method_name = 1;
   string method_descriptor = 2;
