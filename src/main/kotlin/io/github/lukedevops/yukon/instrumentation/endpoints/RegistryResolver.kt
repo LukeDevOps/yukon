@@ -1,18 +1,30 @@
 package io.github.lukedevops.yukon.instrumentation.endpoints
 
 import io.github.lukedevops.yukon.bootstrap.YukonEndpoints
+import io.github.lukedevops.yukon.instrumentation.endpoints.api.EndpointModule
 import io.github.lukedevops.yukon.registry.EndpointRegistry
 import io.github.lukedevops.yukon.registry.HandlerRef
+import java.lang.System.Logger.Level
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Adapts [EndpointRegistry] to the [YukonEndpoints.Resolver] shape the endpoint seam calls
  * through. [YukonEndpoints] lives in the bootstrap module and cannot reference [EndpointRegistry]
  * directly, so every call it forwards passes through the untyped [Any] shapes [Resolver][YukonEndpoints.Resolver]
  * declares; this is the one place those are cast back to [EndpointRegistry.EndpointEntry].
+ *
+ * [modules], indexed by [EndpointModule.name], is who [declare] routes a framework object to: the
+ * module that owns a framework is the only code that knows how to walk one of its objects.
  */
 class RegistryResolver(
     private val registry: EndpointRegistry,
+    modules: List<EndpointModule> = emptyList(),
 ) : YukonEndpoints.Resolver {
+    private val log = System.getLogger(RegistryResolver::class.java.name)
+    private val modulesByName = modules.associateBy { it.name }
+    private val declareFailureLogged = ConcurrentHashMap.newKeySet<String>()
+    private val unknownDeclareModuleLogged = ConcurrentHashMap.newKeySet<String>()
+
     override fun lookup(key: Any): Any? = registry.lookup(key)
 
     override fun register(
@@ -42,6 +54,37 @@ class RegistryResolver(
         contextPath: String?,
         handlerClass: String?,
     ): Any = registry.recordDispatch(key, framework, verb, verbatimTemplate, contextPath, handlerClass)
+
+    /**
+     * Routes [frameworkObject] to the [EndpointModule] named [module], which walks it and
+     * registers whatever it finds through [YukonEndpoints.register].
+     *
+     * An unknown module name is logged once and ignored: nothing registered a module under that
+     * name, so there is nothing to hand the object to. A module whose walk throws is as broken as
+     * one whose advice throws, so it is logged once and marked disabled in [registry] the same
+     * way; a walk that fails partway through cannot be trusted to have found every route it would
+     * otherwise have declared.
+     */
+    override fun declare(
+        module: String,
+        frameworkObject: Any,
+    ) {
+        val target = modulesByName[module]
+        if (target == null) {
+            if (unknownDeclareModuleLogged.add(module)) {
+                log.log(Level.WARNING, "yukon: declare called for unknown endpoint module '$module', ignoring")
+            }
+            return
+        }
+        try {
+            target.declare(frameworkObject)
+        } catch (t: Throwable) {
+            if (declareFailureLogged.add(module)) {
+                log.log(Level.WARNING, "yukon: endpoint module $module failed while declaring its routes", t)
+            }
+            registry.recordDisabledModule(module, t.toString())
+        }
+    }
 
     override fun hit(entry: Any) {
         (entry as EndpointRegistry.EndpointEntry).hit()

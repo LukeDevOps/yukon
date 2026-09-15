@@ -69,6 +69,24 @@ class EndpointInstrumentationTest {
     }
 
     @Test
+    fun `a route added quietly and declared through publishRoutes is discovered by REGISTRATION with its handler class attached`() {
+        val registry = EndpointRegistry()
+        val router = install(registry, listOf(FakeRouterModule()), "com.example.framework.FakeRouter")
+        val addQuietly = router.javaClass.getMethod("addQuietly", String::class.java, String::class.java, Runnable::class.java)
+        val publishRoutes = router.javaClass.getMethod("publishRoutes")
+        val handler = Runnable {}
+
+        addQuietly.invoke(router, "GET", "/declared", handler)
+        publishRoutes.invoke(router)
+
+        val endpoint = registry.endpoints().single { it.verbatimTemplate == "/declared" }
+        assertEquals(EndpointDiscoverySource.REGISTRATION, endpoint.discoverySource)
+        assertEquals("fake-router", endpoint.framework)
+        assertEquals(handler.javaClass.name, endpoint.handlerClass)
+        assertTrue(registry.disabledModules().isEmpty())
+    }
+
+    @Test
     fun `two dispatches to one route give it hitsTotal 2, and the never-dispatched route nothing`() {
         val registry = EndpointRegistry()
         val router = install(registry, listOf(FakeRouterModule()), "com.example.framework.FakeRouter")
