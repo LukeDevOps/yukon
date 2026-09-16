@@ -257,13 +257,20 @@ class StaticBaselineScanner(
      * method is a probed lambda body depends on whether the class carries a `Scala`/`ScalaSig`
      * attribute ([ScalaClassDetector]), and the same bytes are also used to detect inline
      * functions with the same LocalVariableTable rule [BranchSiteAnalyzer] uses at transform time,
-     * merged into each declared method.
+     * merged into each declared method, and to detect a `<clinit>` of the class's own.
      *
      * A class whose bytes cannot be resolved here is not itself unreadable: its [TypeDescription]
      * already resolved successfully through [pool][TypePool], so it is still declared, just
-     * treated as a non-Scala class and with every method's [DeclaredMethod.inline] left false.
-     * This can only happen if the two disagree about what is readable, which does not happen for
-     * any locator this scanner builds today.
+     * treated as a non-Scala class, with every method's [DeclaredMethod.inline] left false and no
+     * `<clinit>` entry added. This can only happen if the two disagree about what is readable,
+     * which does not happen for any locator this scanner builds today.
+     *
+     * A `<clinit>` entry is appended after every other declared method, mirroring
+     * [io.github.lukedevops.yukon.instrumentation.YukonInstrumentation]'s own placement of the
+     * type initializer's probe after every other slot category. This can make the returned list
+     * non-empty even when [TypeMatchPolicy.methodMatcher] admits none of the type's own methods,
+     * so a class whose only probe-worthy content is its own static initializer is still declared
+     * rather than reported as unprobed.
      */
     private fun declaredMethodsOf(
         typeDescription: TypeDescription,
@@ -279,7 +286,6 @@ class StaticBaselineScanner(
             }
         val isScalaClass = classBytes?.let(ScalaClassDetector::isScalaClass) ?: false
         val methods = typeDescription.declaredMethods.filter(TypeMatchPolicy.methodMatcher(isScalaClass))
-        if (methods.isEmpty()) return emptyList()
         val eligible = methods.map { it.internalName to it.descriptor }.toSet()
         val analysis =
             if (classBytes != null) {
@@ -287,7 +293,16 @@ class StaticBaselineScanner(
             } else {
                 BranchSiteAnalyzer.Analysis.EMPTY
             }
-        return methods.map { DeclaredMethod(it.internalName, it.descriptor, analysis.isInline(it.internalName, it.descriptor)) }
+        val declaredMethods =
+            methods.map {
+                DeclaredMethod(
+                    it.internalName,
+                    it.descriptor,
+                    analysis.isInline(it.internalName, it.descriptor),
+                )
+            }
+        val typeInitializer = if (analysis.hasTypeInitializer) listOf(DeclaredMethod("<clinit>", "()V")) else emptyList()
+        return declaredMethods + typeInitializer
     }
 
     /** Cheap, string-only pre-filter, applied before resolving a [TypeDescription] at all. */

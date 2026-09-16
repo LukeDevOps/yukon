@@ -1,6 +1,7 @@
 package io.github.lukedevops.yukon.instrumentation
 
 import io.github.lukedevops.yukon.config.AgentConfig
+import io.github.lukedevops.yukon.export.ProbeKind
 import io.github.lukedevops.yukon.export.ResourceAttributes
 import io.github.lukedevops.yukon.instrumentation.staticscan.StaticBaselineMismatchDetector
 import io.github.lukedevops.yukon.registry.ProbeMeta
@@ -237,6 +238,96 @@ class YukonInstrumentationTest {
                     pingIndex
             }
         assertEquals(1L, reported.hitsTotal, "the registry's array saw the same hit")
+    }
+
+    @Test
+    fun `a type with its own clinit gets one METHOD probe, incremented once by the woven prelude`() {
+        val registry = ProbeRegistry()
+        val config = AgentConfig.parse("includePackages=com.example.target")
+        install(registry, config)
+        val loader = fixtureLoader()
+
+        val target = Class.forName("com.example.target.StaticInitTarget", true, loader)
+        // The JVM initialises a class at most once per loader, so a second forName here cannot
+        // run <clinit> again. This pins that the woven prelude's own increment is not doubled.
+        Class.forName("com.example.target.StaticInitTarget", true, loader)
+
+        val manifest = registry.manifest("test", null, "instance-1")
+        val clinitProbe =
+            manifest.probes.single { it.className == "com.example.target.StaticInitTarget" && it.methodName == "<clinit>" }
+        assertEquals(ProbeKind.METHOD, clinitProbe.kind)
+        assertEquals("()V", clinitProbe.methodDescriptor)
+        assertTrue(clinitProbe.line > 0, "expected a real line, got ${clinitProbe.line}")
+        assertEquals(7, target.getField("TOUCHED").get(null))
+
+        val byIndex =
+            registry
+                .computeDeltaBatch(ResourceAttributes("test", null, "i-1", null))
+                .batch.deltas
+                .associateBy { it.probeIndex }
+        assertEquals(1L, byIndex.getValue(clinitProbe.probeIndex).hitsTotal)
+    }
+
+    @Test
+    fun `a class loaded without being initialised has its clinit probe present at zero`() {
+        val registry = ProbeRegistry()
+        val config = AgentConfig.parse("includePackages=com.example.target")
+        install(registry, config)
+
+        Class.forName("com.example.target.StaticInitTarget", false, fixtureLoader())
+
+        val manifest = registry.manifest("test", null, "instance-1")
+        val clinitProbe =
+            manifest.probes.single { it.className == "com.example.target.StaticInitTarget" && it.methodName == "<clinit>" }
+        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null)).batch.deltas
+        assertTrue(
+            deltas.none { it.probeIndex == clinitProbe.probeIndex },
+            "the class was defined, so its row exists, but <clinit> never ran, so nothing was counted",
+        )
+    }
+
+    @Test
+    fun `a type with no clinit of its own gets no clinit probe`() {
+        val registry = ProbeRegistry()
+        val config = AgentConfig.parse("includePackages=com.example.target")
+        install(registry, config)
+
+        Class.forName("com.example.target.SampleTarget", true, fixtureLoader())
+
+        val manifest = registry.manifest("test", null, "instance-1")
+        assertTrue(
+            manifest.probes.none { it.className == "com.example.target.SampleTarget" && it.methodName == "<clinit>" },
+            "SampleTarget declares no static initializer of its own",
+        )
+    }
+
+    @Test
+    fun `an interface with only abstract methods and no clinit still registers nothing`() {
+        val registry = ProbeRegistry()
+        val config = AgentConfig.parse("includePackages=com.example.target")
+        install(registry, config)
+
+        Class.forName("com.example.target.AbstractOnlyInterface", true, fixtureLoader())
+
+        assertTrue("com.example.target.AbstractOnlyInterface" !in registry.registeredClassNames())
+    }
+
+    @Test
+    fun `an interface with a default method and no static field initialiser gets no clinit row`() {
+        val registry = ProbeRegistry()
+        val config = AgentConfig.parse("includePackages=com.example.target")
+        install(registry, config)
+        val loader = fixtureLoader()
+
+        val iface = Class.forName("com.example.target.DefaultMethodTarget", true, loader)
+        val impl = Class.forName("com.example.target.DefaultMethodImpl", true, loader)
+        impl.getDeclaredConstructor().newInstance()
+        iface.getMethod("staticThing").invoke(null)
+
+        val manifest = registry.manifest("test", null, "instance-1")
+        assertTrue(
+            manifest.probes.none { it.className == "com.example.target.DefaultMethodTarget" && it.methodName == "<clinit>" },
+        )
     }
 
     @Test
