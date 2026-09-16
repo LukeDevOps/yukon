@@ -3,6 +3,7 @@ package io.github.lukedevops.yukon.instrumentation.branch
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -16,6 +17,22 @@ class ScalaGetterResolutionTest {
         module: String,
         simpleName: String,
     ) = BranchSiteAnalyzer.analyze(ScalaFixtures.classBytes(module, simpleName)) { _, _ -> false }
+
+    /** A lookup over the fixture module's own compiled output, resolving an internal name to its class's bytes. */
+    private fun lookupFor(module: String): (String) -> ByteArray? =
+        { internalName ->
+            try {
+                ScalaFixtures.classBytes(module, internalName.substringAfterLast('/'))
+            } catch (_: Exception) {
+                null
+            }
+        }
+
+    private fun analyzeFixtureWithLookup(
+        module: String,
+        simpleName: String,
+        lookup: (String) -> ByteArray? = lookupFor(module),
+    ) = BranchSiteAnalyzer.analyze(ScalaFixtures.classBytes(module, simpleName), lookup) { _, _ -> false }
 
     // --- Shared resolution rules, proven once on the Scala 3 fixture and once on Scala 2.13's. ---
 
@@ -347,5 +364,80 @@ class ScalaGetterResolutionTest {
         val analysis = analyzeFixture("scala3", "Cc\$")
 
         assertTrue(analysis.scalaGetterSites.none { it.getterName.startsWith("apply\$default\$") })
+    }
+
+    // --- Constructor default getters cross the class boundary from the companion module to the
+    // class the module compiles for; see ADR 0023's "cross-class target" shape.
+
+    private fun `constructor getters on the companion resolve across the class boundary to Cc's own init`(module: String) {
+        val analysis = analyzeFixtureWithLookup(module, "Cc\$")
+
+        val first = analysis.scalaGetterSites.single { it.getterName == "\$lessinit\$greater\$default\$1" }
+        assertEquals("<init>", first.targetName)
+        assertEquals("(II)V", first.targetDescriptor)
+        assertEquals(0, first.parameterIndex)
+        assertEquals("a", first.parameterName)
+        assertFalse(first.overridable, "a constructor is never overridable")
+        assertEquals("com.example.scalatarget.Cc", first.targetClassName)
+
+        val second = analysis.scalaGetterSites.single { it.getterName == "\$lessinit\$greater\$default\$2" }
+        assertEquals(1, second.parameterIndex)
+        assertEquals("b", second.parameterName)
+        assertEquals("com.example.scalatarget.Cc", second.targetClassName)
+    }
+
+    @Test
+    fun `scala 3 - constructor getters on the companion resolve across the class boundary`() =
+        `constructor getters on the companion resolve across the class boundary to Cc's own init`("scala3")
+
+    @Test
+    fun `scala 2 - constructor getters on the companion resolve across the class boundary`() =
+        `constructor getters on the companion resolve across the class boundary to Cc's own init`("scala2")
+
+    private fun `the static forwarder on Cc itself resolves in class against its own init`(module: String) {
+        val analysis = analyzeFixtureWithLookup(module, "Cc")
+
+        val site = analysis.scalaGetterSites.single { it.getterName == "\$lessinit\$greater\$default\$1" }
+        assertEquals("<init>", site.targetName)
+        assertEquals("(II)V", site.targetDescriptor)
+        assertEquals(0, site.parameterIndex)
+        assertEquals("a", site.parameterName)
+        assertFalse(site.overridable, "a constructor is never overridable")
+        assertNull(site.targetClassName, "the forwarder's own target is in its own class")
+    }
+
+    @Test
+    fun `scala 3 - the static forwarder on Cc resolves in class`() =
+        `the static forwarder on Cc itself resolves in class against its own init`("scala3")
+
+    @Test
+    fun `scala 2 - the static forwarder on Cc resolves in class`() =
+        `the static forwarder on Cc itself resolves in class against its own init`("scala2")
+
+    private fun `a lookup returning null leaves the companion's constructor getters unresolved`(module: String) {
+        val analysis = analyzeFixtureWithLookup(module, "Cc\$", lookup = { null })
+
+        assertTrue(analysis.scalaGetterSites.none { it.targetName == "<init>" })
+        assertTrue(analysis.unresolvedScalaGetterSites.any { it.first.startsWith("\$lessinit\$greater\$default\$") })
+    }
+
+    @Test
+    fun `scala 3 - a lookup returning null leaves the companion's constructor getters unresolved`() =
+        `a lookup returning null leaves the companion's constructor getters unresolved`("scala3")
+
+    @Test
+    fun `scala 2 - a lookup returning null leaves the companion's constructor getters unresolved`() =
+        `a lookup returning null leaves the companion's constructor getters unresolved`("scala2")
+
+    @Test
+    fun `scala 3 - a defaulted enum constructor parameter resolves across the class boundary`() {
+        val analysis = analyzeFixtureWithLookup("scala3", "Color\$")
+
+        val site = analysis.scalaGetterSites.single { it.getterName == "\$lessinit\$greater\$default\$1" }
+        assertEquals("<init>", site.targetName)
+        assertEquals("(I)V", site.targetDescriptor)
+        assertEquals(0, site.parameterIndex)
+        assertEquals("code", site.parameterName)
+        assertEquals("com.example.scalatarget.Color", site.targetClassName)
     }
 }

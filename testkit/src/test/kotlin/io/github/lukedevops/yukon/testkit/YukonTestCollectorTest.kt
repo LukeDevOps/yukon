@@ -67,6 +67,7 @@ class YukonTestCollectorTest {
         parameterIndex: Int,
         parameterName: String,
         overridable: Boolean = false,
+        targetClassName: String? = null,
     ) = ProbeLocation(
         classId = classId,
         probeIndex = probeIndex,
@@ -79,6 +80,7 @@ class YukonTestCollectorTest {
         parameterIndex = parameterIndex,
         parameterName = parameterName,
         overridable = overridable,
+        targetClassName = targetClassName,
     )
 
     private fun endpoint(
@@ -607,6 +609,77 @@ class YukonTestCollectorTest {
 
         assertTrue(target.neverSupplied().isEmpty())
         assertTrue(target.alwaysSupplied().isEmpty())
+    }
+
+    /**
+     * A Scala constructor default getter's own class is the companion module (`Cc$`), but its
+     * target `<init>` lives on `Cc`. `omissionCount` and the finding rules both name the parameter
+     * by the target's own class, per ADR 0023, not the class the omission probe's slot lives on.
+     */
+    @Test
+    fun `omissionCount and the finding rules join an omission probe to its target across a class boundary`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+        exporter.exportManifest(
+            ProbeManifest(
+                "svc",
+                null,
+                listOf(
+                    methodProbe(2, 0, "com.example.scalatarget.Cc", "<init>", "(II)V", 71),
+                    omissionProbe(
+                        1,
+                        0,
+                        "com.example.scalatarget.Cc\$",
+                        "<init>",
+                        "(II)V",
+                        71,
+                        parameterIndex = 1,
+                        parameterName = "b",
+                        targetClassName = "com.example.scalatarget.Cc",
+                    ),
+                ),
+                serviceInstanceId = "i-1",
+            ),
+        )
+        exporter.exportDeltaBatch(
+            DeltaBatch(
+                ResourceAttributes("svc", null, "i-1", null),
+                listOf(
+                    ProbeDelta(2, 0, ProbeKind.METHOD, 1L, 4L),
+                    ProbeDelta(1, 0, ProbeKind.OPTIONAL_ARGUMENT, 1L, 4L),
+                ),
+            ),
+        )
+
+        assertEquals(4L, target.omissionCount("com.example.scalatarget.Cc", "<init>", parameterIndex = 1))
+        assertEquals(4L, target.omissionCount("com.example.scalatarget.Cc", "<init>", parameterName = "b"))
+
+        val neverSupplied = target.neverSupplied()
+        assertEquals(1, neverSupplied.size)
+        assertEquals("com.example.scalatarget.Cc", neverSupplied.single().className)
+        assertEquals("com.example.scalatarget.Cc", neverSupplied.single().targetClassName)
+        assertEquals("<init>", neverSupplied.single().methodName)
+        assertTrue(target.alwaysSupplied().isEmpty())
+    }
+
+    @Test
+    fun `omissionCount throws naming the target's own class when a cross-class query finds nothing`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+        exporter.exportManifest(
+            ProbeManifest(
+                "svc",
+                null,
+                listOf(methodProbe(2, 0, "com.example.scalatarget.Cc", "<init>", "(II)V", 71)),
+                serviceInstanceId = "i-1",
+            ),
+        )
+
+        val error =
+            assertFailsWith<UnknownProbeException> {
+                target.omissionCount("com.example.scalatarget.Cc", "<init>", parameterIndex = 0)
+            }
+        assertTrue(error.message!!.contains("no omission probe"))
     }
 
     @Test

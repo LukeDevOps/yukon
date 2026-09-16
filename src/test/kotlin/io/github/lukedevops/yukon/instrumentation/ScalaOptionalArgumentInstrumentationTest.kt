@@ -183,8 +183,11 @@ class ScalaOptionalArgumentInstrumentationTest {
 
         callDriver(loader, "callCaseClassApply", times = 2)
 
+        // Cc$ also carries the constructor default getters $lessinit$greater$default$1/2 (ADR
+        // 0023), which resolve separately, cross-class, against Cc's own <init>; isolating by
+        // methodName keeps this test to apply's own same-class getters.
         val probes = registry.manifest("test", null, "instance-1").probes.filter { it.className == "com.example.scalatarget.Cc\$" }
-        val optionalProbes = probes.filter { it.kind == ProbeKind.OPTIONAL_ARGUMENT }
+        val optionalProbes = probes.filter { it.kind == ProbeKind.OPTIONAL_ARGUMENT && it.methodName == "apply" }
         assertEquals(2, optionalProbes.size)
         for (probe in optionalProbes) {
             assertEquals("apply", probe.methodName)
@@ -202,5 +205,94 @@ class ScalaOptionalArgumentInstrumentationTest {
         // Driver.callCaseClassApply calls Cc.apply(1), supplying a explicitly and omitting b.
         assertEquals(0L, hitsFor(0), "a is always supplied explicitly")
         assertEquals(2L, hitsFor(1), "b is omitted by both calls")
+    }
+
+    /**
+     * `Cc$`'s constructor default getters resolve across the class boundary to `Cc`'s own
+     * `<init>`, per ADR 0023. `Cc`'s own `<init>` method probe counts every constructor call
+     * regardless of which arguments were omitted, since it is a separate probe on a separate class.
+     */
+    private fun `constructor default getters resolve across the class boundary, and Cc's own init hit count is unaffected`(
+        module: String,
+    ) {
+        val registry = ProbeRegistry()
+        install(registry, newConfig())
+        val loader = ScalaFixtures.classLoader(module, javaClass.classLoader)
+
+        callDriver(loader, "callCaseClassConstructor") // new Cc(9): supplies a, omits b
+        callDriver(loader, "callCaseClassConstructorBothOmitted") // new Cc(): omits both
+
+        // Scala 2's Cc$ also carries apply$default$1/2, its own same-class getters for apply; this
+        // isolates the constructor getters by target name so both fixture modules assert the same
+        // count regardless of that difference.
+        val probes = registry.manifest("test", null, "instance-1").probes
+        val optionalProbes =
+            probes.filter {
+                it.kind == ProbeKind.OPTIONAL_ARGUMENT && it.className == "com.example.scalatarget.Cc\$" && it.methodName == "<init>"
+            }
+        assertEquals(2, optionalProbes.size)
+        for (probe in optionalProbes) {
+            assertEquals("<init>", probe.methodName, "the target's name, not the getter's")
+            assertEquals("(II)V", probe.methodDescriptor)
+            assertEquals("com.example.scalatarget.Cc", probe.targetClassName, "the target lives on Cc, not Cc\$")
+            assertFalse(probe.overridable, "a constructor is never overridable")
+        }
+
+        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null)).batch.deltas
+
+        fun hitsFor(parameterIndex: Int): Long {
+            val probe = optionalProbes.single { it.parameterIndex == parameterIndex }
+            return deltas.singleOrNull { it.classId == probe.classId && it.probeIndex == probe.probeIndex }?.hitsTotal ?: 0L
+        }
+
+        assertEquals(1L, hitsFor(0), "a is omitted only by the both-omitted call")
+        assertEquals(2L, hitsFor(1), "b is omitted by both calls")
+
+        val initProbe =
+            probes.single {
+                it.kind == ProbeKind.METHOD && it.className == "com.example.scalatarget.Cc" && it.methodName == "<init>"
+            }
+        val initHits = deltas.singleOrNull { it.classId == initProbe.classId && it.probeIndex == initProbe.probeIndex }?.hitsTotal ?: 0L
+        assertEquals(2L, initHits, "Cc's own <init> is called by both driver calls, however many arguments were omitted")
+    }
+
+    @Test
+    fun `scala 3 - constructor default getters resolve across the class boundary`() =
+        `constructor default getters resolve across the class boundary, and Cc's own init hit count is unaffected`("scala3")
+
+    @Test
+    fun `scala 2 - constructor default getters resolve across the class boundary`() =
+        `constructor default getters resolve across the class boundary, and Cc's own init hit count is unaffected`("scala2")
+
+    /**
+     * Scala 3 resolves `Cc.apply(...)` through the same constructor default getters as `new
+     * Cc(...)`, per ADR 0023's consequences: unlike Scala 2, `Cc$` has no `apply$default$N` of its
+     * own for Scala 3 to fall back to.
+     */
+    @Test
+    fun `scala 3 - Cc apply also routes through the constructor getters`() {
+        val registry = ProbeRegistry()
+        install(registry, newConfig())
+        val loader = ScalaFixtures.classLoader("scala3", javaClass.classLoader)
+
+        callDriver(loader, "callCaseClassApply") // Cc.apply(1): supplies a, omits b
+
+        val bProbe =
+            registry
+                .manifest("test", null, "instance-1")
+                .probes
+                .single {
+                    it.kind == ProbeKind.OPTIONAL_ARGUMENT && it.className == "com.example.scalatarget.Cc\$" && it.parameterIndex == 1
+                }
+        assertEquals("<init>", bProbe.methodName)
+        assertEquals("com.example.scalatarget.Cc", bProbe.targetClassName)
+
+        val hits =
+            registry
+                .computeDeltaBatch(ResourceAttributes("test", null, "i-1", null))
+                .batch.deltas
+                .single { it.classId == bProbe.classId && it.probeIndex == bProbe.probeIndex }
+                .hitsTotal
+        assertEquals(1L, hits)
     }
 }

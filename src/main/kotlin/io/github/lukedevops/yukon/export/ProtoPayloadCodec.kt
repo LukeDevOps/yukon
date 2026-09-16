@@ -143,6 +143,7 @@ object ProtoPayloadCodec {
                 .setInline(location.inline)
                 .setParameterName(location.parameterName ?: "")
                 .setOverridable(location.overridable)
+                .setTargetClassName(location.targetClassName ?: "")
         location.branchIndex?.let { builder.branchIndex = it }
         location.parameterIndex?.let { builder.parameterIndex = it }
         return builder.build()
@@ -165,6 +166,7 @@ object ProtoPayloadCodec {
             // when its target has no debug info, so the field is only meaningful for that kind.
             parameterName = if (kind == ProbeKind.OPTIONAL_ARGUMENT) location.parameterName else null,
             overridable = location.overridable,
+            targetClassName = location.targetClassName.ifEmpty { null },
         )
     }
 

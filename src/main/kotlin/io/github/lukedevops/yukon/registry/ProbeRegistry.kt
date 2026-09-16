@@ -347,6 +347,7 @@ open class ProbeRegistry {
                         parameterIndex = meta.parameterIndex,
                         parameterName = meta.parameterName,
                         overridable = meta.overridable,
+                        targetClassName = meta.targetClassName,
                     )
                 }
             }
@@ -436,6 +437,7 @@ open class ProbeRegistry {
                         parameterIndex = meta.parameterIndex,
                         parameterName = meta.parameterName,
                         overridable = meta.overridable,
+                        targetClassName = meta.targetClassName,
                     )
             }
         }

@@ -9,12 +9,19 @@ package io.github.lukedevops.yukon.instrumentation.branch
  * omission probes, this counts a Scala extension receiver, since it is an ordinary first JVM
  * parameter and the getter's own `N` counts it too.
  *
- * [parameterName] is read from [targetName]'s `LocalVariableTable` at that parameter's local
- * variable slot, or the empty string when the target carries no debug info.
+ * [parameterName] is read from the target's `LocalVariableTable` at that parameter's local
+ * variable slot, or the empty string when the target carries no debug info. [line] is the target's
+ * own first line, read from the class the target actually lives in: [targetClassName]'s bytes when
+ * set, otherwise the getter's own class.
  *
- * [overridable] is read from [targetName]'s own access flags and its declaring class's: false for
- * a static, private, or final method, or a method on a final class. An interface target is
- * overridable, since none of those flags apply to it.
+ * [targetClassName] is the dotted binary name of the class the target lives in, set only for a
+ * constructor default getter declared on a companion module class, whose target `<init>` lives on
+ * the sibling class the module compiles for. It is null whenever the target is in the getter's own
+ * class: every non-constructor getter, and a constructor getter's own static forwarder.
+ *
+ * [overridable] is read from the target's own access flags and its declaring class's: false for a
+ * static, private, or final method, a constructor, or a method on a final class. An interface
+ * target is overridable, since none of those flags apply to it.
  *
  * The getter itself keeps its ordinary method-tier probe slot; only its manifest row changes to
  * report this omission instead of an ordinary method hit. No new slot is planted for it.
@@ -27,4 +34,6 @@ data class ScalaGetterSite(
     val parameterIndex: Int,
     val parameterName: String,
     val overridable: Boolean,
+    val targetClassName: String? = null,
+    val line: Int = -1,
 )

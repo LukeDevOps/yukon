@@ -32,6 +32,7 @@ object Driver {
 
   def callCaseClassApply(): Cc = Cc.apply(1)
   def callCaseClassConstructor(): Cc = new Cc(9)
+  def callCaseClassConstructorBothOmitted(): Cc = new Cc()
 
   /** Calls through a `Plain`-typed reference whose runtime class overrides only `f`. */
   def callThroughPlainOverridesOnly(): Int = {

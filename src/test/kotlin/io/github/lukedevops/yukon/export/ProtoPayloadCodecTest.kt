@@ -325,6 +325,48 @@ class ProtoPayloadCodecTest {
     }
 
     @Test
+    fun `a probe location's target class name round-trips through the wire, empty as null`() {
+        val manifest =
+            ProbeManifest(
+                serviceName = "checkout",
+                serviceVersion = "1.0.0",
+                probes =
+                    listOf(
+                        ProbeLocation(
+                            classId = 0,
+                            probeIndex = 0,
+                            kind = ProbeKind.OPTIONAL_ARGUMENT,
+                            className = "com.example.scalatarget.Cc\$",
+                            methodName = "<init>",
+                            methodDescriptor = "(II)V",
+                            line = 71,
+                            branchIndex = null,
+                            parameterIndex = 0,
+                            parameterName = "a",
+                            overridable = false,
+                            targetClassName = "com.example.scalatarget.Cc",
+                        ),
+                        ProbeLocation(
+                            classId = 0,
+                            probeIndex = 1,
+                            kind = ProbeKind.METHOD,
+                            className = "com.example.Foo",
+                            methodName = "bar",
+                            methodDescriptor = "(I)V",
+                            line = 10,
+                            branchIndex = null,
+                        ),
+                    ),
+            )
+
+        val decoded = ProtoPayloadCodec.decodeProbeManifest(ProtoPayloadCodec.encode(manifest))
+
+        assertEquals(manifest, decoded)
+        assertEquals("com.example.scalatarget.Cc", decoded.probes[0].targetClassName)
+        assertEquals(null, decoded.probes[1].targetClassName)
+    }
+
+    @Test
     fun `encodes and decodes a static baseline with declared classes and methods`() {
         val baseline =
             StaticBaseline(

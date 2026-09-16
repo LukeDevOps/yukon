@@ -54,6 +54,7 @@ private data class ProbeInfo(
     val parameterIndex: Int? = null,
     val parameterName: String? = null,
     val overridable: Boolean = false,
+    val targetClassName: String? = null,
 )
 
 private data class SkippedInfo(
@@ -190,6 +191,7 @@ private fun handleManifest(exchange: HttpExchange) {
                 parameterIndex = if (location.hasParameterIndex()) location.parameterIndex else null,
                 parameterName = location.parameterName.ifEmpty { null },
                 overridable = location.overridable,
+                targetClassName = location.targetClassName.ifEmpty { null },
             )
         dynamicallyKnownClassNames += location.className
     }
@@ -303,12 +305,13 @@ private fun printOmissionReport() {
     val alwaysSupplied = mutableListOf<Pair<InstanceProbeKey, ProbeInfo>>()
     for ((key, info) in manifestProbes) {
         if (info.kind != ProbeKind.OPTIONAL_ARGUMENT || info.inline) continue
+        val targetClassName = info.targetClassName ?: info.className
         val targetHits =
             manifestProbes.entries
                 .filter { (targetKey, targetInfo) ->
                     targetKey.serviceInstanceId == key.serviceInstanceId &&
                         targetInfo.kind == ProbeKind.METHOD &&
-                        targetInfo.className == info.className &&
+                        targetInfo.className == targetClassName &&
                         targetInfo.methodName == info.methodName &&
                         targetInfo.methodDescriptor == info.methodDescriptor
                 }.sumOf { (targetKey, _) -> latestHitsTotal[targetKey] ?: 0L }
@@ -319,17 +322,19 @@ private fun printOmissionReport() {
     }
     println("never supplied: ${neverSupplied.size}, always supplied: ${alwaysSupplied.size}")
     neverSupplied
-        .sortedWith(compareBy({ it.second.className }, { it.second.methodName }, { it.second.parameterIndex }))
+        .sortedWith(compareBy({ it.second.targetClassName ?: it.second.className }, { it.second.methodName }, { it.second.parameterIndex }))
         .forEach { (key, info) ->
+            val targetClassName = info.targetClassName ?: info.className
             println(
-                "  NEVER SUPPLIED: ${info.className}#${info.methodName}(${info.parameterName}) (instance ${key.serviceInstanceId})",
+                "  NEVER SUPPLIED: $targetClassName#${info.methodName}(${info.parameterName}) (instance ${key.serviceInstanceId})",
             )
         }
     alwaysSupplied
-        .sortedWith(compareBy({ it.second.className }, { it.second.methodName }, { it.second.parameterIndex }))
+        .sortedWith(compareBy({ it.second.targetClassName ?: it.second.className }, { it.second.methodName }, { it.second.parameterIndex }))
         .forEach { (key, info) ->
+            val targetClassName = info.targetClassName ?: info.className
             println(
-                "  ALWAYS SUPPLIED: ${info.className}#${info.methodName}(${info.parameterName}) (instance ${key.serviceInstanceId})",
+                "  ALWAYS SUPPLIED: $targetClassName#${info.methodName}(${info.parameterName}) (instance ${key.serviceInstanceId})",
             )
         }
     println("==============================================")

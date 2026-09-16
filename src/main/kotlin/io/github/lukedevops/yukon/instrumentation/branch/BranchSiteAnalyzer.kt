@@ -81,8 +81,16 @@ object BranchSiteAnalyzer {
         descriptor: String,
     ): Boolean = name.endsWith("\$default") || (name == "<init>" && descriptor.endsWith("DefaultConstructorMarker;)V"))
 
+    /**
+     * [lookup] resolves another class's bytes by internal name, for a constructor default getter
+     * whose target lives on a different class from the getter itself (see
+     * [resolveScalaGetterSites]). It defaults to always returning null, which leaves such a getter
+     * unresolved instead of failing analysis. A caller must catch and swallow its own lookup
+     * failures; this function treats a thrown exception the same as a null result.
+     */
     fun analyze(
         classBytes: ByteArray,
+        lookup: (internalName: String) -> ByteArray? = { null },
         methodFilter: (name: String, descriptor: String) -> Boolean,
     ): Analysis {
         val sites = mutableListOf<BranchSite>()
@@ -169,7 +177,8 @@ object BranchSiteAnalyzer {
                 .filter { (_, access) -> access and (Opcodes.ACC_SYNTHETIC or Opcodes.ACC_BRIDGE) == 0 }
                 .map { it.key }
                 .filter { (name, _) -> scalaGetterPattern.matches(name) }
-        val scalaGetterSites = resolveScalaGetterSites(classAccess, methodAccess, localNames, getterCandidateNames)
+        val scalaGetterSites =
+            resolveScalaGetterSites(internalClassName, classAccess, methodAccess, localNames, firstLines, getterCandidateNames, lookup)
         val resolvedGetters = scalaGetterSites.mapTo(mutableSetOf()) { it.getterName to it.getterDescriptor }
         val unresolvedScalaGetterSites = getterCandidateNames.filterNot { it in resolvedGetters }
 
@@ -186,6 +195,14 @@ object BranchSiteAnalyzer {
 
     /** Matches a Scala default getter such as `f$default$2`, capturing the target's name and the one-based parameter number. */
     private val scalaGetterPattern = Regex("^(.+)\\\$default\\\$(\\d+)$")
+
+    /**
+     * The mangled name scalac gives a constructor default getter's target group. `<init>` itself
+     * is not a legal method name segment, so the compiler spells it out instead: a getter named
+     * `$lessinit$greater$default$1` fills a default for the primary constructor, not for a method
+     * literally named `$lessinit$greater`.
+     */
+    private const val CONSTRUCTOR_GETTER_TARGET_NAME = "\$lessinit\$greater"
 
     /**
      * Visits one method's instructions. Branch/switch sites, the first line, and the inline
@@ -567,38 +584,82 @@ object BranchSiteAnalyzer {
 
     /**
      * Matches each Scala default getter (`f$default$N`, one of [candidateNames]) to the one
-     * declared, non-getter method in the same class whose default it fills. A getter's own `N` is
-     * one-based across every parameter list and counts an extension receiver, unlike Kotlin's mask
-     * bits.
+     * declared, non-getter method whose default it fills. A getter's own `N` is one-based across
+     * every parameter list and counts an extension receiver, unlike Kotlin's mask bits.
      *
-     * A getter resolves against a method with at least `N` JVM parameters whose parameter `N`
-     * erases to the getter's own return type, or is `scala.Function0` (a by-name parameter's
-     * getter returns the value type, not a thunk of it), and whose leading parameters match the
-     * getter's own parameter list exactly: a getter for a later parameter list carries every
-     * earlier list's parameters, whether or not its own default expression reads them.
+     * A constructor default getter (`$lessinit$greater$default$N`) is the one case whose target can
+     * live outside the getter's own class. On a companion module class ([ownInternalClassName] ends
+     * in `$`), the getter is an instance method and its target `<init>` lives on the sibling class
+     * named without the trailing `$`, whose bytes [lookupCompanionBytes] reads. The same class also
+     * carries a public static forwarder under the same getter name, whose own target `<init>` is in
+     * that same class, resolved the ordinary in-class way. Either way, a constructor target is
+     * never overridable.
+     *
+     * A non-constructor getter always resolves in its own class: a method with at least `N` JVM
+     * parameters whose parameter `N` erases to the getter's own return type, or is
+     * `scala.Function0` (a by-name parameter's getter returns the value type, not a thunk of it),
+     * and whose leading parameters match the getter's own parameter list exactly, since a getter for
+     * a later parameter list carries every earlier list's parameters whether or not its own default
+     * expression reads them.
      *
      * No survivor, or more than one, leaves the getter unresolved. scalac forbids two overloads of
      * one name both declaring defaults, so ambiguity here can only come from an overload with no
      * defaults of its own.
      */
     private fun resolveScalaGetterSites(
+        ownInternalClassName: String,
         classAccess: Int,
         methodAccess: Map<Pair<String, String>, Int>,
         localNames: Map<Pair<String, String>, Map<Int, String>>,
+        firstLines: Map<Pair<String, String>, Int>,
         candidateNames: List<Pair<String, String>>,
+        lookupCompanionBytes: (String) -> ByteArray?,
     ): List<ScalaGetterSite> {
-        val classIsFinal = classAccess and Opcodes.ACC_FINAL != 0
+        val ownNamespace = GetterTargetNamespace(methodAccess, localNames, firstLines, classAccess, targetClassName = null)
+        val companionNamespaces = mutableMapOf<String, GetterTargetNamespace?>()
+
+        fun companionNamespace(companionInternalName: String): GetterTargetNamespace? =
+            companionNamespaces.getOrPut(companionInternalName) {
+                val bytes =
+                    try {
+                        lookupCompanionBytes(companionInternalName)
+                    } catch (_: Exception) {
+                        null
+                    } ?: return@getOrPut null
+                val table =
+                    try {
+                        readMethodTable(bytes)
+                    } catch (_: Exception) {
+                        null
+                    } ?: return@getOrPut null
+                GetterTargetNamespace(
+                    table.methodAccess,
+                    table.localNames,
+                    table.firstLines,
+                    table.classAccess,
+                    targetClassName = companionInternalName.replace('/', '.'),
+                )
+            }
 
         return candidateNames.mapNotNull { (getterName, getterDescriptor) ->
             val match = scalaGetterPattern.matchEntire(getterName) ?: return@mapNotNull null
-            val targetName = match.groupValues[1]
+            val rawTargetName = match.groupValues[1]
             val parameterIndex = match.groupValues[2].toInt() - 1
+            val isConstructorGetter = rawTargetName == CONSTRUCTOR_GETTER_TARGET_NAME
+            val targetName = if (isConstructorGetter) "<init>" else rawTargetName
+
+            val namespace =
+                if (isConstructorGetter && ownInternalClassName.endsWith("$")) {
+                    companionNamespace(ownInternalClassName.removeSuffix("$")) ?: return@mapNotNull null
+                } else {
+                    ownNamespace
+                }
 
             val getterParams = parseParameterDescriptors(getterDescriptor)
             val getterReturn = returnTypeOf(getterDescriptor)
 
             val matches =
-                methodAccess.entries.filter { (key, _) ->
+                namespace.methodAccess.entries.filter { (key, _) ->
                     val (candidateName, candidateDescriptor) = key
                     if (candidateName != targetName || scalaGetterPattern.matches(candidateName)) return@filter false
                     val candidateParams = parseParameterDescriptors(candidateDescriptor)
@@ -614,12 +675,14 @@ object BranchSiteAnalyzer {
             val targetIsStatic = targetAccess and Opcodes.ACC_STATIC != 0
             val targetIsPrivate = targetAccess and Opcodes.ACC_PRIVATE != 0
             val targetIsFinal = targetAccess and Opcodes.ACC_FINAL != 0
-            val overridable = !targetIsStatic && !targetIsPrivate && !targetIsFinal && !classIsFinal
+            val namespaceClassIsFinal = namespace.classAccess and Opcodes.ACC_FINAL != 0
+            val overridable = !isConstructorGetter && !targetIsStatic && !targetIsPrivate && !targetIsFinal && !namespaceClassIsFinal
 
             val targetParams = parseParameterDescriptors(targetDescriptor)
             var slot = if (targetIsStatic) 0 else 1
             for (i in 0 until parameterIndex) slot += slotWidth(targetParams[i])
-            val parameterName = localNames[targetKey]?.get(slot) ?: ""
+            val parameterName = namespace.localNames[targetKey]?.get(slot) ?: ""
+            val line = namespace.firstLines[targetKey] ?: -1
 
             ScalaGetterSite(
                 getterName = getterName,
@@ -629,7 +692,90 @@ object BranchSiteAnalyzer {
                 parameterIndex = parameterIndex,
                 parameterName = parameterName,
                 overridable = overridable,
+                targetClassName = namespace.targetClassName,
+                line = line,
             )
         }
+    }
+
+    /**
+     * The method table a resolved getter's target is searched in, plus the target's own class
+     * name when it differs from the getter's own ([targetClassName], null for an in-class target).
+     */
+    private class GetterTargetNamespace(
+        val methodAccess: Map<Pair<String, String>, Int>,
+        val localNames: Map<Pair<String, String>, Map<Int, String>>,
+        val firstLines: Map<Pair<String, String>, Int>,
+        val classAccess: Int,
+        val targetClassName: String?,
+    )
+
+    /** A class's method access flags, local variable names, and first line numbers, read once from its bytes. */
+    private class MethodTable(
+        val classAccess: Int,
+        val methodAccess: Map<Pair<String, String>, Int>,
+        val localNames: Map<Pair<String, String>, Map<Int, String>>,
+        val firstLines: Map<Pair<String, String>, Int>,
+    )
+
+    /**
+     * A minimal reader for a class this agent is not instrumenting: only what
+     * [resolveScalaGetterSites] needs to resolve a constructor default getter against a companion
+     * module class's own `<init>`. Unlike [analyze], every method's first line is recorded
+     * unconditionally, since no method or branch tier runs against this class to gate it by
+     * eligibility.
+     */
+    private fun readMethodTable(classBytes: ByteArray): MethodTable {
+        var classAccess = 0
+        val methodAccess = mutableMapOf<Pair<String, String>, Int>()
+        val localNames = mutableMapOf<Pair<String, String>, MutableMap<Int, String>>()
+        val firstLines = mutableMapOf<Pair<String, String>, Int>()
+
+        val classVisitor =
+            object : ClassVisitor(Opcodes.ASM9) {
+                override fun visit(
+                    version: Int,
+                    access: Int,
+                    name: String,
+                    signature: String?,
+                    superName: String?,
+                    interfaces: Array<out String>?,
+                ) {
+                    classAccess = access
+                }
+
+                override fun visitMethod(
+                    access: Int,
+                    name: String,
+                    descriptor: String,
+                    signature: String?,
+                    exceptions: Array<out String>?,
+                ): MethodVisitor {
+                    methodAccess[name to descriptor] = access
+                    val localNamesForMethod = localNames.getOrPut(name to descriptor) { mutableMapOf() }
+                    return object : MethodVisitor(Opcodes.ASM9) {
+                        override fun visitLineNumber(
+                            line: Int,
+                            start: Label,
+                        ) {
+                            firstLines.putIfAbsent(name to descriptor, line)
+                        }
+
+                        override fun visitLocalVariable(
+                            localName: String,
+                            localDescriptor: String,
+                            localSignature: String?,
+                            start: Label,
+                            end: Label,
+                            index: Int,
+                        ) {
+                            localNamesForMethod.putIfAbsent(index, localName)
+                        }
+                    }
+                }
+            }
+
+        ClassReader(classBytes).accept(classVisitor, ClassReader.SKIP_FRAMES)
+        return MethodTable(classAccess, methodAccess, localNames, firstLines)
     }
 }

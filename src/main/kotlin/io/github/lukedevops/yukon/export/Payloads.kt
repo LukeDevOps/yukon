@@ -55,6 +55,12 @@ data class DeltaBatch(
  * across whichever override actually ran, which this location cannot relate; it claims "always
  * supplied" (the default is dead) for any target. Neither claim is made when [inline] is true. See
  * ADR 0021.
+ *
+ * [targetClassName] is set only for an [ProbeKind.OPTIONAL_ARGUMENT] probe whose target lives in
+ * another class: a Scala constructor getter declared on a companion module class, whose target
+ * constructor lives on the class the module compiles for. It is null when the target is in the
+ * probe's own class, and always null for Kotlin. A collector joins an omission probe to its
+ * target's METHOD probe by [targetClassName] when set, otherwise by [className]. See ADR 0023.
  */
 data class ProbeLocation(
     val classId: Int,
@@ -69,6 +75,7 @@ data class ProbeLocation(
     val parameterIndex: Int? = null,
     val parameterName: String? = null,
     val overridable: Boolean = false,
+    val targetClassName: String? = null,
 )
 
 /** A class the agent matched but could not instrument. It never gets a classId or any probes. */
