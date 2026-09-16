@@ -1,5 +1,6 @@
 package io.github.lukedevops.yukon.instrumentation.staticscan
 
+import io.github.lukedevops.yukon.export.CallEdge
 import io.github.lukedevops.yukon.export.DeclaredClass
 import io.github.lukedevops.yukon.export.DeclaredMethod
 import io.github.lukedevops.yukon.export.StaticallyUnsafeClass
@@ -238,12 +239,12 @@ class StaticBaselineScanner(
                     )
                 return
             }
-            val methods = declaredMethodsOf(typeDescription, className, locator)
-            if (methods.isEmpty()) {
+            val scanned = declaredMethodsOf(typeDescription, className, locator)
+            if (scanned.methods.isEmpty()) {
                 buckets.unprobed += UnprobedClass(className, "no concrete methods to probe")
                 return
             }
-            buckets.declared += DeclaredClass(className, methods)
+            buckets.declared += DeclaredClass(className, scanned.methods, scanned.superClassName, scanned.interfaceNames)
         } catch (e: Exception) {
             // Covers a corrupt class file, or a failure resolving a supporting type (e.g. an
             // annotation's own definition) while describing this one. Either way, this class
@@ -252,18 +253,28 @@ class StaticBaselineScanner(
         }
     }
 
+    /** [DeclaredMethod]s for one class, plus the supertypes read from the same analysis pass. */
+    private class ScannedMethods(
+        val methods: List<DeclaredMethod>,
+        val superClassName: String?,
+        val interfaceNames: List<String>,
+    )
+
     /**
      * Reads [className]'s bytes through [locator] once, ahead of filtering: whether a synthetic
      * method is a probed lambda body depends on whether the class carries a `Scala`/`ScalaSig`
      * attribute ([ScalaClassDetector]), and the same bytes are also used to detect inline
      * functions with the same LocalVariableTable rule [BranchSiteAnalyzer] uses at transform time,
-     * merged into each declared method, and to detect a `<clinit>` of the class's own.
+     * merged into each declared method, to detect a `<clinit>` of the class's own, to read its
+     * in-scope call edges, and to read its superclass and interfaces.
      *
      * A class whose bytes cannot be resolved here is not itself unreadable: its [TypeDescription]
      * already resolved successfully through [pool][TypePool], so it is still declared, just
-     * treated as a non-Scala class, with every method's [DeclaredMethod.inline] left false and no
-     * `<clinit>` entry added. This can only happen if the two disagree about what is readable,
-     * which does not happen for any locator this scanner builds today.
+     * treated as a non-Scala class, with every method's [DeclaredMethod.inline] and
+     * [DeclaredMethod.calls] left empty, [DeclaredClass.superClassName] left null, no
+     * `<clinit>` entry added, and [DeclaredClass.interfaceNames] left empty. This can only happen
+     * if the two disagree about what is readable, which does not happen for any locator this
+     * scanner builds today.
      *
      * A `<clinit>` entry is appended after every other declared method, mirroring
      * [io.github.lukedevops.yukon.instrumentation.YukonInstrumentation]'s own placement of the
@@ -276,7 +287,7 @@ class StaticBaselineScanner(
         typeDescription: TypeDescription,
         className: String,
         locator: ClassFileLocator,
-    ): List<DeclaredMethod> {
+    ): ScannedMethods {
         val classBytes =
             try {
                 val resolution = locator.locate(className)
@@ -289,7 +300,12 @@ class StaticBaselineScanner(
         val eligible = methods.map { it.internalName to it.descriptor }.toSet()
         val analysis =
             if (classBytes != null) {
-                BranchSiteAnalyzer.analyze(classBytes) { name, descriptor -> (name to descriptor) in eligible }
+                BranchSiteAnalyzer.analyze(
+                    classBytes,
+                    crossClassLookup(locator),
+                    instrumentedPackagePrefixes,
+                    excludedPackagePrefixes,
+                ) { name, descriptor -> (name to descriptor) in eligible }
             } else {
                 BranchSiteAnalyzer.Analysis.EMPTY
             }
@@ -299,11 +315,38 @@ class StaticBaselineScanner(
                     it.internalName,
                     it.descriptor,
                     analysis.isInline(it.internalName, it.descriptor),
+                    analysis.callsOf(it.internalName, it.descriptor),
                 )
             }
-        val typeInitializer = if (analysis.hasTypeInitializer) listOf(DeclaredMethod("<clinit>", "()V")) else emptyList()
-        return declaredMethods + typeInitializer
+        val typeInitializer =
+            if (analysis.hasTypeInitializer) {
+                listOf(DeclaredMethod("<clinit>", "()V", calls = analysis.callsOf("<clinit>", "()V")))
+            } else {
+                emptyList()
+            }
+        return ScannedMethods(declaredMethods + typeInitializer, analysis.superClassName, analysis.interfaceNames)
     }
+
+    /**
+     * Resolves another class's bytes by internal name through [locator], the same locator
+     * [declaredMethodsOf] reads the scanned class's own bytes through, supporting-types fallback
+     * included. [BranchSiteAnalyzer] uses this to resolve a cross-class Kotlin `$default` pass-
+     * through to its real target, the same mechanism
+     * [io.github.lukedevops.yukon.instrumentation.YukonInstrumentation] uses at transform time; a
+     * baseline edge and a manifest edge must agree on the target, not one naming `$default` and
+     * the other naming the function it fills in for. Any failure, including a class the locator
+     * cannot find, is swallowed and reported as an unresolved pass-through rather than as a scan
+     * failure.
+     */
+    private fun crossClassLookup(locator: ClassFileLocator): (String) -> ByteArray? =
+        { internalName ->
+            try {
+                val resolution = locator.locate(internalName.replace('/', '.'))
+                if (resolution.isResolved) resolution.resolve() else null
+            } catch (_: Exception) {
+                null
+            }
+        }
 
     /** Cheap, string-only pre-filter, applied before resolving a [TypeDescription] at all. */
     private fun looksInScope(className: String): Boolean =

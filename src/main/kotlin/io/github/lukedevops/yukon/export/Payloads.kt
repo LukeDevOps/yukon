@@ -146,16 +146,29 @@ data class ProbeManifest(
  * No line field, unlike [ProbeLocation]: the static scan reads a class's bytecode only for the
  * inline marker and records no line. [inline] is read from the LocalVariableTable by the same
  * rule [ProbeLocation.inline] uses; see ADR 0022.
+ *
+ * [calls] is the same in-scope call-edge list [ProbeLocation.calls] carries for a loaded method,
+ * read from the same analysis pass. A collector treats a baseline edge and a manifest edge as one
+ * graph. See ADR 0024.
  */
 data class DeclaredMethod(
     val methodName: String,
     val methodDescriptor: String,
     val inline: Boolean = false,
+    val calls: List<CallEdge> = emptyList(),
 )
 
+/**
+ * [superClassName] and [interfaceNames] are the same fields [ClassSupertypes] carries for a
+ * loaded class. Both are null and empty, respectively, only when the class's bytes could not be
+ * read to analyse them; a class read successfully always has a superclass, since
+ * `java.lang.Object` itself is never instrumented. See ADR 0024.
+ */
 data class DeclaredClass(
     val className: String,
     val methods: List<DeclaredMethod>,
+    val superClassName: String? = null,
+    val interfaceNames: List<String> = emptyList(),
 )
 
 /**

@@ -167,11 +167,24 @@ message DeclaredMethod {
   string method_descriptor = 2;
   // Read from the LocalVariableTable, the same rule as ProbeLocation.inline.
   bool inline = 3;
+  // The in-scope call edges read from this method's own bytecode, the same rule
+  // ProbeLocation.calls uses. A collector treats a baseline edge and a manifest edge as one
+  // graph: for a class the agent both scanned and later loaded, the two describe the same
+  // bytecode. See ADR 0024.
+  repeated CallEdge calls = 4;
 }
 
 message DeclaredClass {
   string class_name = 1;
   repeated DeclaredMethod methods = 2;
+  // The class's superclass and direct interfaces, the same fields ClassSupertypes carries for a
+  // loaded class, and read the same way: dotted, as the class file's own super_class and
+  // interfaces entries name them. Empty only for java.lang.Object itself, which this agent never
+  // instruments; an interface's own super_class_name is java.lang.Object too. Null (empty string
+  // on the wire) when the class's bytes could not be read, alongside its own empty calls list.
+  // See ADR 0024.
+  string super_class_name = 3;
+  repeated string interface_names = 4;
 }
 
 // A class the static scanner found on the classpath but judged unsafe to

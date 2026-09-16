@@ -101,6 +101,7 @@ private data class DeclaredMethodInfo(
     val methodName: String,
     val methodDescriptor: String,
     val inline: Boolean,
+    val calls: List<CallEdgeInfo> = emptyList(),
 )
 
 private data class EndpointInfo(
@@ -140,6 +141,10 @@ private val latestEndpointHitsTotal = ConcurrentHashMap<InstanceEndpointKey, Lon
 // baseline's declared-classes set is for.
 private val dynamicallyKnownClassNames = Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
 private val staticallyDeclaredClasses = ConcurrentHashMap<String, List<DeclaredMethodInfo>>()
+
+// A declared class's superclass and interfaces, read the same way as a loaded class's
+// ClassSupertypes record. See ADR 0024.
+private val staticallyDeclaredSupertypes = ConcurrentHashMap<String, SupertypesInfo>()
 private val staticallyUnsafeClasses = ConcurrentHashMap<String, String>()
 private val staticallyUnreadableClasses = ConcurrentHashMap<String, String>()
 private val staticallyUnprobedClasses = ConcurrentHashMap<String, String>()
@@ -277,7 +282,16 @@ private fun handleStaticBaseline(exchange: HttpExchange) {
     val baseline = StaticBaseline.parseFrom(exchange.requestBody.readBytes())
     for (declaredClass in baseline.declaredClassesList) {
         staticallyDeclaredClasses[declaredClass.className] =
-            declaredClass.methodsList.map { DeclaredMethodInfo(it.methodName, it.methodDescriptor, it.inline) }
+            declaredClass.methodsList.map {
+                DeclaredMethodInfo(
+                    it.methodName,
+                    it.methodDescriptor,
+                    it.inline,
+                    it.callsList.map { call -> CallEdgeInfo(call.className, call.methodName, call.methodDescriptor, call.virtual) },
+                )
+            }
+        staticallyDeclaredSupertypes[declaredClass.className] =
+            SupertypesInfo(declaredClass.superClassName.ifEmpty { null }, declaredClass.interfaceNamesList)
     }
     for (unsafe in baseline.staticallyUnsafeClassesList) {
         staticallyUnsafeClasses[unsafe.className] = unsafe.reason
@@ -291,11 +305,12 @@ private fun handleStaticBaseline(exchange: HttpExchange) {
     val progress =
         scans.computeIfAbsent(ScanKey(baseline.resource.serviceInstanceId, baseline.scannedAt)) { ScanProgress(baseline.chunkCount) }
     progress.received += baseline.chunkIndex
+    val callEdgeCount = baseline.declaredClassesList.sumOf { c -> c.methodsList.sumOf { it.callsList.size } }
     println(
         "[static-baseline] service=${baseline.resource.serviceName} chunk=${baseline.chunkIndex + 1}/${baseline.chunkCount} " +
             "declared_classes=${baseline.declaredClassesList.size} " +
             "statically_unsafe=${baseline.staticallyUnsafeClassesList.size} unreadable=${baseline.unreadableClassesList.size} " +
-            "unprobed=${baseline.unprobedClassesList.size}",
+            "unprobed=${baseline.unprobedClassesList.size} call_edges=$callEdgeCount",
     )
     respondOk(exchange)
 }
