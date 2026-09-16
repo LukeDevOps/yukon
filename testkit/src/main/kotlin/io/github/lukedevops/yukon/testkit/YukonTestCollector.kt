@@ -71,6 +71,19 @@ class YukonTestCollector private constructor(
         val scannedAt: Long,
     )
 
+    /**
+     * Groups every omission probe naming one optional parameter, within one instance: see
+     * [optionalParameterFindings]. [targetClassName] is the effective target class, already
+     * resolved with `targetClassName ?: className`, not the raw wire value.
+     */
+    private data class OmissionTargetKey(
+        val serviceInstanceId: String,
+        val targetClassName: String,
+        val methodName: String,
+        val methodDescriptor: String,
+        val parameterIndex: Int?,
+    )
+
     /** Cross-instance endpoint identity: the pair alone, never `endpoint_id`. See the class KDoc. */
     private data class EndpointIdentity(
         val verb: String,
@@ -289,51 +302,71 @@ class YukonTestCollector private constructor(
     }
 
     /**
-     * Every optional parameter whose omission total equals its target's hit total within the
-     * same instance: every caller took the default, so the parameter can go. Compared per
-     * instance, one row per instance, since an omission probe and its target's method probe
-     * only share a class ID within one instance. Claimed only for a non-overridable target,
-     * since an overridable target's omissions are spread across whichever override actually
-     * ran, which the manifest cannot relate back to one total. A target with no method probe at
-     * all (an abstract interface method) is skipped, and so is an inline target, the same reason
-     * [neverHit] excludes one.
+     * Every optional parameter whose combined omission total equals its target's hit total
+     * within the same instance: every caller took the default, so the parameter can go.
+     * "Combined" matters because one parameter can carry more than one omission probe: a Scala
+     * constructor default gets both a module getter on the companion class and that class's own
+     * static forwarder, both resolving to the same target, so their omissions are summed and
+     * judged once rather than each read on its own; see [omissionCount] and ADR 0023. Compared
+     * per instance, one row per instance, since an omission probe and its target's method probe
+     * only share a class ID within one instance. Claimed only when every probe naming the
+     * parameter is non-overridable, since an overridable target's omissions are spread across
+     * whichever override actually ran, which the manifest cannot relate back to one total. A
+     * target with no method probe at all (an abstract interface method) is skipped, and so is an
+     * inline target, the same reason [neverHit] excludes one.
      */
     fun neverSupplied(): List<OptionalParameterRef> =
-        optionalParameterFindings { omitted, targetHits, probe -> !probe.overridable && omitted == targetHits }
+        optionalParameterFindings { omitted, targetHits, overridable -> !overridable && omitted == targetHits }
 
     /**
-     * Every optional parameter whose omission total stayed at zero while its target was called
-     * at least once in the same instance: the default value is dead. Claimed for any target,
-     * overridable or not. A target with no method probe at all, or an inline target, is skipped,
-     * the same as [neverSupplied].
+     * Every optional parameter whose combined omission total stayed at zero while its target was
+     * called at least once in the same instance: the default value is dead. See [neverSupplied]
+     * for why "combined" matters. Claimed for any target, overridable or not. A target with no
+     * method probe at all, or an inline target, is skipped, the same as [neverSupplied].
      */
     fun alwaysSupplied(): List<OptionalParameterRef> = optionalParameterFindings { omitted, _, _ -> omitted == 0L }
 
+    /**
+     * Groups every non-inline `OPTIONAL_ARGUMENT` probe by the parameter it names, within one
+     * instance: `(service instance, target class, target method name and descriptor, parameter
+     * index)`. A group can hold more than one probe when a target has more than one omission
+     * probe resolving to it, the Scala constructor case [neverSupplied] documents. [claims] sees
+     * the group's summed omission total, its target's summed hit total, and its shared
+     * `overridable` flag (identical across every probe naming one parameter).
+     */
     private fun optionalParameterFindings(
-        claims: (omitted: Long, targetHits: Long, probe: StoredProbe) -> Boolean,
+        claims: (omitted: Long, targetHits: Long, overridable: Boolean) -> Boolean,
     ): List<OptionalParameterRef> =
         probesByKey.entries
             .filter { (_, probe) -> probe.kind == ProbeKind.OPTIONAL_ARGUMENT && !probe.inline }
-            .mapNotNull { (key, probe) ->
-                val targetClassName = probe.targetClassName ?: probe.className
+            .groupBy { (key, probe) ->
+                OmissionTargetKey(
+                    key.serviceInstanceId,
+                    probe.targetClassName ?: probe.className,
+                    probe.methodName,
+                    probe.methodDescriptor,
+                    probe.parameterIndex,
+                )
+            }.mapNotNull { (groupKey, members) ->
                 val targetKeys =
-                    findMethodProbesOrNull(targetClassName, probe.methodName, probe.methodDescriptor)
-                        ?.filter { it.serviceInstanceId == key.serviceInstanceId }
+                    findMethodProbesOrNull(groupKey.targetClassName, groupKey.methodName, groupKey.methodDescriptor)
+                        ?.filter { it.serviceInstanceId == groupKey.serviceInstanceId }
                         ?.takeIf { it.isNotEmpty() }
                         ?: return@mapNotNull null
                 val targetHits = targetKeys.sumOf { hitsByKey[it] ?: 0L }
                 if (targetHits <= 0L) return@mapNotNull null
-                val omitted = hitsByKey[key] ?: 0L
-                if (!claims(omitted, targetHits, probe)) return@mapNotNull null
+                val omitted = members.sumOf { (key, _) -> hitsByKey[key] ?: 0L }
+                val representative = members.first().value
+                if (!claims(omitted, targetHits, representative.overridable)) return@mapNotNull null
                 OptionalParameterRef(
-                    serviceInstanceId = key.serviceInstanceId,
-                    className = targetClassName,
-                    methodName = probe.methodName,
-                    methodDescriptor = probe.methodDescriptor,
-                    parameterIndex = probe.parameterIndex ?: -1,
-                    parameterName = probe.parameterName ?: "",
-                    line = probe.line,
-                    targetClassName = probe.targetClassName,
+                    serviceInstanceId = groupKey.serviceInstanceId,
+                    className = groupKey.targetClassName,
+                    methodName = groupKey.methodName,
+                    methodDescriptor = groupKey.methodDescriptor,
+                    parameterIndex = groupKey.parameterIndex ?: -1,
+                    parameterName = representative.parameterName ?: "",
+                    line = representative.line,
+                    targetClassName = members.firstNotNullOfOrNull { it.value.targetClassName },
                 )
             }.sortedWith(compareBy({ it.className }, { it.methodName }, { it.parameterIndex }))
 
