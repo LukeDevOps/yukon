@@ -323,6 +323,8 @@ fun printStackReport() {
     )
     val endpoints = report["endpoints"] as Map<*, *>
     println("  endpoints: known=${endpoints["known"]} called=${endpoints["called"]} never_called=${endpoints["never_called"]}")
+    val clusters = report["unreached_clusters"] as Map<*, *>
+    println("  unreached clusters: count=${clusters["count"]} methods_attributed=${clusters["methods_attributed"]}")
     for (module in report["disabled_endpoint_modules"] as List<*>) {
         val m = module as Map<*, *>
         println("  DISABLED ENDPOINT MODULE: ${m["module"]} (${m["instances"]} instance(s)): ${m["reason"]}")
@@ -345,6 +347,23 @@ fun printStackReport() {
             val p = parameter as Map<*, *>
             val name = p["parameter_name"] ?: "#${p["parameter_index"]}"
             println("    ${p["class_name"]}#${p["method_name"]}($name) omitted=${p["omissions_total"]} of ${p["target_hits_total"]} calls")
+        }
+    }
+    println("  UNREACHED CLUSTERS:")
+    for (cluster in readApi("/unreached-clusters$version")["clusters"] as List<*>) {
+        val c = cluster as Map<*, *>
+        val root = c["root"] as Map<*, *>
+        println(
+            "    UNREACHED CLUSTER: root ${root["class_name"]}#${root["method_name"]} (${(root["root_kind"] as String).replace(
+                '_',
+                ' ',
+            )}), " +
+                "${c["members_total"]} methods, ${c["never_loaded_classes"]} never-loaded classes",
+        )
+        for (member in c["members"] as List<*>) {
+            val m = member as Map<*, *>
+            val suffix = if (m["never_loaded"] == true) " (never loaded)" else ""
+            println("      ${m["class_name"]}#${m["method_name"]}$suffix")
         }
     }
     println("  ENDPOINTS:")
