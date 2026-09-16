@@ -311,8 +311,16 @@ fun printStackReport() {
     val classes = report["classes"] as Map<*, *>
     val instances = report["instances"] as Map<*, *>
     println("yukon demo: report for $stackServiceName@$stackServiceVersion from $stackServerUrl (${instances["total"]} instance(s) so far)")
-    println("  probes: known=${probes["known"]} hit=${probes["hit"]} never_hit=${probes["never_hit"]}")
-    println("  classes: declared=${classes["declared"]} loaded=${classes["loaded"]} never_loaded=${classes["never_loaded"]}")
+    println(
+        "  probes: known=${probes["known"]} hit=${probes["hit"]} never_hit=${probes["never_hit"]} inline (not judged)=${probes["inline"]}",
+    )
+    println(
+        "  classes: declared=${classes["declared"]} loaded=${classes["loaded"]} never_loaded=${classes["never_loaded"]} all inline (not judged)=${classes["all_inline"]}",
+    )
+    val optionalParameters = report["optional_parameters"] as Map<*, *>
+    println(
+        "  optional parameters: known=${optionalParameters["known"]} never_supplied=${optionalParameters["never_supplied"]} always_supplied=${optionalParameters["always_supplied"]}",
+    )
     val endpoints = report["endpoints"] as Map<*, *>
     println("  endpoints: known=${endpoints["known"]} called=${endpoints["called"]} never_called=${endpoints["never_called"]}")
     for (module in report["disabled_endpoint_modules"] as List<*>) {
@@ -331,12 +339,22 @@ fun printStackReport() {
         val c = cls as Map<*, *>
         println("    ${c["class_name"]} (${(c["methods"] as List<*>).size} methods)")
     }
+    for (status in listOf("never-supplied", "always-supplied")) {
+        println("  ${status.replace('-', ' ').uppercase()}:")
+        for (parameter in readApi("/optional-parameters$version&status=$status")["optional_parameters"] as List<*>) {
+            val p = parameter as Map<*, *>
+            val name = p["parameter_name"] ?: "#${p["parameter_index"]}"
+            println("    ${p["class_name"]}#${p["method_name"]}($name) omitted=${p["omissions_total"]} of ${p["target_hits_total"]} calls")
+        }
+    }
     println("  ENDPOINTS:")
     for (endpoint in readApi("/endpoints$version&status=all")["endpoints"] as List<*>) {
         val e = endpoint as Map<*, *>
         val status = if ((e["calls_total"] as Number).toLong() > 0) "CALLED" else "NEVER CALLED"
         val handler = e["handler_class"]?.let { " handler=$it" } ?: ""
-        println("    $status: ${e["verb"]} ${e["route_template"]} calls=${e["calls_total"]} [${e["framework"]}, ${e["discovery_source"]}]$handler")
+        println(
+            "    $status: ${e["verb"]} ${e["route_template"]} calls=${e["calls_total"]} [${e["framework"]}, ${e["discovery_source"]}]$handler",
+        )
     }
 }
 
