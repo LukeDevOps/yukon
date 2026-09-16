@@ -252,6 +252,7 @@ class YukonInstrumentation(
                         it.descriptor,
                         line = analysis.firstLineOf(it.internalName, it.descriptor),
                         inline = analysis.isInline(it.internalName, it.descriptor),
+                        calls = analysis.callsOf(it.internalName, it.descriptor),
                     )
                 }
             }
@@ -330,7 +331,13 @@ class YukonInstrumentation(
         // constraint the prelude's own bytecode depends on.
         val typeInitializerProbe =
             if (analysis.hasTypeInitializer) {
-                ProbeMeta(ProbeKind.METHOD, "<clinit>", "()V", line = analysis.firstLineOf("<clinit>", "()V"))
+                ProbeMeta(
+                    ProbeKind.METHOD,
+                    "<clinit>",
+                    "()V",
+                    line = analysis.firstLineOf("<clinit>", "()V"),
+                    calls = analysis.callsOf("<clinit>", "()V"),
+                )
             } else {
                 null
             }
@@ -344,7 +351,15 @@ class YukonInstrumentation(
                     defaultSites.map { "${it.defaultName}${it.defaultDescriptor}#optional${it.optionalBits}" } +
                     (if (analysis.hasTypeInitializer) listOf("<clinit>()V#typeinit") else emptyList()),
             )
-        val counts = registry.register(typeDescription.name, layoutHash, probes, classLoader)
+        val counts =
+            registry.register(
+                typeDescription.name,
+                layoutHash,
+                probes,
+                classLoader,
+                superClassName = analysis.superClassName,
+                interfaceNames = analysis.interfaceNames,
+            )
         if (staticBaselineMismatchDetector.shouldWarnAbout(typeDescription.name)) {
             log.log(
                 Level.WARNING,
@@ -446,7 +461,12 @@ class YukonInstrumentation(
         val eligible = methods.map { it.internalName to it.descriptor }.toSet()
         val bytes = classBytes ?: return BranchSiteAnalyzer.Analysis.EMPTY
         val lookup = scalaGetterTargetLookup(classLoader)
-        return BranchSiteAnalyzer.analyze(bytes, lookup) { name, descriptor -> (name to descriptor) in eligible }
+        return BranchSiteAnalyzer.analyze(
+            bytes,
+            lookup,
+            config.instrumentedPackagePrefixes,
+            config.excludedPackagePrefixes,
+        ) { name, descriptor -> (name to descriptor) in eligible }
     }
 
     /**

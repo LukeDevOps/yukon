@@ -61,6 +61,11 @@ data class DeltaBatch(
  * constructor lives on the class the module compiles for. It is null when the target is in the
  * probe's own class, and always null for Kotlin. A collector joins an omission probe to its
  * target's METHOD probe by [targetClassName] when set, otherwise by [className]. See ADR 0023.
+ *
+ * [calls] is set only for a [ProbeKind.METHOD] probe: the in-scope call edges read from that
+ * method's own bytecode at transform time. A pass-through's callees are attributed to whatever
+ * probed method referenced it, so they never appear under the pass-through's own name. See ADR
+ * 0024.
  */
 data class ProbeLocation(
     val classId: Int,
@@ -76,6 +81,7 @@ data class ProbeLocation(
     val parameterName: String? = null,
     val overridable: Boolean = false,
     val targetClassName: String? = null,
+    val calls: List<CallEdge> = emptyList(),
 )
 
 /** A class the agent matched but could not instrument. It never gets a classId or any probes. */
@@ -83,6 +89,38 @@ data class SkippedClass(
     val className: String,
     val reason: String,
     val skippedAt: Long,
+)
+
+/**
+ * One caller method's static reference to one callee method, read from the caller's bytecode at
+ * transform time. See ADR 0024.
+ *
+ * [className], [methodName], and [methodDescriptor] name the callee verbatim, as the caller's own
+ * bytecode names it: the agent never resolves a virtual call, since one class's transform has no
+ * view of the type hierarchy. [virtual] is true for an `invokevirtual` or `invokeinterface` call,
+ * false for `invokestatic` or `invokespecial`, except that a same-class call to a private, static,
+ * or final target is reported as non-virtual even when the raw instruction is `invokevirtual`,
+ * since such a target can never be overridden. A collector widens a virtual edge to every override
+ * it knows about; a non-virtual one names its one real target exactly.
+ */
+data class CallEdge(
+    val className: String,
+    val methodName: String,
+    val methodDescriptor: String,
+    val virtual: Boolean,
+)
+
+/**
+ * A class's superclass and direct interfaces, sent once per class alongside its probes so a
+ * collector can widen a [CallEdge.virtual] call to every type that overrides or inherits its
+ * callee. [superClassName] is null only for `java.lang.Object` itself, which this agent never
+ * instruments; an interface's own [superClassName] is `java.lang.Object`, the same as any other
+ * type, since that is what the class file's own super_class entry names.
+ */
+data class ClassSupertypes(
+    val classId: Int,
+    val superClassName: String?,
+    val interfaceNames: List<String>,
 )
 
 /**
@@ -101,6 +139,7 @@ data class ProbeManifest(
     val serviceInstanceId: String = "",
     val endpoints: List<EndpointLocation> = emptyList(),
     val disabledEndpointModules: List<DisabledEndpointModule> = emptyList(),
+    val classSupertypes: List<ClassSupertypes> = emptyList(),
 )
 
 /**

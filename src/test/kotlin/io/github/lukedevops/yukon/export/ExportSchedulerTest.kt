@@ -274,8 +274,11 @@ class ExportSchedulerTest {
             probes[0] = 1
         }
         val exporter = RecordingExporter()
+        // Each class now weighs 2 in the manifest cap (1 probe + 0 edges + 1 for its own
+        // ClassSupertypes record, ADR 0024), so the cap is 4, not 2, to keep two classes per
+        // chunk: 2 + 2 = 4 fits, and a third class's own 2 would push it past the cap.
         val scheduler =
-            ExportScheduler(config, registry, EndpointRegistry(), exporter, maxDeltasPerBatch = 2, maxManifestEntriesPerChunk = 2)
+            ExportScheduler(config, registry, EndpointRegistry(), exporter, maxDeltasPerBatch = 2, maxManifestEntriesPerChunk = 4)
 
         scheduler.flush()
 

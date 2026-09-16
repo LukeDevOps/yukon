@@ -115,8 +115,10 @@ class YukonInstrumentationTest {
                     layoutHash: Long,
                     probes: List<ProbeMeta>,
                     classLoader: ClassLoader?,
+                    superClassName: String?,
+                    interfaceNames: List<String>,
                 ): LongArray {
-                    val counts = super.register(className, layoutHash, probes, classLoader)
+                    val counts = super.register(className, layoutHash, probes, classLoader, superClassName, interfaceNames)
                     if (className == "com.example.target.SampleTarget") throw IllegalStateException("simulated transform failure")
                     return counts
                 }

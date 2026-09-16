@@ -1,5 +1,6 @@
 package io.github.lukedevops.yukon.registry
 
+import io.github.lukedevops.yukon.export.ClassSupertypes
 import io.github.lukedevops.yukon.export.DeltaBatch
 import io.github.lukedevops.yukon.export.ProbeDelta
 import io.github.lukedevops.yukon.export.ProbeLocation
@@ -63,6 +64,8 @@ open class ProbeRegistry {
         val className: String,
         val probes: List<ProbeMeta>,
         val counts: LongArray,
+        val superClassName: String?,
+        val interfaceNames: List<String>,
     ) {
         /** The last cumulative count successfully delivered to the collector, per probe. */
         var lastSent: LongArray = LongArray(counts.size)
@@ -116,6 +119,13 @@ open class ProbeRegistry {
      * in this class increments. A repeat call for an unchanged (className,
      * layoutHash, classLoader) returns the same array instance.
      *
+     * [superClassName] and [interfaceNames] are the class's supertypes, dotted, read from its
+     * class header. They travel with the class on the manifest as a [ClassSupertypes] record so a
+     * collector can widen a virtual [io.github.lukedevops.yukon.export.CallEdge] to every override
+     * it knows about. See ADR 0024. They play no part in the registry key or the probe-layout
+     * hash: a class's supertypes changing what a call resolves to at the collector never changes
+     * which array slot a probe hit increments.
+     *
      * `open` only so a test can make a transform fail after registration has
      * already happened, which is the case the transform-failure listener
      * exists for.
@@ -125,6 +135,8 @@ open class ProbeRegistry {
         layoutHash: Long,
         probes: List<ProbeMeta>,
         classLoader: ClassLoader? = null,
+        superClassName: String? = null,
+        interfaceNames: List<String> = emptyList(),
     ): LongArray {
         val key = RegistryKey(className, layoutHash, System.identityHashCode(classLoader))
         val entry =
@@ -134,6 +146,8 @@ open class ProbeRegistry {
                     className = className,
                     probes = probes,
                     counts = LongArray(probes.size),
+                    superClassName = superClassName,
+                    interfaceNames = interfaceNames,
                 )
             }
         return entry.counts
@@ -352,6 +366,7 @@ open class ProbeRegistry {
                         parameterName = meta.parameterName,
                         overridable = meta.overridable,
                         targetClassName = meta.targetClassName,
+                        calls = meta.calls,
                     )
                 }
             }
@@ -359,7 +374,8 @@ open class ProbeRegistry {
             skippedByClassName.map { (className, entry) ->
                 SkippedClass(className, entry.reason, entry.skippedAt)
             }
-        return ProbeManifest(serviceName, serviceVersion, locations, skipped, serviceInstanceId)
+        val supertypes = entriesByKey.values.map { entry -> ClassSupertypes(entry.classId, entry.superClassName, entry.interfaceNames) }
+        return ProbeManifest(serviceName, serviceVersion, locations, skipped, serviceInstanceId, classSupertypes = supertypes)
     }
 
     /**
@@ -388,9 +404,10 @@ open class ProbeRegistry {
 
     /**
      * Like [computeManifestDelta], but splits the not-yet-sent classes into chunks of at most
-     * [maxEntriesPerChunk] entries each, counting every probe location and every skipped class
-     * as one entry. The first manifest after a busy startup can otherwise carry every probe in
-     * the app in one POST.
+     * [maxEntriesPerChunk] entries each. A skipped class counts as one entry. A registered class
+     * counts as its probe locations, plus its probes' total call-edge count, plus one for its own
+     * [ClassSupertypes] record, since all three are staged and committed together. The first
+     * manifest after a busy startup can otherwise carry every probe in the app in one POST.
      *
      * Classes are never split across chunks, so [advanceManifestBaseline] on one chunk marks
      * exactly that chunk's classes as included. A single class with more locations than the cap
@@ -405,26 +422,38 @@ open class ProbeRegistry {
         val chunks = mutableListOf<ManifestSnapshot>()
         var locations = mutableListOf<ProbeLocation>()
         var skipped = mutableListOf<SkippedClass>()
+        var supertypes = mutableListOf<ClassSupertypes>()
         var stagedEntries = mutableListOf<Any>()
         var stagedSkipped = mutableListOf<Any>()
 
-        fun size() = locations.size + skipped.size
+        // The running chunk weight is tracked explicitly rather than derived from the staged
+        // lists' sizes: a class's call edges add to its weight but never become list entries of
+        // their own, since each edge nests inside its own ProbeLocation.calls rather than sitting
+        // beside it. Deriving the cap check from list sizes alone would silently ignore that
+        // weight the moment a chunk already held an earlier class's edges.
+        var chunkWeight = 0
 
         fun seal() {
             chunks +=
                 ManifestSnapshot(
-                    ProbeManifest(serviceName, serviceVersion, locations, skipped, serviceInstanceId),
+                    ProbeManifest(serviceName, serviceVersion, locations, skipped, serviceInstanceId, classSupertypes = supertypes),
                     stagedEntries,
                     stagedSkipped,
                 )
             locations = mutableListOf()
             skipped = mutableListOf()
+            supertypes = mutableListOf()
             stagedEntries = mutableListOf()
             stagedSkipped = mutableListOf()
+            chunkWeight = 0
         }
         for (entry in entriesByKey.values) {
             if (entry.manifestIncluded) continue
-            if (size() > 0 && size() + entry.probes.size > maxEntriesPerChunk) seal()
+            // A class's weight is its probe count, plus its total call-edge count, plus one for
+            // its own ClassSupertypes record: all three are staged and committed together, so a
+            // class with many edges seals a chunk earlier than one without.
+            val weight = entry.probes.size + entry.probes.sumOf { it.calls.size } + 1
+            if (chunkWeight > 0 && chunkWeight + weight > maxEntriesPerChunk) seal()
             stagedEntries += entry
             entry.probes.forEachIndexed { index, meta ->
                 locations +=
@@ -442,16 +471,20 @@ open class ProbeRegistry {
                         parameterName = meta.parameterName,
                         overridable = meta.overridable,
                         targetClassName = meta.targetClassName,
+                        calls = meta.calls,
                     )
             }
+            supertypes += ClassSupertypes(entry.classId, entry.superClassName, entry.interfaceNames)
+            chunkWeight += weight
         }
         for ((className, entry) in skippedByClassName) {
             if (entry.manifestIncluded) continue
-            if (size() > 0 && size() + 1 > maxEntriesPerChunk) seal()
+            if (chunkWeight > 0 && chunkWeight + 1 > maxEntriesPerChunk) seal()
             stagedSkipped += entry
             skipped += SkippedClass(className, entry.reason, entry.skippedAt)
+            chunkWeight += 1
         }
-        if (size() > 0) seal()
+        if (chunkWeight > 0) seal()
         return chunks
     }
 

@@ -1,5 +1,7 @@
 package io.github.lukedevops.yukon.export
 
+import io.github.lukedevops.yukon.proto.CallEdge as ProtoCallEdge
+import io.github.lukedevops.yukon.proto.ClassSupertypes as ProtoClassSupertypes
 import io.github.lukedevops.yukon.proto.DeclaredClass as ProtoDeclaredClass
 import io.github.lukedevops.yukon.proto.DeclaredMethod as ProtoDeclaredMethod
 import io.github.lukedevops.yukon.proto.DeltaBatch as ProtoDeltaBatch
@@ -99,6 +101,7 @@ object ProtoPayloadCodec {
                 .setServiceInstanceId(manifest.serviceInstanceId)
                 .addAllEndpoints(manifest.endpoints.map { toProto(it) })
                 .addAllDisabledEndpointModules(manifest.disabledEndpointModules.map { toProto(it) })
+                .addAllClassSupertypes(manifest.classSupertypes.map { toProto(it) })
         manifest.serviceVersion?.let { builder.serviceVersion = it }
         return builder.build()
     }
@@ -112,6 +115,7 @@ object ProtoPayloadCodec {
             serviceInstanceId = manifest.serviceInstanceId,
             endpoints = manifest.endpointsList.map { fromProto(it) },
             disabledEndpointModules = manifest.disabledEndpointModulesList.map { fromProto(it) },
+            classSupertypes = manifest.classSupertypesList.map { fromProto(it) },
         )
 
     private fun toProto(skippedClass: SkippedClass): ProtoSkippedClass =
@@ -144,6 +148,7 @@ object ProtoPayloadCodec {
                 .setParameterName(location.parameterName ?: "")
                 .setOverridable(location.overridable)
                 .setTargetClassName(location.targetClassName ?: "")
+                .addAllCalls(location.calls.map { toProto(it) })
         location.branchIndex?.let { builder.branchIndex = it }
         location.parameterIndex?.let { builder.parameterIndex = it }
         return builder.build()
@@ -167,8 +172,41 @@ object ProtoPayloadCodec {
             parameterName = if (kind == ProbeKind.OPTIONAL_ARGUMENT) location.parameterName else null,
             overridable = location.overridable,
             targetClassName = location.targetClassName.ifEmpty { null },
+            calls = location.callsList.map { fromProto(it) },
         )
     }
+
+    private fun toProto(edge: CallEdge): ProtoCallEdge =
+        ProtoCallEdge
+            .newBuilder()
+            .setClassName(edge.className)
+            .setMethodName(edge.methodName)
+            .setMethodDescriptor(edge.methodDescriptor)
+            .setVirtual(edge.virtual)
+            .build()
+
+    private fun fromProto(edge: ProtoCallEdge): CallEdge =
+        CallEdge(
+            className = edge.className,
+            methodName = edge.methodName,
+            methodDescriptor = edge.methodDescriptor,
+            virtual = edge.virtual,
+        )
+
+    private fun toProto(supertypes: ClassSupertypes): ProtoClassSupertypes =
+        ProtoClassSupertypes
+            .newBuilder()
+            .setClassId(supertypes.classId)
+            .setSuperClassName(supertypes.superClassName ?: "")
+            .addAllInterfaceNames(supertypes.interfaceNames)
+            .build()
+
+    private fun fromProto(supertypes: ProtoClassSupertypes): ClassSupertypes =
+        ClassSupertypes(
+            classId = supertypes.classId,
+            superClassName = supertypes.superClassName.ifEmpty { null },
+            interfaceNames = supertypes.interfaceNamesList,
+        )
 
     private fun toProto(kind: ProbeKind): ProtoProbeKind =
         when (kind) {
