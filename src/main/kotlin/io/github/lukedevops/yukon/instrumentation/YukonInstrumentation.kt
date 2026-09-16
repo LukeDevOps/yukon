@@ -31,8 +31,11 @@ import net.bytebuddy.description.type.TypeDescription
 import net.bytebuddy.dynamic.ClassFileLocator
 import net.bytebuddy.dynamic.DynamicType
 import net.bytebuddy.implementation.Implementation
+import net.bytebuddy.implementation.bytecode.Addition
 import net.bytebuddy.implementation.bytecode.ByteCodeAppender
+import net.bytebuddy.implementation.bytecode.Duplication
 import net.bytebuddy.implementation.bytecode.StackManipulation
+import net.bytebuddy.implementation.bytecode.collection.ArrayAccess
 import net.bytebuddy.implementation.bytecode.constant.ClassConstant
 import net.bytebuddy.implementation.bytecode.constant.IntegerConstant
 import net.bytebuddy.implementation.bytecode.constant.LongConstant
@@ -220,7 +223,7 @@ class YukonInstrumentation(
         // default, with no other probe-worthy method) would otherwise never reach the omission
         // tier below at all.
         val analysis = analyzeBytecode(classBytes, classLoader, methods)
-        if (methods.isEmpty() && analysis.defaultSites.isEmpty()) return builder
+        if (methods.isEmpty() && analysis.defaultSites.isEmpty() && !analysis.hasTypeInitializer) return builder
         val branchSites = analysis.sites
 
         // A resolved Scala default getter (ADR 0023) keeps its ordinary method-tier slot and
@@ -320,13 +323,26 @@ class YukonInstrumentation(
                     "could not be uniquely resolved; reported as an ordinary method probe",
             )
         }
-        val probes = methodProbes + branchProbes + omissionProbes
+        // The type initializer's own probe, when the class declares one, is appended after every
+        // other slot category (method, branch, omission). It carries no advice of its own: the
+        // woven <clinit> prelude increments it directly, right after it fills the counts field, so
+        // placement past the last advice-bound slot is only a matter of convenience, not a
+        // constraint the prelude's own bytecode depends on.
+        val typeInitializerProbe =
+            if (analysis.hasTypeInitializer) {
+                ProbeMeta(ProbeKind.METHOD, "<clinit>", "()V", line = analysis.firstLineOf("<clinit>", "()V"))
+            } else {
+                null
+            }
+        val probes = methodProbes + branchProbes + omissionProbes + listOfNotNull(typeInitializerProbe)
+        val typeInitializerProbeIndex = if (typeInitializerProbe != null) probes.size - 1 else null
 
         val layoutHash =
             ProbeLayoutHash.of(
                 methods.map { it.internalName + it.descriptor } +
                     branchSites.map { "${it.methodName}${it.methodDescriptor}#branch${it.siteIndex}x${it.outcomeCount}" } +
-                    defaultSites.map { "${it.defaultName}${it.defaultDescriptor}#optional${it.optionalBits}" },
+                    defaultSites.map { "${it.defaultName}${it.defaultDescriptor}#optional${it.optionalBits}" } +
+                    (if (analysis.hasTypeInitializer) listOf("<clinit>()V#typeinit") else emptyList()),
             )
         val counts = registry.register(typeDescription.name, layoutHash, probes, classLoader)
         if (staticBaselineMismatchDetector.shouldWarnAbout(typeDescription.name)) {
@@ -347,7 +363,7 @@ class YukonInstrumentation(
                     Ownership.STATIC,
                     FieldManifestation.FINAL,
                     SyntheticState.SYNTHETIC,
-                ).initializer(ProbeArrayInitializer(typeDescription.name, layoutHash, counts.size))
+                ).initializer(ProbeArrayInitializer(typeDescription.name, layoutHash, counts.size, typeInitializerProbeIndex))
 
         // One Advice visitor for the whole class, with each method's slot resolved from its
         // signature at weave time. One visitor per method would stack N method visitors, each
@@ -570,14 +586,29 @@ class YukonInstrumentation(
      * putstatic  <this class>.$yukonProbeCounts
      * ```
      *
+     * When [typeInitializerProbeIndex] is not null, one more sequence follows, incrementing that
+     * slot directly:
+     *
+     * ```
+     * getstatic  <this class>.$yukonProbeCounts
+     * <index as int const>
+     * dup2
+     * laload
+     * lconst_1
+     * ladd
+     * lastore
+     * ```
+     *
      * Every argument is a constant known at transform time. ByteBuddy runs this ahead of the
      * class's own original static initializer, so a static method probed in this class can be
-     * called from that initializer and find the field already set.
+     * called from that initializer and find the field already set, and the type initializer's own
+     * probe is counted whether or not the original body that follows this prelude later throws.
      */
     private class ProbeArrayInitializer(
         private val className: String,
         private val layoutHash: Long,
         private val probeCount: Int,
+        private val typeInitializerProbeIndex: Int? = null,
     ) : ByteCodeAppender {
         override fun apply(
             methodVisitor: MethodVisitor,
@@ -586,17 +617,31 @@ class YukonInstrumentation(
         ): ByteCodeAppender.Size {
             val instrumentedType = implementationContext.instrumentedType
             val field = instrumentedType.declaredFields.filter(named<FieldDescription>(MethodEntryAdvice.PROBE_ARRAY_FIELD)).only
-            val size =
-                StackManipulation
-                    .Compound(
-                        TextConstant(className),
-                        LongConstant.forValue(layoutHash),
-                        IntegerConstant.forValue(probeCount),
-                        ClassConstant.of(instrumentedType),
-                        MethodInvocation.invoke(GET_CLASS_LOADER),
-                        MethodInvocation.invoke(RESOLVE),
-                        FieldAccess.forField(field).write(),
-                    ).apply(methodVisitor, implementationContext)
+            val fillArray =
+                listOf(
+                    TextConstant(className),
+                    LongConstant.forValue(layoutHash),
+                    IntegerConstant.forValue(probeCount),
+                    ClassConstant.of(instrumentedType),
+                    MethodInvocation.invoke(GET_CLASS_LOADER),
+                    MethodInvocation.invoke(RESOLVE),
+                    FieldAccess.forField(field).write(),
+                )
+            val incrementTypeInitializerSlot =
+                if (typeInitializerProbeIndex == null) {
+                    emptyList()
+                } else {
+                    listOf(
+                        FieldAccess.forField(field).read(),
+                        IntegerConstant.forValue(typeInitializerProbeIndex),
+                        Duplication.DOUBLE,
+                        ArrayAccess.LONG.load(),
+                        LongConstant.forValue(1L),
+                        Addition.LONG,
+                        ArrayAccess.LONG.store(),
+                    )
+                }
+            val size = StackManipulation.Compound(fillArray + incrementTypeInitializerSlot).apply(methodVisitor, implementationContext)
             return ByteCodeAppender.Size(size.maximalSize, instrumentedMethod.stackSize)
         }
 

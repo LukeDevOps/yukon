@@ -39,6 +39,17 @@ class ProbeLayoutHashTest {
     }
 
     @Test
+    fun `a type initializer slot changes the hash`() {
+        // YukonInstrumentation folds one "<clinit>()V#typeinit" entry into the layout hash when
+        // the class has a type initializer of its own. Its presence or absence must count as a
+        // layout change, the same as any other slot being added or removed.
+        val without = listOf("bar()V", "foo(I)Z")
+        val with = without + "<clinit>()V#typeinit"
+
+        assertNotEquals(ProbeLayoutHash.of(without), ProbeLayoutHash.of(with))
+    }
+
+    @Test
     fun `a changed optional parameter set changes the hash`() {
         // YukonInstrumentation folds one entry per default site into the layout hash, of the
         // shape "<defaultName><defaultDescriptor>#optional<bits>". A bit added or removed must

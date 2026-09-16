@@ -21,6 +21,7 @@ class StaticBaselineScannerTest {
     private val weirdNameBytes = classBytes("kotlin/test/com/example/target/WeirdName.class")
     private val inlineTargetBytes = classBytes("kotlin/test/com/example/target/InlineTarget.class")
     private val lambdaTargetBytes = classBytes("java/test/com/example/target/LambdaTarget.class")
+    private val staticInitTargetBytes = classBytes("java/test/com/example/target/StaticInitTarget.class")
 
     private fun directoryRoot(vararg entries: Pair<String, ByteArray>): File {
         val root =
@@ -240,6 +241,24 @@ class StaticBaselineScannerTest {
         val methodNames = declared.methods.map { it.methodName }
         assertTrue("lambda\$classifyViaLambda\$0" in methodNames, "the lambda body itself must be declared, not just its caller")
         assertTrue("ship" in methodNames, "a method reference's own target stays an ordinary declared method")
+    }
+
+    @Test
+    fun `declares clinit for a fixture that has one, and not for one that does not`() {
+        val root =
+            directoryRoot(
+                "com/example/target/StaticInitTarget.class" to staticInitTargetBytes,
+                "com/example/target/SampleTarget.class" to sampleTargetBytes,
+            )
+        val scanner = StaticBaselineScanner(listOf("com.example.target"))
+
+        val result = scanner.scan(listOf(root))
+
+        val withClinit = result.declaredClasses.single { it.className == "com.example.target.StaticInitTarget" }
+        assertTrue(withClinit.methods.any { it.methodName == "<clinit>" && it.methodDescriptor == "()V" })
+
+        val withoutClinit = result.declaredClasses.single { it.className == "com.example.target.SampleTarget" }
+        assertTrue(withoutClinit.methods.none { it.methodName == "<clinit>" })
     }
 
     @Test

@@ -34,6 +34,15 @@ object BranchSiteAnalyzer {
         val unresolvedDefaultSites: List<Pair<String, String>> = emptyList(),
         val scalaGetterSites: List<ScalaGetterSite> = emptyList(),
         val unresolvedScalaGetterSites: List<Pair<String, String>> = emptyList(),
+        /**
+         * Whether the class's own original bytecode declares a `<clinit>`. `<clinit>` is excluded
+         * from [io.github.lukedevops.yukon.instrumentation.TypeMatchPolicy.methodMatcher], so it
+         * never contributes a [sites] entry or an ordinary method probe; this flag is what lets
+         * [io.github.lukedevops.yukon.instrumentation.YukonInstrumentation] give such a class one
+         * METHOD probe anyway, counted by the woven `<clinit>` prelude instead of by advice. A
+         * marker interface, or a class with only instance methods, has none.
+         */
+        val hasTypeInitializer: Boolean = false,
     ) {
         /** First line-number-table entry of the method, or -1 when the class carries no debug info or the bytes were never read. */
         fun firstLineOf(
@@ -131,11 +140,15 @@ object BranchSiteAnalyzer {
                     val defaultShaped = isDefaultShaped(name, descriptor)
                     if (defaultShaped) defaultShapedNames += name to descriptor
                     val eligible = methodFilter(name, descriptor)
+                    val isTypeInitializer = name == "<clinit>" && descriptor == "()V"
 
                     if (!eligible && !defaultShaped) {
                         // Out of scope for the method, branch, and inline tiers, but this method
                         // may still be somebody else's $default target, so its parameter names
-                        // are worth capturing.
+                        // are worth capturing. <clinit> is always out of scope here too
+                        // (methodFilter excludes it), but its own first line is still worth
+                        // recording: YukonInstrumentation gives a class with a type initializer of
+                        // its own one METHOD probe, counted by the woven prelude rather than advice.
                         return object : MethodVisitor(Opcodes.ASM9) {
                             override fun visitLocalVariable(
                                 localName: String,
@@ -146,6 +159,13 @@ object BranchSiteAnalyzer {
                                 index: Int,
                             ) {
                                 localNamesForMethod.putIfAbsent(index, localName)
+                            }
+
+                            override fun visitLineNumber(
+                                line: Int,
+                                start: Label,
+                            ) {
+                                if (isTypeInitializer) firstLines.putIfAbsent(name to descriptor, line)
                             }
                         }
                     }
@@ -181,6 +201,7 @@ object BranchSiteAnalyzer {
             resolveScalaGetterSites(internalClassName, classAccess, methodAccess, localNames, firstLines, getterCandidateNames, lookup)
         val resolvedGetters = scalaGetterSites.mapTo(mutableSetOf()) { it.getterName to it.getterDescriptor }
         val unresolvedScalaGetterSites = getterCandidateNames.filterNot { it in resolvedGetters }
+        val hasTypeInitializer = ("<clinit>" to "()V") in methodAccess
 
         return Analysis(
             sites,
@@ -190,6 +211,7 @@ object BranchSiteAnalyzer {
             unresolvedDefaultSites,
             scalaGetterSites,
             unresolvedScalaGetterSites,
+            hasTypeInitializer,
         )
     }
 
