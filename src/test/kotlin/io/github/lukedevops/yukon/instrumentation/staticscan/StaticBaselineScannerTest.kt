@@ -20,6 +20,7 @@ class StaticBaselineScannerTest {
     private val otherTargetBytes = classBytes("java/test/com/example/other/OtherTarget.class")
     private val weirdNameBytes = classBytes("kotlin/test/com/example/target/WeirdName.class")
     private val inlineTargetBytes = classBytes("kotlin/test/com/example/target/InlineTarget.class")
+    private val lambdaTargetBytes = classBytes("java/test/com/example/target/LambdaTarget.class")
 
     private fun directoryRoot(vararg entries: Pair<String, ByteArray>): File {
         val root =
@@ -226,6 +227,19 @@ class StaticBaselineScannerTest {
         assertTrue(result.declaredClasses.none { it.className == "com.example.target.AbstractOnlyInterface" })
         assertTrue(result.declaredClasses.all { it.methods.isNotEmpty() }, "a declared class always has something to probe")
         assertTrue("com.example.target.AbstractOnlyInterface" in result.allClassNames())
+    }
+
+    @Test
+    fun `declares a javac lambda body alongside the class's ordinary methods`() {
+        val root = directoryRoot("com/example/target/LambdaTarget.class" to lambdaTargetBytes)
+        val scanner = StaticBaselineScanner(listOf("com.example.target"))
+
+        val result = scanner.scan(listOf(root))
+
+        val declared = result.declaredClasses.single { it.className == "com.example.target.LambdaTarget" }
+        val methodNames = declared.methods.map { it.methodName }
+        assertTrue("lambda\$classifyViaLambda\$0" in methodNames, "the lambda body itself must be declared, not just its caller")
+        assertTrue("ship" in methodNames, "a method reference's own target stays an ordinary declared method")
     }
 
     @Test

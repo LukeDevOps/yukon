@@ -5,6 +5,7 @@ import io.github.lukedevops.yukon.export.DeclaredMethod
 import io.github.lukedevops.yukon.export.StaticallyUnsafeClass
 import io.github.lukedevops.yukon.export.UnprobedClass
 import io.github.lukedevops.yukon.export.UnreadableClass
+import io.github.lukedevops.yukon.instrumentation.ScalaClassDetector
 import io.github.lukedevops.yukon.instrumentation.TypeMatchPolicy
 import io.github.lukedevops.yukon.instrumentation.branch.BranchSiteAnalyzer
 import net.bytebuddy.description.type.TypeDescription
@@ -252,32 +253,38 @@ class StaticBaselineScanner(
     }
 
     /**
-     * Reads [className]'s bytes through [locator] to detect inline functions with the same
-     * LocalVariableTable rule [BranchSiteAnalyzer] uses at transform time, and merges the result
-     * into each method it declares.
+     * Reads [className]'s bytes through [locator] once, ahead of filtering: whether a synthetic
+     * method is a probed lambda body depends on whether the class carries a `Scala`/`ScalaSig`
+     * attribute ([ScalaClassDetector]), and the same bytes are also used to detect inline
+     * functions with the same LocalVariableTable rule [BranchSiteAnalyzer] uses at transform time,
+     * merged into each declared method.
      *
      * A class whose bytes cannot be resolved here is not itself unreadable: its [TypeDescription]
-     * already resolved successfully through [pool][TypePool], so it is still declared, just with
-     * every method's [DeclaredMethod.inline] left false. This can only happen if the two disagree
-     * about what is readable, which does not happen for any locator this scanner builds today.
+     * already resolved successfully through [pool][TypePool], so it is still declared, just
+     * treated as a non-Scala class and with every method's [DeclaredMethod.inline] left false.
+     * This can only happen if the two disagree about what is readable, which does not happen for
+     * any locator this scanner builds today.
      */
     private fun declaredMethodsOf(
         typeDescription: TypeDescription,
         className: String,
         locator: ClassFileLocator,
     ): List<DeclaredMethod> {
-        val methods = typeDescription.declaredMethods.filter(TypeMatchPolicy.methodMatcher())
+        val classBytes =
+            try {
+                val resolution = locator.locate(className)
+                if (resolution.isResolved) resolution.resolve() else null
+            } catch (_: IOException) {
+                null
+            }
+        val isScalaClass = classBytes?.let(ScalaClassDetector::isScalaClass) ?: false
+        val methods = typeDescription.declaredMethods.filter(TypeMatchPolicy.methodMatcher(isScalaClass))
         if (methods.isEmpty()) return emptyList()
         val eligible = methods.map { it.internalName to it.descriptor }.toSet()
         val analysis =
-            try {
-                val resolution = locator.locate(className)
-                if (resolution.isResolved) {
-                    BranchSiteAnalyzer.analyze(resolution.resolve()) { name, descriptor -> (name to descriptor) in eligible }
-                } else {
-                    BranchSiteAnalyzer.Analysis.EMPTY
-                }
-            } catch (_: IOException) {
+            if (classBytes != null) {
+                BranchSiteAnalyzer.analyze(classBytes) { name, descriptor -> (name to descriptor) in eligible }
+            } else {
                 BranchSiteAnalyzer.Analysis.EMPTY
             }
         return methods.map { DeclaredMethod(it.internalName, it.descriptor, analysis.isInline(it.internalName, it.descriptor)) }

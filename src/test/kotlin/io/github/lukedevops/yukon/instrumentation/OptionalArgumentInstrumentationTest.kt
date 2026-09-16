@@ -50,13 +50,17 @@ class OptionalArgumentInstrumentationTest {
 
         Class.forName("com.example.target.DefaultArgumentTarget", true, fixtureLoader())
 
+        val manifest = registry.manifest("test", null, "instance-1")
         val probes =
-            registry
-                .manifest("test", null, "instance-1")
+            manifest
                 .probes
                 .filter { it.className == "com.example.target.DefaultArgumentTarget" && it.kind == ProbeKind.OPTIONAL_ARGUMENT }
 
         assertEquals(3, probes.size, "b, c, and d are optional; a is required")
+        assertTrue(
+            manifest.probes.none { it.kind == ProbeKind.METHOD && it.methodName.endsWith("\$default") },
+            "the synthetic default-filling method is a pass-through and gets no method probe of its own",
+        )
         for (probe in probes) {
             assertEquals("f", probe.methodName, "the target's name, not f\$default")
             assertEquals("(IILjava/lang/String;J)I", probe.methodDescriptor)

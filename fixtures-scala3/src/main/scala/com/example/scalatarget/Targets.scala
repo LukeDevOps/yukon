@@ -89,3 +89,15 @@ class PlainOverridesOnly extends Plain {
 final class FinalHost {
   def f(a: Int, b: Int = 5): Int = a + b
 }
+
+/**
+ * A lambda body with a conditional, compiled by scalac to a synthetic `$anonfun$classify$1`
+ * method on the module class. Proves that the method and branch tiers probe a scalac lambda body
+ * too, while its boxing adapter and any unrelated synthetic method on a non-Scala class stay out.
+ */
+object LambdaHost {
+  def classify(value: Int): String = {
+    val f: Int => String = v => if (v > 0) "positive" else "non-positive"
+    f(value)
+  }
+}

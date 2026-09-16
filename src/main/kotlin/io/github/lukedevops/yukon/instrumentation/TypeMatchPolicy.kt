@@ -70,13 +70,33 @@ object TypeMatchPolicy {
      * ByteBuddy silently declines to weave advice into a native method, so without this exclusion
      * such a method would get a slot in the counts array that reads zero forever and be reported
      * as dead code that can never, by construction, be observed running.
+     *
+     * Most synthetic methods are excluded too: a bridge, a `$default` forwarder, an `access$`
+     * accessor and the like hold no code of the adopter's own, so a probe on one would either
+     * duplicate a probe already on the method it forwards to or, for a bridge, read zero forever
+     * whenever callers use the exact signature and so never invoke it. Two synthetic shapes are
+     * the adopter's own code and stay eligible: a lambda body, which javac names
+     * `lambda$<method>$N`, and a lambda body scalac names `$anonfun$<method>$N`, only inside a
+     * class scalac itself compiled ([isScalaClass], from [ScalaClassDetector]) so an unrelated
+     * synthetic method of the same shape on a non-Scala class stays excluded. This is the same
+     * allow-list JaCoCo's `SyntheticFilter` applies, with one refinement: Scala 2 emits a boxing
+     * forwarder `$anonfun$<method>$N$adapted` beside each body without marking it as a bridge,
+     * where Scala 3 marks its `$anonfun$adapted$N` as one, so the `$adapted` suffix is excluded
+     * explicitly and both compilers yield one probe per lambda. Kotlin needs no entry here, since
+     * its lambda bodies are plain private static methods, never synthetic.
      */
-    fun methodMatcher(): ElementMatcher.Junction<MethodDescription> =
+    fun methodMatcher(isScalaClass: Boolean): ElementMatcher.Junction<MethodDescription> =
         not(isAbstract<MethodDescription>())
             .and(not(isNative()))
-            .and(not(isSynthetic()))
             .and(not(isBridge()))
             .and(not(isTypeInitializer()))
+            .and { method -> !method.isSynthetic || isProbedLambdaBody(method.name, isScalaClass) }
+
+    /** Whether a synthetic method named [name] is a lambda body worth a probe. See [methodMatcher]. */
+    private fun isProbedLambdaBody(
+        name: String,
+        isScalaClass: Boolean,
+    ): Boolean = name.startsWith("lambda\$") || (isScalaClass && name.startsWith("\$anonfun\$") && !name.endsWith("\$adapted"))
 
     /**
      * The declared annotation that makes [typeDescription] unsafe for ByteBuddy to redefine, or

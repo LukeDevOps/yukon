@@ -1,7 +1,12 @@
 package io.github.lukedevops.yukon.instrumentation
 
+import net.bytebuddy.ByteBuddy
+import net.bytebuddy.description.modifier.Ownership
+import net.bytebuddy.description.modifier.SyntheticState
+import net.bytebuddy.description.modifier.Visibility
 import net.bytebuddy.description.type.TypeDescription
 import net.bytebuddy.dynamic.ClassFileLocator
+import net.bytebuddy.implementation.FixedValue
 import net.bytebuddy.pool.TypePool
 import java.io.File
 import kotlin.test.Test
@@ -97,8 +102,77 @@ class TypeMatchPolicyTest {
             )
         val nativeTarget = pool.describe("com.example.target.NativeTarget").resolve()
 
-        val matched = nativeTarget.declaredMethods.filter(TypeMatchPolicy.methodMatcher()).map { it.internalName }
+        val matched = nativeTarget.declaredMethods.filter(TypeMatchPolicy.methodMatcher(isScalaClass = false)).map { it.internalName }
 
         assertEquals(setOf("<init>", "normalThing"), matched.toSet())
+    }
+
+    @Test
+    fun `a javac lambda body is eligible whatever isScalaClass says`() {
+        val pool =
+            TypePool.Default.of(
+                ClassFileLocator.Compound(
+                    ClassFileLocator.ForFolder(File("build/classes/java/test")),
+                    ClassFileLocator.ForClassLoader.ofSystemLoader(),
+                ),
+            )
+        val lambdaTarget = pool.describe("com.example.target.LambdaTarget").resolve()
+
+        val matchedNotScala = lambdaTarget.declaredMethods.filter(TypeMatchPolicy.methodMatcher(isScalaClass = false)).map { it.name }
+        val matchedScala = lambdaTarget.declaredMethods.filter(TypeMatchPolicy.methodMatcher(isScalaClass = true)).map { it.name }
+
+        assertTrue("lambda\$classifyViaLambda\$0" in matchedNotScala, "a lambda body is eligible even outside a Scala class")
+        assertTrue("lambda\$classifyViaLambda\$0" in matchedScala)
+        assertTrue("ship" in matchedNotScala, "a method reference's own target is an ordinary method, untouched by the rule")
+    }
+
+    /** Builds a type with one static synthetic method named [name], returning `int`, taking no arguments. */
+    private fun typeWithSyntheticMethod(
+        typeName: String,
+        name: String,
+    ): TypeDescription =
+        ByteBuddy()
+            .subclass(Any::class.java)
+            .name(typeName)
+            .defineMethod(name, Int::class.javaPrimitiveType, Visibility.PUBLIC, Ownership.STATIC, SyntheticState.SYNTHETIC)
+            .intercept(FixedValue.value(1))
+            .make()
+            .typeDescription
+
+    @Test
+    fun `a dollar-anonfun-named synthetic method is only eligible inside a Scala class`() {
+        val type = typeWithSyntheticMethod("com.example.target.GeneratedAnonfunHost", "\$anonfun\$notScala\$1")
+
+        val matchedNotScala = type.declaredMethods.filter(TypeMatchPolicy.methodMatcher(isScalaClass = false)).map { it.name }
+        val matchedScala = type.declaredMethods.filter(TypeMatchPolicy.methodMatcher(isScalaClass = true)).map { it.name }
+
+        assertTrue(
+            "\$anonfun\$notScala\$1" !in matchedNotScala,
+            "an unrelated synthetic method named like a Scala lambda body must stay excluded outside a Scala class",
+        )
+        assertTrue("\$anonfun\$notScala\$1" in matchedScala)
+    }
+
+    @Test
+    fun `an ordinary synthetic method, such as a bridge-shaped accessor, is excluded regardless of isScalaClass`() {
+        val type = typeWithSyntheticMethod("com.example.target.GeneratedAccessorHost", "access\$000")
+
+        val matchedNotScala = type.declaredMethods.filter(TypeMatchPolicy.methodMatcher(isScalaClass = false)).map { it.name }
+        val matchedScala = type.declaredMethods.filter(TypeMatchPolicy.methodMatcher(isScalaClass = true)).map { it.name }
+
+        assertTrue("access\$000" !in matchedNotScala)
+        assertTrue("access\$000" !in matchedScala, "isScalaClass only widens eligibility for \$anonfun\$-named methods, nothing else")
+    }
+
+    @Test
+    fun `a Scala 2 dollar-adapted boxing forwarder is excluded even inside a Scala class`() {
+        val type = typeWithSyntheticMethod("com.example.target.GeneratedAdaptedHost", "\$anonfun\$classify\$1\$adapted")
+
+        val matchedScala = type.declaredMethods.filter(TypeMatchPolicy.methodMatcher(isScalaClass = true)).map { it.name }
+
+        assertTrue(
+            "\$anonfun\$classify\$1\$adapted" !in matchedScala,
+            "the forwarder only unboxes and calls the body, which has its own probe",
+        )
     }
 }
