@@ -120,6 +120,26 @@ An optional parameter whose omission total stayed at zero while its function was
 **Inline method**:
 A Kotlin `inline` function, whose body is copied into Kotlin callers so its own probe only counts calls from Java or through a reference. Marked in the manifest and the baseline; never reported as never hit.
 
+### Call graph
+
+**Call edge**:
+One caller method's static reference to one callee method, read from the caller's bytecode at transform time and deduplicated per caller. The callee is named as the bytecode names it: owner class, method name and descriptor. Only callees inside the include rules are recorded.
+_Avoid_: call site (one invoke instruction; never on the wire), edge (one outcome of a branch site), dependency
+
+**Supertypes**:
+A class's superclass and direct interfaces, sent with the class so a collector can widen a virtual call edge to the methods that override or inherit its callee.
+
+**Pass-through**:
+A compiler-generated method with no probe of its own, such as a bridge, an `access$` accessor or Kotlin's `$default`, whose callees are attributed to whatever references it. Lambda bodies are not pass-throughs: they hold the adopter's own code and get probes.
+
+**Unreached cluster**:
+A root plus every never-hit method reachable from it through call edges whose every in-scope caller is itself in the cluster. Deleting the root removes the whole cluster.
+_Avoid_: dead cluster, dead code (a collector's verdict, not an observation)
+
+**Root**:
+A never-hit method that starts an unreached cluster. *Reached from hit* when one of its callers has hits; *uncalled* when nothing in scope calls it.
+_Avoid_: entry point (a root may be deep inside the code), node
+
 ### Testkit
 
 **Settled**:
