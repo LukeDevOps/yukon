@@ -101,8 +101,15 @@ _Avoid_: default argument, defaulted parameter
 One call that left an optional parameter to its default.
 
 **Omission probe**:
-The counter for one optional parameter, incremented in the compiler's default-filling method when a call omits it. It reports the function the parameter belongs to, not the synthetic method it sits in.
+The counter for one optional parameter, incremented in the compiler's default-filling method or default getter when a call omits it. It reports the function the parameter belongs to, not the compiler's method it sits in.
 _Avoid_: argument probe, default probe
+
+**Default-filling method**:
+Kotlin's synthetic `f$default`, which takes a mask of omitted parameters, fills in every default, and calls `f`. One per function with optional parameters.
+
+**Default getter**:
+Scala's `f$default$N`, one per optional parameter, which returns that parameter's default and is called by every call that omits it. Its own hit total is the parameter's omission total.
+_Avoid_: default method, default accessor
 
 **Never supplied**:
 An optional parameter whose omission total equals its function's hit total. Every caller took the default; the parameter can go. Only claimed for a function that cannot be overridden.

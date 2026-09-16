@@ -14,7 +14,7 @@ Two findings follow at the collector. An optional parameter is never supplied wh
 - Reading `kotlin.Metadata` through `kotlin-metadata-jvm` to learn which parameters declare a default. Rejected: a megabyte shaded into every adopter's JVM, a supported metadata version that must keep pace with adopters' compilers or fail on every class of a newer-compiled app, and the lookup string kept out of the jar's Kotlin relocation, to learn what the `$default` body already states. The mask tests are what that method exists for and have had the same shape since Kotlin 1.0. A `$default` whose body does not match the pattern gets no probes and one log line.
 - Treating every mask bit as a parameter. Rejected: a required parameter's bit is never set, so it would read as always supplied.
 - Shipping the class hierarchy so the collector can sum hits across overrides. Rejected: a much larger change than one flag, for a case Kotlin makes rare by making methods final unless declared `open`.
-- Scala. Its compiler emits a public, non-synthetic `f$default$N()` per optional parameter, which the method tier already probes, so every omission is already counted under that name. Relabelling those probes to the same kind is a follow-up: `$default$N` does not encode the target's descriptor, and `f` may have overloads without defaults.
+- Scala. Its compiler emits a public, non-synthetic `f$default$N()` per optional parameter, which the method tier already probes, so every omission is already counted under that name. Those probes are re-kinded onto the target by ADR 0023, which resolves the target from the getter's position and return type.
 
 ## Consequences
 
