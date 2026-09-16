@@ -277,12 +277,16 @@ object ProtoPayloadCodec {
             .newBuilder()
             .setClassName(declaredClass.className)
             .addAllMethods(declaredClass.methods.map { toProto(it) })
+            .setSuperClassName(declaredClass.superClassName ?: "")
+            .addAllInterfaceNames(declaredClass.interfaceNames)
             .build()
 
     private fun fromProto(declaredClass: ProtoDeclaredClass): DeclaredClass =
         DeclaredClass(
             className = declaredClass.className,
             methods = declaredClass.methodsList.map { fromProto(it) },
+            superClassName = declaredClass.superClassName.ifEmpty { null },
+            interfaceNames = declaredClass.interfaceNamesList,
         )
 
     private fun toProto(method: DeclaredMethod): ProtoDeclaredMethod =
@@ -291,6 +295,7 @@ object ProtoPayloadCodec {
             .setMethodName(method.methodName)
             .setMethodDescriptor(method.methodDescriptor)
             .setInline(method.inline)
+            .addAllCalls(method.calls.map { toProto(it) })
             .build()
 
     private fun fromProto(method: ProtoDeclaredMethod): DeclaredMethod =
@@ -298,6 +303,7 @@ object ProtoPayloadCodec {
             methodName = method.methodName,
             methodDescriptor = method.methodDescriptor,
             inline = method.inline,
+            calls = method.callsList.map { fromProto(it) },
         )
 
     private fun toProto(unsafeClass: StaticallyUnsafeClass): ProtoStaticallyUnsafeClass =

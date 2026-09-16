@@ -1,5 +1,6 @@
 package io.github.lukedevops.yukon.instrumentation.staticscan
 
+import io.github.lukedevops.yukon.export.CallEdge
 import io.github.lukedevops.yukon.export.DeclaredClass
 import io.github.lukedevops.yukon.export.DeclaredMethod
 import io.github.lukedevops.yukon.export.ResourceAttributes
@@ -18,6 +19,20 @@ class StaticBaselineChunkerTest {
         methods: Int,
     ) = DeclaredClass(name, (1..methods).map { DeclaredMethod("m$it", "()V") })
 
+    private fun declaredWithEdges(
+        name: String,
+        edgesPerMethod: Int,
+    ) = DeclaredClass(
+        name,
+        listOf(
+            DeclaredMethod(
+                "m",
+                "()V",
+                calls = (1..edgesPerMethod).map { CallEdge("com.example.Callee", "c$it", "()V", virtual = false) },
+            ),
+        ),
+    )
+
     @Test
     fun `packs whole classes by method count and numbers the chunks`() {
         val result =
@@ -27,9 +42,11 @@ class StaticBaselineChunkerTest {
                 unreadableClasses = emptyList(),
             )
 
-        val chunks = StaticBaselineChunker.chunk(result, resource, scannedAt = 42L, maxEntriesPerChunk = 4)
+        val chunks = StaticBaselineChunker.chunk(result, resource, scannedAt = 42L, maxEntriesPerChunk = 7)
 
-        // A (3) alone, since B (3) would push it past 4; then B and C together at exactly 4.
+        // Each class weighs its method count plus one for its own supertypes record: A and B
+        // weigh 4 each, C weighs 2. A (4) alone, since B (4) would push it past 7; then B and C
+        // together at exactly 6.
         assertEquals(listOf(listOf("A"), listOf("B", "C")), chunks.map { c -> c.declaredClasses.map { it.className } })
         assertEquals(listOf(0, 1), chunks.map { it.chunkIndex })
         assertTrue(chunks.all { it.chunkCount == 2 && it.scannedAt == 42L && it.resource == resource })
@@ -62,13 +79,32 @@ class StaticBaselineChunkerTest {
                 unprobedClasses = listOf(UnprobedClass("P", "r")),
             )
 
-        val chunks = StaticBaselineChunker.chunk(result, resource, scannedAt = 1L, maxEntriesPerChunk = 3)
+        val chunks = StaticBaselineChunker.chunk(result, resource, scannedAt = 1L, maxEntriesPerChunk = 4)
 
         assertEquals(2, chunks.size)
         assertEquals(listOf("A"), chunks[0].declaredClasses.map { it.className })
         assertEquals(listOf("U"), chunks[0].staticallyUnsafeClasses.map { it.className })
         assertEquals(listOf("R"), chunks[1].unreadableClasses.map { it.className })
         assertEquals(listOf("P"), chunks[1].unprobedClasses.map { it.className })
+    }
+
+    @Test
+    fun `a class with many call edges seals a chunk earlier than one with none, and every chunk holds whole classes`() {
+        val result =
+            StaticScanResult(
+                // "Heavy" weighs 1 method + 3 edges + 1 supertypes record = 5, "Light" weighs
+                // 1 method + 0 edges + 1 = 2. A cap of 4 must not let both land in one chunk.
+                declaredClasses = listOf(declaredWithEdges("Heavy", edgesPerMethod = 3), declaredWithEdges("Light", edgesPerMethod = 0)),
+                staticallyUnsafeClasses = emptyList(),
+                unreadableClasses = emptyList(),
+            )
+
+        val chunks = StaticBaselineChunker.chunk(result, resource, scannedAt = 1L, maxEntriesPerChunk = 4)
+
+        assertEquals(listOf(listOf("Heavy"), listOf("Light")), chunks.map { c -> c.declaredClasses.map { it.className } })
+        chunks.forEach { chunk ->
+            chunk.declaredClasses.forEach { assertEquals(1, it.methods.size, "a class is never split across chunks") }
+        }
     }
 
     @Test

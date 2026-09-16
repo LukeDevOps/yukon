@@ -1,5 +1,12 @@
 package io.github.lukedevops.yukon.instrumentation.staticscan
 
+import io.github.lukedevops.yukon.config.AgentConfig
+import io.github.lukedevops.yukon.export.CallEdge
+import io.github.lukedevops.yukon.export.ProbeKind
+import io.github.lukedevops.yukon.instrumentation.FixtureClassLoader
+import io.github.lukedevops.yukon.instrumentation.YukonInstrumentation
+import io.github.lukedevops.yukon.registry.ProbeRegistry
+import net.bytebuddy.agent.ByteBuddyAgent
 import net.bytebuddy.dynamic.ClassFileLocator
 import net.bytebuddy.jar.asm.ClassWriter
 import net.bytebuddy.jar.asm.Opcodes
@@ -22,6 +29,22 @@ class StaticBaselineScannerTest {
     private val inlineTargetBytes = classBytes("kotlin/test/com/example/target/InlineTarget.class")
     private val lambdaTargetBytes = classBytes("java/test/com/example/target/LambdaTarget.class")
     private val staticInitTargetBytes = classBytes("java/test/com/example/target/StaticInitTarget.class")
+    private val callEdgeTargetBytes = classBytes("kotlin/test/com/example/target/CallEdgeTarget.class")
+    private val callEdgeTargetKtBytes = classBytes("kotlin/test/com/example/target/CallEdgeTargetKt.class")
+    private val defaultArgumentTargetBytes = classBytes("kotlin/test/com/example/target/DefaultArgumentTarget.class")
+    private val classifierBytes = classBytes("kotlin/test/com/example/target/Classifier.class")
+    private val classifierImplBytes = classBytes("kotlin/test/com/example/target/ClassifierImpl.class")
+
+    /** The fixture root [CallEdgeAnalyzerTest][io.github.lukedevops.yukon.instrumentation.branch.CallEdgeAnalyzerTest] exercises directly. */
+    private fun callEdgeFixtureRoot(): File =
+        directoryRoot(
+            "com/example/target/CallEdgeTarget.class" to callEdgeTargetBytes,
+            "com/example/target/CallEdgeTargetKt.class" to callEdgeTargetKtBytes,
+            "com/example/target/DefaultArgumentTarget.class" to defaultArgumentTargetBytes,
+            "com/example/target/Classifier.class" to classifierBytes,
+            "com/example/target/ClassifierImpl.class" to classifierImplBytes,
+            "com/example/other/OtherTarget.class" to otherTargetBytes,
+        )
 
     private fun directoryRoot(vararg entries: Pair<String, ByteArray>): File {
         val root =
@@ -338,5 +361,93 @@ class StaticBaselineScannerTest {
 
         assertTrue(result.declaredClasses.isEmpty())
         assertTrue(result.unreadableClasses.isEmpty())
+    }
+
+    @Test
+    fun `a cross-class Kotlin default pass-through resolves to its target method, not to dollar-default`() {
+        val root = callEdgeFixtureRoot()
+        val scanner = StaticBaselineScanner(listOf("com.example.target", "com.example.other"))
+
+        val result = scanner.scan(listOf(root))
+
+        val declared = result.declaredClasses.single { it.className == "com.example.target.CallEdgeTarget" }
+        val method =
+            declared.methods.single {
+                it.methodName == "callsWithDefaultArgument" && it.methodDescriptor == "(Lcom/example/target/DefaultArgumentTarget;)I"
+            }
+        assertEquals(
+            listOf(CallEdge("com.example.target.DefaultArgumentTarget", "f", "(IILjava/lang/String;J)I", virtual = false)),
+            method.calls,
+        )
+    }
+
+    @Test
+    fun `declares CallEdgeTarget with the same call edges and supertypes the manifest carries for the loaded class`() {
+        val root = callEdgeFixtureRoot()
+        val scanner = StaticBaselineScanner(listOf("com.example.target", "com.example.other"))
+
+        val result = scanner.scan(listOf(root))
+        val declared = result.declaredClasses.single { it.className == "com.example.target.CallEdgeTarget" }
+
+        val registry = ProbeRegistry()
+        val config = AgentConfig.parse("includePackages=com.example.target;com.example.other")
+        val instrumentation = ByteBuddyAgent.install()
+        val yukon = YukonInstrumentation(config, registry)
+        val transformer = yukon.install(instrumentation)
+        try {
+            val loader = FixtureClassLoader(arrayOf(File("build/classes/kotlin/test").toURI().toURL()), javaClass.classLoader)
+            Class.forName("com.example.target.CallEdgeTarget", true, loader)
+
+            val manifest = registry.manifest("test", null, "instance-1")
+            val methodProbes =
+                manifest.probes.filter { it.className == "com.example.target.CallEdgeTarget" && it.kind == ProbeKind.METHOD }
+            assertTrue(methodProbes.isNotEmpty())
+            for (probe in methodProbes) {
+                val declaredMethod =
+                    declared.methods.single {
+                        it.methodName == probe.methodName &&
+                            it.methodDescriptor == probe.methodDescriptor
+                    }
+                assertEquals(probe.calls, declaredMethod.calls, "mismatch for ${probe.methodName}${probe.methodDescriptor}")
+            }
+            // Both out-of-scope callees (a JDK call, a Kotlin stdlib call) are absent from the
+            // methods that make them, on both sides.
+            assertEquals(emptyList(), declared.methods.single { it.methodName == "callsJdkMethod" }.calls)
+            assertEquals(emptyList(), declared.methods.single { it.methodName == "callsKotlinStdlib" }.calls)
+
+            val supertypes = manifest.classSupertypes.single { it.classId == methodProbes.first().classId }
+            assertEquals(supertypes.superClassName, declared.superClassName)
+            assertEquals(supertypes.interfaceNames, declared.interfaceNames)
+        } finally {
+            yukon.uninstall(instrumentation, transformer)
+        }
+    }
+
+    @Test
+    fun `an implementing class's declared supertypes name both its superclass and its interface`() {
+        val root = callEdgeFixtureRoot()
+        val scanner = StaticBaselineScanner(listOf("com.example.target", "com.example.other"))
+
+        val result = scanner.scan(listOf(root))
+
+        val declared = result.declaredClasses.single { it.className == "com.example.target.ClassifierImpl" }
+        assertEquals("java.lang.Object", declared.superClassName)
+        assertEquals(listOf("com.example.target.Classifier"), declared.interfaceNames)
+    }
+
+    @Test
+    fun `a class scanned with a narrower includePackages loses its edges to classes outside that scope`() {
+        val root = callEdgeFixtureRoot()
+        val wideScanner = StaticBaselineScanner(listOf("com.example.target", "com.example.other"))
+        val narrowScanner = StaticBaselineScanner(listOf("com.example.target"))
+
+        val wideResult = wideScanner.scan(listOf(root))
+        val narrowResult = narrowScanner.scan(listOf(root))
+
+        val wideMethod = wideResult.declaredClasses.single { it.className == "com.example.target.CallEdgeTarget" }.methods
+        val narrowMethod = narrowResult.declaredClasses.single { it.className == "com.example.target.CallEdgeTarget" }.methods
+
+        assertTrue(wideMethod.single { it.methodName == "callsOtherClass" }.calls.isNotEmpty())
+        assertTrue(narrowMethod.single { it.methodName == "callsOtherClass" }.calls.isEmpty())
     }
 }

@@ -418,6 +418,74 @@ class ProtoPayloadCodecTest {
     }
 
     @Test
+    fun `a declared method's call edges and a declared class's supertypes round-trip through the wire`() {
+        val baseline =
+            StaticBaseline(
+                resource = ResourceAttributes("checkout", "1.0.0", "instance-1", "prod"),
+                declaredClasses =
+                    listOf(
+                        DeclaredClass(
+                            className = "com.example.Foo",
+                            methods =
+                                listOf(
+                                    DeclaredMethod(
+                                        methodName = "bar",
+                                        methodDescriptor = "()V",
+                                        calls =
+                                            listOf(
+                                                CallEdge("com.example.Baz", "qux", "()I", virtual = true),
+                                                CallEdge("com.example.Baz", "<init>", "()V", virtual = false),
+                                            ),
+                                    ),
+                                ),
+                            superClassName = "com.example.Base",
+                            interfaceNames = listOf("com.example.Marker"),
+                        ),
+                    ),
+                scannedAt = 1000L,
+            )
+
+        val decoded = ProtoPayloadCodec.decodeStaticBaseline(ProtoPayloadCodec.encode(baseline))
+
+        assertEquals(baseline, decoded)
+        assertEquals(
+            2,
+            decoded.declaredClasses
+                .single()
+                .methods
+                .single()
+                .calls.size,
+        )
+        assertEquals("com.example.Base", decoded.declaredClasses.single().superClassName)
+        assertEquals(listOf("com.example.Marker"), decoded.declaredClasses.single().interfaceNames)
+    }
+
+    @Test
+    fun `a declared class with no superclass round-trips super class name as null, not empty string`() {
+        val baseline =
+            StaticBaseline(
+                resource = ResourceAttributes("checkout", null, "instance-1", null),
+                declaredClasses =
+                    listOf(DeclaredClass(className = "com.example.Foo", methods = listOf(DeclaredMethod("bar", "()V")))),
+                scannedAt = 1000L,
+            )
+
+        val decoded = ProtoPayloadCodec.decodeStaticBaseline(ProtoPayloadCodec.encode(baseline))
+
+        assertEquals(baseline, decoded)
+        assertEquals(null, decoded.declaredClasses.single().superClassName)
+        assertEquals(emptyList(), decoded.declaredClasses.single().interfaceNames)
+        assertEquals(
+            emptyList(),
+            decoded.declaredClasses
+                .single()
+                .methods
+                .single()
+                .calls,
+        )
+    }
+
+    @Test
     fun `encodes and decodes a static baseline's statically-unsafe and unreadable classes`() {
         val baseline =
             StaticBaseline(

@@ -11,9 +11,11 @@ import io.github.lukedevops.yukon.export.UnreadableClass
  * Splits one [StaticScanResult] into [StaticBaseline] chunks of bounded size, so a large
  * classpath never produces a single POST the collector might refuse.
  *
- * Size is measured in entries: a declared class counts as its number of methods, since those
- * are what carry the bytes; every unsafe, unreadable, or unprobed class counts as one. Classes
- * are never split across chunks, so a declared class with more methods than [maxEntriesPerChunk]
+ * Size is measured in entries: a declared class counts as its number of methods, plus the total
+ * number of call edges across those methods, plus one for its own supertypes record, mirroring
+ * the weighting [io.github.lukedevops.yukon.registry.ProbeRegistry] gives a manifest class for
+ * the same reason (see ADR 0024); every unsafe, unreadable, or unprobed class counts as one.
+ * Classes are never split across chunks, so a declared class heavier than [maxEntriesPerChunk]
  * gets a chunk of its own. Every chunk carries the same resource and [scannedAt], and its own
  * `chunkIndex` out of `chunkCount`, so a collector can tell when it holds the whole scan.
  *
@@ -42,7 +44,13 @@ object StaticBaselineChunker {
             current.size += weight
         }
 
-        result.declaredClasses.forEach { c -> place(c.methods.size.coerceAtLeast(1)) { declared += c } }
+        result.declaredClasses.forEach { c ->
+            // A class's weight is its method count, plus its methods' total call-edge count, plus
+            // one for its own supertypes record: all three are staged together, so a class with
+            // many edges seals a chunk earlier than one without. See ADR 0024.
+            val weight = (c.methods.size + c.methods.sumOf { it.calls.size } + 1).coerceAtLeast(1)
+            place(weight) { declared += c }
+        }
         result.staticallyUnsafeClasses.forEach { c -> place(1) { unsafe += c } }
         result.unreadableClasses.forEach { c -> place(1) { unreadable += c } }
         result.unprobedClasses.forEach { c -> place(1) { unprobed += c } }
