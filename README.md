@@ -35,7 +35,9 @@ the target application's classpath.
 ```
 
 Options (comma-separated `key=value`, `includePackages`/`excludePackages` use
-`;` to separate multiple prefixes):
+`;` to separate multiple prefixes; a value cannot itself contain a comma, so
+set one that needs to through the system property or environment variable
+described below):
 
 | Option | Default | Meaning |
 |---|---|---|
