@@ -662,6 +662,73 @@ class YukonTestCollectorTest {
         assertTrue(target.alwaysSupplied().isEmpty())
     }
 
+    /**
+     * A Scala constructor default gets two omission probes for the same parameter: the module
+     * getter on `Cc$`, resolved cross-class to `Cc`'s own `<init>`, and `Cc`'s own static
+     * forwarder for the same getter name, resolved in class to that same `<init>`. Scala callers
+     * only ever reach the module getter, so the forwarder's own probe stays at zero. Judging each
+     * probe on its own would report the forwarder as always supplied beside the module getter's
+     * never supplied for the same parameter; both must be summed and judged once. See ADR 0023.
+     */
+    @Test
+    fun `neverSupplied and alwaysSupplied sum every omission probe naming the same target parameter`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+        exporter.exportManifest(
+            ProbeManifest(
+                "svc",
+                null,
+                listOf(
+                    methodProbe(3, 0, "com.example.scalatarget.Cc", "<init>", "(II)V", 71),
+                    omissionProbe(
+                        1,
+                        0,
+                        "com.example.scalatarget.Cc\$",
+                        "<init>",
+                        "(II)V",
+                        71,
+                        parameterIndex = 0,
+                        parameterName = "a",
+                        targetClassName = "com.example.scalatarget.Cc",
+                    ),
+                    omissionProbe(
+                        3,
+                        1,
+                        "com.example.scalatarget.Cc",
+                        "<init>",
+                        "(II)V",
+                        71,
+                        parameterIndex = 0,
+                        parameterName = "a",
+                    ),
+                ),
+                serviceInstanceId = "i-1",
+            ),
+        )
+        exporter.exportDeltaBatch(
+            DeltaBatch(
+                ResourceAttributes("svc", null, "i-1", null),
+                listOf(
+                    ProbeDelta(3, 0, ProbeKind.METHOD, 1L, 4L),
+                    ProbeDelta(1, 0, ProbeKind.OPTIONAL_ARGUMENT, 1L, 4L),
+                    ProbeDelta(3, 1, ProbeKind.OPTIONAL_ARGUMENT, 1L, 0L),
+                ),
+            ),
+        )
+
+        assertEquals(4L, target.omissionCount("com.example.scalatarget.Cc", "<init>", parameterIndex = 0))
+
+        val neverSupplied = target.neverSupplied()
+        assertEquals(1, neverSupplied.size)
+        assertEquals("com.example.scalatarget.Cc", neverSupplied.single().className)
+        assertEquals("<init>", neverSupplied.single().methodName)
+        assertEquals(0, neverSupplied.single().parameterIndex)
+        assertTrue(
+            target.alwaysSupplied().isEmpty(),
+            "the forwarder's own zero must not be judged on its own now that both probes are summed",
+        )
+    }
+
     @Test
     fun `omissionCount throws naming the target's own class when a cross-class query finds nothing`() {
         val target = startCollector()

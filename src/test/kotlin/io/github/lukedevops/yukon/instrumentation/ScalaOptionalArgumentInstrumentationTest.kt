@@ -265,6 +265,51 @@ class ScalaOptionalArgumentInstrumentationTest {
         `constructor default getters resolve across the class boundary, and Cc's own init hit count is unaffected`("scala2")
 
     /**
+     * `Cc`'s own static forwarder for the constructor default getter resolves in class to
+     * `Cc.<init>`, alongside the module getter on `Cc$` that resolves to the same target across
+     * the class boundary: one parameter, two omission probes, an intended and known shape. A
+     * consumer that judges each probe on its own instead of summing them, as ADR 0023's
+     * consequences describe, can find the forwarder's own zero reading as "always supplied"
+     * beside the module getter's "never supplied" for the same parameter.
+     */
+    private fun `Cc's constructor default getter for parameter 0 has both a module probe and its own forwarder probe`(module: String) {
+        val registry = ProbeRegistry()
+        install(registry, newConfig())
+        val loader = ScalaFixtures.classLoader(module, javaClass.classLoader)
+
+        callDriver(loader, "callCaseClassConstructor") // new Cc(9): supplies a, omits b
+
+        val probes = registry.manifest("test", null, "instance-1").probes
+        val parameterZeroProbes =
+            probes.filter {
+                it.kind == ProbeKind.OPTIONAL_ARGUMENT &&
+                    it.methodName == "<init>" &&
+                    it.parameterIndex == 0 &&
+                    it.methodDescriptor == "(II)V"
+            }
+
+        assertEquals(2, parameterZeroProbes.size, "the module getter and Cc's own forwarder both resolve to <init>'s parameter 0")
+
+        val moduleGetter = parameterZeroProbes.single { it.className == "com.example.scalatarget.Cc\$" }
+        assertEquals(
+            "com.example.scalatarget.Cc",
+            moduleGetter.targetClassName,
+            "the module getter on Cc\$ resolves across the class boundary",
+        )
+
+        val forwarder = parameterZeroProbes.single { it.className == "com.example.scalatarget.Cc" }
+        assertEquals(null, forwarder.targetClassName, "Cc's own static forwarder resolves in class")
+    }
+
+    @Test
+    fun `scala 3 - Cc's constructor default getter for parameter 0 has both a module probe and its own forwarder probe`() =
+        `Cc's constructor default getter for parameter 0 has both a module probe and its own forwarder probe`("scala3")
+
+    @Test
+    fun `scala 2 - Cc's constructor default getter for parameter 0 has both a module probe and its own forwarder probe`() =
+        `Cc's constructor default getter for parameter 0 has both a module probe and its own forwarder probe`("scala2")
+
+    /**
      * Scala 3 resolves `Cc.apply(...)` through the same constructor default getters as `new
      * Cc(...)`, per ADR 0023's consequences: unlike Scala 2, `Cc$` has no `apply$default$N` of its
      * own for Scala 3 to fall back to.

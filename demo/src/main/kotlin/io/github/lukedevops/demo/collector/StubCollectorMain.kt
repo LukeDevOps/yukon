@@ -43,6 +43,21 @@ private data class InstanceModuleKey(
     val module: String,
 )
 
+/**
+ * Groups every omission probe naming one optional parameter, within one instance: the target
+ * class (`targetClassName ?: className`), method, descriptor, and parameter index. A group can
+ * hold more than one probe: a Scala constructor default gets both a module getter, resolved
+ * across the class boundary, and that class's own static forwarder for the same getter name,
+ * resolved in class, both landing on the same target. See ADR 0023.
+ */
+private data class OmissionTargetKey(
+    val serviceInstanceId: String,
+    val targetClassName: String,
+    val methodName: String,
+    val methodDescriptor: String,
+    val parameterIndex: Int?,
+)
+
 private data class ProbeInfo(
     val className: String,
     val methodName: String,
@@ -292,49 +307,64 @@ private fun printNeverHitReport() {
 
 /**
  * Reports every optional parameter found never supplied (every caller took the default, so the
- * parameter can go) or always supplied (the default value is dead). Both rules require the
- * target's own summed hit total to be above zero, and skip a target with no method probe at all
- * (an abstract interface method) or an inline target, the same reasons [printNeverHitReport]
- * excludes those. "Never supplied" is claimed only for a non-overridable target, since an
- * overridable target's omissions are spread across whichever override actually ran. See ADR 0021.
+ * parameter can go) or always supplied (the default value is dead). Every omission probe naming
+ * the same parameter is summed before either rule is judged: a Scala constructor default carries
+ * two, a module getter resolved across the class boundary and that class's own static forwarder
+ * resolved in class, and judging them apart can call one never supplied while the other reads as
+ * always supplied for the same parameter. See ADR 0023. Both rules require the target's own
+ * summed hit total to be above zero, and skip a target with no method probe at all (an abstract
+ * interface method) or an inline target, the same reasons [printNeverHitReport] excludes those.
+ * "Never supplied" is claimed only for a non-overridable target, since an overridable target's
+ * omissions are spread across whichever override actually ran. See ADR 0021.
  */
 private fun printOmissionReport() {
     println()
     println("=== yukon demo: optional argument report ===")
-    val neverSupplied = mutableListOf<Pair<InstanceProbeKey, ProbeInfo>>()
-    val alwaysSupplied = mutableListOf<Pair<InstanceProbeKey, ProbeInfo>>()
-    for ((key, info) in manifestProbes) {
-        if (info.kind != ProbeKind.OPTIONAL_ARGUMENT || info.inline) continue
-        val targetClassName = info.targetClassName ?: info.className
+    val omissionGroups =
+        manifestProbes.entries
+            .filter { (_, info) -> info.kind == ProbeKind.OPTIONAL_ARGUMENT && !info.inline }
+            .groupBy { (key, info) ->
+                OmissionTargetKey(
+                    key.serviceInstanceId,
+                    info.targetClassName ?: info.className,
+                    info.methodName,
+                    info.methodDescriptor,
+                    info.parameterIndex,
+                )
+            }
+    val neverSupplied = mutableListOf<Pair<OmissionTargetKey, ProbeInfo>>()
+    val alwaysSupplied = mutableListOf<Pair<OmissionTargetKey, ProbeInfo>>()
+    for ((groupKey, members) in omissionGroups) {
         val targetHits =
             manifestProbes.entries
                 .filter { (targetKey, targetInfo) ->
-                    targetKey.serviceInstanceId == key.serviceInstanceId &&
+                    targetKey.serviceInstanceId == groupKey.serviceInstanceId &&
                         targetInfo.kind == ProbeKind.METHOD &&
-                        targetInfo.className == targetClassName &&
-                        targetInfo.methodName == info.methodName &&
-                        targetInfo.methodDescriptor == info.methodDescriptor
+                        targetInfo.className == groupKey.targetClassName &&
+                        targetInfo.methodName == groupKey.methodName &&
+                        targetInfo.methodDescriptor == groupKey.methodDescriptor
                 }.sumOf { (targetKey, _) -> latestHitsTotal[targetKey] ?: 0L }
         if (targetHits <= 0L) continue
-        val omitted = latestHitsTotal[key] ?: 0L
-        if (!info.overridable && omitted == targetHits) neverSupplied += key to info
-        if (omitted == 0L) alwaysSupplied += key to info
+        val omitted = members.sumOf { (key, _) -> latestHitsTotal[key] ?: 0L }
+        val representative = members.first().value
+        if (!representative.overridable && omitted == targetHits) neverSupplied += groupKey to representative
+        if (omitted == 0L) alwaysSupplied += groupKey to representative
     }
     println("never supplied: ${neverSupplied.size}, always supplied: ${alwaysSupplied.size}")
     neverSupplied
-        .sortedWith(compareBy({ it.second.targetClassName ?: it.second.className }, { it.second.methodName }, { it.second.parameterIndex }))
-        .forEach { (key, info) ->
-            val targetClassName = info.targetClassName ?: info.className
+        .sortedWith(compareBy({ it.first.targetClassName }, { it.first.methodName }, { it.first.parameterIndex }))
+        .forEach { (groupKey, info) ->
             println(
-                "  NEVER SUPPLIED: $targetClassName#${info.methodName}(${info.parameterName}) (instance ${key.serviceInstanceId})",
+                "  NEVER SUPPLIED: ${groupKey.targetClassName}#${groupKey.methodName}(${info.parameterName}) " +
+                    "(instance ${groupKey.serviceInstanceId})",
             )
         }
     alwaysSupplied
-        .sortedWith(compareBy({ it.second.targetClassName ?: it.second.className }, { it.second.methodName }, { it.second.parameterIndex }))
-        .forEach { (key, info) ->
-            val targetClassName = info.targetClassName ?: info.className
+        .sortedWith(compareBy({ it.first.targetClassName }, { it.first.methodName }, { it.first.parameterIndex }))
+        .forEach { (groupKey, info) ->
             println(
-                "  ALWAYS SUPPLIED: $targetClassName#${info.methodName}(${info.parameterName}) (instance ${key.serviceInstanceId})",
+                "  ALWAYS SUPPLIED: ${groupKey.targetClassName}#${groupKey.methodName}(${info.parameterName}) " +
+                    "(instance ${groupKey.serviceInstanceId})",
             )
         }
     println("==============================================")
