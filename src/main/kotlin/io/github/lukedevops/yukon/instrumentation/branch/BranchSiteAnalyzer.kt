@@ -1,5 +1,7 @@
 package io.github.lukedevops.yukon.instrumentation.branch
 
+import io.github.lukedevops.yukon.export.CallEdge
+import io.github.lukedevops.yukon.instrumentation.TypeMatchPolicy
 import net.bytebuddy.jar.asm.ClassReader
 import net.bytebuddy.jar.asm.ClassVisitor
 import net.bytebuddy.jar.asm.Handle
@@ -43,6 +45,11 @@ object BranchSiteAnalyzer {
          * marker interface, or a class with only instance methods, has none.
          */
         val hasTypeInitializer: Boolean = false,
+        private val callEdgesByMethod: Map<Pair<String, String>, List<CallEdge>> = emptyMap(),
+        /** Dotted, as the class file's own super_class entry names it. Null only for `java.lang.Object`. See ADR 0024. */
+        val superClassName: String? = null,
+        /** Dotted, as the class file's own interfaces entries name them. See ADR 0024. */
+        val interfaceNames: List<String> = emptyList(),
     ) {
         /** First line-number-table entry of the method, or -1 when the class carries no debug info or the bytes were never read. */
         fun firstLineOf(
@@ -60,6 +67,15 @@ object BranchSiteAnalyzer {
             descriptor: String,
         ): Boolean = (name to descriptor) in inlineMethods
 
+        /**
+         * The in-scope call edges read from this method's own bytecode, empty for any method that
+         * does not get a METHOD probe. See ADR 0024.
+         */
+        fun callsOf(
+            name: String,
+            descriptor: String,
+        ): List<CallEdge> = callEdgesByMethod[name to descriptor] ?: emptyList()
+
         companion object {
             val EMPTY = Analysis(emptyList(), emptyMap())
         }
@@ -72,6 +88,43 @@ object BranchSiteAnalyzer {
         val optionalBits: Int,
         val higherMaskTested: Boolean,
     )
+
+    /**
+     * A callee named exactly as one method's bytecode names it, before any pass-through or
+     * cross-class `$default` resolution. [virtualRaw] is true for `invokevirtual`/
+     * `invokeinterface`, or for an `invokedynamic` whose `LambdaMetafactory` implementation handle
+     * has an `H_INVOKEVIRTUAL`/`H_INVOKEINTERFACE` tag. See ADR 0024.
+     */
+    private data class RawCandidate(
+        val owner: String,
+        val name: String,
+        val descriptor: String,
+        val virtualRaw: Boolean,
+    )
+
+    /** One resolved cross-class `$default` target: see [resolveCrossClassDefaultTarget]. */
+    private data class CrossClassDefaultTarget(
+        val name: String,
+        val descriptor: String,
+        val virtual: Boolean,
+    )
+
+    /**
+     * The `LambdaMetafactory` implementation method an `invokedynamic` instruction names, as a
+     * [RawCandidate], or null for any other bootstrap (`StringConcatFactory`, Kotlin's own,
+     * records). The implementation method is bootstrap argument index 1, verified against javac
+     * 21 and Kotlin 2.2.21 output. See ADR 0024.
+     */
+    private fun lambdaCandidateOrNull(
+        bootstrapMethodHandle: Handle,
+        bootstrapMethodArguments: Array<out Any>,
+    ): RawCandidate? {
+        if (bootstrapMethodHandle.owner != "java/lang/invoke/LambdaMetafactory") return null
+        if (bootstrapMethodHandle.name != "metafactory" && bootstrapMethodHandle.name != "altMetafactory") return null
+        val implementationHandle = bootstrapMethodArguments.getOrNull(1) as? Handle ?: return null
+        val virtualRaw = implementationHandle.tag == Opcodes.H_INVOKEVIRTUAL || implementationHandle.tag == Opcodes.H_INVOKEINTERFACE
+        return RawCandidate(implementationHandle.owner, implementationHandle.name, implementationHandle.desc, virtualRaw)
+    }
 
     /** How many probe slots a switch with these case targets and this default owns. */
     fun switchOutcomeCount(
@@ -100,6 +153,8 @@ object BranchSiteAnalyzer {
     fun analyze(
         classBytes: ByteArray,
         lookup: (internalName: String) -> ByteArray? = { null },
+        includePackages: List<String> = emptyList(),
+        excludePackages: List<String> = emptyList(),
         methodFilter: (name: String, descriptor: String) -> Boolean,
     ): Analysis {
         val sites = mutableListOf<BranchSite>()
@@ -109,10 +164,14 @@ object BranchSiteAnalyzer {
 
         var internalClassName = ""
         var classAccess = 0
+        var superInternalName: String? = null
+        var interfaceInternalNames: List<String> = emptyList()
         val methodAccess = mutableMapOf<Pair<String, String>, Int>()
         val localNames = mutableMapOf<Pair<String, String>, MutableMap<Int, String>>()
         val defaultCandidates = mutableListOf<DefaultCandidate>()
         val defaultShapedNames = mutableListOf<Pair<String, String>>()
+        val rawCandidatesByMethod = mutableMapOf<Pair<String, String>, MutableList<RawCandidate>>()
+        val eligibleMethodKeys = mutableSetOf<Pair<String, String>>()
 
         val classVisitor =
             object : ClassVisitor(Opcodes.ASM9) {
@@ -126,6 +185,8 @@ object BranchSiteAnalyzer {
                 ) {
                     internalClassName = name
                     classAccess = access
+                    superInternalName = superName
+                    interfaceInternalNames = interfaces?.toList() ?: emptyList()
                 }
 
                 override fun visitMethod(
@@ -141,6 +202,8 @@ object BranchSiteAnalyzer {
                     if (defaultShaped) defaultShapedNames += name to descriptor
                     val eligible = methodFilter(name, descriptor)
                     val isTypeInitializer = name == "<clinit>" && descriptor == "()V"
+                    if (eligible) eligibleMethodKeys += name to descriptor
+                    val candidatesForMethod = rawCandidatesByMethod.getOrPut(name to descriptor) { mutableListOf() }
 
                     if (!eligible && !defaultShaped) {
                         // Out of scope for the method, branch, and inline tiers, but this method
@@ -149,6 +212,9 @@ object BranchSiteAnalyzer {
                         // (methodFilter excludes it), but its own first line is still worth
                         // recording: YukonInstrumentation gives a class with a type initializer of
                         // its own one METHOD probe, counted by the woven prelude rather than advice.
+                        // Its call candidates are still worth capturing too: this method may be a
+                        // same-class pass-through (a bridge, an access$ accessor) referenced by a
+                        // probed method elsewhere in the class. See ADR 0024.
                         return object : MethodVisitor(Opcodes.ASM9) {
                             override fun visitLocalVariable(
                                 localName: String,
@@ -167,6 +233,26 @@ object BranchSiteAnalyzer {
                             ) {
                                 if (isTypeInitializer) firstLines.putIfAbsent(name to descriptor, line)
                             }
+
+                            override fun visitMethodInsn(
+                                opcode: Int,
+                                owner: String,
+                                calleeName: String,
+                                calleeDescriptor: String,
+                                isInterface: Boolean,
+                            ) {
+                                val virtualRaw = opcode == Opcodes.INVOKEVIRTUAL || opcode == Opcodes.INVOKEINTERFACE
+                                candidatesForMethod += RawCandidate(owner, calleeName, calleeDescriptor, virtualRaw)
+                            }
+
+                            override fun visitInvokeDynamicInsn(
+                                invokedName: String,
+                                invokedDescriptor: String,
+                                bootstrapMethodHandle: Handle,
+                                vararg bootstrapMethodArguments: Any,
+                            ) {
+                                lambdaCandidateOrNull(bootstrapMethodHandle, bootstrapMethodArguments)?.let { candidatesForMethod += it }
+                            }
                         }
                     }
 
@@ -182,6 +268,7 @@ object BranchSiteAnalyzer {
                         onSiteIndexUsed = { nextSiteIndex++ },
                         nextSiteIndex = { nextSiteIndex },
                         onDefaultCandidate = { defaultCandidates += it },
+                        candidatesForMethod = candidatesForMethod,
                     )
                 }
             }
@@ -203,6 +290,18 @@ object BranchSiteAnalyzer {
         val unresolvedScalaGetterSites = getterCandidateNames.filterNot { it in resolvedGetters }
         val hasTypeInitializer = ("<clinit>" to "()V") in methodAccess
 
+        val callEdgeEntryPoints = if (hasTypeInitializer) eligibleMethodKeys + ("<clinit>" to "()V") else eligibleMethodKeys
+        val callEdgesByMethod =
+            resolveCallEdges(
+                internalClassName = internalClassName,
+                methodAccess = methodAccess,
+                rawCandidatesByMethod = rawCandidatesByMethod,
+                eligibleMethodKeys = callEdgeEntryPoints,
+                lookup = lookup,
+                includePackages = includePackages,
+                excludePackages = excludePackages,
+            )
+
         return Analysis(
             sites,
             firstLines,
@@ -212,8 +311,168 @@ object BranchSiteAnalyzer {
             scalaGetterSites,
             unresolvedScalaGetterSites,
             hasTypeInitializer,
+            callEdgesByMethod,
+            superInternalName?.replace('/', '.'),
+            interfaceInternalNames.map { it.replace('/', '.') },
         )
     }
+
+    /**
+     * Resolves every [eligibleMethodKeys] method's raw candidates (collected by [analyze]) into
+     * its final [CallEdge] list. See ADR 0024.
+     *
+     * A same-class candidate is a pass-through only when this class declares it with a body and
+     * it is not in [eligibleMethodKeys]: its own raw candidates are substituted in its place,
+     * transitively, guarded by a per-entry-point visited set so a cycle among pass-through methods
+     * terminates instead of looping. An abstract or native method has no body to pass through, and
+     * a method this class only inherits (javac names the receiver's static type as owner, so
+     * `this.inherited()` arrives with this class as owner) is not in the method table at all; both
+     * stay verbatim edges, since the abstract case is exactly the template-method edge a collector
+     * widens to the implementers. A cross-class
+     * candidate shaped like a Kotlin `$default` method is resolved one step further, against the
+     * target class's own bytecode fetched through [lookup], the same mechanism
+     * [resolveScalaGetterSites] already uses for a Scala constructor getter's cross-class target.
+     * Any other cross-class pass-through (a bridge, an `access$` accessor, a synthetic adapter
+     * class the type matcher never instruments) is left as-is: it becomes an edge to that
+     * synthetic method itself, an unknown type to the collector. See ADR 0024's "known gap" for
+     * why this is an accepted v1 boundary, not a bug.
+     *
+     * Self-edges (the entry-point method calling itself, directly or through a pass-through
+     * chain) are dropped. Edges are deduplicated per entry point by (owner, name, descriptor,
+     * virtual).
+     */
+    private fun resolveCallEdges(
+        internalClassName: String,
+        methodAccess: Map<Pair<String, String>, Int>,
+        rawCandidatesByMethod: Map<Pair<String, String>, List<RawCandidate>>,
+        eligibleMethodKeys: Set<Pair<String, String>>,
+        lookup: (String) -> ByteArray?,
+        includePackages: List<String>,
+        excludePackages: List<String>,
+    ): Map<Pair<String, String>, List<CallEdge>> {
+        val crossClassMethodTables = mutableMapOf<String, MethodTable?>()
+
+        fun methodTableFor(ownerInternalName: String): MethodTable? =
+            crossClassMethodTables.getOrPut(ownerInternalName) {
+                val bytes =
+                    try {
+                        lookup(ownerInternalName)
+                    } catch (_: Exception) {
+                        null
+                    } ?: return@getOrPut null
+                try {
+                    readMethodTable(bytes)
+                } catch (_: Exception) {
+                    null
+                }
+            }
+
+        val dottedClassName = internalClassName.replace('/', '.')
+
+        fun resolveOne(methodKey: Pair<String, String>): List<CallEdge> {
+            val edges = LinkedHashSet<CallEdge>()
+            val visited = mutableSetOf<Triple<String, String, String>>()
+
+            fun visit(
+                owner: String,
+                name: String,
+                descriptor: String,
+                virtualRaw: Boolean,
+            ) {
+                if (!visited.add(Triple(owner, name, descriptor))) return
+
+                if (owner == internalClassName) {
+                    val access = methodAccess[name to descriptor]
+                    val nonVirtual = access != null && access and NON_VIRTUAL_FLAGS != 0
+                    val virtual = virtualRaw && !nonVirtual
+                    val declaredWithBody = access != null && access and BODYLESS_FLAGS == 0
+                    if ((name to descriptor) in eligibleMethodKeys || !declaredWithBody) {
+                        edges += CallEdge(dottedClassName, name, descriptor, virtual)
+                    } else {
+                        for (candidate in rawCandidatesByMethod[name to descriptor].orEmpty()) {
+                            visit(candidate.owner, candidate.name, candidate.descriptor, candidate.virtualRaw)
+                        }
+                    }
+                    return
+                }
+
+                val dottedOwner = owner.replace('/', '.')
+                if (!TypeMatchPolicy.isIncluded(dottedOwner, includePackages, excludePackages)) return
+
+                if (isDefaultShaped(name, descriptor)) {
+                    val target = methodTableFor(owner)?.let { resolveCrossClassDefaultTarget(owner, name, descriptor, it) }
+                    if (target != null) {
+                        edges += CallEdge(dottedOwner, target.name, target.descriptor, target.virtual)
+                        return
+                    }
+                }
+                edges += CallEdge(dottedOwner, name, descriptor, virtualRaw)
+            }
+
+            for (candidate in rawCandidatesByMethod[methodKey].orEmpty()) {
+                visit(candidate.owner, candidate.name, candidate.descriptor, candidate.virtualRaw)
+            }
+            val (selfName, selfDescriptor) = methodKey
+            return edges.filterNot { it.className == dottedClassName && it.methodName == selfName && it.methodDescriptor == selfDescriptor }
+        }
+
+        return eligibleMethodKeys.associateWith(::resolveOne)
+    }
+
+    /**
+     * Finds the one method [defaultName]/[defaultDescriptor] fills defaults for, on a different
+     * class from the one declaring it, by descriptor shape alone: the same matching rule
+     * [resolveDefaultSites] applies in-class, minus the parts that need the `$default` method's
+     * own bytecode (the mask test, its optional-parameter bits), since a call edge only needs the
+     * target's identity and whether it can be overridden. No match, or more than one, returns
+     * null, the same as an unresolved same-class default site.
+     */
+    private fun resolveCrossClassDefaultTarget(
+        ownerInternalName: String,
+        defaultName: String,
+        defaultDescriptor: String,
+        table: MethodTable,
+    ): CrossClassDefaultTarget? {
+        val isConstructor = defaultName == "<init>"
+        val targetName = if (isConstructor) "<init>" else defaultName.removeSuffix("\$default")
+        val defaultParams = parseParameterDescriptors(defaultDescriptor)
+        val maskIntCount = resolveMaskIntCount(defaultParams.size - 1)
+        val maskStartParamIndex = defaultParams.size - 1 - maskIntCount
+        if (maskStartParamIndex < 0) return null
+        val valueParams = defaultParams.subList(0, maskStartParamIndex)
+        val defaultReturn = returnTypeOf(defaultDescriptor)
+        val ownerDescriptor = "L$ownerInternalName;"
+
+        val matches =
+            table.methodAccess.entries.filter { (key, access) ->
+                val (candidateName, candidateDescriptor) = key
+                if (candidateName != targetName || candidateDescriptor == defaultDescriptor) return@filter false
+                val candidateIsStatic = access and Opcodes.ACC_STATIC != 0
+                val candidateParams = parseParameterDescriptors(candidateDescriptor)
+                if (isConstructor) {
+                    returnTypeOf(candidateDescriptor) == "V" && candidateParams == valueParams
+                } else if (returnTypeOf(candidateDescriptor) != defaultReturn) {
+                    false
+                } else if (candidateIsStatic) {
+                    candidateParams == valueParams
+                } else {
+                    valueParams.size == candidateParams.size + 1 &&
+                        valueParams[0] == ownerDescriptor &&
+                        valueParams.drop(1) == candidateParams
+                }
+            }
+
+        if (matches.size != 1) return null
+        val (targetKey, targetAccess) = matches.single()
+        val nonVirtual = targetAccess and NON_VIRTUAL_FLAGS != 0
+        return CrossClassDefaultTarget(targetKey.first, targetKey.second, virtual = !nonVirtual)
+    }
+
+    /** A same-class target with any of these flags can never be overridden, so a call to it is never virtual. See ADR 0024. */
+    private const val NON_VIRTUAL_FLAGS = Opcodes.ACC_PRIVATE or Opcodes.ACC_STATIC or Opcodes.ACC_FINAL
+
+    /** A same-class target with either flag has no body to pass through, so a call to it stays an edge. */
+    private const val BODYLESS_FLAGS = Opcodes.ACC_ABSTRACT or Opcodes.ACC_NATIVE
 
     /** Matches a Scala default getter such as `f$default$2`, capturing the target's name and the one-based parameter number. */
     private val scalaGetterPattern = Regex("^(.+)\\\$default\\\$(\\d+)$")
@@ -244,6 +503,7 @@ object BranchSiteAnalyzer {
         private val onSiteIndexUsed: () -> Unit,
         private val nextSiteIndex: () -> Int,
         private val onDefaultCandidate: (DefaultCandidate) -> Unit,
+        private val candidatesForMethod: MutableList<RawCandidate>,
     ) : MethodVisitor(Opcodes.ASM9) {
         private var currentLine = -1
         private var lastLabel: Label? = null
@@ -400,6 +660,8 @@ object BranchSiteAnalyzer {
             isInterface: Boolean,
         ) {
             if (defaultShaped) resetMaskPhase()
+            val virtualRaw = opcode == Opcodes.INVOKEVIRTUAL || opcode == Opcodes.INVOKEINTERFACE
+            candidatesForMethod += RawCandidate(owner, methodName, methodDescriptor, virtualRaw)
         }
 
         override fun visitTypeInsn(
@@ -423,6 +685,7 @@ object BranchSiteAnalyzer {
             vararg bootstrapMethodArguments: Any,
         ) {
             if (defaultShaped) resetMaskPhase()
+            lambdaCandidateOrNull(bootstrapMethodHandle, bootstrapMethodArguments)?.let { candidatesForMethod += it }
         }
 
         override fun visitMultiANewArrayInsn(

@@ -1,5 +1,6 @@
 package io.github.lukedevops.yukon.registry
 
+import io.github.lukedevops.yukon.export.CallEdge
 import io.github.lukedevops.yukon.export.ProbeKind
 import io.github.lukedevops.yukon.export.ResourceAttributes
 import java.net.URLClassLoader
@@ -640,9 +641,10 @@ class ProbeRegistryTest {
         registry.register("com.example.Bar", layoutHash = 1L, probes = methodProbes(3))
         registry.recordSkipped("com.example.Skipped", reason = "unsafe")
 
-        val chunks = registry.computeManifestDeltas("checkout", null, "instance-1", maxEntriesPerChunk = 4)
+        val chunks = registry.computeManifestDeltas("checkout", null, "instance-1", maxEntriesPerChunk = 5)
 
-        // Foo (3) fills the first chunk on its own, since Bar (3) would push it past 4. Bar and
+        // Each of Foo and Bar weighs 3 probes + 0 edges + 1 for its own supertypes record = 4.
+        // Foo (4) fills the first chunk on its own, since Bar (4) would push it past 5. Bar and
         // the skipped class (1) then fit together in the second, exactly at the cap.
         assertEquals(2, chunks.size)
         assertEquals(
@@ -650,7 +652,9 @@ class ProbeRegistryTest {
             chunks.flatMap { it.manifest.probes.map { p -> p.className } }.toSet(),
         )
         assertEquals(listOf("com.example.Skipped"), chunks.flatMap { it.manifest.skippedClasses.map { s -> s.className } })
-        chunks.forEach { assertTrue(it.manifest.probes.size + it.manifest.skippedClasses.size <= 4) }
+        chunks.forEach {
+            assertTrue(it.manifest.probes.size + it.manifest.skippedClasses.size + it.manifest.classSupertypes.size <= 5)
+        }
     }
 
     @Test
@@ -735,5 +739,119 @@ class ProbeRegistryTest {
             assertEquals("count", location.parameterName)
             assertTrue(location.overridable)
         }
+    }
+
+    @Test
+    fun `manifest and computeManifestDelta carry a METHOD probe's call edges and the class's supertypes record`() {
+        val registry = ProbeRegistry()
+        val calls = listOf(CallEdge("com.example.Bar", "baz", "()V", virtual = true))
+        registry.register(
+            "com.example.Foo",
+            layoutHash = 1L,
+            probes = listOf(ProbeMeta(ProbeKind.METHOD, "run", "()V", line = 1, calls = calls)),
+            superClassName = "com.example.Base",
+            interfaceNames = listOf("com.example.Marker"),
+        )
+
+        val manifestLocation = registry.manifest("checkout", "1.0.0", "instance-1").probes.single()
+        val manifestSupertypes = registry.manifest("checkout", "1.0.0", "instance-1").classSupertypes.single()
+        val deltaSnapshot = registry.computeManifestDelta("checkout", "1.0.0", "instance-1")
+
+        assertEquals(calls, manifestLocation.calls)
+        assertEquals(
+            calls,
+            deltaSnapshot.manifest.probes
+                .single()
+                .calls,
+        )
+        assertEquals("com.example.Base", manifestSupertypes.superClassName)
+        assertEquals(listOf("com.example.Marker"), manifestSupertypes.interfaceNames)
+        assertEquals(manifestSupertypes, deltaSnapshot.manifest.classSupertypes.single())
+    }
+
+    @Test
+    fun `the registry passes ProbeMeta calls through unchanged whatever the probe kind`() {
+        val registry = ProbeRegistry()
+        val calls = listOf(CallEdge("com.example.Bar", "baz", "()V", virtual = true))
+        registry.register(
+            "com.example.Foo",
+            layoutHash = 1L,
+            probes = listOf(ProbeMeta(ProbeKind.BRANCH, "run", "()V", line = 1, branchIndex = 0, calls = calls)),
+        )
+
+        // ProbeMeta.calls is populated only for METHOD-kind probes by YukonInstrumentation; the
+        // registry itself carries through whatever it is given, so this pins that a manifest
+        // location built from a BRANCH probe still reports whatever calls its ProbeMeta carried.
+        // Real BRANCH probes never carry any: see CallEdgeInstrumentationTest.
+        assertEquals(
+            calls,
+            registry
+                .manifest("checkout", null, "instance-1")
+                .probes
+                .single()
+                .calls,
+        )
+    }
+
+    @Test
+    fun `a class with many call edges seals a manifest chunk earlier than one without`() {
+        val registry = ProbeRegistry()
+        val manyCalls = (0 until 5).map { CallEdge("com.example.Callee", "m$it", "()V", virtual = false) }
+        registry.register(
+            "com.example.Heavy",
+            layoutHash = 1L,
+            probes = listOf(ProbeMeta(ProbeKind.METHOD, "run", "()V", line = 1, calls = manyCalls)),
+        )
+        registry.register("com.example.Light", layoutHash = 1L, probes = methodProbes(1))
+
+        // Heavy weighs 1 probe + 5 edges + 1 supertypes record = 7, already past a cap of 6, so it
+        // seals its own chunk; Light (1 + 0 + 1 = 2) starts a second chunk. entriesByKey is a
+        // ConcurrentHashMap, so which chunk lands first is not guaranteed; only that the two
+        // classes never land in the same chunk.
+        val chunks = registry.computeManifestDeltas("checkout", null, "instance-1", maxEntriesPerChunk = 6)
+
+        assertEquals(2, chunks.size)
+        val classNamesPerChunk =
+            chunks.map { chunk ->
+                chunk.manifest.probes
+                    .map { it.className }
+                    .toSet()
+            }
+        assertEquals(listOf(setOf("com.example.Heavy"), setOf("com.example.Light")).toSet(), classNamesPerChunk.toSet())
+    }
+
+    @Test
+    fun `advanceManifestBaseline marks a class's supertypes record as included together with its probes`() {
+        val registry = ProbeRegistry()
+        registry.register("com.example.Foo", layoutHash = 1L, probes = methodProbes(1), superClassName = "com.example.Base")
+
+        val snapshot = registry.computeManifestDelta("checkout", null, "instance-1")
+        assertEquals(1, snapshot.manifest.classSupertypes.size)
+        registry.advanceManifestBaseline(snapshot)
+
+        val retry = registry.computeManifestDelta("checkout", null, "instance-1")
+        assertTrue(retry.manifest.probes.isEmpty())
+        assertTrue(retry.manifest.classSupertypes.isEmpty())
+    }
+
+    @Test
+    fun `re-registering the same class and layout hash keeps the first-registered supertypes`() {
+        val registry = ProbeRegistry()
+        registry.register("com.example.Foo", layoutHash = 1L, probes = methodProbes(1), superClassName = "com.example.First")
+
+        registry.register("com.example.Foo", layoutHash = 1L, probes = methodProbes(1), superClassName = "com.example.Second")
+
+        // Supertypes play no part in the registry key, the same as the probe list itself: a
+        // repeat call for an unchanged (className, layoutHash, classLoader) is a no-op, so the
+        // layout hash a caller computes from methods and branches alone stays meaningful whether
+        // or not calls or supertypes are attached. See ADR 0024.
+        assertEquals(
+            "com.example.First",
+            registry
+                .manifest("checkout", null, "instance-1")
+                .classSupertypes
+                .single()
+                .superClassName,
+        )
     }
 }

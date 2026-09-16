@@ -1,5 +1,6 @@
 package io.github.lukedevops.yukon.registry
 
+import io.github.lukedevops.yukon.export.CallEdge
 import io.github.lukedevops.yukon.export.ProbeKind
 
 /**
@@ -17,6 +18,9 @@ import io.github.lukedevops.yukon.export.ProbeKind
  * [targetClassName] is set only for an [ProbeKind.OPTIONAL_ARGUMENT] probe whose target lives in a
  * different class from the probe's own, the cross-class shape a Scala constructor default getter
  * takes. Null whenever the target is in the probe's own class. See ADR 0023.
+ *
+ * [calls] is populated only for a [ProbeKind.METHOD] probe: the in-scope call edges read from
+ * that method's own bytecode at transform time. See ADR 0024.
  */
 data class ProbeMeta(
     val kind: ProbeKind,
@@ -29,4 +33,5 @@ data class ProbeMeta(
     val parameterName: String? = null,
     val overridable: Boolean = false,
     val targetClassName: String? = null,
+    val calls: List<CallEdge> = emptyList(),
 )

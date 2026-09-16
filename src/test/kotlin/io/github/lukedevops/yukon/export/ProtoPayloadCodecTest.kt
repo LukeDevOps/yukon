@@ -714,4 +714,95 @@ class ProtoPayloadCodecTest {
             ProtoPayloadCodec.decodeProbeManifest(wireManifest.toByteArray())
         }
     }
+
+    @Test
+    fun `a METHOD probe's call edges and a class's supertypes round-trip through the wire`() {
+        val manifest =
+            ProbeManifest(
+                serviceName = "checkout",
+                serviceVersion = "1.0.0",
+                probes =
+                    listOf(
+                        ProbeLocation(
+                            classId = 0,
+                            probeIndex = 0,
+                            kind = ProbeKind.METHOD,
+                            className = "com.example.Foo",
+                            methodName = "bar",
+                            methodDescriptor = "()V",
+                            line = 10,
+                            branchIndex = null,
+                            calls =
+                                listOf(
+                                    CallEdge("com.example.Baz", "qux", "()I", virtual = true),
+                                    CallEdge("com.example.Baz", "<init>", "()V", virtual = false),
+                                ),
+                        ),
+                    ),
+                classSupertypes =
+                    listOf(
+                        ClassSupertypes(classId = 0, superClassName = "com.example.Base", interfaceNames = listOf("com.example.Marker")),
+                    ),
+            )
+
+        val decoded = ProtoPayloadCodec.decodeProbeManifest(ProtoPayloadCodec.encode(manifest))
+
+        assertEquals(manifest, decoded)
+        assertEquals(
+            2,
+            decoded.probes
+                .single()
+                .calls.size,
+        )
+        assertEquals("com.example.Base", decoded.classSupertypes.single().superClassName)
+    }
+
+    @Test
+    fun `a class supertypes record with no superclass round-trips super class name as null, not empty string`() {
+        val manifest =
+            ProbeManifest(
+                serviceName = "checkout",
+                serviceVersion = null,
+                probes = emptyList(),
+                classSupertypes = listOf(ClassSupertypes(classId = 0, superClassName = null, interfaceNames = emptyList())),
+            )
+
+        val decoded = ProtoPayloadCodec.decodeProbeManifest(ProtoPayloadCodec.encode(manifest))
+
+        assertEquals(manifest, decoded)
+        assertEquals(null, decoded.classSupertypes.single().superClassName)
+    }
+
+    @Test
+    fun `a manifest with no calls or supertypes decodes to empty lists, matching an old payload`() {
+        val manifest =
+            ProbeManifest(
+                serviceName = "checkout",
+                serviceVersion = null,
+                probes =
+                    listOf(
+                        ProbeLocation(
+                            classId = 0,
+                            probeIndex = 0,
+                            kind = ProbeKind.METHOD,
+                            className = "com.example.Foo",
+                            methodName = "bar",
+                            methodDescriptor = "()V",
+                            line = 10,
+                            branchIndex = null,
+                        ),
+                    ),
+            )
+
+        val decoded = ProtoPayloadCodec.decodeProbeManifest(ProtoPayloadCodec.encode(manifest))
+
+        assertTrue(
+            decoded.probes
+                .single()
+                .calls
+                .isEmpty(),
+        )
+        assertTrue(decoded.classSupertypes.isEmpty())
+        assertEquals(manifest, decoded)
+    }
 }

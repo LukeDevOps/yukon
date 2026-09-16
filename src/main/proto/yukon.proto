@@ -84,6 +84,38 @@ message ProbeLocation {
   // never set for Kotlin. A collector joins an omission probe to its target's METHOD probe by
   // target_class_name when set, otherwise by class_name.
   string target_class_name = 13;
+  // Set only for a METHOD probe: the in-scope call edges read from this method's own bytecode at
+  // transform time. A pass-through's callees are attributed to whichever probed method referenced
+  // it, so they never appear under the pass-through's own name.
+  repeated CallEdge calls = 14;
+}
+
+// One caller method's static reference to one callee method, read from the caller's bytecode at
+// transform time.
+message CallEdge {
+  // The callee's owner class, dotted, as the caller's own bytecode names it. Verbatim, not
+  // resolved: the agent never has the type hierarchy for the class it is transforming.
+  string class_name = 1;
+  string method_name = 2;
+  string method_descriptor = 3;
+  // True for an invokevirtual or invokeinterface call, false for invokestatic or invokespecial,
+  // except that a same-class call to a private, static, or final target is reported false even
+  // when the raw instruction is invokevirtual, since such a target can never be overridden. A
+  // collector widens a virtual edge to every override it knows about, and treats a non-virtual
+  // edge as naming its one real target exactly.
+  bool virtual = 4;
+}
+
+// A class's superclass and direct interfaces, sent once per class alongside its probes so a
+// collector can widen a CallEdge.virtual call to every type that overrides or inherits its
+// callee.
+message ClassSupertypes {
+  int32 class_id = 1;
+  // Dotted, as the class header names it. Empty only for java.lang.Object itself, which this
+  // agent never instruments. An interface's own super_class_name is java.lang.Object, the same
+  // as any other type, since that is what the class file's own super_class entry names.
+  string super_class_name = 2;
+  repeated string interface_names = 3;
 }
 
 // A class the agent matched but could not instrument (e.g. bytecode
@@ -120,6 +152,8 @@ message ProbeManifest {
   string service_instance_id = 5;
   repeated EndpointLocation endpoints = 6;
   repeated DisabledEndpointModule disabled_endpoint_modules = 7;
+  // Sent once per class alongside its probes, staged and committed the same way. See ADR 0024.
+  repeated ClassSupertypes class_supertypes = 8;
 }
 
 // No line field, unlike ProbeLocation. A method's first source line is
