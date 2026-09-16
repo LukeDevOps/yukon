@@ -61,6 +61,8 @@ class StaticBaselineScanner(
     private val typeNameMatcher = TypeMatchPolicy.typeNameMatcher(instrumentedPackagePrefixes, excludedPackagePrefixes)
 
     private class Buckets {
+        /** One parsed-table cache per scan: a class many others reference is parsed once, not once per referencing class. */
+        val tableCache = BranchSiteAnalyzer.CrossClassTableCache(SCAN_TABLE_CACHE_ENTRIES)
         val declared = mutableListOf<DeclaredClass>()
         val unsafe = mutableListOf<StaticallyUnsafeClass>()
         val unreadable = mutableListOf<UnreadableClass>()
@@ -239,7 +241,7 @@ class StaticBaselineScanner(
                     )
                 return
             }
-            val scanned = declaredMethodsOf(typeDescription, className, locator)
+            val scanned = declaredMethodsOf(typeDescription, className, locator, buckets.tableCache)
             if (scanned.methods.isEmpty()) {
                 buckets.unprobed += UnprobedClass(className, "no concrete methods to probe")
                 return
@@ -287,6 +289,7 @@ class StaticBaselineScanner(
         typeDescription: TypeDescription,
         className: String,
         locator: ClassFileLocator,
+        tableCache: BranchSiteAnalyzer.CrossClassTableCache,
     ): ScannedMethods {
         val classBytes =
             try {
@@ -305,6 +308,7 @@ class StaticBaselineScanner(
                     crossClassLookup(locator),
                     instrumentedPackagePrefixes,
                     excludedPackagePrefixes,
+                    tableCache,
                 ) { name, descriptor -> (name to descriptor) in eligible }
             } else {
                 BranchSiteAnalyzer.Analysis.EMPTY
@@ -377,6 +381,13 @@ class StaticBaselineScanner(
         val NESTED_CLASSES_PREFIXES = listOf("BOOT-INF/classes/", "WEB-INF/classes/")
         val NESTED_JAR_PREFIXES = listOf("BOOT-INF/lib/", "WEB-INF/lib/")
         val JAR_EXTENSIONS = setOf("jar", "zip")
+
+        /**
+         * Tables held at once during a scan. Every in-scope class another one references is parsed
+         * once while it stays within this many most recently used; a scan larger than this parses
+         * the least recently referenced again rather than holding a whole classpath's tables.
+         */
+        const val SCAN_TABLE_CACHE_ENTRIES = 8192
 
         fun defaultClasspathRoots(): List<File> =
             System

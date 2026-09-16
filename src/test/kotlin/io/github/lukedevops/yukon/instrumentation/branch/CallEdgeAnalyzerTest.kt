@@ -524,4 +524,58 @@ class CallEdgeAnalyzerTest {
             analysis.callsOf("viaReference", "()I"),
         )
     }
+
+    private fun countingLookup(counts: MutableMap<String, Int>): (String) -> ByteArray? =
+        { internalName ->
+            counts.merge(internalName, 1, Int::plus)
+            lookup(internalName)
+        }
+
+    @Test
+    fun `a shared table cache reads each referenced class once across analyses and changes no edge`() {
+        val uncached = analyzeCallEdgeTarget()
+        val counts = mutableMapOf<String, Int>()
+        val cache = BranchSiteAnalyzer.CrossClassTableCache(maxEntries = 64)
+        val filter: (String, String) -> Boolean = { _, _ -> true }
+
+        val first =
+            BranchSiteAnalyzer.analyze(
+                readTargetBytes("CallEdgeTarget"),
+                countingLookup(counts),
+                includePackages,
+                emptyList(),
+                cache,
+                filter,
+            )
+        val readsAfterFirst = counts.toMap()
+        val second =
+            BranchSiteAnalyzer.analyze(
+                readTargetBytes("CallEdgeTarget"),
+                countingLookup(counts),
+                includePackages,
+                emptyList(),
+                cache,
+                filter,
+            )
+
+        assertTrue(readsAfterFirst.isNotEmpty(), "the fixture references other in-scope classes, so the first analysis must read some")
+        assertEquals(readsAfterFirst, counts.toMap(), "the second analysis must be served from the cache")
+        assertEquals(uncached.callsOf("callsOtherClass", "()I"), first.callsOf("callsOtherClass", "()I"))
+        assertEquals(first.callsOf("callsOtherClass", "()I"), second.callsOf("callsOtherClass", "()I"))
+    }
+
+    @Test
+    fun `a table cache bounded below the number of referenced classes reads again after eviction`() {
+        val counts = mutableMapOf<String, Int>()
+        val cache = BranchSiteAnalyzer.CrossClassTableCache(maxEntries = 1)
+        val filter: (String, String) -> Boolean = { _, _ -> true }
+
+        BranchSiteAnalyzer.analyze(readTargetBytes("CallEdgeTarget"), countingLookup(counts), includePackages, emptyList(), cache, filter)
+        val distinctOwners = counts.size
+        BranchSiteAnalyzer.analyze(readTargetBytes("CallEdgeTarget"), countingLookup(counts), includePackages, emptyList(), cache, filter)
+
+        assertTrue(distinctOwners > 1, "the fixture must reference more than one class for eviction to matter")
+        assertTrue(counts.values.sum() > distinctOwners, "with room for one table, a second analysis must read again")
+        assertEquals(1, cache.size)
+    }
 }

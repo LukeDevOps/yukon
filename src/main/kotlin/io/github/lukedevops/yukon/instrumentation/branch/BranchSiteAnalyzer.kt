@@ -91,12 +91,47 @@ object BranchSiteAnalyzer {
     )
 
     /**
+     * Parsed method tables of classes referenced across a class boundary, shared between
+     * analyses so a class that many others reference is read and parsed once rather than once per
+     * referencing class. Bounded and least-recently-used, since the tables of a whole classpath
+     * would otherwise stay live for the life of the holder. Safe to share between threads; every
+     * access is synchronised. A class whose bytes cannot be read is remembered as unreadable, so a
+     * miss is not retried on every analysis either.
+     */
+    class CrossClassTableCache(
+        private val maxEntries: Int,
+    ) {
+        private val tables =
+            object : LinkedHashMap<String, Any>(16, 0.75f, true) {
+                override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Any>?): Boolean = size > maxEntries
+            }
+
+        /** The number of tables held, unreadable entries included. */
+        val size: Int
+            get() = synchronized(tables) { tables.size }
+
+        internal fun getOrRead(
+            internalName: String,
+            read: () -> MethodTable?,
+        ): MethodTable? {
+            synchronized(tables) { tables[internalName] }?.let { return it as? MethodTable }
+            val table = read()
+            synchronized(tables) { tables[internalName] = table ?: UNREADABLE }
+            return table
+        }
+
+        private companion object {
+            val UNREADABLE = Any()
+        }
+    }
+
+    /**
      * A callee named exactly as one method's bytecode names it, before any pass-through or
      * cross-class `$default` resolution. [virtualRaw] is true for `invokevirtual`/
      * `invokeinterface`, or for an `invokedynamic` whose `LambdaMetafactory` implementation handle
      * has an `H_INVOKEVIRTUAL`/`H_INVOKEINTERFACE` tag. See ADR 0024.
      */
-    private data class RawCandidate(
+    internal data class RawCandidate(
         val owner: String,
         val name: String,
         val descriptor: String,
@@ -205,6 +240,7 @@ object BranchSiteAnalyzer {
         lookup: (internalName: String) -> ByteArray? = { null },
         includePackages: List<String> = emptyList(),
         excludePackages: List<String> = emptyList(),
+        tableCache: CrossClassTableCache? = null,
         methodFilter: (name: String, descriptor: String) -> Boolean,
     ): Analysis {
         val sites = mutableListOf<BranchSite>()
@@ -331,6 +367,7 @@ object BranchSiteAnalyzer {
                 lookup = lookup,
                 includePackages = includePackages,
                 excludePackages = excludePackages,
+                tableCache = tableCache,
             )
 
         return Analysis(
@@ -405,22 +442,28 @@ object BranchSiteAnalyzer {
         lookup: (String) -> ByteArray?,
         includePackages: List<String>,
         excludePackages: List<String>,
+        tableCache: CrossClassTableCache? = null,
     ): Map<Pair<String, String>, List<CallEdge>> {
         val crossClassMethodTables = mutableMapOf<String, MethodTable?>()
 
-        fun methodTableFor(ownerInternalName: String): MethodTable? =
-            crossClassMethodTables.getOrPut(ownerInternalName) {
-                val bytes =
-                    try {
-                        lookup(ownerInternalName)
-                    } catch (_: Exception) {
-                        null
-                    } ?: return@getOrPut null
+        fun readTable(ownerInternalName: String): MethodTable? {
+            val bytes =
                 try {
-                    readMethodTable(bytes)
+                    lookup(ownerInternalName)
                 } catch (_: Exception) {
                     null
-                }
+                } ?: return null
+            return try {
+                readMethodTable(bytes)
+            } catch (_: Exception) {
+                null
+            }
+        }
+
+        fun methodTableFor(ownerInternalName: String): MethodTable? =
+            crossClassMethodTables.getOrPut(ownerInternalName) {
+                tableCache?.getOrRead(ownerInternalName) { readTable(ownerInternalName) }
+                    ?: readTable(ownerInternalName).takeIf { tableCache == null }
             }
 
         val dottedClassName = internalClassName.replace('/', '.')
@@ -1114,7 +1157,7 @@ object BranchSiteAnalyzer {
      * class, and kotlinc attaches the same attribute to a function reference, a suspend lambda, and
      * an object expression. See ADR 0024's body-class rule.
      */
-    private class MethodTable(
+    internal class MethodTable(
         val classAccess: Int,
         val methodAccess: Map<Pair<String, String>, Int>,
         val localNames: Map<Pair<String, String>, Map<Int, String>>,

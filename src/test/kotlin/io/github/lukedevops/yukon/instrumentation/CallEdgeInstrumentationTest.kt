@@ -136,4 +136,27 @@ class CallEdgeInstrumentationTest {
             viaReferenceProbe.calls,
         )
     }
+
+    @Test
+    fun `transforms on one classloader share a parsed-table cache, and another loader has none`() {
+        val registry = ProbeRegistry()
+        val config = AgentConfig.parse("includePackages=com.example.target;com.example.other")
+        install(registry, config)
+        val loader = FixtureClassLoader(arrayOf(File("build/classes/kotlin/test").toURI().toURL()), javaClass.classLoader)
+
+        assertEquals(0, installedYukon!!.cachedTableCount(loader))
+        Class.forName("com.example.target.CallEdgeTarget", true, loader)
+        val afterFirst = installedYukon!!.cachedTableCount(loader)
+        Class.forName("com.example.target.StaticUseTarget", true, loader)
+        val afterSecond = installedYukon!!.cachedTableCount(loader)
+
+        assertTrue(afterFirst > 0, "the fixture references other in-scope classes, so their tables must be cached")
+        assertTrue(afterSecond >= afterFirst, "a later transform on the same loader must reuse the same cache")
+        assertEquals(
+            0,
+            installedYukon!!.cachedTableCount(
+                FixtureClassLoader(arrayOf(File("build/classes/kotlin/test").toURI().toURL()), javaClass.classLoader),
+            ),
+        )
+    }
 }
