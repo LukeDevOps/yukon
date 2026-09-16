@@ -32,6 +32,8 @@ object BranchSiteAnalyzer {
         private val inlineMethods: Set<Pair<String, String>> = emptySet(),
         val defaultSites: List<DefaultSite> = emptyList(),
         val unresolvedDefaultSites: List<Pair<String, String>> = emptyList(),
+        val scalaGetterSites: List<ScalaGetterSite> = emptyList(),
+        val unresolvedScalaGetterSites: List<Pair<String, String>> = emptyList(),
     ) {
         /** First line-number-table entry of the method, or -1 when the class carries no debug info or the bytes were never read. */
         fun firstLineOf(
@@ -161,8 +163,29 @@ object BranchSiteAnalyzer {
         val defaultSites = resolveDefaultSites(internalClassName, classAccess, methodAccess, localNames, defaultCandidates)
         val resolved = defaultSites.mapTo(mutableSetOf()) { it.defaultName to it.defaultDescriptor }
         val unresolvedDefaultSites = defaultShapedNames.distinct().filterNot { it in resolved }
-        return Analysis(sites, firstLines, inlineMethods, defaultSites, unresolvedDefaultSites)
+
+        val getterCandidateNames =
+            methodAccess.entries
+                .filter { (_, access) -> access and (Opcodes.ACC_SYNTHETIC or Opcodes.ACC_BRIDGE) == 0 }
+                .map { it.key }
+                .filter { (name, _) -> scalaGetterPattern.matches(name) }
+        val scalaGetterSites = resolveScalaGetterSites(classAccess, methodAccess, localNames, getterCandidateNames)
+        val resolvedGetters = scalaGetterSites.mapTo(mutableSetOf()) { it.getterName to it.getterDescriptor }
+        val unresolvedScalaGetterSites = getterCandidateNames.filterNot { it in resolvedGetters }
+
+        return Analysis(
+            sites,
+            firstLines,
+            inlineMethods,
+            defaultSites,
+            unresolvedDefaultSites,
+            scalaGetterSites,
+            unresolvedScalaGetterSites,
+        )
     }
+
+    /** Matches a Scala default getter such as `f$default$2`, capturing the target's name and the one-based parameter number. */
+    private val scalaGetterPattern = Regex("^(.+)\\\$default\\\$(\\d+)$")
 
     /**
      * Visits one method's instructions. Branch/switch sites, the first line, and the inline
@@ -540,5 +563,73 @@ object BranchSiteAnalyzer {
             slot += slotWidth(remainingParams[bit])
         }
         return names
+    }
+
+    /**
+     * Matches each Scala default getter (`f$default$N`, one of [candidateNames]) to the one
+     * declared, non-getter method in the same class whose default it fills. A getter's own `N` is
+     * one-based across every parameter list and counts an extension receiver, unlike Kotlin's mask
+     * bits.
+     *
+     * A getter resolves against a method with at least `N` JVM parameters whose parameter `N`
+     * erases to the getter's own return type, or is `scala.Function0` (a by-name parameter's
+     * getter returns the value type, not a thunk of it), and whose leading parameters match the
+     * getter's own parameter list exactly: a getter for a later parameter list carries every
+     * earlier list's parameters, whether or not its own default expression reads them.
+     *
+     * No survivor, or more than one, leaves the getter unresolved. scalac forbids two overloads of
+     * one name both declaring defaults, so ambiguity here can only come from an overload with no
+     * defaults of its own.
+     */
+    private fun resolveScalaGetterSites(
+        classAccess: Int,
+        methodAccess: Map<Pair<String, String>, Int>,
+        localNames: Map<Pair<String, String>, Map<Int, String>>,
+        candidateNames: List<Pair<String, String>>,
+    ): List<ScalaGetterSite> {
+        val classIsFinal = classAccess and Opcodes.ACC_FINAL != 0
+
+        return candidateNames.mapNotNull { (getterName, getterDescriptor) ->
+            val match = scalaGetterPattern.matchEntire(getterName) ?: return@mapNotNull null
+            val targetName = match.groupValues[1]
+            val parameterIndex = match.groupValues[2].toInt() - 1
+
+            val getterParams = parseParameterDescriptors(getterDescriptor)
+            val getterReturn = returnTypeOf(getterDescriptor)
+
+            val matches =
+                methodAccess.entries.filter { (key, _) ->
+                    val (candidateName, candidateDescriptor) = key
+                    if (candidateName != targetName || scalaGetterPattern.matches(candidateName)) return@filter false
+                    val candidateParams = parseParameterDescriptors(candidateDescriptor)
+                    if (candidateParams.size <= parameterIndex) return@filter false
+                    val nthParameterMatches =
+                        candidateParams[parameterIndex] == getterReturn || candidateParams[parameterIndex] == "Lscala/Function0;"
+                    nthParameterMatches && candidateParams.take(getterParams.size) == getterParams
+                }
+
+            if (matches.size != 1) return@mapNotNull null
+            val (targetKey, targetAccess) = matches.single()
+            val targetDescriptor = targetKey.second
+            val targetIsStatic = targetAccess and Opcodes.ACC_STATIC != 0
+            val targetIsPrivate = targetAccess and Opcodes.ACC_PRIVATE != 0
+            val targetIsFinal = targetAccess and Opcodes.ACC_FINAL != 0
+            val overridable = !targetIsStatic && !targetIsPrivate && !targetIsFinal && !classIsFinal
+
+            val targetParams = parseParameterDescriptors(targetDescriptor)
+            var slot = if (targetIsStatic) 0 else 1
+            for (i in 0 until parameterIndex) slot += slotWidth(targetParams[i])
+            val parameterName = localNames[targetKey]?.get(slot) ?: ""
+
+            ScalaGetterSite(
+                getterName = getterName,
+                getterDescriptor = getterDescriptor,
+                targetName = targetName,
+                targetDescriptor = targetDescriptor,
+                parameterIndex = parameterIndex,
+                parameterName = parameterName,
+                overridable = overridable,
+            )
+        }
     }
 }
