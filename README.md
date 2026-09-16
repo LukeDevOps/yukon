@@ -84,6 +84,26 @@ one way; `/promo`, never called), and a client that drives the server, all as
 separate JVM processes. On shutdown, the stub collector prints a report of
 probes that were never hit and any classes it had to skip.
 
+The last report groups those never-hit probes into unreached clusters: a
+root that's either reached from code that does run or never called at all,
+plus every never-hit method beneath it whose only callers are also in the
+cluster. `/promo`'s handler calls a helper that calls a repository method
+neither the handler nor anything else ever reaches, so it prints as one
+five-method cluster: the handler, its helper, and the repository's method,
+static initialiser and constructor, the last three marked never loaded
+since that class never loads at all in this demo. A call into a class
+counts as a call into its static initialiser, which is why the whole
+class follows the handler into the cluster:
+
+```
+UNREACHED CLUSTER: root io.github.lukedevops.demo.server.DemoServerMainKt#handlePromo (reached from hit), 5 methods, 1 never-loaded classes
+  io.github.lukedevops.demo.server.DemoServerMainKt#applyPromoCode
+  io.github.lukedevops.demo.server.DemoServerMainKt#handlePromo
+  io.github.lukedevops.demo.server.PromoRepository#<clinit> (never loaded)
+  io.github.lukedevops.demo.server.PromoRepository#<init> (never loaded)
+  io.github.lukedevops.demo.server.PromoRepository#find (never loaded)
+```
+
 ## Run the demo against a real collector
 
 ```

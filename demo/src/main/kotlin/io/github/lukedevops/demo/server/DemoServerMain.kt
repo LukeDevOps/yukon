@@ -19,6 +19,12 @@ private const val FREE_SHIPPING_THRESHOLD = 100.0
  * only the static baseline (opted into below via `staticBaselineEnabled=true`) can report.
  * [formatTotal]'s two optional parameters add a fourth: [handleCheckout] always supplies
  * `decimals` and never supplies `currency`, giving the omission tier one finding of each kind.
+ *
+ * [handlePromo] also demonstrates an unreached cluster: it alone calls [applyPromoCode], which
+ * alone calls [PromoRepository.find], so a client that never calls `/promo` leaves all three
+ * methods, and `PromoRepository` itself, unreached together. [handleCheckout] demonstrates the
+ * same call-edge attribution for a class that never loads at all: it calls
+ * [LegacyDiscountCalculator]'s constructor and `apply` under the branch this demo never takes.
  */
 fun main() {
     val server = HttpServer.create(InetSocketAddress(DemoPorts.SERVER_PORT), 0)
@@ -68,7 +74,17 @@ private fun formatTotal(
 ): String = "%.${decimals}f %s".format(total, currency)
 
 private fun handlePromo(exchange: HttpExchange) {
-    respond(exchange, "promo code applied")
+    respond(exchange, applyPromoCode(exchange.requestURI.query ?: ""))
+}
+
+/**
+ * Only [handlePromo] calls this, and the demo client never calls `/promo`, so neither this
+ * method nor [PromoRepository.find] ever runs. That grows the unreached cluster rooted at
+ * `handlePromo` by one more method and, through `find`, one more never-loaded class.
+ */
+private fun applyPromoCode(code: String): String {
+    val discount = PromoRepository.find(code)
+    return "promo code applied: $discount% off"
 }
 
 private fun totalParam(exchange: HttpExchange): Double {
