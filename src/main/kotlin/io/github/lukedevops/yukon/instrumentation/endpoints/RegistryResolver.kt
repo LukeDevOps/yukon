@@ -70,9 +70,12 @@ class RegistryResolver(
      *
      * An unknown module name is logged once and ignored: nothing registered a module under that
      * name, so there is nothing to hand the object to. A module whose walk throws is as broken as
-     * one whose advice throws, so it is logged once and marked disabled in [registry] the same
-     * way; a walk that fails partway through cannot be trusted to have found every route it would
-     * otherwise have declared.
+     * one whose advice throws, so it goes through [YukonEndpoints.moduleFailed] like an advice
+     * failure: the module is switched off at the seam, its dispatch advice stops counting, and it
+     * lands in the manifest's disabled list. A walk that fails partway through cannot be trusted
+     * to have found every route, and a half-declared list would let a collector call an endpoint
+     * never called when it merely went undeclared; no data for that framework is the safer
+     * report than partial data.
      */
     override fun declare(
         module: String,
@@ -91,7 +94,7 @@ class RegistryResolver(
             if (declareFailureLogged.add(module)) {
                 log.log(Level.WARNING, "yukon: endpoint module $module failed while declaring its routes", t)
             }
-            registry.recordDisabledModule(module, t.toString())
+            YukonEndpoints.moduleFailed(module, t)
         }
     }
 
