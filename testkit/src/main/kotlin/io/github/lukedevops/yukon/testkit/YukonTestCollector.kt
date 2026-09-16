@@ -60,6 +60,9 @@ class YukonTestCollector private constructor(
         val kind: ProbeKind,
         val branchIndex: Int?,
         val inline: Boolean,
+        val parameterIndex: Int? = null,
+        val parameterName: String? = null,
+        val overridable: Boolean = false,
     )
 
     private data class ScanKey(
@@ -206,22 +209,147 @@ class YukonTestCollector private constructor(
         methodDescriptor: String? = null,
     ): Long = findMethodProbes(className, methodName, methodDescriptor).sumOf { hitsByKey[it] ?: 0L }
 
-    private fun findMethodProbes(
+    /**
+     * Sums, over the optional parameter at [parameterIndex] of [methodName], every omission any
+     * instance ever reported, merged across instances with max() like [hitCount].
+     * `methodDescriptor` left null matches any overload declaring an optional parameter at that
+     * index; given, it isolates one.
+     *
+     * Throws [UnknownProbeException] if no such omission probe was ever declared.
+     */
+    fun omissionCount(
+        className: String,
+        methodName: String,
+        parameterIndex: Int,
+        methodDescriptor: String? = null,
+    ): Long =
+        findOmissionProbes(className, methodName, methodDescriptor, "index $parameterIndex") { it.parameterIndex == parameterIndex }
+            .sumOf { hitsByKey[it] ?: 0L }
+
+    /** Like [omissionCount], but selects the optional parameter by [parameterName] instead of index. */
+    fun omissionCount(
+        className: String,
+        methodName: String,
+        parameterName: String,
+        methodDescriptor: String? = null,
+    ): Long =
+        findOmissionProbes(className, methodName, methodDescriptor, "name \"$parameterName\"") { it.parameterName == parameterName }
+            .sumOf { hitsByKey[it] ?: 0L }
+
+    private fun findOmissionProbes(
         className: String,
         methodName: String,
         methodDescriptor: String?,
+        parameterDescription: String,
+        matchesParameter: (StoredProbe) -> Boolean,
     ): List<ProbeKey> {
         val matches =
             nameIndex[className]?.filter { key ->
                 val probe = probesByKey[key]
                 probe != null &&
+                    probe.kind == ProbeKind.OPTIONAL_ARGUMENT &&
+                    probe.methodName == methodName &&
+                    (methodDescriptor == null || probe.methodDescriptor == methodDescriptor) &&
+                    matchesParameter(probe)
+            } ?: emptyList()
+        if (matches.isNotEmpty()) return matches
+        throw unknownOmissionProbe(className, methodName, methodDescriptor, parameterDescription)
+    }
+
+    private fun unknownOmissionProbe(
+        className: String,
+        methodName: String,
+        methodDescriptor: String?,
+        parameterDescription: String,
+    ): UnknownProbeException {
+        skippedByClassName[className]?.let {
+            return UnknownProbeException("$className: class was matched but could not be instrumented: ${it.reason}")
+        }
+        if (className in consultedDeclaredNames && className !in dynamicallyKnownClassNames) {
+            return UnknownProbeException("$className: class was declared by the static baseline but never loaded in any instance")
+        }
+        if (nameIndex.containsKey(className)) {
+            val descriptorSuffix = methodDescriptor?.let { " $it" } ?: ""
+            return UnknownProbeException(
+                "$className: class is instrumented but has no omission probe for method " +
+                    "$methodName$descriptorSuffix, parameter $parameterDescription",
+            )
+        }
+        return UnknownProbeException(
+            "$className: never mentioned by any manifest or static baseline " +
+                "(not matched by includePackages, misspelled, or not loaded yet)",
+        )
+    }
+
+    /**
+     * Every optional parameter whose omission total equals its target's hit total within the
+     * same instance: every caller took the default, so the parameter can go. Compared per
+     * instance, one row per instance, since an omission probe and its target's method probe
+     * only share a class ID within one instance. Claimed only for a non-overridable target,
+     * since an overridable target's omissions are spread across whichever override actually
+     * ran, which the manifest cannot relate back to one total. A target with no method probe at
+     * all (an abstract interface method) is skipped, and so is an inline target, the same reason
+     * [neverHit] excludes one.
+     */
+    fun neverSupplied(): List<OptionalParameterRef> =
+        optionalParameterFindings { omitted, targetHits, probe -> !probe.overridable && omitted == targetHits }
+
+    /**
+     * Every optional parameter whose omission total stayed at zero while its target was called
+     * at least once in the same instance: the default value is dead. Claimed for any target,
+     * overridable or not. A target with no method probe at all, or an inline target, is skipped,
+     * the same as [neverSupplied].
+     */
+    fun alwaysSupplied(): List<OptionalParameterRef> = optionalParameterFindings { omitted, _, _ -> omitted == 0L }
+
+    private fun optionalParameterFindings(
+        claims: (omitted: Long, targetHits: Long, probe: StoredProbe) -> Boolean,
+    ): List<OptionalParameterRef> =
+        probesByKey.entries
+            .filter { (_, probe) -> probe.kind == ProbeKind.OPTIONAL_ARGUMENT && !probe.inline }
+            .mapNotNull { (key, probe) ->
+                val targetKeys =
+                    findMethodProbesOrNull(probe.className, probe.methodName, probe.methodDescriptor)
+                        ?.filter { it.serviceInstanceId == key.serviceInstanceId }
+                        ?.takeIf { it.isNotEmpty() }
+                        ?: return@mapNotNull null
+                val targetHits = targetKeys.sumOf { hitsByKey[it] ?: 0L }
+                if (targetHits <= 0L) return@mapNotNull null
+                val omitted = hitsByKey[key] ?: 0L
+                if (!claims(omitted, targetHits, probe)) return@mapNotNull null
+                OptionalParameterRef(
+                    serviceInstanceId = key.serviceInstanceId,
+                    className = probe.className,
+                    methodName = probe.methodName,
+                    methodDescriptor = probe.methodDescriptor,
+                    parameterIndex = probe.parameterIndex ?: -1,
+                    parameterName = probe.parameterName ?: "",
+                    line = probe.line,
+                )
+            }.sortedWith(compareBy({ it.className }, { it.methodName }, { it.parameterIndex }))
+
+    private fun findMethodProbes(
+        className: String,
+        methodName: String,
+        methodDescriptor: String?,
+    ): List<ProbeKey> =
+        findMethodProbesOrNull(className, methodName, methodDescriptor)
+            ?: throw unknownProbe(className, methodName, methodDescriptor)
+
+    /** Like [findMethodProbes], but returns null instead of throwing when nothing matches. */
+    private fun findMethodProbesOrNull(
+        className: String,
+        methodName: String,
+        methodDescriptor: String?,
+    ): List<ProbeKey>? =
+        nameIndex[className]
+            ?.filter { key ->
+                val probe = probesByKey[key]
+                probe != null &&
                     probe.kind == ProbeKind.METHOD &&
                     probe.methodName == methodName &&
                     (methodDescriptor == null || probe.methodDescriptor == methodDescriptor)
-            } ?: emptyList()
-        if (matches.isNotEmpty()) return matches
-        throw unknownProbe(className, methodName, methodDescriptor)
-    }
+            }?.takeIf { it.isNotEmpty() }
 
     private fun unknownProbe(
         className: String,
@@ -251,10 +379,14 @@ class YukonTestCollector private constructor(
      * A probe belonging to a Kotlin inline function, or a branch inside one, is left out: a
      * Kotlin caller copies the body into its own call site instead of invoking it, so a zero hit
      * total is not evidence the code never ran. See ADR 0022.
+     *
+     * An optional-argument probe is left out too, whatever its own count: an omission probe
+     * reading zero means a parameter is never omitted, which is [alwaysSupplied], not dead code.
+     * See ADR 0021.
      */
     fun neverHit(): List<ProbeRef> =
         probesByKey.entries
-            .filter { (key, probe) -> !probe.inline && (hitsByKey[key] ?: 0L) <= 0L }
+            .filter { (key, probe) -> !probe.inline && probe.kind != ProbeKind.OPTIONAL_ARGUMENT && (hitsByKey[key] ?: 0L) <= 0L }
             .map { (key, probe) ->
                 ProbeRef(
                     key.serviceInstanceId,
@@ -417,6 +549,9 @@ class YukonTestCollector private constructor(
                     location.kind,
                     location.branchIndex,
                     location.inline,
+                    location.parameterIndex,
+                    location.parameterName,
+                    location.overridable,
                 )
             nameIndex.computeIfAbsent(location.className) { ConcurrentHashMap.newKeySet() }.add(key)
             dynamicallyKnownClassNames += location.className
@@ -524,7 +659,8 @@ class YukonTestCollector private constructor(
 /**
  * One probe's identity and location, as reported by a manifest. See [YukonTestCollector] for the
  * class name format. [inline] marks a Kotlin inline function, or a branch inside one; see ADR
- * 0022.
+ * 0022. [parameterIndex], [parameterName], and [overridable] are set only when [kind] is
+ * [ProbeKind.OPTIONAL_ARGUMENT]; see ADR 0021.
  */
 data class ProbeRef(
     val serviceInstanceId: String,
@@ -535,6 +671,25 @@ data class ProbeRef(
     val kind: ProbeKind,
     val branchIndex: Int?,
     val inline: Boolean = false,
+    val parameterIndex: Int? = null,
+    val parameterName: String? = null,
+    val overridable: Boolean = false,
+)
+
+/**
+ * One optional parameter's identity, as found by [YukonTestCollector.neverSupplied] or
+ * [YukonTestCollector.alwaysSupplied]. [className], [methodName], and [methodDescriptor] name the
+ * target function the parameter belongs to, not the synthetic `$default` method its omission
+ * probe actually sits in. See ADR 0021 and CONTEXT.md, "Optional parameter".
+ */
+data class OptionalParameterRef(
+    val serviceInstanceId: String,
+    val className: String,
+    val methodName: String,
+    val methodDescriptor: String,
+    val parameterIndex: Int,
+    val parameterName: String,
+    val line: Int,
 )
 
 /**

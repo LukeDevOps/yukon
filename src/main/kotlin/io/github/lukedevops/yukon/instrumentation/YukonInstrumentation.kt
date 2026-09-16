@@ -1,6 +1,10 @@
 package io.github.lukedevops.yukon.instrumentation
 
+import io.github.lukedevops.yukon.advice.MaskArgument
 import io.github.lukedevops.yukon.advice.MethodEntryAdvice
+import io.github.lukedevops.yukon.advice.OmissionBase
+import io.github.lukedevops.yukon.advice.OptionalArgumentAdvice
+import io.github.lukedevops.yukon.advice.OptionalBits
 import io.github.lukedevops.yukon.advice.ProbeIndex
 import io.github.lukedevops.yukon.bootstrap.YukonProbeArrays
 import io.github.lukedevops.yukon.config.AgentConfig
@@ -10,6 +14,7 @@ import io.github.lukedevops.yukon.instrumentation.branch.BranchSiteAnalyzer
 import io.github.lukedevops.yukon.instrumentation.staticscan.StaticBaselineMismatchDetector
 import io.github.lukedevops.yukon.registry.ProbeMeta
 import io.github.lukedevops.yukon.registry.ProbeRegistry
+import net.bytebuddy.ByteBuddy
 import net.bytebuddy.agent.builder.AgentBuilder
 import net.bytebuddy.agent.builder.ResettableClassFileTransformer
 import net.bytebuddy.asm.Advice
@@ -37,11 +42,28 @@ import net.bytebuddy.implementation.bytecode.member.MethodInvocation
 import net.bytebuddy.jar.asm.MethodVisitor
 import net.bytebuddy.matcher.ElementMatcher
 import net.bytebuddy.matcher.ElementMatchers.named
+import net.bytebuddy.matcher.ElementMatchers.none
 import net.bytebuddy.matcher.ElementMatchers.takesArguments
 import net.bytebuddy.utility.JavaModule
 import java.io.IOException
 import java.lang.System.Logger.Level
 import java.lang.instrument.Instrumentation
+
+/** A woven `$default` method's per-method constants for [OptionalArgumentAdvice]. */
+private class DefaultSiteBinding(
+    val base: Int,
+    val optionalBits: Int,
+    val maskParameterIndex: Int,
+)
+
+private fun bindingFor(
+    bindings: Map<Pair<String, String>, DefaultSiteBinding>,
+    instrumentedMethod: MethodDescription,
+): DefaultSiteBinding =
+    bindings[instrumentedMethod.internalName to instrumentedMethod.descriptor]
+        ?: throw IllegalStateException(
+            "yukon: no omission binding for ${instrumentedMethod.internalName}${instrumentedMethod.descriptor}",
+        )
 
 /**
  * Wires method-entry probes into every type matched by [AgentConfig.instrumentedPackagePrefixes].
@@ -89,7 +111,13 @@ class YukonInstrumentation(
         YukonProbeArrays.install { className, layoutHash, _, classLoader -> registry.lookup(className, layoutHash, classLoader) }
         instrumentation.addTransformer(classBytesCapture, false)
         return AgentBuilder
-            .Default()
+            // ByteBuddy's own default ignores every synthetic method, copying it through
+            // unrewritten no matter what a later .visit()/.method() matcher asks for: a Kotlin
+            // $default method is exactly such a method, and the omission tier's whole job is to
+            // weave advice onto it. Every other tier already gates what it touches through its
+            // own explicit matchers (methodMatcher, typeMatcher), so lifting ByteBuddy's blanket
+            // exclusion here does not widen what actually gets instrumented.
+            .Default(ByteBuddy().ignore(none()))
             // No LoadedTypeInitializer is ever used, so ByteBuddy has nothing to run after load
             // and no reason to inject its Nexus class into the bootstrap loader via Unsafe.
             .with(AgentBuilder.InitializationStrategy.NoOp.INSTANCE)
@@ -174,9 +202,13 @@ class YukonInstrumentation(
         classLoader: ClassLoader?,
     ): DynamicType.Builder<*> {
         val methods = typeDescription.declaredMethods.filter(methodMatcher())
-        if (methods.isEmpty()) return builder
 
+        // Analysed regardless of whether methods is empty: a type whose only concrete content is
+        // a Kotlin $default method (an interface declaring only an abstract method plus its
+        // default, with no other probe-worthy method) would otherwise never reach the omission
+        // tier below at all.
         val analysis = analyzeBytecode(typeDescription, classLoader, methods)
+        if (methods.isEmpty() && analysis.defaultSites.isEmpty()) return builder
         val branchSites = analysis.sites
 
         val methodProbes =
@@ -206,12 +238,57 @@ class YukonInstrumentation(
                         inline = analysis.isInline(site.methodName, site.methodDescriptor),
                     )
                 }
-        val probes = methodProbes + branchProbes
+        // Slots are packed per default site, one per optional parameter, appended after the
+        // method and branch slots: bit i's slot is siteBase + bitCount(optionalBits & ((1 << i) - 1)),
+        // never one slot per value parameter, so a required parameter's bit (never set) never
+        // reserves a slot nobody increments.
+        val defaultSites = analysis.defaultSites
+        var omissionBase = methodProbes.size + branchProbes.size
+        val omissionSiteBases = mutableMapOf<Pair<String, String>, Int>()
+        val omissionProbes =
+            defaultSites.flatMap { site ->
+                omissionSiteBases[site.defaultName to site.defaultDescriptor] = omissionBase
+                val slots =
+                    (0 until Int.SIZE_BITS)
+                        .filter { bit -> (site.optionalBits shr bit) and 1 == 1 }
+                        .map { bit ->
+                            ProbeMeta(
+                                ProbeKind.OPTIONAL_ARGUMENT,
+                                site.targetName,
+                                site.targetDescriptor,
+                                line = analysis.firstLineOf(site.targetName, site.targetDescriptor),
+                                inline = analysis.isInline(site.targetName, site.targetDescriptor),
+                                parameterIndex = bit,
+                                parameterName = site.parameterNames[bit] ?: "",
+                                overridable = site.overridable,
+                            )
+                        }
+                omissionBase += slots.size
+                slots
+            }
+        for (site in defaultSites) {
+            if (site.higherMaskTested) {
+                log.log(
+                    Level.INFO,
+                    "yukon: ${typeDescription.name}#${site.defaultName} tests a mask int past the first; " +
+                        "only the first 32 optional parameters are counted",
+                )
+            }
+        }
+        for ((name, descriptor) in analysis.unresolvedDefaultSites) {
+            log.log(
+                Level.INFO,
+                "yukon: ${typeDescription.name}#$name$descriptor looks like a Kotlin default-argument method " +
+                    "but its target could not be uniquely resolved, or no mask test was found; no omission probes woven",
+            )
+        }
+        val probes = methodProbes + branchProbes + omissionProbes
 
         val layoutHash =
             ProbeLayoutHash.of(
                 methods.map { it.internalName + it.descriptor } +
-                    branchSites.map { "${it.methodName}${it.methodDescriptor}#branch${it.siteIndex}x${it.outcomeCount}" },
+                    branchSites.map { "${it.methodName}${it.methodDescriptor}#branch${it.siteIndex}x${it.outcomeCount}" } +
+                    defaultSites.map { "${it.defaultName}${it.defaultDescriptor}#optional${it.optionalBits}" },
             )
         val counts = registry.register(typeDescription.name, layoutHash, probes, classLoader)
         if (staticBaselineMismatchDetector.shouldWarnAbout(typeDescription.name)) {
@@ -269,6 +346,30 @@ class YukonInstrumentation(
                 )
         }
 
+        if (defaultSites.isNotEmpty()) {
+            val bindings =
+                defaultSites.associateBy(
+                    { it.defaultName to it.defaultDescriptor },
+                    {
+                        DefaultSiteBinding(
+                            omissionSiteBases.getValue(it.defaultName to it.defaultDescriptor),
+                            it.optionalBits,
+                            it.maskParameterIndex,
+                        )
+                    },
+                )
+            instrumented =
+                instrumented.visit(
+                    Advice
+                        .withCustomMapping()
+                        .bind(OmissionBaseMapping(bindings))
+                        .bind(OptionalBitsMapping(bindings))
+                        .bind(MaskArgumentMapping(bindings))
+                        .to(OptionalArgumentAdvice::class.java)
+                        .on { method -> (method.internalName to method.descriptor) in bindings },
+                )
+        }
+
         return instrumented
     }
 
@@ -316,6 +417,63 @@ class YukonInstrumentation(
                             "yukon: no probe slot for ${instrumentedMethod.internalName}${instrumentedMethod.descriptor}",
                         )
                 Advice.OffsetMapping.Target.ForStackManipulation(IntegerConstant.forValue(slot))
+            }
+    }
+
+    /** Resolves `@OmissionBase` to a woven `$default` method's first omission probe's slot. */
+    private class OmissionBaseMapping(
+        private val bindings: Map<Pair<String, String>, DefaultSiteBinding>,
+    ) : Advice.OffsetMapping.Factory<OmissionBase> {
+        override fun getAnnotationType(): Class<OmissionBase> = OmissionBase::class.java
+
+        override fun make(
+            target: ParameterDescription.InDefinedShape,
+            annotation: AnnotationDescription.Loadable<OmissionBase>,
+            adviceType: Advice.OffsetMapping.Factory.AdviceType,
+        ): Advice.OffsetMapping =
+            Advice.OffsetMapping { _, instrumentedMethod, _, _, _ ->
+                Advice.OffsetMapping.Target.ForStackManipulation(IntegerConstant.forValue(bindingFor(bindings, instrumentedMethod).base))
+            }
+    }
+
+    /** Resolves `@OptionalBits` to a woven `$default` method's optional-parameter bitmask. */
+    private class OptionalBitsMapping(
+        private val bindings: Map<Pair<String, String>, DefaultSiteBinding>,
+    ) : Advice.OffsetMapping.Factory<OptionalBits> {
+        override fun getAnnotationType(): Class<OptionalBits> = OptionalBits::class.java
+
+        override fun make(
+            target: ParameterDescription.InDefinedShape,
+            annotation: AnnotationDescription.Loadable<OptionalBits>,
+            adviceType: Advice.OffsetMapping.Factory.AdviceType,
+        ): Advice.OffsetMapping =
+            Advice.OffsetMapping { _, instrumentedMethod, _, _, _ ->
+                Advice.OffsetMapping.Target.ForStackManipulation(
+                    IntegerConstant.forValue(bindingFor(bindings, instrumentedMethod).optionalBits),
+                )
+            }
+    }
+
+    /**
+     * Resolves `@MaskArgument` to a woven `$default` method's first mask `int`, read as a local
+     * variable at its own offset: the mask parameter's index differs per method, so it cannot be
+     * bound through a fixed `@Advice.Argument` index.
+     */
+    private class MaskArgumentMapping(
+        private val bindings: Map<Pair<String, String>, DefaultSiteBinding>,
+    ) : Advice.OffsetMapping.Factory<MaskArgument> {
+        override fun getAnnotationType(): Class<MaskArgument> = MaskArgument::class.java
+
+        override fun make(
+            target: ParameterDescription.InDefinedShape,
+            annotation: AnnotationDescription.Loadable<MaskArgument>,
+            adviceType: Advice.OffsetMapping.Factory.AdviceType,
+        ): Advice.OffsetMapping =
+            Advice.OffsetMapping { _, instrumentedMethod, _, _, _ ->
+                val maskParameterIndex = bindingFor(bindings, instrumentedMethod).maskParameterIndex
+                val maskParameter = instrumentedMethod.parameters[maskParameterIndex]
+                Advice.OffsetMapping.Target.ForVariable
+                    .ReadOnly(maskParameter.type, maskParameter.offset)
             }
     }
 

@@ -250,6 +250,81 @@ class ProtoPayloadCodecTest {
     }
 
     @Test
+    fun `an optional argument probe's parameter fields round-trip through the wire`() {
+        val manifest =
+            ProbeManifest(
+                serviceName = "checkout",
+                serviceVersion = "1.0.0",
+                probes =
+                    listOf(
+                        ProbeLocation(
+                            classId = 0,
+                            probeIndex = 0,
+                            kind = ProbeKind.OPTIONAL_ARGUMENT,
+                            className = "com.example.Foo",
+                            methodName = "bar",
+                            methodDescriptor = "(I)V",
+                            line = 10,
+                            branchIndex = null,
+                            parameterIndex = 0,
+                            parameterName = "count",
+                            overridable = true,
+                        ),
+                        ProbeLocation(
+                            classId = 0,
+                            probeIndex = 1,
+                            kind = ProbeKind.METHOD,
+                            className = "com.example.Foo",
+                            methodName = "bar",
+                            methodDescriptor = "(I)V",
+                            line = 10,
+                            branchIndex = null,
+                        ),
+                    ),
+            )
+
+        val decoded = ProtoPayloadCodec.decodeProbeManifest(ProtoPayloadCodec.encode(manifest))
+
+        assertEquals(manifest, decoded)
+        val omission = decoded.probes.single { it.kind == ProbeKind.OPTIONAL_ARGUMENT }
+        assertEquals(0, omission.parameterIndex)
+        assertEquals("count", omission.parameterName)
+        assertTrue(omission.overridable)
+        val method = decoded.probes.single { it.kind == ProbeKind.METHOD }
+        assertEquals(null, method.parameterIndex)
+        assertEquals(null, method.parameterName)
+        assertFalse(method.overridable)
+    }
+
+    @Test
+    fun `an optional argument probe with no LocalVariableTable name round-trips as an empty string, not null`() {
+        val manifest =
+            ProbeManifest(
+                serviceName = "checkout",
+                serviceVersion = "1.0.0",
+                probes =
+                    listOf(
+                        ProbeLocation(
+                            classId = 0,
+                            probeIndex = 0,
+                            kind = ProbeKind.OPTIONAL_ARGUMENT,
+                            className = "com.example.Foo",
+                            methodName = "bar",
+                            methodDescriptor = "(I)V",
+                            line = 10,
+                            branchIndex = null,
+                            parameterIndex = 0,
+                            parameterName = "",
+                        ),
+                    ),
+            )
+
+        val decoded = ProtoPayloadCodec.decodeProbeManifest(ProtoPayloadCodec.encode(manifest))
+
+        assertEquals("", decoded.probes.single().parameterName)
+    }
+
+    @Test
     fun `encodes and decodes a static baseline with declared classes and methods`() {
         val baseline =
             StaticBaseline(

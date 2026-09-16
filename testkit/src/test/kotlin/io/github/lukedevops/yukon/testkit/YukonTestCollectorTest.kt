@@ -57,6 +57,30 @@ class YukonTestCollectorTest {
         line: Int,
     ) = ProbeLocation(classId, probeIndex, ProbeKind.METHOD, className, methodName, methodDescriptor, line, null)
 
+    private fun omissionProbe(
+        classId: Int,
+        probeIndex: Int,
+        className: String,
+        methodName: String,
+        methodDescriptor: String,
+        line: Int,
+        parameterIndex: Int,
+        parameterName: String,
+        overridable: Boolean = false,
+    ) = ProbeLocation(
+        classId = classId,
+        probeIndex = probeIndex,
+        kind = ProbeKind.OPTIONAL_ARGUMENT,
+        className = className,
+        methodName = methodName,
+        methodDescriptor = methodDescriptor,
+        line = line,
+        branchIndex = null,
+        parameterIndex = parameterIndex,
+        parameterName = parameterName,
+        overridable = overridable,
+    )
+
     private fun endpoint(
         endpointId: Int,
         verb: String,
@@ -332,6 +356,257 @@ class YukonTestCollectorTest {
 
         assertEquals(listOf("a"), neverHit.map { it.methodName })
         assertFalse(neverHit.single().inline)
+    }
+
+    @Test
+    fun `neverHit excludes an optional argument probe even though it was never omitted`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+        exporter.exportManifest(
+            ProbeManifest(
+                "svc",
+                null,
+                listOf(
+                    methodProbe(1, 0, "com.acme.Foo", "f", "(I)V", 1),
+                    omissionProbe(1, 1, "com.acme.Foo", "f", "(I)V", 1, parameterIndex = 0, parameterName = "count"),
+                ),
+                serviceInstanceId = "i-1",
+            ),
+        )
+
+        val neverHit = target.neverHit()
+
+        assertEquals(listOf("f"), neverHit.map { it.methodName })
+        assertEquals(ProbeKind.METHOD, neverHit.single().kind)
+    }
+
+    @Test
+    fun `omissionCount sums across instances and isolates by parameter index or name`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+        exporter.exportManifest(
+            ProbeManifest(
+                "svc",
+                null,
+                listOf(omissionProbe(1, 0, "com.acme.Foo", "f", "(II)V", 1, parameterIndex = 0, parameterName = "count")),
+                serviceInstanceId = "i-1",
+            ),
+        )
+        exporter.exportManifest(
+            ProbeManifest(
+                "svc",
+                null,
+                listOf(omissionProbe(1, 0, "com.acme.Foo", "f", "(II)V", 1, parameterIndex = 0, parameterName = "count")),
+                serviceInstanceId = "i-2",
+            ),
+        )
+        exporter.exportDeltaBatch(
+            DeltaBatch(
+                ResourceAttributes("svc", null, "i-1", null),
+                listOf(ProbeDelta(1, 0, ProbeKind.OPTIONAL_ARGUMENT, 1L, 3L)),
+            ),
+        )
+        exporter.exportDeltaBatch(
+            DeltaBatch(
+                ResourceAttributes("svc", null, "i-2", null),
+                listOf(ProbeDelta(1, 0, ProbeKind.OPTIONAL_ARGUMENT, 1L, 2L)),
+            ),
+        )
+
+        assertEquals(5L, target.omissionCount("com.acme.Foo", "f", parameterIndex = 0))
+        assertEquals(5L, target.omissionCount("com.acme.Foo", "f", parameterName = "count"))
+        assertEquals(5L, target.omissionCount("com.acme.Foo", "f", parameterIndex = 0, methodDescriptor = "(II)V"))
+    }
+
+    @Test
+    fun `omissionCount throws when the class is instrumented but has no omission probe for that parameter`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+        exporter.exportManifest(
+            ProbeManifest(
+                "svc",
+                null,
+                listOf(omissionProbe(1, 0, "com.acme.Foo", "f", "(II)V", 1, parameterIndex = 0, parameterName = "count")),
+                serviceInstanceId = "i-1",
+            ),
+        )
+
+        val error = assertFailsWith<UnknownProbeException> { target.omissionCount("com.acme.Foo", "f", parameterIndex = 1) }
+        assertTrue(error.message!!.contains("no omission probe"))
+    }
+
+    @Test
+    fun `neverSupplied lists a non-overridable target whose omission total equals its hit total`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+        exporter.exportManifest(
+            ProbeManifest(
+                "svc",
+                null,
+                listOf(
+                    methodProbe(1, 0, "com.acme.Foo", "f", "(I)V", 10),
+                    omissionProbe(1, 1, "com.acme.Foo", "f", "(I)V", 10, parameterIndex = 0, parameterName = "count"),
+                ),
+                serviceInstanceId = "i-1",
+            ),
+        )
+        exporter.exportDeltaBatch(
+            DeltaBatch(
+                ResourceAttributes("svc", null, "i-1", null),
+                listOf(
+                    ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 4L),
+                    ProbeDelta(1, 1, ProbeKind.OPTIONAL_ARGUMENT, 1L, 4L),
+                ),
+            ),
+        )
+
+        val neverSupplied = target.neverSupplied()
+
+        assertEquals(1, neverSupplied.size)
+        assertEquals("count", neverSupplied.single().parameterName)
+        assertEquals(0, neverSupplied.single().parameterIndex)
+        assertEquals(10, neverSupplied.single().line)
+        assertTrue(target.alwaysSupplied().isEmpty())
+    }
+
+    @Test
+    fun `neverSupplied abstains for an overridable target even when every call omitted the parameter`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+        exporter.exportManifest(
+            ProbeManifest(
+                "svc",
+                null,
+                listOf(
+                    methodProbe(1, 0, "com.acme.Base", "greet", "(Ljava/lang/String;)V", 10),
+                    omissionProbe(
+                        1,
+                        1,
+                        "com.acme.Base",
+                        "greet",
+                        "(Ljava/lang/String;)V",
+                        10,
+                        parameterIndex = 0,
+                        parameterName = "name",
+                        overridable = true,
+                    ),
+                ),
+                serviceInstanceId = "i-1",
+            ),
+        )
+        exporter.exportDeltaBatch(
+            DeltaBatch(
+                ResourceAttributes("svc", null, "i-1", null),
+                listOf(
+                    ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 3L),
+                    ProbeDelta(1, 1, ProbeKind.OPTIONAL_ARGUMENT, 1L, 3L),
+                ),
+            ),
+        )
+
+        assertTrue(target.neverSupplied().isEmpty())
+    }
+
+    @Test
+    fun `alwaysSupplied lists a parameter whose omission total stayed at zero while its target was called`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+        exporter.exportManifest(
+            ProbeManifest(
+                "svc",
+                null,
+                listOf(
+                    methodProbe(1, 0, "com.acme.Foo", "f", "(I)V", 10),
+                    omissionProbe(1, 1, "com.acme.Foo", "f", "(I)V", 10, parameterIndex = 0, parameterName = "count"),
+                ),
+                serviceInstanceId = "i-1",
+            ),
+        )
+        exporter.exportDeltaBatch(
+            DeltaBatch(
+                ResourceAttributes("svc", null, "i-1", null),
+                listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 4L)),
+            ),
+        )
+
+        val alwaysSupplied = target.alwaysSupplied()
+
+        assertEquals(1, alwaysSupplied.size)
+        assertEquals("count", alwaysSupplied.single().parameterName)
+        assertTrue(target.neverSupplied().isEmpty())
+    }
+
+    @Test
+    fun `neverSupplied and alwaysSupplied skip a target with no method probe`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+        exporter.exportManifest(
+            ProbeManifest(
+                "svc",
+                null,
+                listOf(
+                    omissionProbe(
+                        1,
+                        0,
+                        "com.acme.Greeter",
+                        "greet",
+                        "(Ljava/lang/String;)V",
+                        10,
+                        parameterIndex = 0,
+                        parameterName = "name",
+                        overridable = true,
+                    ),
+                ),
+                serviceInstanceId = "i-1",
+            ),
+        )
+        exporter.exportDeltaBatch(
+            DeltaBatch(
+                ResourceAttributes("svc", null, "i-1", null),
+                listOf(ProbeDelta(1, 0, ProbeKind.OPTIONAL_ARGUMENT, 1L, 0L)),
+            ),
+        )
+
+        assertTrue(target.neverSupplied().isEmpty())
+        assertTrue(target.alwaysSupplied().isEmpty())
+    }
+
+    @Test
+    fun `neverSupplied and alwaysSupplied skip an inline target`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+        exporter.exportManifest(
+            ProbeManifest(
+                "svc",
+                null,
+                listOf(
+                    methodProbe(1, 0, "com.acme.FooKt", "f", "(I)V", 10),
+                    ProbeLocation(
+                        classId = 1,
+                        probeIndex = 1,
+                        kind = ProbeKind.OPTIONAL_ARGUMENT,
+                        className = "com.acme.FooKt",
+                        methodName = "f",
+                        methodDescriptor = "(I)V",
+                        line = 10,
+                        branchIndex = null,
+                        inline = true,
+                        parameterIndex = 0,
+                        parameterName = "count",
+                    ),
+                ),
+                serviceInstanceId = "i-1",
+            ),
+        )
+        exporter.exportDeltaBatch(
+            DeltaBatch(
+                ResourceAttributes("svc", null, "i-1", null),
+                listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 4L)),
+            ),
+        )
+
+        assertTrue(target.neverSupplied().isEmpty())
+        assertTrue(target.alwaysSupplied().isEmpty())
     }
 
     @Test

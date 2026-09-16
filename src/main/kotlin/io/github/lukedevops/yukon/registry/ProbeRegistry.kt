@@ -344,6 +344,9 @@ open class ProbeRegistry {
                         line = meta.line,
                         branchIndex = meta.branchIndex,
                         inline = meta.inline,
+                        parameterIndex = meta.parameterIndex,
+                        parameterName = meta.parameterName,
+                        overridable = meta.overridable,
                     )
                 }
             }
@@ -430,6 +433,9 @@ open class ProbeRegistry {
                         line = meta.line,
                         branchIndex = meta.branchIndex,
                         inline = meta.inline,
+                        parameterIndex = meta.parameterIndex,
+                        parameterName = meta.parameterName,
+                        overridable = meta.overridable,
                     )
             }
         }

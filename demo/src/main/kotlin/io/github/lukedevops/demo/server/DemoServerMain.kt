@@ -17,6 +17,8 @@ private const val FREE_SHIPPING_THRESHOLD = 100.0
  * both are method-level "loaded but never hit" findings. [LegacyDiscountCalculator] is a level
  * further: its feature flag is always off in this demo, so the class itself never loads, which
  * only the static baseline (opted into below via `staticBaselineEnabled=true`) can report.
+ * [formatTotal]'s two optional parameters add a fourth: [handleCheckout] always supplies
+ * `decimals` and never supplies `currency`, giving the omission tier one finding of each kind.
  */
 fun main() {
     val server = HttpServer.create(InetSocketAddress(DemoPorts.SERVER_PORT), 0)
@@ -52,7 +54,18 @@ private fun handleCheckout(exchange: HttpExchange) {
  * caller instead of invoking this method. Its own probe reads zero no matter how often a request
  * comes in, so the demo report shows it under neither `NEVER HIT` nor a hit count.
  */
-private inline fun describeOrder(total: Double): String = "order of $total"
+private inline fun describeOrder(total: Double): String = "order of ${formatTotal(total, decimals = 2)}"
+
+/**
+ * Always called with `decimals` supplied and never with `currency`: the demo report shows
+ * `decimals` under `ALWAYS SUPPLIED` (the default is dead) and `currency` under `NEVER SUPPLIED`
+ * (every caller took the default, so the parameter can go).
+ */
+private fun formatTotal(
+    total: Double,
+    currency: String = "GBP",
+    decimals: Int = 2,
+): String = "%.${decimals}f %s".format(total, currency)
 
 private fun handlePromo(exchange: HttpExchange) {
     respond(exchange, "promo code applied")
