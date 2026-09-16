@@ -1126,6 +1126,66 @@ class YukonTestCollectorTest {
     }
 
     @Test
+    fun `unreachedClusters reports no cluster for a function reference's body class or its target when the creator calls it`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+        exporter.exportManifest(
+            ProbeManifest(
+                "svc",
+                null,
+                probes =
+                    listOf(
+                        methodProbe(
+                            1,
+                            0,
+                            "com.acme.A",
+                            "run",
+                            "()I",
+                            1,
+                            calls =
+                                listOf(
+                                    CallEdge("com.acme.A\$run\$f\$1", "<init>", "(Ljava/lang/Object;)V", false),
+                                    CallEdge("com.acme.A\$run\$f\$1", "invoke", "()Ljava/lang/Integer;", false),
+                                ),
+                        ),
+                        methodProbe(
+                            2,
+                            0,
+                            "com.acme.A\$run\$f\$1",
+                            "invoke",
+                            "()Ljava/lang/Integer;",
+                            1,
+                            calls = listOf(CallEdge("com.acme.A", "secret", "()I", false)),
+                        ),
+                        methodProbe(1, 1, "com.acme.A", "secret", "()I", 2),
+                    ),
+                serviceInstanceId = "i-1",
+            ),
+        )
+        exporter.exportDeltaBatch(
+            DeltaBatch(
+                ResourceAttributes("svc", null, "i-1", null),
+                listOf(
+                    ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 5L),
+                    ProbeDelta(2, 0, ProbeKind.METHOD, 1L, 5L),
+                    ProbeDelta(1, 1, ProbeKind.METHOD, 1L, 5L),
+                ),
+            ),
+        )
+
+        val clusters = target.unreachedClusters()
+        assertTrue(clusters.none { it.root.className == "com.acme.A\$run\$f\$1" })
+        assertTrue(clusters.none { it.root.className == "com.acme.A" && it.root.methodName == "secret" })
+        assertTrue(
+            clusters.none { cluster ->
+                cluster.members.any {
+                    it.className == "com.acme.A\$run\$f\$1" || (it.className == "com.acme.A" && it.methodName == "secret")
+                }
+            },
+        )
+    }
+
+    @Test
     fun `a virtual edge widens through classSupertypes to a never-hit override, a non-virtual edge does not`() {
         fun manifestWith(virtual: Boolean) =
             ProbeManifest(

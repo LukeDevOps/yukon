@@ -38,6 +38,9 @@ class StaticBaselineScannerTest {
     private val suitBytes = classBytes("kotlin/test/com/example/target/Suit.class")
     private val configBytes = classBytes("kotlin/test/com/example/target/Config.class")
     private val finalMethodTargetBytes = classBytes("kotlin/test/com/example/target/FinalMethodTarget.class")
+    private val functionReferenceTargetBytes = classBytes("kotlin/test/com/example/target/FunctionReferenceTarget.class")
+    private val functionReferenceBodyClassBytes =
+        classBytes("kotlin/test/com/example/target/FunctionReferenceTarget\$viaReference\$f\$1.class")
 
     /** The fixture root [CallEdgeAnalyzerTest][io.github.lukedevops.yukon.instrumentation.branch.CallEdgeAnalyzerTest] exercises directly. */
     private fun callEdgeFixtureRoot(): File =
@@ -51,6 +54,8 @@ class StaticBaselineScannerTest {
             "com/example/target/Suit.class" to suitBytes,
             "com/example/target/Config.class" to configBytes,
             "com/example/target/FinalMethodTarget.class" to finalMethodTargetBytes,
+            "com/example/target/FunctionReferenceTarget.class" to functionReferenceTargetBytes,
+            "com/example/target/FunctionReferenceTarget\$viaReference\$f\$1.class" to functionReferenceBodyClassBytes,
             "com/example/other/OtherTarget.class" to otherTargetBytes,
         )
 
@@ -463,6 +468,57 @@ class StaticBaselineScannerTest {
             assertEquals(
                 listOf(CallEdge("com.example.target.Suit", "<clinit>", "()V", virtual = false)),
                 declared.methods.single { it.methodName == "readEnumConstant" }.calls,
+            )
+        } finally {
+            yukon.uninstall(instrumentation, transformer)
+        }
+    }
+
+    @Test
+    fun `declares a bound function reference's body-class edges the same way the manifest carries them for the loaded class`() {
+        val root = callEdgeFixtureRoot()
+        val scanner = StaticBaselineScanner(listOf("com.example.target", "com.example.other"))
+
+        val result = scanner.scan(listOf(root))
+        val declared = result.declaredClasses.single { it.className == "com.example.target.FunctionReferenceTarget" }
+
+        val registry = ProbeRegistry()
+        val config = AgentConfig.parse("includePackages=com.example.target;com.example.other")
+        val instrumentation = ByteBuddyAgent.install()
+        val yukon = YukonInstrumentation(config, registry)
+        val transformer = yukon.install(instrumentation)
+        try {
+            val loader = FixtureClassLoader(arrayOf(File("build/classes/kotlin/test").toURI().toURL()), javaClass.classLoader)
+            val targetClass = Class.forName("com.example.target.FunctionReferenceTarget", true, loader)
+            val target = targetClass.getDeclaredConstructor().newInstance()
+            targetClass.getMethod("viaReference").invoke(target)
+
+            val manifest = registry.manifest("test", null, "instance-1")
+            val viaReferenceProbe =
+                manifest.probes.single {
+                    it.className == "com.example.target.FunctionReferenceTarget" && it.methodName == "viaReference" &&
+                        it.kind == ProbeKind.METHOD
+                }
+            assertEquals(
+                viaReferenceProbe.calls,
+                declared.methods.single { it.methodName == "viaReference" }.calls,
+            )
+            assertEquals(
+                listOf(
+                    CallEdge(
+                        "com.example.target.FunctionReferenceTarget\$viaReference\$f\$1",
+                        "<init>",
+                        "(Ljava/lang/Object;)V",
+                        virtual = false,
+                    ),
+                    CallEdge(
+                        "com.example.target.FunctionReferenceTarget\$viaReference\$f\$1",
+                        "invoke",
+                        "()Ljava/lang/Integer;",
+                        virtual = false,
+                    ),
+                ),
+                declared.methods.single { it.methodName == "viaReference" }.calls,
             )
         } finally {
             yukon.uninstall(instrumentation, transformer)

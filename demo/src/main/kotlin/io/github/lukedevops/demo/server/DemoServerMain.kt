@@ -24,7 +24,13 @@ private const val FREE_SHIPPING_THRESHOLD = 100.0
  * alone calls [PromoRepository.find], so a client that never calls `/promo` leaves all three
  * methods, and `PromoRepository` itself, unreached together. [handleCheckout] demonstrates the
  * same call-edge attribution for a class that never loads at all: it calls
- * [LegacyDiscountCalculator]'s constructor and `apply` under the branch this demo never takes.
+ * [LegacyDiscountCalculator]'s constructor and `apply`, and reads a static field of [LegacyRates],
+ * both under the branch this demo never takes; the constructor and the field read are two
+ * different ways an unloaded class is reached from [handleCheckout]. [handleCheckout] also holds
+ * [respond] as a function-typed value and calls it through that value: kotlinc compiles the
+ * reference to its own class, a body class under ADR 0024, whose `invoke` only the reference's
+ * holder ever calls. Calling it on every request keeps that `invoke` and [respond] itself out of
+ * every unreached cluster, which proves the body-class edge rather than manufacturing a finding.
  */
 fun main() {
     val server = HttpServer.create(InetSocketAddress(DemoPorts.SERVER_PORT), 0)
@@ -42,7 +48,7 @@ private fun handleCheckout(exchange: HttpExchange) {
     val total = totalParam(exchange)
     val discounted =
         if (System.getenv("ENABLE_LEGACY_DISCOUNT") == "true") {
-            LegacyDiscountCalculator().apply(total)
+            LegacyDiscountCalculator().apply(total) + LegacyRates.FLAT_FEE
         } else {
             total
         }
@@ -52,7 +58,8 @@ private fun handleCheckout(exchange: HttpExchange) {
         } else {
             "${describeOrder(discounted)} does not qualify for free shipping"
         }
-    respond(exchange, message)
+    val send: (HttpExchange, String) -> Unit = ::respond
+    send(exchange, message)
 }
 
 /**

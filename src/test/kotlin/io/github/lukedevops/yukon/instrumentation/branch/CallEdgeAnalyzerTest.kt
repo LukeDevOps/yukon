@@ -356,4 +356,172 @@ class CallEdgeAnalyzerTest {
             analysis.callsOf("callsFinalMethod", "(Lcom/example/target/FinalMethodTarget;)I"),
         )
     }
+
+    @Test
+    fun `a bound function reference to a private method is a body class, joined by its constructor edge`() {
+        val analysis = analyzeTarget("FunctionReferenceTarget")
+
+        assertEquals(
+            listOf(
+                CallEdge(
+                    "com.example.target.FunctionReferenceTarget\$viaReference\$f\$1",
+                    "<init>",
+                    "(Ljava/lang/Object;)V",
+                    virtual = false,
+                ),
+                CallEdge(
+                    "com.example.target.FunctionReferenceTarget\$viaReference\$f\$1",
+                    "invoke",
+                    "()Ljava/lang/Integer;",
+                    virtual = false,
+                ),
+            ),
+            analysis.callsOf("viaReference", "()I"),
+        )
+    }
+
+    @Test
+    fun `the body class's own typed invoke resolves through the accessor to the private target, plus the owner's clinit`() {
+        val analysis = analyzeTarget("FunctionReferenceTarget\$viaReference\$f\$1")
+
+        assertEquals(
+            listOf(
+                CallEdge("com.example.target.FunctionReferenceTarget", "secret", "()I", virtual = false),
+                CallEdge("com.example.target.FunctionReferenceTarget", "<clinit>", "()V", virtual = false),
+            ),
+            analysis.callsOf("invoke", "()Ljava/lang/Integer;"),
+        )
+    }
+
+    @Test
+    fun `a suspend lambda is a body class, joined by its constructor edge to every probed method it declares`() {
+        val analysis = analyzeTarget("SuspendLambdaTarget")
+
+        assertEquals(
+            listOf(
+                CallEdge(
+                    "com.example.target.SuspendLambdaTarget\$usesSuspend\$1",
+                    "<init>",
+                    "(Lcom/example/target/SuspendLambdaTarget;Lkotlin/coroutines/Continuation;)V",
+                    virtual = false,
+                ),
+                CallEdge(
+                    "com.example.target.SuspendLambdaTarget\$usesSuspend\$1",
+                    "invokeSuspend",
+                    "(Ljava/lang/Object;)Ljava/lang/Object;",
+                    virtual = false,
+                ),
+                CallEdge(
+                    "com.example.target.SuspendLambdaTarget\$usesSuspend\$1",
+                    "create",
+                    "(Lkotlin/coroutines/Continuation;)Lkotlin/coroutines/Continuation;",
+                    virtual = false,
+                ),
+                CallEdge(
+                    "com.example.target.SuspendLambdaTarget\$usesSuspend\$1",
+                    "invoke",
+                    "(Lkotlin/coroutines/Continuation;)Ljava/lang/Object;",
+                    virtual = false,
+                ),
+                CallEdge("com.example.target.SuspendLambdaTarget", "runIt", "(Lkotlin/jvm/functions/Function1;)V", virtual = false),
+            ),
+            analysis.callsOf("usesSuspend", "()V"),
+        )
+    }
+
+    @Test
+    fun `an object expression is a body class, joined by its constructor edge to its overridden run`() {
+        val analysis = analyzeTarget("ObjectExpressionTarget")
+
+        assertEquals(
+            listOf(
+                CallEdge(
+                    "com.example.target.ObjectExpressionTarget\$makeHandler\$1",
+                    "<init>",
+                    "(Lcom/example/target/ObjectExpressionTarget;)V",
+                    virtual = false,
+                ),
+                CallEdge("com.example.target.ObjectExpressionTarget\$makeHandler\$1", "run", "()V", virtual = true),
+            ),
+            analysis.callsOf("makeHandler", "()Ljava/lang/Runnable;"),
+        )
+    }
+
+    private fun readJavaTargetBytes(simpleName: String): ByteArray =
+        File("build/classes/java/test/com/example/target/$simpleName.class").readBytes()
+
+    @Test
+    fun `a javac anonymous class is a body class, joined by its constructor edge to its overridden run`() {
+        val analysis =
+            BranchSiteAnalyzer.analyze(readJavaTargetBytes("AnonymousClassTarget"), lookup, includePackages, emptyList()) { _, _ -> true }
+
+        assertEquals(
+            listOf(
+                CallEdge(
+                    "com.example.target.AnonymousClassTarget\$1",
+                    "<init>",
+                    "(Lcom/example/target/AnonymousClassTarget;)V",
+                    virtual = false,
+                ),
+                CallEdge("com.example.target.AnonymousClassTarget\$1", "run", "()V", virtual = true),
+            ),
+            analysis.callsOf("makeAnonymousRunnable", "()Ljava/lang/Runnable;"),
+        )
+    }
+
+    @Test
+    fun `a javac named local class declared inside a method is a body class too`() {
+        val analysis =
+            BranchSiteAnalyzer.analyze(readJavaTargetBytes("AnonymousClassTarget"), lookup, includePackages, emptyList()) { _, _ -> true }
+
+        assertEquals(
+            listOf(
+                CallEdge(
+                    "com.example.target.AnonymousClassTarget\$1LocalRunnable",
+                    "<init>",
+                    "(Lcom/example/target/AnonymousClassTarget;)V",
+                    virtual = false,
+                ),
+                CallEdge("com.example.target.AnonymousClassTarget\$1LocalRunnable", "run", "()V", virtual = true),
+            ),
+            analysis.callsOf("makeLocalClassRunnable", "()Ljava/lang/Runnable;"),
+        )
+    }
+
+    @Test
+    fun `a named, non-local nested class created with new carries no EnclosingMethod, so it is not expanded`() {
+        val analysis = analyzeTarget("BodyClassTargetKt")
+
+        assertEquals(
+            listOf(CallEdge("com.example.target.NamedNestedTarget\$Nested", "<init>", "()V", virtual = false)),
+            analysis.callsOf("makesNamedNested", "()Lcom/example/target/NamedNestedTarget\$Nested;"),
+        )
+    }
+
+    @Test
+    fun `a named Kotlin object reached by getstatic INSTANCE carries no EnclosingMethod, so only its clinit edge applies`() {
+        val analysis = analyzeTarget("BodyClassTargetKt")
+
+        assertEquals(
+            listOf(CallEdge("com.example.target.NamedObjectTarget", "<clinit>", "()V", virtual = false)),
+            analysis.callsOf("readsNamedObjectTarget", "()Lcom/example/target/NamedObjectTarget;"),
+        )
+    }
+
+    @Test
+    fun `an unreadable body class leaves only the constructor edge, with no expansion`() {
+        val analysis = analyzeTarget("FunctionReferenceTarget", useLookup = false)
+
+        assertEquals(
+            listOf(
+                CallEdge(
+                    "com.example.target.FunctionReferenceTarget\$viaReference\$f\$1",
+                    "<init>",
+                    "(Ljava/lang/Object;)V",
+                    virtual = false,
+                ),
+            ),
+            analysis.callsOf("viaReference", "()I"),
+        )
+    }
 }

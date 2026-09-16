@@ -104,6 +104,15 @@ UNREACHED CLUSTER: root io.github.lukedevops.demo.server.DemoServerMainKt#handle
   io.github.lukedevops.demo.server.PromoRepository#find (never loaded)
 ```
 
+Three smaller clusters follow it, each reached from the checkout handler
+under the branch the demo never takes: `LegacyDiscountCalculator`'s
+constructor and `apply`, which the branch calls, and `LegacyRates`'
+static initialiser, which the branch reaches only by reading a static
+field. A static field read counts as a use of the class the same way a
+call does. The checkout handler also calls its response helper through a
+function reference; the class the compiler generates for that reference
+is reached from the handler and never appears in a cluster.
+
 ## Run the demo against a real collector
 
 ```
