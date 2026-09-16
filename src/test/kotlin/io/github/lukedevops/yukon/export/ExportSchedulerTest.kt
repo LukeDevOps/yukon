@@ -408,6 +408,68 @@ class ExportSchedulerTest {
     }
 
     @Test
+    fun `flushOnShutdown returns at once when the budget is already spent, instead of joining the final flush forever`() {
+        val registry = ProbeRegistry()
+        registry.register("com.example.Foo", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "bar", "()V", 1)))
+        val exporter = GatedExporter()
+        val scheduler = ExportScheduler(config, registry, EndpointRegistry(), exporter)
+
+        // A zero budget is what the hook is left with when an in-flight flush finishes with less
+        // than a millisecond to spare: the remaining time truncates to 0, and Thread.join(0)
+        // means "wait forever", not "do not wait".
+        val hook = thread { scheduler.flushOnShutdown(Duration.ZERO) }
+        hook.join(3_000)
+        val returned = !hook.isAlive
+        exporter.gate.countDown()
+
+        assertTrue(returned, "a spent budget must not turn into an unbounded wait on the final flush")
+        assertEquals(0, exporter.deltaSends.get(), "no final flush is attempted once the budget is gone")
+    }
+
+    /** Counts down [delivered] on the first delta batch, so a test can wait on a scheduled tick from another thread. */
+    private class LatchExporter : Exporter {
+        val delivered = CountDownLatch(1)
+
+        override fun exportDeltaBatch(batch: DeltaBatch) {
+            delivered.countDown()
+        }
+
+        override fun exportManifest(manifest: ProbeManifest) {}
+
+        override fun exportStaticBaseline(baseline: StaticBaseline) {}
+    }
+
+    @Test
+    fun `an Error thrown by a send does not stop the schedule`() {
+        var calls = 0
+        val registry =
+            object : ProbeRegistry() {
+                override fun computeDeltaBatches(
+                    resource: ResourceAttributes,
+                    maxDeltasPerBatch: Int,
+                ): List<ProbeRegistry.DeltaSnapshot> {
+                    // A LinkageError is the realistic shape: a class the shaded jar failed to
+                    // carry, first touched on the export path rather than at startup.
+                    if (calls++ == 0) throw NoClassDefFoundError("com/example/Missing")
+                    return super.computeDeltaBatches(resource, maxDeltasPerBatch)
+                }
+            }
+        val exporter = LatchExporter()
+        val oneSecond = AgentConfig.parse("serviceName=checkout,flushIntervalSeconds=1")
+        val scheduler = ExportScheduler(oneSecond, registry, EndpointRegistry(), exporter, noJitter)
+
+        scheduler.start()
+        try {
+            assertTrue(
+                exporter.delivered.await(5, TimeUnit.SECONDS),
+                "the second tick must still flush after the first tick's send threw an Error",
+            )
+        } finally {
+            scheduler.stop()
+        }
+    }
+
+    @Test
     fun `endpoint deltas ride in the same batch as probe deltas when there is room`() {
         val registry = ProbeRegistry()
         val probes = registry.register("com.example.Foo", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "bar", "()V", 1)))
