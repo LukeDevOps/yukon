@@ -34,6 +34,10 @@ class StaticBaselineScannerTest {
     private val defaultArgumentTargetBytes = classBytes("kotlin/test/com/example/target/DefaultArgumentTarget.class")
     private val classifierBytes = classBytes("kotlin/test/com/example/target/Classifier.class")
     private val classifierImplBytes = classBytes("kotlin/test/com/example/target/ClassifierImpl.class")
+    private val staticUseTargetBytes = classBytes("kotlin/test/com/example/target/StaticUseTarget.class")
+    private val suitBytes = classBytes("kotlin/test/com/example/target/Suit.class")
+    private val configBytes = classBytes("kotlin/test/com/example/target/Config.class")
+    private val finalMethodTargetBytes = classBytes("kotlin/test/com/example/target/FinalMethodTarget.class")
 
     /** The fixture root [CallEdgeAnalyzerTest][io.github.lukedevops.yukon.instrumentation.branch.CallEdgeAnalyzerTest] exercises directly. */
     private fun callEdgeFixtureRoot(): File =
@@ -43,6 +47,10 @@ class StaticBaselineScannerTest {
             "com/example/target/DefaultArgumentTarget.class" to defaultArgumentTargetBytes,
             "com/example/target/Classifier.class" to classifierBytes,
             "com/example/target/ClassifierImpl.class" to classifierImplBytes,
+            "com/example/target/StaticUseTarget.class" to staticUseTargetBytes,
+            "com/example/target/Suit.class" to suitBytes,
+            "com/example/target/Config.class" to configBytes,
+            "com/example/target/FinalMethodTarget.class" to finalMethodTargetBytes,
             "com/example/other/OtherTarget.class" to otherTargetBytes,
         )
 
@@ -418,6 +426,44 @@ class StaticBaselineScannerTest {
             val supertypes = manifest.classSupertypes.single { it.classId == methodProbes.first().classId }
             assertEquals(supertypes.superClassName, declared.superClassName)
             assertEquals(supertypes.interfaceNames, declared.interfaceNames)
+        } finally {
+            yukon.uninstall(instrumentation, transformer)
+        }
+    }
+
+    @Test
+    fun `declares StaticUseTarget's static field use edges the same way the manifest carries them for the loaded class`() {
+        val root = callEdgeFixtureRoot()
+        val scanner = StaticBaselineScanner(listOf("com.example.target", "com.example.other"))
+
+        val result = scanner.scan(listOf(root))
+        val declared = result.declaredClasses.single { it.className == "com.example.target.StaticUseTarget" }
+
+        val registry = ProbeRegistry()
+        val config = AgentConfig.parse("includePackages=com.example.target;com.example.other")
+        val instrumentation = ByteBuddyAgent.install()
+        val yukon = YukonInstrumentation(config, registry)
+        val transformer = yukon.install(instrumentation)
+        try {
+            val loader = FixtureClassLoader(arrayOf(File("build/classes/kotlin/test").toURI().toURL()), javaClass.classLoader)
+            Class.forName("com.example.target.StaticUseTarget", true, loader)
+
+            val manifest = registry.manifest("test", null, "instance-1")
+            val methodProbes =
+                manifest.probes.filter { it.className == "com.example.target.StaticUseTarget" && it.kind == ProbeKind.METHOD }
+            assertTrue(methodProbes.isNotEmpty())
+            for (probe in methodProbes) {
+                val declaredMethod =
+                    declared.methods.single {
+                        it.methodName == probe.methodName &&
+                            it.methodDescriptor == probe.methodDescriptor
+                    }
+                assertEquals(probe.calls, declaredMethod.calls, "mismatch for ${probe.methodName}${probe.methodDescriptor}")
+            }
+            assertEquals(
+                listOf(CallEdge("com.example.target.Suit", "<clinit>", "()V", virtual = false)),
+                declared.methods.single { it.methodName == "readEnumConstant" }.calls,
+            )
         } finally {
             yukon.uninstall(instrumentation, transformer)
         }

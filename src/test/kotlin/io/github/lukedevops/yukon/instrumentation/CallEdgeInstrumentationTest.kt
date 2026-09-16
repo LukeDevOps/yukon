@@ -83,4 +83,22 @@ class CallEdgeInstrumentationTest {
             }
         assertEquals(listOf(CallEdge("com.example.target.TemplateTarget", "step", "()I", virtual = true)), runProbe.calls)
     }
+
+    @Test
+    fun `a static read of another class's enum constant carries an edge to that class's clinit on the manifest`() {
+        val registry = ProbeRegistry()
+        val config = AgentConfig.parse("includePackages=com.example.target")
+        install(registry, config)
+
+        val loader = FixtureClassLoader(arrayOf(File("build/classes/kotlin/test").toURI().toURL()), javaClass.classLoader)
+        val targetClass = Class.forName("com.example.target.StaticUseTarget", true, loader)
+        val target = targetClass.getDeclaredConstructor().newInstance()
+        targetClass.getMethod("readEnumConstant").invoke(target)
+
+        val readEnumConstantProbe =
+            registry.manifest("test", null, "instance-1").probes.single {
+                it.className == "com.example.target.StaticUseTarget" && it.methodName == "readEnumConstant" && it.kind == ProbeKind.METHOD
+            }
+        assertEquals(listOf(CallEdge("com.example.target.Suit", "<clinit>", "()V", virtual = false)), readEnumConstantProbe.calls)
+    }
 }

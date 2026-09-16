@@ -19,17 +19,35 @@ class CallEdgeAnalyzerTest {
 
     private val includePackages = listOf("com.example.target", "com.example.other")
 
-    /** Resolves another com.example.target class's bytes, the way [io.github.lukedevops.yukon.instrumentation.YukonInstrumentation] does. */
+    /** Resolves another class's bytes by internal name, the way [io.github.lukedevops.yukon.instrumentation.YukonInstrumentation] does. */
     private val lookup: (String) -> ByteArray? = { internalName ->
-        val locator = ClassFileLocator.ForFolder(File("build/classes/kotlin/test"))
-        val resolution = locator.locate(internalName.replace('/', '.'))
-        if (resolution.isResolved) resolution.resolve() else null
+        val dottedName = internalName.replace('/', '.')
+        listOf("build/classes/kotlin/test", "build/classes/java/test")
+            .asSequence()
+            .map { ClassFileLocator.ForFolder(File(it)).locate(dottedName) }
+            .firstOrNull { it.isResolved }
+            ?.resolve()
     }
 
     private fun analyzeCallEdgeTarget(): BranchSiteAnalyzer.Analysis =
         BranchSiteAnalyzer.analyze(
             readTargetBytes("CallEdgeTarget"),
             lookup,
+            includePackages,
+            emptyList(),
+        ) { _, _ -> true }
+
+    /**
+     * Analyses another Kotlin fixture class the same way, with the real cross-class [lookup] by
+     * default so pass-through resolution runs; [useLookup] false simulates an unreadable owner.
+     */
+    private fun analyzeTarget(
+        simpleName: String,
+        useLookup: Boolean = true,
+    ): BranchSiteAnalyzer.Analysis =
+        BranchSiteAnalyzer.analyze(
+            readTargetBytes(simpleName),
+            if (useLookup) lookup else { _ -> null },
             includePackages,
             emptyList(),
         ) { _, _ -> true }
@@ -216,5 +234,126 @@ class CallEdgeAnalyzerTest {
         val edge = analysis.callsOf("go", "()I").single()
         assertEquals("inherited", edge.methodName)
         assertTrue(edge.virtual, "an inherited method could be overridden further down; the collector resolves it")
+    }
+
+    @Test
+    fun `a nested class's call through an access$ accessor resolves to the private target, plus the owner's clinit`() {
+        val analysis = analyzeTarget("AccessorTarget\$Inner")
+
+        assertEquals(
+            listOf(
+                CallEdge("com.example.target.AccessorTarget", "secret", "()I", virtual = false),
+                CallEdge("com.example.target.AccessorTarget", "<clinit>", "()V", virtual = false),
+            ),
+            analysis.callsOf("callSecret", "()I"),
+        )
+    }
+
+    @Test
+    fun `a field read through an access$ accessor yields only the owner's clinit, never an edge to the accessor`() {
+        val analysis = analyzeTarget("AccessorTarget\$Inner")
+
+        assertEquals(
+            listOf(CallEdge("com.example.target.AccessorTarget", "<clinit>", "()V", virtual = false)),
+            analysis.callsOf("readX", "()I"),
+        )
+    }
+
+    @Test
+    fun `a private companion member reached from the enclosing class resolves through the companion's own accessor`() {
+        val analysis = analyzeTarget("AccessorTarget")
+
+        assertEquals(
+            listOf(
+                CallEdge("com.example.target.AccessorTarget\$Companion", "companionSecret", "()I", virtual = false),
+                CallEdge("com.example.target.AccessorTarget\$Companion", "<clinit>", "()V", virtual = false),
+            ),
+            analysis.callsOf("callCompanionSecret", "()I"),
+        )
+    }
+
+    @Test
+    fun `an unreadable owner leaves a cross-class synthetic callee as a verbatim edge to the accessor itself`() {
+        val analysis = analyzeTarget("AccessorTarget\$Inner", useLookup = false)
+
+        assertEquals(
+            listOf(
+                CallEdge(
+                    "com.example.target.AccessorTarget",
+                    "access\$secret",
+                    "(Lcom/example/target/AccessorTarget;)I",
+                    virtual = false,
+                ),
+            ),
+            analysis.callsOf("callSecret", "()I"),
+        )
+    }
+
+    @Test
+    fun `a static read of another class's enum constant is an edge to that class's clinit`() {
+        val analysis = analyzeTarget("StaticUseTarget")
+
+        assertEquals(
+            listOf(CallEdge("com.example.target.Suit", "<clinit>", "()V", virtual = false)),
+            analysis.callsOf("readEnumConstant", "()Lcom/example/target/Suit;"),
+        )
+    }
+
+    @Test
+    fun `a static write and a static read of the same owner collapse into one deduplicated clinit edge`() {
+        val analysis = analyzeTarget("StaticUseTarget")
+
+        assertEquals(
+            listOf(CallEdge("com.example.target.Config", "<clinit>", "()V", virtual = false)),
+            analysis.callsOf("readAndWriteConfigFlag", "()Z"),
+        )
+    }
+
+    @Test
+    fun `a static read and a static write of a Java field are clinit edges even though the owner declares no clinit`() {
+        val analysis = analyzeTarget("StaticUseTarget")
+
+        assertEquals(
+            listOf(CallEdge("com.example.other.OtherTarget", "<clinit>", "()V", virtual = false)),
+            analysis.callsOf("readJavaStaticField", "()I"),
+        )
+        assertEquals(
+            listOf(CallEdge("com.example.other.OtherTarget", "<clinit>", "()V", virtual = false)),
+            analysis.callsOf("writeJavaStaticField", "()V"),
+        )
+    }
+
+    @Test
+    fun `a same-class static field use records no edge`() {
+        val analysis = analyzeTarget("SelfStaticUser")
+
+        assertEquals(emptyList(), analysis.callsOf("touchOwnCounter", "()I"))
+    }
+
+    @Test
+    fun `an out-of-scope static read is excluded by the in-scope filter`() {
+        val analysis = analyzeTarget("StaticUseTarget")
+
+        assertEquals(emptyList(), analysis.callsOf("readSystemOut", "()Ljava/io/PrintStream;"))
+    }
+
+    @Test
+    fun `instance field access on another in-scope class records no edge beyond the constructor edge`() {
+        val analysis = analyzeTarget("StaticUseTarget")
+
+        assertEquals(
+            listOf(CallEdge("com.example.other.OtherTarget", "<init>", "()V", virtual = false)),
+            analysis.callsOf("touchesOtherFieldAndConstructs", "()I"),
+        )
+    }
+
+    @Test
+    fun `a call to another in-scope class's final method is non-virtual`() {
+        val analysis = analyzeTarget("StaticUseTarget")
+
+        assertEquals(
+            listOf(CallEdge("com.example.target.FinalMethodTarget", "method", "()I", virtual = false)),
+            analysis.callsOf("callsFinalMethod", "(Lcom/example/target/FinalMethodTarget;)I"),
+        )
     }
 }

@@ -92,8 +92,14 @@ object TypeMatchPolicy {
             .and(not(isTypeInitializer()))
             .and { method -> !method.isSynthetic || isProbedLambdaBody(method.name, isScalaClass) }
 
-    /** Whether a synthetic method named [name] is a lambda body worth a probe. See [methodMatcher]. */
-    private fun isProbedLambdaBody(
+    /**
+     * Whether a synthetic method named [name] is a lambda body worth a probe. See [methodMatcher].
+     *
+     * Also used by [io.github.lukedevops.yukon.instrumentation.branch.BranchSiteAnalyzer] to tell
+     * a cross-class pass-through (a bridge, an `access$` accessor) apart from a lambda body when
+     * resolving call edges, so both readers apply the exact same synthetic-method rule.
+     */
+    internal fun isProbedLambdaBody(
         name: String,
         isScalaClass: Boolean,
     ): Boolean = name.startsWith("lambda\$") || (isScalaClass && name.startsWith("\$anonfun\$") && !name.endsWith("\$adapted"))
