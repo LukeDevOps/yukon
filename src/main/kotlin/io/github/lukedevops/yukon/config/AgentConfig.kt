@@ -8,6 +8,11 @@ import java.util.UUID
 /**
  * Agent options, passed as comma-separated key=value pairs on the
  * `-javaagent:yukon-agent.jar=key=value,key=value` command line.
+ *
+ * A value cannot contain a comma, since the comma is the pair separator and
+ * there is no quoting. A value that needs one (an endpoint with a query
+ * string, a token) is set through the matching system property or
+ * environment variable instead; see [parse].
  */
 data class AgentConfig(
     val serviceName: String,
@@ -232,7 +237,11 @@ data class AgentConfig(
                 .mapNotNull { pair ->
                     val separator = pair.indexOf('=')
                     if (separator <= 0) {
-                        log.log(Level.WARNING, "yukon: ignoring malformed agent option '$pair' (expected key=value)")
+                        log.log(
+                            Level.WARNING,
+                            "yukon: ignoring malformed agent option '$pair' (expected key=value; a value cannot contain a " +
+                                "comma, set such a value through a system property or environment variable instead)",
+                        )
                         null
                     } else {
                         pair.take(separator).trim() to pair.substring(separator + 1).trim()

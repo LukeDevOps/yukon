@@ -67,9 +67,16 @@ class StaticBaselineScanner(
         fun toResult() = StaticScanResult(declared, unsafe, unreadable, unprobed)
     }
 
+    /**
+     * Scans [classpathRoots] plus every jar they reach through a manifest `Class-Path` attribute.
+     * A `java -jar app.jar` launch puts only `app.jar` on `java.class.path`; the dependencies the
+     * launcher actually loads are named in its manifest, relative to the jar's own directory, and
+     * can name further jars with manifests of their own. Without following them, an adopter's
+     * code in one of those jars would never be declared.
+     */
     fun scan(classpathRoots: List<File> = defaultClasspathRoots()): StaticScanResult {
         val buckets = Buckets()
-        for (root in classpathRoots) {
+        for (root in withManifestClassPath(classpathRoots)) {
             try {
                 scanRoot(root, buckets)
             } catch (e: Exception) {
@@ -78,6 +85,47 @@ class StaticBaselineScanner(
         }
         return buckets.toResult()
     }
+
+    /**
+     * [roots] followed by every jar reachable through manifest `Class-Path` entries, in
+     * discovery order, each file once. An entry is resolved the way the JDK's launcher resolves
+     * it, as a relative path against the referencing jar's parent directory; an entry that does
+     * not exist is dropped, and a jar whose manifest cannot be read contributes nothing beyond
+     * itself.
+     */
+    private fun withManifestClassPath(roots: List<File>): List<File> {
+        val ordered = LinkedHashMap<File, File>()
+        val queue = ArrayDeque(roots)
+        while (queue.isNotEmpty()) {
+            val root = queue.removeFirst()
+            val canonical = runCatching { root.canonicalFile }.getOrDefault(root.absoluteFile)
+            if (ordered.putIfAbsent(canonical, root) != null) continue
+            if (!isJarFile(root) || !root.isFile) continue
+            for (entry in manifestClassPathEntries(root)) {
+                val referenced = File(root.absoluteFile.parentFile, entry)
+                if (referenced.exists()) queue.addLast(referenced)
+            }
+        }
+        return ordered.values.toList()
+    }
+
+    private fun manifestClassPathEntries(jar: File): List<String> =
+        try {
+            JarFile(jar).use { jarFile ->
+                jarFile.manifest
+                    ?.mainAttributes
+                    ?.getValue("Class-Path")
+                    .orEmpty()
+                    .split(' ')
+                    .filter { it.isNotBlank() }
+            }
+        } catch (e: Exception) {
+            log.log(Level.WARNING, "yukon: could not read the manifest of $jar for Class-Path entries", e)
+            emptyList()
+        }
+
+    /** A jar or zip, by extension, case-insensitively: the launcher accepts `Foo.JAR` and `lib.zip` alike. */
+    private fun isJarFile(root: File): Boolean = root.extension.lowercase() in JAR_EXTENSIONS
 
     private fun scanRoot(
         root: File,
@@ -90,7 +138,7 @@ class StaticBaselineScanner(
             candidateClassNamesInFolder(root).forEach { className -> classify(className, pool, locator, buckets) }
             return
         }
-        if (root.extension != "jar") return
+        if (!isJarFile(root)) return
         JarFile(root).use { jarFile -> scanJar(jarFile, buckets) }
     }
 
@@ -263,6 +311,7 @@ class StaticBaselineScanner(
     private companion object {
         val NESTED_CLASSES_PREFIXES = listOf("BOOT-INF/classes/", "WEB-INF/classes/")
         val NESTED_JAR_PREFIXES = listOf("BOOT-INF/lib/", "WEB-INF/lib/")
+        val JAR_EXTENSIONS = setOf("jar", "zip")
 
         fun defaultClasspathRoots(): List<File> =
             System

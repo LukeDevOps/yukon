@@ -4,7 +4,9 @@ import net.bytebuddy.dynamic.ClassFileLocator
 import net.bytebuddy.jar.asm.ClassWriter
 import net.bytebuddy.jar.asm.Opcodes
 import java.io.File
+import java.util.jar.Attributes
 import java.util.jar.JarOutputStream
+import java.util.jar.Manifest
 import java.util.zip.ZipEntry
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -44,14 +46,26 @@ class StaticBaselineScannerTest {
     private fun jarRoot(vararg entries: Pair<String, ByteArray>): File {
         val jarFile = File.createTempFile("yukon-static-scan", ".jar")
         jarFile.deleteOnExit()
-        JarOutputStream(jarFile.outputStream()).use { out ->
+        writeJar(jarFile, entries.toList())
+        return jarFile
+    }
+
+    /** Writes [entries] into [jarFile], with a manifest carrying [classPath] as `Class-Path` when given. */
+    private fun writeJar(
+        jarFile: File,
+        entries: List<Pair<String, ByteArray>>,
+        classPath: String? = null,
+    ) {
+        val manifest = Manifest()
+        manifest.mainAttributes[Attributes.Name.MANIFEST_VERSION] = "1.0"
+        if (classPath != null) manifest.mainAttributes[Attributes.Name.CLASS_PATH] = classPath
+        JarOutputStream(jarFile.outputStream(), manifest).use { out ->
             for ((entryName, bytes) in entries) {
                 out.putNextEntry(ZipEntry(entryName))
                 out.write(bytes)
                 out.closeEntry()
             }
         }
-        return jarFile
     }
 
     @Test
@@ -106,6 +120,42 @@ class StaticBaselineScannerTest {
         val result = scanner.scan(listOf(jar))
 
         assertEquals(listOf("com.example.target.SampleTarget"), result.allClassNames().sorted())
+    }
+
+    @Test
+    fun `a root named with an uppercase JAR extension or a zip extension is scanned like any jar`() {
+        val dir = directoryRoot()
+        val upper = File(dir, "app.JAR").also { writeJar(it, listOf("com/example/target/SampleTarget.class" to sampleTargetBytes)) }
+        val zip = File(dir, "lib.zip").also { writeJar(it, listOf("com/example/other/OtherTarget.class" to otherTargetBytes)) }
+        val scanner = StaticBaselineScanner(listOf("com.example"))
+
+        val result = scanner.scan(listOf(upper, zip))
+
+        assertTrue(result.declaredClasses.any { it.className == "com.example.target.SampleTarget" })
+        assertTrue(result.declaredClasses.any { it.className == "com.example.other.OtherTarget" })
+    }
+
+    @Test
+    fun `jars named by a manifest Class-Path are scanned too, following the chain once each`() {
+        // java -jar app.jar puts only app.jar on java.class.path; the launcher loads lib/a.jar
+        // from the manifest, and a.jar's own manifest names b.jar. b.jar names app.jar back,
+        // which must not loop.
+        val dir = directoryRoot()
+        File(dir, "lib").mkdirs()
+        val app = File(dir, "app.jar")
+        val a = File(dir, "lib/a.jar")
+        val b = File(dir, "lib/b.jar")
+        writeJar(app, emptyList(), classPath = "lib/a.jar missing.jar")
+        writeJar(a, listOf("com/example/target/SampleTarget.class" to sampleTargetBytes), classPath = "b.jar")
+        writeJar(b, listOf("com/example/other/OtherTarget.class" to otherTargetBytes), classPath = "../app.jar")
+        val scanner = StaticBaselineScanner(listOf("com.example"))
+
+        val result = scanner.scan(listOf(app))
+
+        assertEquals(
+            listOf("com.example.other.OtherTarget", "com.example.target.SampleTarget"),
+            result.declaredClasses.map { it.className }.sorted(),
+        )
     }
 
     @Test
