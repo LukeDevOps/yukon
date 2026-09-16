@@ -8,6 +8,11 @@ import io.github.lukedevops.yukon.export.ProbeKind
  * [inline] marks a probe belonging to a Kotlin inline function, or a branch inside one: a Kotlin
  * caller copies the body into the call site instead of invoking this method, so a zero hit total
  * is not evidence the code never ran. See ADR 0022.
+ *
+ * [parameterIndex], [parameterName], and [overridable] apply only to an [ProbeKind.OPTIONAL_ARGUMENT]
+ * probe. [methodName] and [methodDescriptor] on such a probe name the target function the
+ * parameter belongs to, not the synthetic `$default` method the probe actually sits in; [line] is
+ * the target's first line, and [inline] is the target's own inline flag. See ADR 0021.
  */
 data class ProbeMeta(
     val kind: ProbeKind,
@@ -16,4 +21,7 @@ data class ProbeMeta(
     val line: Int,
     val branchIndex: Int? = null,
     val inline: Boolean = false,
+    val parameterIndex: Int? = null,
+    val parameterName: String? = null,
+    val overridable: Boolean = false,
 )

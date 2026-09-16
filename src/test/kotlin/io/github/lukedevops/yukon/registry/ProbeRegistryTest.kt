@@ -701,4 +701,39 @@ class ProbeRegistryTest {
                 ).manifest
         assertEquals(listOf("com.example.Bar"), retry.skippedClasses.map { it.className })
     }
+
+    @Test
+    fun `manifest and computeManifestDelta carry an optional argument probe's parameter fields`() {
+        val registry = ProbeRegistry()
+        registry.register(
+            "com.example.Foo",
+            layoutHash = 1L,
+            probes =
+                listOf(
+                    ProbeMeta(
+                        ProbeKind.OPTIONAL_ARGUMENT,
+                        "bar",
+                        "(I)V",
+                        line = 10,
+                        parameterIndex = 0,
+                        parameterName = "count",
+                        overridable = true,
+                    ),
+                ),
+        )
+
+        val manifestLocation = registry.manifest("checkout", "1.0.0", "instance-1").probes.single()
+        val deltaLocation =
+            registry
+                .computeManifestDelta("checkout", "1.0.0", "instance-1")
+                .manifest.probes
+                .single()
+
+        for (location in listOf(manifestLocation, deltaLocation)) {
+            assertEquals(ProbeKind.OPTIONAL_ARGUMENT, location.kind)
+            assertEquals(0, location.parameterIndex)
+            assertEquals("count", location.parameterName)
+            assertTrue(location.overridable)
+        }
+    }
 }

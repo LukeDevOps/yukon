@@ -133,4 +133,108 @@ class BranchSiteAnalyzerTest {
 
         assertFalse(analysis.isInline("member", "(II)I"))
     }
+
+    /** A default site is found regardless of the filter, since `$default` methods are synthetic and so never eligible. */
+    private fun analyzeDefaultSites(simpleName: String) = BranchSiteAnalyzer.analyze(readInlineTargetBytes(simpleName)) { _, _ -> false }
+
+    @Test
+    fun `a final class's multi-bit default method resolves its target with the right bits, names, and overridability`() {
+        val analysis = analyzeDefaultSites("DefaultArgumentTarget")
+
+        val site = analysis.defaultSites.single { it.defaultName == "f\$default" }
+        assertEquals("f", site.targetName)
+        assertEquals("(IILjava/lang/String;J)I", site.targetDescriptor)
+        assertEquals(0b1110, site.optionalBits, "bits 1, 2, 3 for b, c, d; bit 0 (a) is required")
+        assertFalse(site.overridable, "f is final, on a final class")
+        assertFalse(site.higherMaskTested)
+        assertEquals(mapOf(1 to "b", 2 to "c", 3 to "d"), site.parameterNames)
+    }
+
+    @Test
+    fun `a top-level function's default method resolves against its static target`() {
+        val analysis = analyzeDefaultSites("DefaultArgumentTargetKt")
+
+        val site = analysis.defaultSites.single { it.defaultName == "topLevelWithDefault\$default" }
+        assertEquals("topLevelWithDefault", site.targetName)
+        assertEquals(0b10, site.optionalBits)
+        assertFalse(site.overridable, "a static top-level function is never overridable")
+        assertEquals(mapOf(1 to "b"), site.parameterNames)
+    }
+
+    @Test
+    fun `an extension function's receiver is excluded from the mask bit and the parameter name`() {
+        val analysis = analyzeDefaultSites("DefaultArgumentTargetKt")
+
+        val site = analysis.defaultSites.single { it.defaultName == "extWithDefault\$default" }
+        assertEquals("extWithDefault", site.targetName)
+        assertEquals(0b1, site.optionalBits, "n is value-parameter index 0; the receiver owns no bit")
+        assertEquals(mapOf(0 to "n"), site.parameterNames)
+    }
+
+    @Test
+    fun `a synthetic constructor resolves against the plain constructor it calls`() {
+        val analysis = analyzeDefaultSites("ConstructedWithDefault")
+
+        val site = analysis.defaultSites.single()
+        assertEquals("<init>", site.defaultName)
+        assertEquals("<init>", site.targetName)
+        assertEquals("(II)V", site.targetDescriptor)
+        assertEquals(0b10, site.optionalBits)
+        assertFalse(site.overridable, "a constructor is never overridable")
+        assertEquals(mapOf(1 to "b"), site.parameterNames)
+    }
+
+    @Test
+    fun `an open method's default site is overridable`() {
+        val analysis = analyzeDefaultSites("OpenBase")
+
+        val site = analysis.defaultSites.single()
+        assertEquals("greet", site.targetName)
+        assertTrue(site.overridable, "greet is open, on a non-final class")
+        assertEquals(mapOf(0 to "name"), site.parameterNames)
+    }
+
+    @Test
+    fun `an interface method's default site lives on the interface and is overridable`() {
+        val analysis = analyzeDefaultSites("Greeter")
+
+        val site = analysis.defaultSites.single()
+        assertEquals("greet", site.targetName)
+        assertTrue(site.overridable, "an interface target is overridable")
+        // greet itself is abstract, so it has no Code attribute and so no LocalVariableTable.
+        assertEquals(mapOf(0 to ""), site.parameterNames)
+    }
+
+    @Test
+    fun `an interface's DefaultImpls forwarding stub has no mask test and yields no default site`() {
+        val analysis = analyzeDefaultSites("Greeter\$DefaultImpls")
+
+        assertEquals(emptyList(), analysis.defaultSites)
+    }
+
+    @Test
+    fun `a non-mask bitwise and on another local is not mistaken for a mask test`() {
+        val analysis = analyzeDefaultSites("DefaultArgumentTargetKt")
+
+        val site = analysis.defaultSites.single { it.defaultName == "withNonMaskAnd\$default" }
+        assertEquals(0b10, site.optionalBits, "only b's real mask test counts; a's default-value \"and 4\" does not")
+    }
+
+    @Test
+    fun `a JvmOverloads-generated overload does not confuse target resolution`() {
+        val analysis = analyzeDefaultSites("OverloadsTarget")
+
+        val site = analysis.defaultSites.single()
+        assertEquals("withOverloads", site.targetName)
+        assertEquals("(II)I", site.targetDescriptor, "the two-parameter method, not the one-parameter JvmOverloads overload")
+    }
+
+    @Test
+    fun `a data class's copy$default is resolved like any other default site`() {
+        val analysis = analyzeDefaultSites("DataTarget")
+
+        val site = analysis.defaultSites.single { it.defaultName == "copy\$default" }
+        assertEquals("copy", site.targetName)
+        assertEquals(0b11, site.optionalBits)
+    }
 }

@@ -46,10 +46,14 @@ private data class InstanceModuleKey(
 private data class ProbeInfo(
     val className: String,
     val methodName: String,
+    val methodDescriptor: String,
     val line: Int,
     val kind: ProbeKind,
     val branchIndex: Int?,
     val inline: Boolean,
+    val parameterIndex: Int? = null,
+    val parameterName: String? = null,
+    val overridable: Boolean = false,
 )
 
 private data class SkippedInfo(
@@ -135,6 +139,7 @@ fun main() {
     Runtime.getRuntime().addShutdownHook(
         Thread {
             printNeverHitReport()
+            printOmissionReport()
             printEndpointReport()
             printNeverLoadedReport()
         },
@@ -177,10 +182,14 @@ private fun handleManifest(exchange: HttpExchange) {
             ProbeInfo(
                 className = location.className,
                 methodName = location.methodName,
+                methodDescriptor = location.methodDescriptor,
                 line = location.line,
                 kind = location.kind,
                 branchIndex = if (location.hasBranchIndex()) location.branchIndex else null,
                 inline = location.inline,
+                parameterIndex = if (location.hasParameterIndex()) location.parameterIndex else null,
+                parameterName = location.parameterName.ifEmpty { null },
+                overridable = location.overridable,
             )
         dynamicallyKnownClassNames += location.className
     }
@@ -244,9 +253,13 @@ private fun respondOk(exchange: HttpExchange) {
 }
 
 private fun printNeverHitReport() {
-    val neverHitKeys = manifestProbes.keys.filter { it !in everHit }
+    // An optional-argument probe reading zero means its parameter is never omitted, which is
+    // ALWAYS SUPPLIED, not dead code, so it is excluded here entirely and reported by
+    // printOmissionReport instead. See ADR 0021.
+    val judgeableKeys = manifestProbes.keys.filter { manifestProbes[it]?.kind != ProbeKind.OPTIONAL_ARGUMENT }
+    val neverHitKeys = judgeableKeys.filter { it !in everHit }
     val (inlineNeverHit, judgeable) = neverHitKeys.partition { manifestProbes[it]?.inline == true }
-    val judgeableTotal = manifestProbes.values.count { !it.inline }
+    val judgeableTotal = judgeableKeys.count { manifestProbes[it]?.inline == false }
     println()
     println("=== yukon demo: dead code report ===")
     println("known probes: ${manifestProbes.size}, ever hit: ${everHit.size}, never hit: ${judgeable.size}")
@@ -273,6 +286,53 @@ private fun printNeverHitReport() {
             .forEach { (key, info) -> println("  SKIPPED: ${key.className} (instance ${key.serviceInstanceId}) - ${info.reason}") }
     }
     println("=====================================")
+}
+
+/**
+ * Reports every optional parameter found never supplied (every caller took the default, so the
+ * parameter can go) or always supplied (the default value is dead). Both rules require the
+ * target's own summed hit total to be above zero, and skip a target with no method probe at all
+ * (an abstract interface method) or an inline target, the same reasons [printNeverHitReport]
+ * excludes those. "Never supplied" is claimed only for a non-overridable target, since an
+ * overridable target's omissions are spread across whichever override actually ran. See ADR 0021.
+ */
+private fun printOmissionReport() {
+    println()
+    println("=== yukon demo: optional argument report ===")
+    val neverSupplied = mutableListOf<Pair<InstanceProbeKey, ProbeInfo>>()
+    val alwaysSupplied = mutableListOf<Pair<InstanceProbeKey, ProbeInfo>>()
+    for ((key, info) in manifestProbes) {
+        if (info.kind != ProbeKind.OPTIONAL_ARGUMENT || info.inline) continue
+        val targetHits =
+            manifestProbes.entries
+                .filter { (targetKey, targetInfo) ->
+                    targetKey.serviceInstanceId == key.serviceInstanceId &&
+                        targetInfo.kind == ProbeKind.METHOD &&
+                        targetInfo.className == info.className &&
+                        targetInfo.methodName == info.methodName &&
+                        targetInfo.methodDescriptor == info.methodDescriptor
+                }.sumOf { (targetKey, _) -> latestHitsTotal[targetKey] ?: 0L }
+        if (targetHits <= 0L) continue
+        val omitted = latestHitsTotal[key] ?: 0L
+        if (!info.overridable && omitted == targetHits) neverSupplied += key to info
+        if (omitted == 0L) alwaysSupplied += key to info
+    }
+    println("never supplied: ${neverSupplied.size}, always supplied: ${alwaysSupplied.size}")
+    neverSupplied
+        .sortedWith(compareBy({ it.second.className }, { it.second.methodName }, { it.second.parameterIndex }))
+        .forEach { (key, info) ->
+            println(
+                "  NEVER SUPPLIED: ${info.className}#${info.methodName}(${info.parameterName}) (instance ${key.serviceInstanceId})",
+            )
+        }
+    alwaysSupplied
+        .sortedWith(compareBy({ it.second.className }, { it.second.methodName }, { it.second.parameterIndex }))
+        .forEach { (key, info) ->
+            println(
+                "  ALWAYS SUPPLIED: ${info.className}#${info.methodName}(${info.parameterName}) (instance ${key.serviceInstanceId})",
+            )
+        }
+    println("==============================================")
 }
 
 /**

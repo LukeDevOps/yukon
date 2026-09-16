@@ -7,8 +7,12 @@ package io.github.lukedevops.yukon.export
  * manifest is sent once per (service, version). It lets the collector
  * resolve probe IDs to source locations, without the agent repeating that
  * metadata on every flush.
+ *
+ * [OPTIONAL_ARGUMENT] counts one omission of a Kotlin optional parameter,
+ * incremented in the compiler's `$default` method rather than the target
+ * function itself. See ADR 0021.
  */
-enum class ProbeKind { METHOD, BRANCH }
+enum class ProbeKind { METHOD, BRANCH, OPTIONAL_ARGUMENT }
 
 data class ResourceAttributes(
     val serviceName: String,
@@ -44,6 +48,13 @@ data class DeltaBatch(
  * [inline] marks a probe belonging to a Kotlin inline function, or a branch inside one: a Kotlin
  * caller copies the body into the call site instead of invoking this method, so a zero hit total
  * is not evidence the code never ran. See ADR 0022.
+ *
+ * [parameterIndex], [parameterName], and [overridable] are set only for an
+ * [ProbeKind.OPTIONAL_ARGUMENT] probe. A collector claims "never supplied" (every caller took the
+ * default) only when [overridable] is false, since an overridable target's omissions are spread
+ * across whichever override actually ran, which this location cannot relate; it claims "always
+ * supplied" (the default is dead) for any target. Neither claim is made when [inline] is true. See
+ * ADR 0021.
  */
 data class ProbeLocation(
     val classId: Int,
@@ -55,6 +66,9 @@ data class ProbeLocation(
     val line: Int,
     val branchIndex: Int?,
     val inline: Boolean = false,
+    val parameterIndex: Int? = null,
+    val parameterName: String? = null,
+    val overridable: Boolean = false,
 )
 
 /** A class the agent matched but could not instrument. It never gets a classId or any probes. */

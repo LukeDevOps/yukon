@@ -141,27 +141,38 @@ object ProtoPayloadCodec {
                 .setMethodDescriptor(location.methodDescriptor)
                 .setLine(location.line)
                 .setInline(location.inline)
+                .setParameterName(location.parameterName ?: "")
+                .setOverridable(location.overridable)
         location.branchIndex?.let { builder.branchIndex = it }
+        location.parameterIndex?.let { builder.parameterIndex = it }
         return builder.build()
     }
 
-    private fun fromProto(location: ProtoProbeLocation): ProbeLocation =
-        ProbeLocation(
+    private fun fromProto(location: ProtoProbeLocation): ProbeLocation {
+        val kind = fromProto(location.kind)
+        return ProbeLocation(
             classId = location.classId,
             probeIndex = location.probeIndex,
-            kind = fromProto(location.kind),
+            kind = kind,
             className = location.className,
             methodName = location.methodName,
             methodDescriptor = location.methodDescriptor,
             line = location.line,
             branchIndex = if (location.hasBranchIndex()) location.branchIndex else null,
             inline = location.inline,
+            parameterIndex = if (location.hasParameterIndex()) location.parameterIndex else null,
+            // parameter_name has no wire presence bit: an omission probe's name is "" precisely
+            // when its target has no debug info, so the field is only meaningful for that kind.
+            parameterName = if (kind == ProbeKind.OPTIONAL_ARGUMENT) location.parameterName else null,
+            overridable = location.overridable,
         )
+    }
 
     private fun toProto(kind: ProbeKind): ProtoProbeKind =
         when (kind) {
             ProbeKind.METHOD -> ProtoProbeKind.METHOD
             ProbeKind.BRANCH -> ProtoProbeKind.BRANCH
+            ProbeKind.OPTIONAL_ARGUMENT -> ProtoProbeKind.OPTIONAL_ARGUMENT
         }
 
     private fun fromProto(kind: ProtoProbeKind): ProbeKind =
@@ -172,6 +183,10 @@ object ProtoPayloadCodec {
 
             ProtoProbeKind.BRANCH -> {
                 ProbeKind.BRANCH
+            }
+
+            ProtoProbeKind.OPTIONAL_ARGUMENT -> {
+                ProbeKind.OPTIONAL_ARGUMENT
             }
 
             ProtoProbeKind.PROBE_KIND_UNSPECIFIED, ProtoProbeKind.UNRECOGNIZED -> {

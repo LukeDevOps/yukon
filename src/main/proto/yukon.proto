@@ -13,6 +13,9 @@ enum ProbeKind {
   PROBE_KIND_UNSPECIFIED = 0;
   METHOD = 1;
   BRANCH = 2;
+  // Counts one omission of a Kotlin optional parameter, incremented in the
+  // compiler's $default method rather than the target function itself.
+  OPTIONAL_ARGUMENT = 3;
 }
 
 message ResourceAttributes {
@@ -62,6 +65,18 @@ message ProbeLocation {
   // own call site instead of invoking this method, so a zero hits_total is not evidence of dead
   // code.
   bool inline = 9;
+  // Set only for an OPTIONAL_ARGUMENT probe: the parameter's zero-based value index, receivers
+  // not counted.
+  optional int32 parameter_index = 10;
+  // Set only for an OPTIONAL_ARGUMENT probe: the parameter's name from the target's
+  // LocalVariableTable, or empty when the target carries no debug info.
+  string parameter_name = 11;
+  // Set only for an OPTIONAL_ARGUMENT probe. A collector claims "never supplied" (omission total
+  // equals the target's hit total) only when this is false and inline is false, since an
+  // overridable target's omissions are spread across whichever override actually ran, which this
+  // location cannot relate. It claims "always supplied" (omission total zero while the target was
+  // hit) for any target, so long as inline is false.
+  bool overridable = 12;
 }
 
 // A class the agent matched but could not instrument (e.g. bytecode

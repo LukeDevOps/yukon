@@ -1,6 +1,7 @@
 package io.github.lukedevops.yukon.instrumentation
 
 import io.github.lukedevops.yukon.config.AgentConfig
+import io.github.lukedevops.yukon.export.ProbeKind
 import io.github.lukedevops.yukon.export.ResourceAttributes
 import io.github.lukedevops.yukon.registry.ProbeRegistry
 import net.bytebuddy.agent.ByteBuddyAgent
@@ -50,7 +51,14 @@ class InlineMarkingTest {
         val target = Class.forName("com.example.target.InlineTarget", true, fixtureLoader())
         target.getDeclaredConstructor().newInstance()
 
-        val probes = registry.manifest("test", null, "instance-1").probes.filter { it.className == "com.example.target.InlineTarget" }
+        // member has an optional parameter, so it also owns an OPTIONAL_ARGUMENT probe with the
+        // same methodName; every lookup below is scoped to the METHOD-kind probe to stay
+        // unambiguous.
+        val probes =
+            registry
+                .manifest("test", null, "instance-1")
+                .probes
+                .filter { it.className == "com.example.target.InlineTarget" && it.kind == ProbeKind.METHOD }
 
         assertTrue(probes.single { it.methodName == "member" }.inline, "member is declared inline")
         assertFalse(probes.single { it.methodName == "plain" }.inline, "plain is not inline")
@@ -91,7 +99,7 @@ class InlineMarkingTest {
             registry
                 .manifest("test", null, "instance-1")
                 .probes
-                .single { it.className == "com.example.target.InlineTarget" && it.methodName == "member" }
+                .single { it.className == "com.example.target.InlineTarget" && it.methodName == "member" && it.kind == ProbeKind.METHOD }
         val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null)).batch.deltas
         assertEquals(1L, deltas.single { it.probeIndex == memberProbe.probeIndex }.hitsTotal)
     }

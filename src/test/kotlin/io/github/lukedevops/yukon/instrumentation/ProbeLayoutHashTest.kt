@@ -37,4 +37,15 @@ class ProbeLayoutHashTest {
     fun `an empty signature list hashes to a stable constant`() {
         assertEquals(ProbeLayoutHash.of(emptyList()), ProbeLayoutHash.of(emptyList()))
     }
+
+    @Test
+    fun `a changed optional parameter set changes the hash`() {
+        // YukonInstrumentation folds one entry per default site into the layout hash, of the
+        // shape "<defaultName><defaultDescriptor>#optional<bits>". A bit added or removed must
+        // count as a layout change, the same as a method or branch site being added or removed.
+        val before = listOf("f\$default(IILjava/lang/Object;)I#optional2")
+        val after = listOf("f\$default(IILjava/lang/Object;)I#optional6")
+
+        assertNotEquals(ProbeLayoutHash.of(before), ProbeLayoutHash.of(after))
+    }
 }
