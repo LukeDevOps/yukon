@@ -211,15 +211,33 @@ class YukonInstrumentation(
         if (methods.isEmpty() && analysis.defaultSites.isEmpty()) return builder
         val branchSites = analysis.sites
 
+        // A resolved Scala default getter (ADR 0023) keeps its ordinary method-tier slot and
+        // advice; only its manifest row changes, from a METHOD probe under the getter's own name
+        // to an OPTIONAL_ARGUMENT probe naming the target it fills a default for.
+        val scalaGetterSitesByKey = analysis.scalaGetterSites.associateBy { it.getterName to it.getterDescriptor }
         val methodProbes =
             methods.map {
-                ProbeMeta(
-                    ProbeKind.METHOD,
-                    it.internalName,
-                    it.descriptor,
-                    line = analysis.firstLineOf(it.internalName, it.descriptor),
-                    inline = analysis.isInline(it.internalName, it.descriptor),
-                )
+                val getterSite = scalaGetterSitesByKey[it.internalName to it.descriptor]
+                if (getterSite != null) {
+                    ProbeMeta(
+                        ProbeKind.OPTIONAL_ARGUMENT,
+                        getterSite.targetName,
+                        getterSite.targetDescriptor,
+                        line = analysis.firstLineOf(getterSite.targetName, getterSite.targetDescriptor),
+                        inline = false,
+                        parameterIndex = getterSite.parameterIndex,
+                        parameterName = getterSite.parameterName,
+                        overridable = getterSite.overridable,
+                    )
+                } else {
+                    ProbeMeta(
+                        ProbeKind.METHOD,
+                        it.internalName,
+                        it.descriptor,
+                        line = analysis.firstLineOf(it.internalName, it.descriptor),
+                        inline = analysis.isInline(it.internalName, it.descriptor),
+                    )
+                }
             }
         // Each site contributes `outcomeCount` adjacent slots: 2 for a conditional jump, or the
         // case count plus one for a switch. BranchProbeAsmVisitorWrapper allocates them in this
@@ -280,6 +298,13 @@ class YukonInstrumentation(
                 Level.INFO,
                 "yukon: ${typeDescription.name}#$name$descriptor looks like a Kotlin default-argument method " +
                     "but its target could not be uniquely resolved, or no mask test was found; no omission probes woven",
+            )
+        }
+        for ((name, descriptor) in analysis.unresolvedScalaGetterSites) {
+            log.log(
+                Level.INFO,
+                "yukon: ${typeDescription.name}#$name$descriptor looks like a Scala default getter but its target " +
+                    "could not be uniquely resolved; reported as an ordinary method probe",
             )
         }
         val probes = methodProbes + branchProbes + omissionProbes

@@ -1,0 +1,206 @@
+package io.github.lukedevops.yukon.instrumentation
+
+import io.github.lukedevops.yukon.config.AgentConfig
+import io.github.lukedevops.yukon.export.ProbeKind
+import io.github.lukedevops.yukon.export.ResourceAttributes
+import io.github.lukedevops.yukon.instrumentation.branch.ScalaFixtures
+import io.github.lukedevops.yukon.registry.ProbeRegistry
+import net.bytebuddy.agent.ByteBuddyAgent
+import net.bytebuddy.agent.builder.ResettableClassFileTransformer
+import kotlin.test.AfterTest
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
+
+/**
+ * Proves Scala default-getter re-kinding (ADR 0023) through the real transform pipeline, on the
+ * `:fixtures-scala3` and `:fixtures-scala2` fixtures, the same way
+ * [OptionalArgumentInstrumentationTest] proves the Kotlin `$default` tier. [ProbeRegistry.manifest]
+ * is enough for every assertion here; nothing goes over the wire.
+ */
+class ScalaOptionalArgumentInstrumentationTest {
+    private var installedTransformer: ResettableClassFileTransformer? = null
+    private var installedYukon: YukonInstrumentation? = null
+
+    private fun install(
+        registry: ProbeRegistry,
+        config: AgentConfig,
+    ) {
+        val instrumentation = ByteBuddyAgent.install()
+        val yukon = YukonInstrumentation(config, registry)
+        installedYukon = yukon
+        installedTransformer = yukon.install(instrumentation)
+    }
+
+    @AfterTest
+    fun tearDown() {
+        installedTransformer?.let { installedYukon?.uninstall(ByteBuddyAgent.install(), it) }
+        installedTransformer = null
+        installedYukon = null
+    }
+
+    private fun newConfig() = AgentConfig.parse("includePackages=com.example.scalatarget")
+
+    private fun callDriver(
+        loader: ClassLoader,
+        methodName: String,
+        times: Int = 1,
+    ) {
+        val driver = Class.forName("com.example.scalatarget.Driver", true, loader)
+        val method = driver.getMethod(methodName)
+        repeat(times) { method.invoke(null) }
+    }
+
+    private fun `resolved getters get one OPTIONAL_ARGUMENT probe each and no METHOD probe of their own`(module: String) {
+        val registry = ProbeRegistry()
+        install(registry, newConfig())
+        val loader = ScalaFixtures.classLoader(module, javaClass.classLoader)
+
+        callDriver(loader, "callSimpleAllOmitted")
+
+        val probes = registry.manifest("test", null, "instance-1").probes.filter { it.className == "com.example.scalatarget.Simple" }
+        val optionalProbes = probes.filter { it.kind == ProbeKind.OPTIONAL_ARGUMENT }
+
+        assertEquals(2, optionalProbes.size, "b and c are optional; a is required")
+        for (probe in optionalProbes) {
+            assertEquals("f", probe.methodName, "the target's name, not the getter's")
+            assertEquals("(IILjava/lang/String;)I", probe.methodDescriptor)
+            assertTrue(probe.overridable, "f is not final, on a non-final class")
+        }
+        assertEquals(setOf(1, 2), optionalProbes.map { it.parameterIndex }.toSet())
+        assertEquals(setOf("b", "c"), optionalProbes.map { it.parameterName }.toSet())
+
+        assertTrue(
+            probes.none { it.kind == ProbeKind.METHOD && it.methodName.startsWith("f\$default\$") },
+            "the getter's own slot is reported as OPTIONAL_ARGUMENT, never also as a METHOD probe",
+        )
+        assertTrue(
+            probes.any { it.kind == ProbeKind.METHOD && it.methodName == "f" },
+            "f itself keeps its ordinary method probe",
+        )
+    }
+
+    @Test
+    fun `scala 3 - resolved getters get one OPTIONAL_ARGUMENT probe each and no METHOD probe of their own`() =
+        `resolved getters get one OPTIONAL_ARGUMENT probe each and no METHOD probe of their own`("scala3")
+
+    @Test
+    fun `scala 2 - resolved getters get one OPTIONAL_ARGUMENT probe each and no METHOD probe of their own`() =
+        `resolved getters get one OPTIONAL_ARGUMENT probe each and no METHOD probe of their own`("scala2")
+
+    private fun `omission counts match real omitting calls, and the target's own method hit count is unaffected`(module: String) {
+        val registry = ProbeRegistry()
+        install(registry, newConfig())
+        val loader = ScalaFixtures.classLoader(module, javaClass.classLoader)
+
+        callDriver(loader, "callSimpleAllOmitted", times = 3)
+        callDriver(loader, "callSimpleNoneOmitted", times = 2)
+
+        val probes = registry.manifest("test", null, "instance-1").probes.filter { it.className == "com.example.scalatarget.Simple" }
+        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null)).batch.deltas
+
+        fun hitsFor(
+            classId: Int,
+            probeIndex: Int,
+        ): Long = deltas.singleOrNull { it.classId == classId && it.probeIndex == probeIndex }?.hitsTotal ?: 0L
+
+        val bProbe = probes.single { it.kind == ProbeKind.OPTIONAL_ARGUMENT && it.parameterIndex == 1 }
+        val cProbe = probes.single { it.kind == ProbeKind.OPTIONAL_ARGUMENT && it.parameterIndex == 2 }
+        val fProbe =
+            probes.single {
+                it.kind == ProbeKind.METHOD && it.methodName == "f" && it.methodDescriptor == "(IILjava/lang/String;)I"
+            }
+
+        assertEquals(3L, hitsFor(bProbe.classId, bProbe.probeIndex), "b is omitted by the three all-omitted calls only")
+        assertEquals(3L, hitsFor(cProbe.classId, cProbe.probeIndex), "c is omitted by the three all-omitted calls only")
+        assertEquals(5L, hitsFor(fProbe.classId, fProbe.probeIndex), "f itself is called by all five driver calls, omitted or not")
+    }
+
+    @Test
+    fun `scala 3 - omission counts match real omitting calls`() =
+        `omission counts match real omitting calls, and the target's own method hit count is unaffected`("scala3")
+
+    @Test
+    fun `scala 2 - omission counts match real omitting calls`() =
+        `omission counts match real omitting calls, and the target's own method hit count is unaffected`("scala2")
+
+    /**
+     * `Plain.f`'s default is resolved statically, so a call through a `Plain`-typed reference
+     * whose runtime class only overrides `f` (not its default) still counts against `Plain`'s own
+     * getter probe, exactly the way Scala itself resolves the omitted argument.
+     */
+    private fun `a receiver whose class overrides only f is counted on the base class's getter probe`(module: String) {
+        val registry = ProbeRegistry()
+        install(registry, newConfig())
+        val loader = ScalaFixtures.classLoader(module, javaClass.classLoader)
+
+        callDriver(loader, "callThroughPlainOverridesOnly")
+
+        val probe =
+            registry
+                .manifest("test", null, "instance-1")
+                .probes
+                .single { it.className == "com.example.scalatarget.Plain" && it.kind == ProbeKind.OPTIONAL_ARGUMENT }
+        assertEquals("f", probe.methodName)
+        assertTrue(probe.overridable, "Plain.f is not final, on a non-final class")
+
+        val hits =
+            registry
+                .computeDeltaBatch(ResourceAttributes("test", null, "i-1", null))
+                .batch.deltas
+                .single { it.classId == probe.classId && it.probeIndex == probe.probeIndex }
+                .hitsTotal
+        assertEquals(1L, hits)
+
+        assertTrue(
+            registry.manifest("test", null, "instance-1").probes.none {
+                it.className == "com.example.scalatarget.PlainOverridesOnly" && it.kind == ProbeKind.OPTIONAL_ARGUMENT
+            },
+            "PlainOverridesOnly declares no default of its own, so it has no omission probe to hit",
+        )
+    }
+
+    @Test
+    fun `scala 3 - a receiver whose class overrides only f is counted on the base class's getter probe`() =
+        `a receiver whose class overrides only f is counted on the base class's getter probe`("scala3")
+
+    @Test
+    fun `scala 2 - a receiver whose class overrides only f is counted on the base class's getter probe`() =
+        `a receiver whose class overrides only f is counted on the base class's getter probe`("scala2")
+
+    /**
+     * Scala 2.13's case-class companion gets its own `apply$default$N`, resolved by the same
+     * general same-class rule as any other getter, onto `Cc$.apply` in the same class. Scala 3
+     * has no such method (see [io.github.lukedevops.yukon.instrumentation.branch.ScalaGetterResolutionTest]),
+     * so this is Scala-2-specific.
+     */
+    @Test
+    fun `scala 2 - apply defaults re-kind onto Cc dollar's own apply in the same class`() {
+        val registry = ProbeRegistry()
+        install(registry, newConfig())
+        val loader = ScalaFixtures.classLoader("scala2", javaClass.classLoader)
+
+        callDriver(loader, "callCaseClassApply", times = 2)
+
+        val probes = registry.manifest("test", null, "instance-1").probes.filter { it.className == "com.example.scalatarget.Cc\$" }
+        val optionalProbes = probes.filter { it.kind == ProbeKind.OPTIONAL_ARGUMENT }
+        assertEquals(2, optionalProbes.size)
+        for (probe in optionalProbes) {
+            assertEquals("apply", probe.methodName)
+            assertEquals("(II)Lcom/example/scalatarget/Cc;", probe.methodDescriptor)
+            assertFalse(probe.overridable, "Cc\$ is a module; its class is final")
+        }
+
+        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null)).batch.deltas
+
+        fun hitsFor(parameterIndex: Int): Long {
+            val probe = optionalProbes.single { it.parameterIndex == parameterIndex }
+            return deltas.singleOrNull { it.classId == probe.classId && it.probeIndex == probe.probeIndex }?.hitsTotal ?: 0L
+        }
+
+        // Driver.callCaseClassApply calls Cc.apply(1), supplying a explicitly and omitting b.
+        assertEquals(0L, hitsFor(0), "a is always supplied explicitly")
+        assertEquals(2L, hitsFor(1), "b is omitted by both calls")
+    }
+}
