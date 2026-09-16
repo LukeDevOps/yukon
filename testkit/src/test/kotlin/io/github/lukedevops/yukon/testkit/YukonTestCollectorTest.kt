@@ -1,5 +1,7 @@
 package io.github.lukedevops.yukon.testkit
 
+import io.github.lukedevops.yukon.export.CallEdge
+import io.github.lukedevops.yukon.export.ClassSupertypes
 import io.github.lukedevops.yukon.export.DeclaredClass
 import io.github.lukedevops.yukon.export.DeclaredMethod
 import io.github.lukedevops.yukon.export.DeltaBatch
@@ -55,7 +57,8 @@ class YukonTestCollectorTest {
         methodName: String,
         methodDescriptor: String,
         line: Int,
-    ) = ProbeLocation(classId, probeIndex, ProbeKind.METHOD, className, methodName, methodDescriptor, line, null)
+        calls: List<CallEdge> = emptyList(),
+    ) = ProbeLocation(classId, probeIndex, ProbeKind.METHOD, className, methodName, methodDescriptor, line, null, calls = calls)
 
     private fun omissionProbe(
         classId: Int,
@@ -1043,5 +1046,377 @@ class YukonTestCollectorTest {
         )
 
         assertEquals(listOf("jax-rs", "ktor"), target.disabledEndpointModules().map { it.module })
+    }
+
+    @Test
+    fun `callEdges returns the verbatim callees for a method and throws for an unknown method`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+        exporter.exportManifest(
+            ProbeManifest(
+                "svc",
+                null,
+                probes =
+                    listOf(
+                        methodProbe(
+                            1,
+                            0,
+                            "com.acme.Foo",
+                            "run",
+                            "()V",
+                            1,
+                            calls = listOf(CallEdge("com.acme.Bar", "step", "()V", virtual = false)),
+                        ),
+                    ),
+                serviceInstanceId = "i-1",
+            ),
+        )
+
+        assertEquals(listOf(CallEdge("com.acme.Bar", "step", "()V", false)), target.callEdges("com.acme.Foo", "run"))
+        assertFailsWith<UnknownProbeException> { target.callEdges("com.acme.Foo", "missing") }
+    }
+
+    @Test
+    fun `unreachedClusters attributes a never-hit chain to the never-hit method a hit method calls`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+        exporter.exportManifest(
+            ProbeManifest(
+                "svc",
+                null,
+                probes =
+                    listOf(
+                        methodProbe(1, 0, "com.acme.A", "run", "()V", 1, calls = listOf(CallEdge("com.acme.B", "step", "()V", false))),
+                        methodProbe(1, 1, "com.acme.B", "step", "()V", 2, calls = listOf(CallEdge("com.acme.C", "leaf", "()V", false))),
+                        methodProbe(1, 2, "com.acme.C", "leaf", "()V", 3),
+                    ),
+                serviceInstanceId = "i-1",
+            ),
+        )
+        exporter.exportDeltaBatch(
+            DeltaBatch(ResourceAttributes("svc", null, "i-1", null), listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 5L))),
+        )
+
+        val clusters = target.unreachedClusters()
+        assertEquals(1, clusters.size)
+        val cluster = clusters.single()
+        assertEquals(RootKind.REACHED_FROM_HIT, cluster.rootKind)
+        assertEquals("com.acme.B", cluster.root.className)
+        assertEquals("step", cluster.root.methodName)
+        assertEquals(
+            listOf("com.acme.B" to "step", "com.acme.C" to "leaf"),
+            cluster.members.map { it.className to it.methodName },
+        )
+    }
+
+    @Test
+    fun `unreachedClusters reports an uncalled root for a never-hit method with no caller at all`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+        exporter.exportManifest(
+            ProbeManifest("svc", null, probes = listOf(methodProbe(1, 0, "com.acme.D", "job", "()V", 1)), serviceInstanceId = "i-1"),
+        )
+
+        val clusters = target.unreachedClusters()
+        assertEquals(1, clusters.size)
+        val cluster = clusters.single()
+        assertEquals(RootKind.UNCALLED, cluster.rootKind)
+        assertEquals("com.acme.D", cluster.root.className)
+        assertEquals(listOf("job"), cluster.members.map { it.methodName })
+    }
+
+    @Test
+    fun `a virtual edge widens through classSupertypes to a never-hit override, a non-virtual edge does not`() {
+        fun manifestWith(virtual: Boolean) =
+            ProbeManifest(
+                "svc",
+                null,
+                probes =
+                    listOf(
+                        methodProbe(
+                            1,
+                            0,
+                            "com.acme.A",
+                            "run",
+                            "()V",
+                            1,
+                            calls = listOf(CallEdge("com.acme.Svc", "charge", "()V", virtual = virtual)),
+                        ),
+                        // Svc is a pure interface: its abstract charge() has no probe and no node
+                        // anywhere, so widening has to start at the owner named in the edge.
+                        methodProbe(3, 0, "com.acme.StripeSvc", "charge", "()V", 20),
+                    ),
+                classSupertypes = listOf(ClassSupertypes(3, "java.lang.Object", listOf("com.acme.Svc"))),
+                serviceInstanceId = "i-1",
+            )
+
+        run {
+            val target = startCollector()
+            val exporter = exporterFor(target)
+            exporter.exportManifest(manifestWith(virtual = true))
+            exporter.exportDeltaBatch(
+                DeltaBatch(ResourceAttributes("svc", null, "i-1", null), listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 4L))),
+            )
+
+            val stripeCluster = target.unreachedClusters().single { it.root.className == "com.acme.StripeSvc" }
+            assertEquals(RootKind.REACHED_FROM_HIT, stripeCluster.rootKind)
+            assertEquals(listOf("com.acme.StripeSvc"), stripeCluster.members.map { it.className })
+        }
+
+        run {
+            val target = startCollector()
+            val exporter = exporterFor(target)
+            exporter.exportManifest(manifestWith(virtual = false))
+            exporter.exportDeltaBatch(
+                DeltaBatch(ResourceAttributes("svc", null, "i-1", null), listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 4L))),
+            )
+
+            // Without widening, StripeSvc.charge has no resolved caller at all: it can still surface
+            // as its own uncalled root, but never as reached from A.run.
+            val stripeCluster = target.unreachedClusters().single { it.root.className == "com.acme.StripeSvc" }
+            assertEquals(RootKind.UNCALLED, stripeCluster.rootKind)
+        }
+    }
+
+    @Test
+    fun `widening starts at the edge's owner, so a sibling subtype's override is never a target`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+        exporter.exportManifest(
+            ProbeManifest(
+                "svc",
+                null,
+                probes =
+                    listOf(
+                        methodProbe(
+                            1,
+                            0,
+                            "com.acme.A",
+                            "run",
+                            "()V",
+                            1,
+                            calls = listOf(CallEdge("com.acme.Left", "m", "()V", virtual = true)),
+                        ),
+                        methodProbe(2, 0, "com.acme.Base", "m", "()V", 5),
+                        methodProbe(3, 0, "com.acme.Left", "m", "()V", 10),
+                        methodProbe(4, 0, "com.acme.Right", "m", "()V", 15),
+                        methodProbe(5, 0, "com.acme.LeftChild", "m", "()V", 30),
+                    ),
+                classSupertypes =
+                    listOf(
+                        ClassSupertypes(3, "com.acme.Base", emptyList()),
+                        ClassSupertypes(4, "com.acme.Base", emptyList()),
+                        ClassSupertypes(5, "com.acme.Left", emptyList()),
+                    ),
+                serviceInstanceId = "i-1",
+            ),
+        )
+        exporter.exportDeltaBatch(
+            DeltaBatch(ResourceAttributes("svc", null, "i-1", null), listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 4L))),
+        )
+
+        val byRoot = target.unreachedClusters().associateBy { it.root.className }
+        // A receiver typed Left can be a Left or a LeftChild, never a Right, and never a bare Base.
+        assertEquals(RootKind.REACHED_FROM_HIT, byRoot.getValue("com.acme.Left").rootKind)
+        assertEquals(RootKind.REACHED_FROM_HIT, byRoot.getValue("com.acme.LeftChild").rootKind)
+        assertEquals(RootKind.UNCALLED, byRoot.getValue("com.acme.Right").rootKind)
+        assertEquals(RootKind.UNCALLED, byRoot.getValue("com.acme.Base").rootKind)
+    }
+
+    @Test
+    fun `an edge to an inherited method resolves through the declaring supertype`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+        exporter.exportManifest(
+            ProbeManifest(
+                "svc",
+                null,
+                probes =
+                    listOf(
+                        methodProbe(
+                            1,
+                            0,
+                            "com.acme.Caller",
+                            "run",
+                            "()V",
+                            1,
+                            calls = listOf(CallEdge("com.acme.Sub", "inherited", "()V", virtual = true)),
+                        ),
+                        methodProbe(2, 0, "com.acme.Base", "inherited", "()V", 9),
+                        methodProbe(3, 0, "com.acme.Sub", "<init>", "()V", 15),
+                    ),
+                classSupertypes = listOf(ClassSupertypes(3, "com.acme.Base", emptyList())),
+                serviceInstanceId = "i-1",
+            ),
+        )
+        exporter.exportDeltaBatch(
+            DeltaBatch(ResourceAttributes("svc", null, "i-1", null), listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 1L))),
+        )
+
+        val cluster = target.unreachedClusters().single { it.root.className == "com.acme.Base" }
+        assertEquals(RootKind.REACHED_FROM_HIT, cluster.rootKind)
+        assertEquals(listOf("com.acme.Base" to "inherited"), cluster.members.map { it.className to it.methodName })
+    }
+
+    @Test
+    fun `a node whose callers sit in two clusters belongs to neither`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+        exporter.exportManifest(
+            ProbeManifest(
+                "svc",
+                null,
+                probes =
+                    listOf(
+                        methodProbe(
+                            1,
+                            0,
+                            "com.acme.H",
+                            "start",
+                            "()V",
+                            1,
+                            calls =
+                                listOf(
+                                    CallEdge("com.acme.R1", "step", "()V", false),
+                                    CallEdge("com.acme.R2", "step", "()V", false),
+                                ),
+                        ),
+                        methodProbe(1, 1, "com.acme.R1", "step", "()V", 2, calls = listOf(CallEdge("com.acme.S", "shared", "()V", false))),
+                        methodProbe(1, 2, "com.acme.R2", "step", "()V", 3, calls = listOf(CallEdge("com.acme.S", "shared", "()V", false))),
+                        methodProbe(1, 3, "com.acme.S", "shared", "()V", 4),
+                    ),
+                serviceInstanceId = "i-1",
+            ),
+        )
+        exporter.exportDeltaBatch(
+            DeltaBatch(ResourceAttributes("svc", null, "i-1", null), listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 1L))),
+        )
+
+        val clusters = target.unreachedClusters()
+        val r1Cluster = clusters.single { it.root.className == "com.acme.R1" }
+        val r2Cluster = clusters.single { it.root.className == "com.acme.R2" }
+        assertEquals(listOf("com.acme.R1"), r1Cluster.members.map { it.className })
+        assertEquals(listOf("com.acme.R2"), r2Cluster.members.map { it.className })
+        assertTrue(clusters.none { it.root.className == "com.acme.S" || it.members.any { m -> m.className == "com.acme.S" } })
+    }
+
+    @Test
+    fun `a cycle of never-hit nodes with no outside caller has no root`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+        exporter.exportManifest(
+            ProbeManifest(
+                "svc",
+                null,
+                probes =
+                    listOf(
+                        methodProbe(1, 0, "com.acme.P", "loop", "()V", 1, calls = listOf(CallEdge("com.acme.Q", "loop", "()V", false))),
+                        methodProbe(1, 1, "com.acme.Q", "loop", "()V", 2, calls = listOf(CallEdge("com.acme.P", "loop", "()V", false))),
+                    ),
+                serviceInstanceId = "i-1",
+            ),
+        )
+
+        assertTrue(target.unreachedClusters().isEmpty())
+    }
+
+    @Test
+    fun `unreachedClusters attributes a chain into never-loaded classes from a complete static baseline`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+        exporter.exportManifest(
+            ProbeManifest(
+                "svc",
+                null,
+                probes =
+                    listOf(
+                        methodProbe(1, 0, "com.acme.A", "run", "()V", 1, calls = listOf(CallEdge("com.acme.B", "helper", "()V", false))),
+                    ),
+                serviceInstanceId = "i-1",
+            ),
+        )
+        exporter.exportDeltaBatch(
+            DeltaBatch(ResourceAttributes("svc", null, "i-1", null), listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 2L))),
+        )
+        exporter.exportStaticBaseline(
+            StaticBaseline(
+                resource = ResourceAttributes("svc", null, "i-1", null),
+                declaredClasses =
+                    listOf(
+                        DeclaredClass(
+                            "com.acme.B",
+                            listOf(DeclaredMethod("helper", "()V", calls = listOf(CallEdge("com.acme.C", "leaf", "()V", false)))),
+                        ),
+                        DeclaredClass("com.acme.C", listOf(DeclaredMethod("leaf", "()V"))),
+                    ),
+                scannedAt = 1000L,
+                chunkIndex = 0,
+                chunkCount = 1,
+            ),
+        )
+
+        val cluster = target.unreachedClusters().single { it.root.className == "com.acme.B" }
+        assertEquals(RootKind.REACHED_FROM_HIT, cluster.rootKind)
+        assertEquals(
+            listOf("com.acme.B" to "helper", "com.acme.C" to "leaf"),
+            cluster.members.map { it.className to it.methodName },
+        )
+        assertTrue(cluster.members.all { it.neverLoaded })
+        assertTrue(cluster.members.all { it.line == -1 })
+        assertEquals(2, cluster.neverLoadedClasses)
+    }
+
+    @Test
+    fun `unreachedClusters ignores an incomplete static baseline scan`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+        exporter.exportManifest(
+            ProbeManifest(
+                "svc",
+                null,
+                probes =
+                    listOf(
+                        methodProbe(1, 0, "com.acme.A", "run", "()V", 1, calls = listOf(CallEdge("com.acme.B", "helper", "()V", false))),
+                    ),
+                serviceInstanceId = "i-1",
+            ),
+        )
+        exporter.exportDeltaBatch(
+            DeltaBatch(ResourceAttributes("svc", null, "i-1", null), listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 2L))),
+        )
+        exporter.exportStaticBaseline(
+            StaticBaseline(
+                resource = ResourceAttributes("svc", null, "i-1", null),
+                declaredClasses = listOf(DeclaredClass("com.acme.B", listOf(DeclaredMethod("helper", "()V")))),
+                scannedAt = 1000L,
+                chunkIndex = 0,
+                chunkCount = 2,
+            ),
+        )
+
+        assertTrue(target.unreachedClusters().none { it.root.className == "com.acme.B" })
+    }
+
+    @Test
+    fun `an edge into an inline method resolves to nothing since inline methods are never nodes`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+        exporter.exportManifest(
+            ProbeManifest(
+                "svc",
+                null,
+                probes =
+                    listOf(
+                        methodProbe(1, 0, "com.acme.A", "run", "()V", 1, calls = listOf(CallEdge("com.acme.B", "helper", "()V", false))),
+                        ProbeLocation(2, 0, ProbeKind.METHOD, "com.acme.B", "helper", "()V", 9, null, inline = true),
+                    ),
+                serviceInstanceId = "i-1",
+            ),
+        )
+        exporter.exportDeltaBatch(
+            DeltaBatch(ResourceAttributes("svc", null, "i-1", null), listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 2L))),
+        )
+
+        assertTrue(target.unreachedClusters().none { c -> c.members.any { it.className == "com.acme.B" } })
     }
 }
