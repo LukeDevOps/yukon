@@ -1224,6 +1224,62 @@ class YukonTestCollectorTest {
     }
 
     @Test
+    fun `a call into a class implies a call into its clinit, so the initialiser joins the cluster instead of rooting one`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+        exporter.exportManifest(
+            ProbeManifest(
+                "svc",
+                null,
+                probes =
+                    listOf(
+                        methodProbe(
+                            1,
+                            0,
+                            "com.acme.A",
+                            "run",
+                            "()V",
+                            1,
+                            calls = listOf(CallEdge("com.acme.B", "step", "()V", virtual = false)),
+                        ),
+                        methodProbe(
+                            2,
+                            0,
+                            "com.acme.B",
+                            "step",
+                            "()V",
+                            5,
+                            calls = listOf(CallEdge("com.acme.Repo", "find", "()V", virtual = false)),
+                        ),
+                        methodProbe(3, 0, "com.acme.Repo", "find", "()V", 9),
+                        methodProbe(
+                            3,
+                            1,
+                            "com.acme.Repo",
+                            "<clinit>",
+                            "()V",
+                            1,
+                            calls = listOf(CallEdge("com.acme.Repo", "<init>", "()V", virtual = false)),
+                        ),
+                        methodProbe(3, 2, "com.acme.Repo", "<init>", "()V", 1),
+                    ),
+                serviceInstanceId = "i-1",
+            ),
+        )
+        exporter.exportDeltaBatch(
+            DeltaBatch(ResourceAttributes("svc", null, "i-1", null), listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 4L))),
+        )
+
+        val cluster = target.unreachedClusters().single()
+        assertEquals("step", cluster.root.methodName)
+        assertEquals(
+            listOf("<clinit>", "<init>", "find", "step"),
+            cluster.members.map { it.methodName }.sorted(),
+            "Repo's initialiser and constructor belong to the cluster that first uses the class",
+        )
+    }
+
+    @Test
     fun `an edge to an inherited method resolves through the declaring supertype`() {
         val target = startCollector()
         val exporter = exporterFor(target)

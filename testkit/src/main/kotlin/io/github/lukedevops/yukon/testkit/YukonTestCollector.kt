@@ -643,6 +643,11 @@ class YukonTestCollector private constructor(
      * drop every edge into a pure interface, which is the constructor-injected case supertypes
      * exist for; and a receiver typed as the owner can only be the owner or one of its subtypes,
      * never a sibling under some ancestor.
+     * Every resolved edge into a class also implies an edge into that class's `<clinit>` node
+     * when it has one: no bytecode ever calls `<clinit>`, the JVM runs it on the class's first
+     * active use, and a resolved call into the class is exactly such a use. Without this a
+     * never-initialised class's `<clinit>` would be an uncalled root of its own beside the
+     * cluster that actually owns it.
      */
     private fun computeCallGraph(): CallGraph {
         val nodes = buildNodes()
@@ -658,6 +663,10 @@ class YukonTestCollector private constructor(
                 if (edge.virtual && edge.methodName != "<init>" && edge.methodName != "<clinit>") {
                     targets += widenToSubtypes(nodes, reverseSubtypes, edge.className, edge.methodName, edge.methodDescriptor)
                 }
+            }
+            for (target in targets.toList()) {
+                val typeInitializer = NodeKey(target.className, "<clinit>", "()V")
+                if (typeInitializer in nodes) targets += typeInitializer
             }
             targets -= nodeKey
             resolvedEdges[nodeKey] = targets

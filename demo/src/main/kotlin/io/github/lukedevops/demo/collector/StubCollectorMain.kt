@@ -164,6 +164,51 @@ private data class ScanProgress(
 
 private val scans = ConcurrentHashMap<ScanKey, ScanProgress>()
 
+/** One node of the call graph [computeUnreachedClusters] resolves: a probed method, by identity alone. See ADR 0024. */
+private data class NodeKey(
+    val className: String,
+    val methodName: String,
+    val methodDescriptor: String,
+)
+
+/**
+ * A [NodeKey]'s reporting fields and raw, unresolved outgoing call edges. [neverLoaded] marks a
+ * node that exists only because a complete static baseline declared it, never a manifest: its
+ * [hits] is fixed at zero, since the dynamic tier never registered its class at all.
+ */
+private data class NodeInfo(
+    val line: Int,
+    val neverLoaded: Boolean,
+    val hits: Long,
+    val edges: Set<CallEdgeInfo>,
+)
+
+/** The resolved call graph: every node, its resolved outgoing edges, and the reverse (caller) index. */
+private class CallGraph(
+    val nodes: Map<NodeKey, NodeInfo>,
+    val resolvedEdges: Map<NodeKey, Set<NodeKey>>,
+    val callersOf: Map<NodeKey, Set<NodeKey>>,
+)
+
+/** Which of the two root shapes ADR 0024 distinguishes an [UnreachedClusterInfo] by. */
+private enum class ClusterRootKind { REACHED_FROM_HIT, UNCALLED }
+
+/** One member of an unreached cluster, printed by [printUnreachedClusterReport]. */
+private data class ClusterMember(
+    val className: String,
+    val methodName: String,
+    val methodDescriptor: String,
+    val neverLoaded: Boolean,
+)
+
+/** A root plus every never-hit method reachable from it whose every in-scope caller is itself in the cluster. */
+private data class UnreachedClusterInfo(
+    val root: ClusterMember,
+    val rootKind: ClusterRootKind,
+    val members: List<ClusterMember>,
+    val neverLoadedClasses: Int,
+)
+
 /**
  * Stands in for the real collector, which lives outside this repo.
  *
@@ -188,6 +233,7 @@ fun main() {
             printOmissionReport()
             printEndpointReport()
             printNeverLoadedReport()
+            printUnreachedClusterReport()
         },
     )
 }
@@ -513,4 +559,250 @@ private fun printNeverLoadedReport() {
             .forEach { (className, reason) -> println("  UNREADABLE: $className - $reason") }
     }
     println("===========================================================")
+}
+
+/** Orders a [ClusterMember] the way [printNeverHitReport] orders a probe: by class, then method, then descriptor. */
+private val clusterMemberComparator: Comparator<ClusterMember> = compareBy({ it.className }, { it.methodName }, { it.methodDescriptor })
+
+/**
+ * Reports every unreached cluster: a root plus every never-hit method reachable from it whose
+ * every in-scope caller is itself already in the cluster. Applies the same rule
+ * `YukonTestCollector.unreachedClusters` applies within a test JVM, over the manifest call edges,
+ * class supertypes, and complete-baseline declarations this stub already stores. See ADR 0024 and
+ * CONTEXT.md, "Unreached cluster".
+ */
+private fun printUnreachedClusterReport() {
+    println()
+    println("=== yukon demo: unreached clusters ===")
+    val clusters = computeUnreachedClusters()
+    println("clusters: ${clusters.size}")
+    clusters.forEach { cluster ->
+        val rootLabel = if (cluster.rootKind == ClusterRootKind.REACHED_FROM_HIT) "reached from hit" else "uncalled"
+        println(
+            "UNREACHED CLUSTER: root ${cluster.root.className}#${cluster.root.methodName} ($rootLabel), " +
+                "${cluster.members.size} methods, ${cluster.neverLoadedClasses} never-loaded classes",
+        )
+        cluster.members.forEach { member ->
+            val suffix = if (member.neverLoaded) " (never loaded)" else ""
+            println("  ${member.className}#${member.methodName}$suffix")
+        }
+    }
+    println("=======================================")
+}
+
+/**
+ * Every unreached cluster in the call graph, sorted by member count descending, then by root. A
+ * root is a never-hit method with at least one hit caller ([ClusterRootKind.REACHED_FROM_HIT]) or
+ * with no in-scope caller at all ([ClusterRootKind.UNCALLED]).
+ */
+private fun computeUnreachedClusters(): List<UnreachedClusterInfo> {
+    val graph = computeCallGraph()
+
+    fun isHit(key: NodeKey) = (graph.nodes[key]?.hits ?: 0L) > 0L
+
+    val roots =
+        graph.nodes.keys.filter { !isHit(it) }.mapNotNull { key ->
+            val callers = graph.callersOf[key].orEmpty()
+            when {
+                callers.isEmpty() -> key to ClusterRootKind.UNCALLED
+                callers.any { isHit(it) } -> key to ClusterRootKind.REACHED_FROM_HIT
+                else -> null
+            }
+        }
+
+    return roots
+        .map { (rootKey, rootKind) -> buildUnreachedCluster(graph, rootKey, rootKind, ::isHit) }
+        .sortedWith(
+            compareByDescending<UnreachedClusterInfo> { it.members.size }
+                .thenComparing({ it.root }, clusterMemberComparator),
+        )
+}
+
+/**
+ * Grows [rootKey]'s cluster by fixpoint: repeatedly add a never-hit node reachable by a resolved
+ * edge from a current member, once every one of that node's callers is itself already in the
+ * cluster. A node whose callers sit outside the cluster, or a cycle of never-hit nodes with no
+ * outside caller, is never added.
+ */
+private fun buildUnreachedCluster(
+    graph: CallGraph,
+    rootKey: NodeKey,
+    rootKind: ClusterRootKind,
+    isHit: (NodeKey) -> Boolean,
+): UnreachedClusterInfo {
+    val members = mutableSetOf(rootKey)
+    var changed = true
+    while (changed) {
+        changed = false
+        for (member in members.toList()) {
+            for (target in graph.resolvedEdges[member].orEmpty()) {
+                if (target in members || isHit(target)) continue
+                val callers = graph.callersOf[target].orEmpty()
+                if (callers.isNotEmpty() && members.containsAll(callers)) {
+                    members += target
+                    changed = true
+                }
+            }
+        }
+    }
+    val memberList = members.map { toClusterMember(graph.nodes.getValue(it), it) }.sortedWith(clusterMemberComparator)
+    val neverLoadedClasses =
+        memberList
+            .filter { it.neverLoaded }
+            .map { it.className }
+            .distinct()
+            .size
+    return UnreachedClusterInfo(toClusterMember(graph.nodes.getValue(rootKey), rootKey), rootKind, memberList, neverLoadedClasses)
+}
+
+private fun toClusterMember(
+    info: NodeInfo,
+    key: NodeKey,
+): ClusterMember = ClusterMember(key.className, key.methodName, key.methodDescriptor, info.neverLoaded)
+
+/**
+ * Builds every node, resolves its edges against the known supertype graph, and indexes callers.
+ * An edge resolves to the union of two lookups, either of which may find nothing: the first node
+ * up the owner's supertype chain, which is an inherited concrete declaration, and, for a virtual
+ * call, every node with the same name and descriptor on a transitive subtype of the owner.
+ * Widening starts at the owner, not at the declaring type: an abstract interface method has no
+ * node anywhere, so requiring the up-walk to succeed would drop every edge into a pure interface,
+ * and a receiver typed as the owner can only be the owner or one of its subtypes, never a sibling
+ * under some ancestor. Declared classes and their supertypes are consulted only from scans where
+ * every chunk has arrived; see [printNeverLoadedReport] for why a partial scan cannot be diffed.
+ */
+private fun computeCallGraph(): CallGraph {
+    val scansComplete = scans.values.all { it.complete }
+    val declaredClasses = if (scansComplete) staticallyDeclaredClasses else emptyMap()
+    val declaredSupertypes = if (scansComplete) staticallyDeclaredSupertypes else emptyMap()
+    val nodes = buildClusterNodes(declaredClasses)
+    val supertypesByClassName = buildSupertypesByClassName(declaredSupertypes)
+    val reverseSubtypes = buildReverseSubtypes(supertypesByClassName)
+    val resolvedEdges = mutableMapOf<NodeKey, Set<NodeKey>>()
+    val callersOf = mutableMapOf<NodeKey, MutableSet<NodeKey>>()
+    for ((nodeKey, info) in nodes) {
+        val targets = mutableSetOf<NodeKey>()
+        for (edge in info.edges) {
+            findDeclaringType(nodes, supertypesByClassName, edge.className, edge.methodName, edge.methodDescriptor)?.let {
+                targets += NodeKey(it, edge.methodName, edge.methodDescriptor)
+            }
+            if (edge.virtual && edge.methodName != "<init>" && edge.methodName != "<clinit>") {
+                targets += widenToSubtypes(nodes, reverseSubtypes, edge.className, edge.methodName, edge.methodDescriptor)
+            }
+        }
+        // A resolved call into a class is its first active use, which is what runs <clinit>;
+        // no bytecode ever calls it directly. Same rule as YukonTestCollector.computeCallGraph.
+        for (target in targets.toList()) {
+            val typeInitializer = NodeKey(target.className, "<clinit>", "()V")
+            if (typeInitializer in nodes) targets += typeInitializer
+        }
+        targets -= nodeKey
+        resolvedEdges[nodeKey] = targets
+        for (target in targets) callersOf.getOrPut(target) { mutableSetOf() } += nodeKey
+    }
+    return CallGraph(nodes, resolvedEdges, callersOf)
+}
+
+/**
+ * Every node: a manifest METHOD probe, non-inline, merged across instances by
+ * (class, method, descriptor) with hits summed and edges unioned with any matching declaration
+ * from [declaredClasses]; plus, for a class [declaredClasses] names that no manifest ever
+ * mentioned, each of its non-inline declared methods, with zero hits.
+ */
+private fun buildClusterNodes(declaredClasses: Map<String, List<DeclaredMethodInfo>>): Map<NodeKey, NodeInfo> {
+    val nodes = mutableMapOf<NodeKey, NodeInfo>()
+    val manifestGroups =
+        manifestProbes.entries
+            .filter { (_, probe) -> probe.kind == ProbeKind.METHOD && !probe.inline }
+            .groupBy { (_, probe) -> NodeKey(probe.className, probe.methodName, probe.methodDescriptor) }
+    for ((nodeKey, entries) in manifestGroups) {
+        val hits = entries.sumOf { (key, _) -> latestHitsTotal[key] ?: 0L }
+        val edges = entries.flatMap { (key, _) -> manifestCallEdges[key].orEmpty() }.toMutableSet()
+        declaredClasses[nodeKey.className]
+            ?.filter { it.methodName == nodeKey.methodName && it.methodDescriptor == nodeKey.methodDescriptor }
+            ?.forEach { edges += it.calls }
+        val representative = entries.first().value
+        nodes[nodeKey] = NodeInfo(line = representative.line, neverLoaded = false, hits = hits, edges = edges)
+    }
+    for ((className, methods) in declaredClasses) {
+        if (className in dynamicallyKnownClassNames) continue
+        for (method in methods) {
+            if (method.inline) continue
+            val nodeKey = NodeKey(className, method.methodName, method.methodDescriptor)
+            if (nodeKey in nodes) continue
+            nodes[nodeKey] = NodeInfo(line = -1, neverLoaded = true, hits = 0L, edges = method.calls.toSet())
+        }
+    }
+    return nodes
+}
+
+/** A class's supertypes, by name: from any instance's manifest record, or a declared-class record. */
+private fun buildSupertypesByClassName(declaredSupertypes: Map<String, SupertypesInfo>): Map<String, SupertypesInfo> {
+    val result = mutableMapOf<String, SupertypesInfo>()
+    for ((key, info) in manifestProbes) {
+        val supertypes = classSupertypes[InstanceClassIdKey(key.serviceInstanceId, key.classId)] ?: continue
+        result.putIfAbsent(info.className, supertypes)
+    }
+    for ((className, supertypes) in declaredSupertypes) {
+        result.putIfAbsent(className, supertypes)
+    }
+    return result
+}
+
+/** Every known class name's direct subtypes, for widening a virtual call edge down. */
+private fun buildReverseSubtypes(supertypesByClassName: Map<String, SupertypesInfo>): Map<String, List<String>> {
+    val reverse = mutableMapOf<String, MutableList<String>>()
+    for ((className, info) in supertypesByClassName) {
+        info.superClassName?.let { reverse.getOrPut(it) { mutableListOf() } += className }
+        info.interfaceNames.forEach { reverse.getOrPut(it) { mutableListOf() } += className }
+    }
+    return reverse
+}
+
+/**
+ * Breadth-first walk from [owner] up through its supertypes to the first type with a node named
+ * ([name], [desc]), [owner] itself included. Null if the whole chain, as far as it is known, never
+ * reaches one.
+ */
+private fun findDeclaringType(
+    nodes: Map<NodeKey, NodeInfo>,
+    supertypesByClassName: Map<String, SupertypesInfo>,
+    owner: String,
+    name: String,
+    desc: String,
+): String? {
+    val visited = mutableSetOf<String>()
+    val queue = ArrayDeque<String>()
+    queue += owner
+    while (queue.isNotEmpty()) {
+        val current = queue.removeFirst()
+        if (!visited.add(current)) continue
+        if (NodeKey(current, name, desc) in nodes) return current
+        val info = supertypesByClassName[current] ?: continue
+        info.superClassName?.let { queue += it }
+        queue += info.interfaceNames
+    }
+    return null
+}
+
+/** Every transitive subtype of [declaringType], excluding itself, that has a matching ([name], [desc]) node. */
+private fun widenToSubtypes(
+    nodes: Map<NodeKey, NodeInfo>,
+    reverseSubtypes: Map<String, List<String>>,
+    declaringType: String,
+    name: String,
+    desc: String,
+): Set<NodeKey> {
+    val result = mutableSetOf<NodeKey>()
+    val visited = mutableSetOf(declaringType)
+    val queue = ArrayDeque<String>()
+    queue += reverseSubtypes[declaringType].orEmpty()
+    while (queue.isNotEmpty()) {
+        val current = queue.removeFirst()
+        if (!visited.add(current)) continue
+        val key = NodeKey(current, name, desc)
+        if (key in nodes) result += key
+        queue += reverseSubtypes[current].orEmpty()
+    }
+    return result
 }
