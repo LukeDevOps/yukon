@@ -103,9 +103,16 @@ class JaxRsModule
                 .and(ElementMatcher<TypeDescription> { type -> declaresOwnPathOrVerb(type) || hasInheritedPathOrVerb(type) })
 
         /**
-         * Reads every eligible declared method for a verb and a route template, registers each one
-         * found through the endpoint seam, then weaves [io.github.lukedevops.yukon.endpoints.jaxrs.ResourceMethodAdvice]
-         * onto exactly those methods.
+         * Reads every eligible declared method for a verb and a route template, binds
+         * [io.github.lukedevops.yukon.endpoints.jaxrs.ResourceMethodAdvice], registers each method
+         * found through the endpoint seam, then weaves the advice onto exactly those methods.
+         *
+         * Binding comes before registering on purpose. Registration is a side effect on the
+         * endpoint registry that nothing rolls back, so a transform that threw after it would
+         * leave endpoints declared for a class that never got its advice: zero hits forever,
+         * reading as never called. Binding is the one step here that can fail, so it runs first,
+         * and a failure leaves nothing declared. A failure inside ByteBuddy's own weaving, after
+         * this method returns, is not covered by this ordering and is only logged.
          *
          * A method with neither a verb annotation nor `@Path`, own or inherited, is not an
          * endpoint and is left alone. A method with `@Path` but no verb is a sub-resource locator:
@@ -119,35 +126,28 @@ class JaxRsModule
             classLoader: ClassLoader?,
         ): DynamicType.Builder<*> {
             val classPath = resolveClassPath(typeDescription, classLoader)
-            val matchedMethods = mutableSetOf<Pair<String, String>>()
+            val matched =
+                typeDescription.declaredMethods.filter(ELIGIBLE_METHOD).mapNotNull { method ->
+                    val source = resolveAnnotationSource(method, typeDescription)
+                    val verb = resolveVerb(source)
+                    val methodPath = pathValue(source)
+                    if (verb == null &&
+                        methodPath == null
+                    ) {
+                        null
+                    } else {
+                        Triple(method, verb ?: WILDCARD_VERB, combineTemplate(classPath, methodPath))
+                    }
+                }
+            if (matched.isEmpty()) return builder
 
-            for (method in typeDescription.declaredMethods.filter(ELIGIBLE_METHOD)) {
-                val source = resolveAnnotationSource(method, typeDescription)
-                val verb = resolveVerb(source)
-                val methodPath = pathValue(source)
-                if (verb == null && methodPath == null) continue
-
-                val template = combineTemplate(classPath, methodPath)
+            val boundAdvice = advice.bind("$ADVICE_PACKAGE.ResourceMethodAdvice")
+            for ((method, verb, template) in matched) {
                 val key = "${typeDescription.name}#${method.internalName}${method.descriptor}"
-                YukonEndpoints.register(
-                    MODULE,
-                    key,
-                    verb ?: WILDCARD_VERB,
-                    template,
-                    null,
-                    typeDescription.name,
-                    method.internalName,
-                    method.descriptor,
-                )
-                matchedMethods += method.internalName to method.descriptor
+                YukonEndpoints.register(MODULE, key, verb, template, null, typeDescription.name, method.internalName, method.descriptor)
             }
-
-            if (matchedMethods.isEmpty()) return builder
-            return builder.visit(
-                advice
-                    .bind("$ADVICE_PACKAGE.ResourceMethodAdvice")
-                    .on { method -> (method.internalName to method.descriptor) in matchedMethods },
-            )
+            val matchedMethods = matched.mapTo(mutableSetOf()) { (method, _, _) -> method.internalName to method.descriptor }
+            return builder.visit(boundAdvice.on { method -> (method.internalName to method.descriptor) in matchedMethods })
         }
 
         /**
