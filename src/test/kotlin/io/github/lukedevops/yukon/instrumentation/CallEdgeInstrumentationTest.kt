@@ -101,4 +101,39 @@ class CallEdgeInstrumentationTest {
             }
         assertEquals(listOf(CallEdge("com.example.target.Suit", "<clinit>", "()V", virtual = false)), readEnumConstantProbe.calls)
     }
+
+    @Test
+    fun `a bound function reference's constructor edge on the manifest also carries the body class's typed invoke`() {
+        val registry = ProbeRegistry()
+        val config = AgentConfig.parse("includePackages=com.example.target")
+        install(registry, config)
+
+        val loader = FixtureClassLoader(arrayOf(File("build/classes/kotlin/test").toURI().toURL()), javaClass.classLoader)
+        val targetClass = Class.forName("com.example.target.FunctionReferenceTarget", true, loader)
+        val target = targetClass.getDeclaredConstructor().newInstance()
+        targetClass.getMethod("viaReference").invoke(target)
+
+        val viaReferenceProbe =
+            registry.manifest("test", null, "instance-1").probes.single {
+                it.className == "com.example.target.FunctionReferenceTarget" && it.methodName == "viaReference" &&
+                    it.kind == ProbeKind.METHOD
+            }
+        assertEquals(
+            listOf(
+                CallEdge(
+                    "com.example.target.FunctionReferenceTarget\$viaReference\$f\$1",
+                    "<init>",
+                    "(Ljava/lang/Object;)V",
+                    virtual = false,
+                ),
+                CallEdge(
+                    "com.example.target.FunctionReferenceTarget\$viaReference\$f\$1",
+                    "invoke",
+                    "()Ljava/lang/Integer;",
+                    virtual = false,
+                ),
+            ),
+            viaReferenceProbe.calls,
+        )
+    }
 }

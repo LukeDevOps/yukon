@@ -379,6 +379,18 @@ object BranchSiteAnalyzer {
      * declares and the method tier would probe keeps its name and descriptor but has its virtual
      * flag corrected the same way a same-class target's is.
      *
+     * A candidate named `<init>` or `<clinit>` whose owner's [MethodTable.hasEnclosingMethod] is
+     * true names a body class: a function reference, a suspend lambda, an object expression, or an
+     * anonymous or local class. In addition to the edge already added for that candidate, an edge
+     * is added from the entry point to every method the body class declares with a body, other than
+     * `<init>` and `<clinit>`, that the method tier would probe, with the same non-virtual
+     * correction a same-class target gets. The creator is the only method that can ever reach a
+     * body class's methods, so without this edge every one of them would look uncalled the moment
+     * its only caller is out of scope, which is the common case: a framework invokes a lambda body,
+     * and a function reference's `invoke` is called by whatever the reference was handed to. A
+     * named, non-local class carries no `EnclosingMethod` attribute, so `new` on one is never
+     * expanded this way.
+     *
      * Self-edges (the entry-point method calling itself, directly or through a pass-through
      * chain) are dropped, and so is a candidate for this class's own `<clinit>`, which a
      * substituted forwarder on another class can carry back in when it reads a static field of
@@ -471,6 +483,17 @@ object BranchSiteAnalyzer {
 
                 val nonVirtual = access and NON_VIRTUAL_FLAGS != 0
                 edges += CallEdge(dottedOwner, name, descriptor, virtualRaw && !nonVirtual)
+
+                if (isConstructorOrInitializer && table.hasEnclosingMethod) {
+                    for ((bodyKey, bodyAccess) in table.methodAccess) {
+                        val (bodyName, bodyDescriptor) = bodyKey
+                        if (bodyName == "<init>" || bodyName == "<clinit>") continue
+                        if (bodyAccess and BODYLESS_FLAGS != 0) continue
+                        if (wouldNotBeProbedByMethodTier(bodyAccess, bodyName, table.isScalaClass)) continue
+                        val bodyNonVirtual = bodyAccess and NON_VIRTUAL_FLAGS != 0
+                        edges += CallEdge(dottedOwner, bodyName, bodyDescriptor, !bodyNonVirtual)
+                    }
+                }
             }
 
             for (candidate in rawCandidatesByMethod[methodKey].orEmpty()) {
@@ -1086,7 +1109,10 @@ object BranchSiteAnalyzer {
      * A class's method access flags, local variable names, first line numbers, and raw call
      * candidates, read once from its bytes. [isScalaClass] tells a pass-through resolution apart
      * from a lambda body scalac generates, the same distinction
-     * [TypeMatchPolicy.methodMatcher] applies to a loaded class.
+     * [TypeMatchPolicy.methodMatcher] applies to a loaded class. [hasEnclosingMethod] is true only
+     * for a body class: the JVM attaches an `EnclosingMethod` attribute to an anonymous or local
+     * class, and kotlinc attaches the same attribute to a function reference, a suspend lambda, and
+     * an object expression. See ADR 0024's body-class rule.
      */
     private class MethodTable(
         val classAccess: Int,
@@ -1095,6 +1121,7 @@ object BranchSiteAnalyzer {
         val firstLines: Map<Pair<String, String>, Int>,
         val rawCandidatesByMethod: Map<Pair<String, String>, List<RawCandidate>> = emptyMap(),
         val isScalaClass: Boolean = false,
+        val hasEnclosingMethod: Boolean = false,
     )
 
     /**
@@ -1108,6 +1135,7 @@ object BranchSiteAnalyzer {
     private fun readMethodTable(classBytes: ByteArray): MethodTable {
         var classAccess = 0
         var internalName = ""
+        var hasEnclosingMethod = false
         val methodAccess = mutableMapOf<Pair<String, String>, Int>()
         val localNames = mutableMapOf<Pair<String, String>, MutableMap<Int, String>>()
         val firstLines = mutableMapOf<Pair<String, String>, Int>()
@@ -1125,6 +1153,14 @@ object BranchSiteAnalyzer {
                 ) {
                     classAccess = access
                     internalName = name
+                }
+
+                override fun visitOuterClass(
+                    owner: String,
+                    name: String?,
+                    descriptor: String?,
+                ) {
+                    hasEnclosingMethod = true
                 }
 
                 override fun visitMethod(
@@ -1161,6 +1197,6 @@ object BranchSiteAnalyzer {
 
         ClassReader(classBytes).accept(classVisitor, ClassReader.SKIP_FRAMES)
         val isScalaClass = ScalaClassDetector.isScalaClass(classBytes)
-        return MethodTable(classAccess, methodAccess, localNames, firstLines, rawCandidatesByMethod, isScalaClass)
+        return MethodTable(classAccess, methodAccess, localNames, firstLines, rawCandidatesByMethod, isScalaClass, hasEnclosingMethod)
     }
 }
