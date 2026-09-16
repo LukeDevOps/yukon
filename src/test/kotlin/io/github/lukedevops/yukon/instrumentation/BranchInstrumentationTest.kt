@@ -63,6 +63,24 @@ class BranchInstrumentationTest {
     }
 
     @Test
+    fun `with no class-bytes capture, the branch analysis falls back to the class's own resource and still finds every site`() {
+        val registry = ProbeRegistry()
+        val config = AgentConfig.parse("includePackages=com.example.target")
+        val yukon = YukonInstrumentation(config, registry, captureClassBytes = false)
+        installedYukon = yukon
+        installedTransformer = yukon.install(ByteBuddyAgent.install())
+
+        val target = loadFixtureFresh()
+        repeat(3) { target.javaClass.getMethod("classify", Int::class.java).invoke(target, 5) }
+
+        val manifest = registry.manifest("test", null, "instance-1")
+        val branchIndices = manifest.probes.filter { it.methodName == "classify" && it.kind == ProbeKind.BRANCH }.map { it.probeIndex }
+        assertEquals(2, branchIndices.size, "the resource read off the loader must yield the same two-outcome site")
+        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null)).batch.deltas
+        assertEquals(3L, deltas.single { it.probeIndex in branchIndices }.hitsTotal)
+    }
+
+    @Test
     fun `exercising both outcomes of a conditional counts each independently`() {
         val registry = ProbeRegistry()
         val config = AgentConfig.parse("includePackages=com.example.target")

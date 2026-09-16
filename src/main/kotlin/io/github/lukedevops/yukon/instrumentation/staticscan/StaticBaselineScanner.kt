@@ -111,7 +111,7 @@ class StaticBaselineScanner(
                 withSupportingTypesFallback(PrefixedJarClassFileLocator(jarFile, prefix))
             }
         val nestedPools = nestedLocators.mapValues { (_, locator) -> TypePool.Default.of(locator) }
-        val entries = jarFile.entries().asSequence().filter { !it.isDirectory && it.name.endsWith(".class") }
+        val entries = jarFile.entries().asSequence().filter { !it.isDirectory && isClassEntry(it.name) }
         for (entry in entries) {
             val nestedPrefix = NESTED_CLASSES_PREFIXES.firstOrNull { entry.name.startsWith(it) }
             val (relativeName, pool, locator) =
@@ -140,7 +140,7 @@ class StaticBaselineScanner(
     private fun candidateClassNamesInFolder(root: File): List<String> =
         root
             .walkTopDown()
-            .filter { it.isFile && it.extension == "class" }
+            .filter { it.isFile && isClassEntry(it.relativeTo(root).invariantSeparatorsPath) }
             .map {
                 it
                     .relativeTo(root)
@@ -148,6 +148,22 @@ class StaticBaselineScanner(
                     .removeSuffix(".class")
                     .replace(File.separatorChar, '.')
             }.toList()
+
+    /**
+     * Whether a path inside a root names a class this scan should classify. A `.class` file under
+     * `META-INF/` is never one: a multi-release jar keeps its per-JDK variants under
+     * `META-INF/versions/N/`, and the JVM loads those under the same name as the base entry, so
+     * classifying the entry by its path would declare a second, phantom class named
+     * `META-INF.versions.9.com.acme.Foo`. A class present only in a versioned directory is
+     * therefore not declared at all, which can only lose a declaration, never invent one.
+     * `module-info` and `package-info` carry no methods and are not types an adopter's code
+     * refers to, so they are left out rather than reported as unprobed.
+     */
+    private fun isClassEntry(path: String): Boolean {
+        if (!path.endsWith(".class") || path.startsWith("META-INF/")) return false
+        val simpleName = path.substringAfterLast('/').removeSuffix(".class")
+        return simpleName != "module-info" && simpleName != "package-info"
+    }
 
     private fun classify(
         className: String,

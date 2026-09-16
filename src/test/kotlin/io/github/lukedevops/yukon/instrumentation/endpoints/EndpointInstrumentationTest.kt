@@ -2,10 +2,14 @@ package io.github.lukedevops.yukon.instrumentation.endpoints
 
 import io.github.lukedevops.yukon.export.EndpointDiscoverySource
 import io.github.lukedevops.yukon.instrumentation.BootstrapHolder
+import io.github.lukedevops.yukon.instrumentation.endpoints.api.AdviceBinder
 import io.github.lukedevops.yukon.instrumentation.endpoints.api.EndpointModule
 import io.github.lukedevops.yukon.registry.EndpointRegistry
 import net.bytebuddy.agent.ByteBuddyAgent
 import net.bytebuddy.agent.builder.ResettableClassFileTransformer
+import net.bytebuddy.description.type.TypeDescription
+import net.bytebuddy.dynamic.DynamicType
+import net.bytebuddy.matcher.ElementMatcher
 import java.io.File
 import java.lang.instrument.Instrumentation
 import kotlin.test.AfterTest
@@ -138,6 +142,37 @@ class EndpointInstrumentationTest {
         dispatch.invoke(broken, "GET", "/broken")
 
         assertEquals(1, registry.disabledModules().count { it.module == "broken-router" })
+    }
+
+    @Test
+    fun `a module whose matcher throws leaves the class loadable and untouched`() {
+        // A matcher that throws (a supertype walk hitting an unresolvable type, say) fails inside
+        // ByteBuddy's own transform call, outside the module's try/catch, so the listener is the
+        // only thing that sees it. The class must still define, with no advice woven.
+        val throwingModule =
+            object : EndpointModule {
+                override val name: String = "throwing-matcher"
+
+                override fun typeMatcher(): ElementMatcher<in TypeDescription> =
+                    ElementMatcher { type ->
+                        if (type.name == "com.example.framework.FakeRouter") throw IllegalStateException("simulated matcher failure")
+                        false
+                    }
+
+                override fun transform(
+                    builder: DynamicType.Builder<*>,
+                    typeDescription: TypeDescription,
+                    advice: AdviceBinder,
+                    classLoader: ClassLoader?,
+                ): DynamicType.Builder<*> = builder
+            }
+        val registry = EndpointRegistry()
+
+        val router = install(registry, listOf(throwingModule), "com.example.framework.FakeRouter")
+        val addRoute = router.javaClass.getMethod("addRoute", String::class.java, String::class.java, Runnable::class.java)
+        addRoute.invoke(router, "GET", "/checkout", Runnable {})
+
+        assertTrue(registry.endpoints().isEmpty(), "nothing was woven, so nothing registers")
     }
 
     @Test

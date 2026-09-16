@@ -90,9 +90,15 @@ class YukonInstrumentation(
     private val config: AgentConfig,
     private val registry: ProbeRegistry,
     private val staticBaselineMismatchDetector: StaticBaselineMismatchDetector = StaticBaselineMismatchDetector(),
+    /**
+     * Whether [install] registers a [ClassBytesCapture] ahead of ByteBuddy's transformer. Always
+     * true for the agent; a test switches it off to drive the classloader-resource fallback in
+     * [analyzeBytecode], the path taken when the capture has nothing for a class.
+     */
+    captureClassBytes: Boolean = true,
 ) {
     private val log = System.getLogger(YukonInstrumentation::class.java.name)
-    private val classBytesCapture = ClassBytesCapture(::isCandidateInternalName)
+    private val classBytesCapture: ClassBytesCapture? = if (captureClassBytes) ClassBytesCapture(::isCandidateInternalName) else null
 
     /**
      * Installs the bootstrap holder, points it at this registry, then registers two transformers
@@ -109,7 +115,7 @@ class YukonInstrumentation(
     fun install(instrumentation: Instrumentation): ResettableClassFileTransformer {
         BootstrapHolder.install(instrumentation)
         YukonProbeArrays.install { className, layoutHash, _, classLoader -> registry.lookup(className, layoutHash, classLoader) }
-        instrumentation.addTransformer(classBytesCapture, false)
+        if (classBytesCapture != null) instrumentation.addTransformer(classBytesCapture, false)
         return AgentBuilder
             // ByteBuddy's own default ignores every synthetic method, copying it through
             // unrewritten no matter what a later .visit()/.method() matcher asks for: a Kotlin
@@ -133,7 +139,7 @@ class YukonInstrumentation(
         transformer: ResettableClassFileTransformer,
     ) {
         transformer.reset(instrumentation, AgentBuilder.RedefinitionStrategy.DISABLED)
-        instrumentation.removeTransformer(classBytesCapture)
+        if (classBytesCapture != null) instrumentation.removeTransformer(classBytesCapture)
     }
 
     /** String-only pre-filter for the capture, the package part of [typeMatcher] without resolving a type. */
@@ -416,7 +422,7 @@ class YukonInstrumentation(
     ): BranchSiteAnalyzer.Analysis {
         val eligible = methods.map { it.internalName to it.descriptor }.toSet()
         val bytes =
-            classBytesCapture.take(typeDescription.internalName)
+            classBytesCapture?.take(typeDescription.internalName)
                 ?: locateClassBytes(typeDescription, classLoader)
                 ?: return BranchSiteAnalyzer.Analysis.EMPTY
         val lookup = scalaGetterTargetLookup(classLoader)

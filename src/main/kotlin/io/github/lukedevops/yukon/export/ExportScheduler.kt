@@ -83,9 +83,16 @@ class ExportScheduler(
                 return
             }
         }
+        // Thread.join(0) waits with no limit, so a budget that ran out while waiting above (or
+        // one that was zero to begin with) must skip the final flush rather than start it.
+        val remaining = remainingMillis(deadlineNanos)
+        if (remaining <= 0L) {
+            log.log(Level.WARNING, "yukon: no shutdown budget left for the final flush; skipping it")
+            return
+        }
         val worker = Thread(::flush, "yukon-shutdown-flush").apply { isDaemon = true }
         worker.start()
-        worker.join(remainingMillis(deadlineNanos))
+        worker.join(remaining)
         sendPool.shutdown()
     }
 
@@ -115,17 +122,24 @@ class ExportScheduler(
      * send's worst case instead of the sum of both.
      *
      * This method runs under `scheduleAtFixedRate`, which stops calling a
-     * task forever the first time it lets an exception escape, with nothing
+     * task forever the first time it lets a throwable escape, with nothing
      * logged. So `sendManifestDelta` and `sendDeltaBatch` each wrap their
-     * own registry call (`compute*`) and exporter call in one try/catch: a
-     * registry exception must never escape either one, or every future
-     * flush, including the heartbeat, silently stops.
+     * own registry call (`compute*`) and exporter call in one catch of
+     * `Throwable`, not `Exception`: a `NoClassDefFoundError` from a class
+     * first touched on the export path is as fatal to the schedule as any
+     * exception, and would otherwise stop every future flush, heartbeat
+     * included. The outer catch here covers what the sends cannot, such as
+     * a rejected submission after [stop].
      */
     fun flush() {
-        val manifestSend = sendPool.submit(::sendManifestDelta)
-        val deltaSend = sendPool.submit(::sendDeltaBatch)
-        manifestSend.get()
-        deltaSend.get()
+        try {
+            val manifestSend = sendPool.submit(::sendManifestDelta)
+            val deltaSend = sendPool.submit(::sendDeltaBatch)
+            manifestSend.get()
+            deltaSend.get()
+        } catch (t: Throwable) {
+            log.log(Level.ERROR, "yukon: flush failed outside its own send guards, will retry next flush", t)
+        }
     }
 
     /**
@@ -153,8 +167,8 @@ class ExportScheduler(
                 send.probeSnapshot?.let(registry::advanceBaseline)
                 send.endpointSnapshots.forEach(endpointRegistry::advanceDeltas)
             }
-        } catch (e: Exception) {
-            log.log(Level.WARNING, "yukon: delta export failed, will retry next flush", e)
+        } catch (t: Throwable) {
+            log.log(Level.WARNING, "yukon: delta export failed, will retry next flush", t)
         }
     }
 
@@ -238,8 +252,8 @@ class ExportScheduler(
                 send.probeSnapshot?.let(registry::advanceManifestBaseline)
                 send.endpointSnapshots.forEach(endpointRegistry::advanceManifest)
             }
-        } catch (e: Exception) {
-            log.log(Level.WARNING, "yukon: manifest export failed, will retry next flush", e)
+        } catch (t: Throwable) {
+            log.log(Level.WARNING, "yukon: manifest export failed, will retry next flush", t)
         }
     }
 

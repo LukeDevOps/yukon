@@ -1,6 +1,8 @@
 package io.github.lukedevops.yukon.instrumentation.staticscan
 
 import net.bytebuddy.dynamic.ClassFileLocator
+import net.bytebuddy.jar.asm.ClassWriter
+import net.bytebuddy.jar.asm.Opcodes
 import java.io.File
 import java.util.jar.JarOutputStream
 import java.util.zip.ZipEntry
@@ -28,6 +30,15 @@ class StaticBaselineScannerTest {
             file.writeBytes(bytes)
         }
         return root
+    }
+
+    /** A minimal `module-info.class`, the shape javac emits for `module <name> {}`. */
+    private fun moduleInfoBytes(moduleName: String): ByteArray {
+        val writer = ClassWriter(0)
+        writer.visit(Opcodes.V9, Opcodes.ACC_MODULE, "module-info", null, null, null)
+        writer.visitModule(moduleName, 0, null).visitEnd()
+        writer.visitEnd()
+        return writer.toByteArray()
     }
 
     private fun jarRoot(vararg entries: Pair<String, ByteArray>): File {
@@ -79,6 +90,22 @@ class StaticBaselineScannerTest {
         val result = scanner.scan(listOf(jar))
 
         assertTrue(result.declaredClasses.any { it.className == "com.example.target.SampleTarget" })
+    }
+
+    @Test
+    fun `a multi-release jar's versioned entries and its module descriptor are not classes of their own`() {
+        val jar =
+            jarRoot(
+                "com/example/target/SampleTarget.class" to sampleTargetBytes,
+                "META-INF/versions/9/com/example/target/SampleTarget.class" to sampleTargetBytes,
+                "module-info.class" to moduleInfoBytes("com.example"),
+            )
+        // Empty includePackages: the prefix pre-filter cannot save the scan from a phantom name here.
+        val scanner = StaticBaselineScanner(emptyList())
+
+        val result = scanner.scan(listOf(jar))
+
+        assertEquals(listOf("com.example.target.SampleTarget"), result.allClassNames().sorted())
     }
 
     @Test
@@ -207,6 +234,17 @@ class StaticBaselineScannerTest {
 
         assertTrue(result.declaredClasses.none { it.className == "com.example.target.SampleTarget" })
         assertTrue("com.example.target.SampleTarget" !in result.allClassNames())
+    }
+
+    @Test
+    fun `with no roots given, the scan walks this JVM's own java-class-path`() {
+        // The test classpath carries this module's compiled test fixtures, so a scan of the
+        // default roots must find one of them without being told where to look.
+        val scanner = StaticBaselineScanner(listOf("com.example.target"))
+
+        val result = scanner.scan()
+
+        assertTrue(result.declaredClasses.any { it.className == "com.example.target.SampleTarget" })
     }
 
     @Test

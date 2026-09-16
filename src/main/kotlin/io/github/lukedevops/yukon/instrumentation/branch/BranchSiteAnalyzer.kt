@@ -263,7 +263,11 @@ object BranchSiteAnalyzer {
             label: Label,
         ) {
             if (defaultShaped) {
-                if (phase == 3 && opcode == Opcodes.IFEQ) optionalBits = optionalBits or pendingConstant
+                // kotlinc writes the test as IFEQ. A coverage agent registered ahead of this one
+                // (JaCoCo) hands over its own output, where every conditional jump is inverted
+                // around an inserted probe, so the same test arrives as IFNE. Either direction
+                // means "mask bit tested"; the advice reads the mask itself, not the branch.
+                if (phase == 3 && (opcode == Opcodes.IFEQ || opcode == Opcodes.IFNE)) optionalBits = optionalBits or pendingConstant
                 resetMaskPhase()
             }
             if (eligible && ConditionalJump.isTracked(opcode)) {

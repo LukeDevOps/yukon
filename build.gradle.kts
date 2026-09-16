@@ -69,6 +69,11 @@ dependencies {
 
     testImplementation(kotlin("test"))
     testImplementation("net.bytebuddy:byte-buddy-agent:1.18.12")
+
+    // JaCoCo's offline instrumenter, used only to produce the bytecode shape a coverage agent
+    // attached ahead of this one hands to the transformer chain, so the analyser is tested
+    // against the real thing rather than a hand-written imitation of it.
+    testImplementation("org.jacoco:org.jacoco.core:0.8.13")
 }
 
 protobuf {

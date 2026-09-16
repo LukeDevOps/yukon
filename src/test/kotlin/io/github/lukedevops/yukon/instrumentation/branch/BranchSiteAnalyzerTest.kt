@@ -1,5 +1,7 @@
 package io.github.lukedevops.yukon.instrumentation.branch
 
+import org.jacoco.core.instr.Instrumenter
+import org.jacoco.core.runtime.OfflineInstrumentationAccessGenerator
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -148,6 +150,24 @@ class BranchSiteAnalyzerTest {
         assertFalse(site.overridable, "f is final, on a final class")
         assertFalse(site.higherMaskTested)
         assertEquals(mapOf(1 to "b", 2 to "c", 3 to "d"), site.parameterNames)
+    }
+
+    @Test
+    fun `a default method already instrumented by JaCoCo still resolves its mask bits`() {
+        // A coverage agent registered ahead of this one hands the transformer chain its own
+        // output, in which every conditional jump is inverted around an inserted probe, so the
+        // mask test ends in IFNE rather than the IFEQ kotlinc wrote. This is what an adopter's
+        // test suite looks like with coverage switched on.
+        val plain = analyzeDefaultSites("DefaultArgumentTarget").defaultSites.single { it.defaultName == "f\$default" }
+        val instrumented =
+            Instrumenter(OfflineInstrumentationAccessGenerator())
+                .instrument(readInlineTargetBytes("DefaultArgumentTarget"), "DefaultArgumentTarget")
+
+        val analysis = BranchSiteAnalyzer.analyze(instrumented) { _, _ -> false }
+
+        val site = analysis.defaultSites.singleOrNull { it.defaultName == "f\$default" }
+        assertEquals(plain.optionalBits, site?.optionalBits, "the same optional parameters must be found in JaCoCo's output")
+        assertEquals(plain.parameterNames, site?.parameterNames)
     }
 
     @Test

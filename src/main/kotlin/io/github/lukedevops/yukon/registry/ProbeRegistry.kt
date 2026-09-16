@@ -115,8 +115,12 @@ open class ProbeRegistry {
      * Called once per class transform. Returns the backing array every probe
      * in this class increments. A repeat call for an unchanged (className,
      * layoutHash, classLoader) returns the same array instance.
+     *
+     * `open` only so a test can make a transform fail after registration has
+     * already happened, which is the case the transform-failure listener
+     * exists for.
      */
-    fun register(
+    open fun register(
         className: String,
         layoutHash: Long,
         probes: List<ProbeMeta>,

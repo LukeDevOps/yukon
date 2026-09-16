@@ -1,5 +1,8 @@
 package io.github.lukedevops.yukon
 
+import com.sun.net.httpserver.HttpServer
+import io.github.lukedevops.yukon.export.ProtoPayloadCodec
+import io.github.lukedevops.yukon.export.StaticBaseline
 import io.github.lukedevops.yukon.instrumentation.endpoints.api.AdviceBinder
 import io.github.lukedevops.yukon.instrumentation.endpoints.api.EndpointModule
 import net.bytebuddy.agent.ByteBuddyAgent
@@ -7,6 +10,11 @@ import net.bytebuddy.description.type.TypeDescription
 import net.bytebuddy.dynamic.DynamicType
 import net.bytebuddy.matcher.ElementMatcher
 import net.bytebuddy.matcher.ElementMatchers
+import java.lang.instrument.Instrumentation
+import java.lang.reflect.Proxy
+import java.net.InetSocketAddress
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -91,6 +99,57 @@ class AgentTest {
             assertNotNull(running.endpointTransformer)
         } finally {
             running?.stop()
+        }
+    }
+
+    @Test
+    fun `premain with the agent disabled returns quietly`() {
+        Agent.premain("enabled=false", ByteBuddyAgent.install())
+    }
+
+    @Test
+    fun `premain never propagates a failure from start, since that would abort the target JVM`() {
+        // Every Instrumentation call throws, so start() fails at its first use of it, before any
+        // thread or transformer exists to clean up.
+        val brokenInstrumentation =
+            Proxy.newProxyInstance(
+                Instrumentation::class.java.classLoader,
+                arrayOf(Instrumentation::class.java),
+            ) { _, method, _ -> throw IllegalStateException("simulated instrumentation failure in ${method.name}") } as Instrumentation
+
+        Agent.premain("includePackages=io.github.lukedevops.yukon.neverloaded.fixture", brokenInstrumentation)
+    }
+
+    @Test
+    fun `staticBaselineEnabled starts the scan off premain and delivers the baseline to the collector`() {
+        val received = CompletableFuture<StaticBaseline>()
+        val collector = HttpServer.create(InetSocketAddress("localhost", 0), 0)
+        collector.createContext("/v1/yukon/static-baseline") { exchange ->
+            received.complete(ProtoPayloadCodec.decodeStaticBaseline(exchange.requestBody.readBytes()))
+            exchange.sendResponseHeaders(200, -1)
+            exchange.close()
+        }
+        collector.start()
+        val instrumentation = ByteBuddyAgent.install()
+        val before = currentThreadNames()
+
+        // The test classpath is this JVM's java.class.path, and it carries the compiled fixtures
+        // under com.example.target, so a scan of the default roots must declare one of them.
+        val running =
+            Agent.start(
+                "includePackages=com.example.target,flushIntervalSeconds=3600,endpointsEnabled=false," +
+                    "staticBaselineEnabled=true,endpoint=http://localhost:${collector.address.port}",
+                instrumentation,
+            )
+        try {
+            assertNotNull(running)
+            assertTrue((currentThreadNames() - before).any { it == "yukon-static-baseline-scan" } || received.isDone)
+            val baseline = received.get(30, TimeUnit.SECONDS)
+            assertTrue(baseline.declaredClasses.any { it.className == "com.example.target.SampleTarget" })
+            assertEquals(1, baseline.chunkCount)
+        } finally {
+            running?.stop()
+            collector.stop(0)
         }
     }
 
