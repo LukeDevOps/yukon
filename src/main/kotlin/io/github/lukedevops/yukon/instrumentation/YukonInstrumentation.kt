@@ -207,13 +207,19 @@ class YukonInstrumentation(
         typeDescription: TypeDescription,
         classLoader: ClassLoader?,
     ): DynamicType.Builder<*> {
-        val methods = typeDescription.declaredMethods.filter(methodMatcher())
+        // Read once, ahead of filtering: whether a synthetic method is a probed lambda body
+        // depends on whether scalac compiled this class at all (methodMatcher's isScalaClass), and
+        // the branch analysis below needs these same bytes too. classBytesCapture.take is
+        // destructive, so it must not be called a second time for the same class.
+        val classBytes = classBytesCapture?.take(typeDescription.internalName) ?: locateClassBytes(typeDescription, classLoader)
+        val isScalaClass = classBytes?.let(ScalaClassDetector::isScalaClass) ?: false
+        val methods = typeDescription.declaredMethods.filter(methodMatcher(isScalaClass))
 
         // Analysed regardless of whether methods is empty: a type whose only concrete content is
         // a Kotlin $default method (an interface declaring only an abstract method plus its
         // default, with no other probe-worthy method) would otherwise never reach the omission
         // tier below at all.
-        val analysis = analyzeBytecode(typeDescription, classLoader, methods)
+        val analysis = analyzeBytecode(classBytes, classLoader, methods)
         if (methods.isEmpty() && analysis.defaultSites.isEmpty()) return builder
         val branchSites = analysis.sites
 
@@ -406,25 +412,23 @@ class YukonInstrumentation(
     }
 
     /**
-     * Finds the class's conditional jumps, and each method's first line number, in the bytes the
-     * JVM is actually about to define, as captured by [ClassBytesCapture] just before ByteBuddy's
-     * transform. ByteBuddy's own callback only hands over type metadata, not the class bytes.
+     * Finds the class's conditional jumps, and each method's first line number, in [classBytes]:
+     * the bytes the JVM is actually about to define, as captured by [ClassBytesCapture] just
+     * before ByteBuddy's transform, or read from the class's own classloader resource when
+     * nothing was captured (a class defined outside the ordinary transformer chain, or loaded by
+     * a test harness that bypasses [install]). ByteBuddy's own callback only hands over type
+     * metadata, not the class bytes, hence the separate capture.
      *
-     * Falls back to the class's own classloader resource when nothing was captured (a class
-     * defined outside the ordinary transformer chain, or loaded by a test harness that bypasses
-     * [install]). If the bytes cannot be located or read at all, this class gets no branch probes
-     * and no method line numbers. Method-entry tracking is unaffected.
+     * If [classBytes] is null, this class gets no branch probes and no method line numbers.
+     * Method-entry tracking is unaffected.
      */
     private fun analyzeBytecode(
-        typeDescription: TypeDescription,
+        classBytes: ByteArray?,
         classLoader: ClassLoader?,
         methods: MethodList<*>,
     ): BranchSiteAnalyzer.Analysis {
         val eligible = methods.map { it.internalName to it.descriptor }.toSet()
-        val bytes =
-            classBytesCapture?.take(typeDescription.internalName)
-                ?: locateClassBytes(typeDescription, classLoader)
-                ?: return BranchSiteAnalyzer.Analysis.EMPTY
+        val bytes = classBytes ?: return BranchSiteAnalyzer.Analysis.EMPTY
         val lookup = scalaGetterTargetLookup(classLoader)
         return BranchSiteAnalyzer.analyze(bytes, lookup) { name, descriptor -> (name to descriptor) in eligible }
     }
@@ -550,7 +554,8 @@ class YukonInstrumentation(
             ClassFileLocator.ForClassLoader.ofBootLoader()
         }
 
-    private fun methodMatcher(): ElementMatcher.Junction<MethodDescription> = TypeMatchPolicy.methodMatcher()
+    private fun methodMatcher(isScalaClass: Boolean): ElementMatcher.Junction<MethodDescription> =
+        TypeMatchPolicy.methodMatcher(isScalaClass)
 
     /**
      * The `<clinit>` prelude that fills the counts field. It compiles to:
