@@ -2,6 +2,7 @@ package io.github.lukedevops.yukon.testkit
 
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
+import io.github.lukedevops.yukon.export.CallEdge
 import io.github.lukedevops.yukon.export.DisabledEndpointModule
 import io.github.lukedevops.yukon.export.EndpointDiscoverySource
 import io.github.lukedevops.yukon.export.ProbeKind
@@ -64,6 +65,60 @@ class YukonTestCollector private constructor(
         val parameterName: String? = null,
         val overridable: Boolean = false,
         val targetClassName: String? = null,
+        val calls: List<CallEdge> = emptyList(),
+    )
+
+    /** A class's superclass and direct interfaces, resolved to a class name. See ADR 0024. */
+    private data class SupertypesInfo(
+        val superClassName: String?,
+        val interfaceNames: List<String>,
+    )
+
+    /** One declared method read from a complete static baseline scan. See ADR 0024. */
+    private data class DeclaredMethodInfo(
+        val methodName: String,
+        val methodDescriptor: String,
+        val inline: Boolean,
+        val calls: List<CallEdge>,
+    )
+
+    /**
+     * A declared class's methods and supertypes, read from a complete static baseline scan.
+     * [serviceInstanceId] names whichever instance's scan produced this record, used to label a
+     * never-loaded member's [ProbeRef.serviceInstanceId].
+     */
+    private data class DeclaredClassInfo(
+        val serviceInstanceId: String,
+        val methods: List<DeclaredMethodInfo>,
+        val superClassName: String?,
+        val interfaceNames: List<String>,
+    )
+
+    /** One node of the call graph [unreachedClusters] resolves: a probed method, by identity alone. */
+    private data class NodeKey(
+        val className: String,
+        val methodName: String,
+        val methodDescriptor: String,
+    )
+
+    /**
+     * A [NodeKey]'s reporting fields and raw, unresolved outgoing call edges. [neverLoaded] marks a
+     * node that exists only because a complete static baseline declared it; such a node has
+     * [hits] fixed at zero, since the dynamic tier never registered its class at all.
+     */
+    private data class NodeInfo(
+        val serviceInstanceId: String,
+        val line: Int,
+        val neverLoaded: Boolean,
+        val hits: Long,
+        val edges: Set<CallEdge>,
+    )
+
+    /** The resolved call graph: every node, its resolved outgoing edges, and the reverse (caller) index. */
+    private class CallGraph(
+        val nodes: Map<NodeKey, NodeInfo>,
+        val resolvedEdges: Map<NodeKey, Set<NodeKey>>,
+        val callersOf: Map<NodeKey, Set<NodeKey>>,
     )
 
     private data class ScanKey(
@@ -104,12 +159,22 @@ class YukonTestCollector private constructor(
 
         /** Declared classes whose every declared method is inline; see [YukonTestCollector.neverLoaded]. */
         val allInlineNames: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+        /** Methods and supertypes per declared class; only merged into [consultedDeclaredClasses] once complete. */
+        val declaredClasses: MutableMap<String, DeclaredClassInfo> = ConcurrentHashMap()
         val complete: Boolean get() = received.size >= chunkCount
     }
 
     private val lock = ReentrantLock()
     private val condition = lock.newCondition()
     private val deltaBatchSeq = AtomicLong(0)
+
+    /** Orders a [ProbeRef] by class name, method name, line, then branch index, the same order [neverHit] sorts by. */
+    private val probeRefComparator: Comparator<ProbeRef> =
+        compareBy({ it.className }, { it.methodName }, { it.line }, {
+            it.branchIndex
+                ?: -1
+        })
 
     private val probesByKey = ConcurrentHashMap<ProbeKey, StoredProbe>()
     private val nameIndex = ConcurrentHashMap<String, MutableSet<ProbeKey>>()
@@ -122,6 +187,12 @@ class YukonTestCollector private constructor(
     private val omissionTargetIndex = ConcurrentHashMap<String, MutableSet<ProbeKey>>()
     private val hitsByKey = ConcurrentHashMap<ProbeKey, Long>()
     private val skippedByClassName = ConcurrentHashMap<String, SkippedClass>()
+
+    /** A class's supertypes, by name, from any manifest. Populated alongside its probes; see [handleManifest]. */
+    private val supertypesByClassName = ConcurrentHashMap<String, SupertypesInfo>()
+
+    /** Declared classes from every complete static baseline scan, by name. See [handleStaticBaseline]. */
+    private val consultedDeclaredClasses = ConcurrentHashMap<String, DeclaredClassInfo>()
 
     /** Every class name any manifest has ever mentioned, whether it got probes or was only reported as skipped. */
     private val dynamicallyKnownClassNames: MutableSet<String> = ConcurrentHashMap.newKeySet()
@@ -462,6 +533,267 @@ class YukonTestCollector private constructor(
     }
 
     /**
+     * The in-scope callees [methodName] on [className] references in its own bytecode, verbatim as
+     * the bytecode names them, deduplicated and sorted by callee class, method name, then
+     * descriptor. Every overload of [methodName] contributes its edges. Sources both a loaded
+     * class's manifest edges and a never-loaded class's complete-baseline edges, the same union
+     * [unreachedClusters] resolves against. See ADR 0024.
+     *
+     * Throws [UnknownProbeException] if no manifest probe and no complete-baseline declaration ever
+     * named [methodName] on [className]; a known method with no callees returns an empty list.
+     */
+    fun callEdges(
+        className: String,
+        methodName: String,
+    ): List<CallEdge> {
+        val fromManifest =
+            nameIndex[className].orEmpty().mapNotNull { key ->
+                probesByKey[key]?.takeIf { it.kind == ProbeKind.METHOD && it.methodName == methodName }
+            }
+        val fromBaseline = consultedDeclaredClasses[className]?.methods?.filter { it.methodName == methodName }.orEmpty()
+        if (fromManifest.isEmpty() && fromBaseline.isEmpty()) {
+            throw unknownProbe(className, methodName, null)
+        }
+        return (fromManifest.flatMap { it.calls } + fromBaseline.flatMap { it.calls })
+            .distinct()
+            .sortedWith(compareBy({ it.className }, { it.methodName }, { it.methodDescriptor }))
+    }
+
+    /**
+     * Every unreached cluster in the call graph, applying the collector's rule (ADR 0024) within
+     * this one test JVM: a root is a never-hit method with at least one hit caller
+     * ([RootKind.REACHED_FROM_HIT]) or no in-scope caller at all ([RootKind.UNCALLED]), and its
+     * cluster is the root plus every never-hit method reachable from it whose every caller is
+     * itself already in the cluster. Sorted by member count descending, then by root.
+     *
+     * A node comes from a manifest METHOD probe, merged across instances with hits summed, or from
+     * a non-inline declared method of a class a complete static baseline declared but no manifest
+     * ever mentioned; such a member carries [ProbeRef.neverLoaded] `true`, line `-1`, and the
+     * declaring instance's id. Inline methods are never nodes, so an edge into one resolves to
+     * nothing. Edges are the union of manifest and complete-baseline call edges; resolution walks a
+     * callee's owner up through [supertypesByClassName] and complete-baseline supertypes to the
+     * first type with a matching node, and, for a virtual call, also down from the owner to every
+     * known transitive subtype with one, `<init>` and `<clinit>` excepted. See [computeCallGraph].
+     */
+    fun unreachedClusters(): List<UnreachedCluster> {
+        val graph = computeCallGraph()
+
+        fun isHit(key: NodeKey) = (graph.nodes[key]?.hits ?: 0L) > 0L
+
+        val roots =
+            graph.nodes.keys.filter { !isHit(it) }.mapNotNull { key ->
+                val callers = graph.callersOf[key].orEmpty()
+                when {
+                    callers.isEmpty() -> key to RootKind.UNCALLED
+                    callers.any { isHit(it) } -> key to RootKind.REACHED_FROM_HIT
+                    else -> null
+                }
+            }
+
+        return roots
+            .map { (rootKey, rootKind) -> buildCluster(graph, rootKey, rootKind, ::isHit) }
+            .sortedWith(compareByDescending<UnreachedCluster> { it.members.size }.thenComparing({ it.root }, probeRefComparator))
+    }
+
+    /**
+     * Grows [rootKey]'s cluster by fixpoint: repeatedly add a never-hit node reachable by a
+     * resolved edge from a current member, once every one of that node's callers is itself already
+     * in the cluster. Two consequences of this rule, pinned by tests: a node whose callers sit in
+     * two different clusters is added to neither, and a cycle of never-hit nodes with no outside
+     * caller produces no root at all, so it never reaches this method in the first place.
+     */
+    private fun buildCluster(
+        graph: CallGraph,
+        rootKey: NodeKey,
+        rootKind: RootKind,
+        isHit: (NodeKey) -> Boolean,
+    ): UnreachedCluster {
+        val members = mutableSetOf(rootKey)
+        var changed = true
+        while (changed) {
+            changed = false
+            for (member in members.toList()) {
+                for (target in graph.resolvedEdges[member].orEmpty()) {
+                    if (target in members || isHit(target)) continue
+                    val callers = graph.callersOf[target].orEmpty()
+                    if (callers.isNotEmpty() && members.containsAll(callers)) {
+                        members += target
+                        changed = true
+                    }
+                }
+            }
+        }
+        val memberRefs = members.map { toProbeRef(graph.nodes.getValue(it), it) }.sortedWith(probeRefComparator)
+        val neverLoadedClasses =
+            memberRefs
+                .filter { it.neverLoaded }
+                .map { it.className }
+                .distinct()
+                .size
+        return UnreachedCluster(toProbeRef(graph.nodes.getValue(rootKey), rootKey), rootKind, memberRefs, neverLoadedClasses)
+    }
+
+    /**
+     * Builds every [NodeKey], resolves its edges against the known supertype graph, and indexes
+     * callers. An edge resolves to the union of two lookups, either of which may find nothing: the
+     * first node up the owner's supertype chain, which is an inherited concrete declaration, and,
+     * for a virtual call, every node with the same name and descriptor on a transitive subtype of
+     * the owner. Widening starts at the owner, not at the declaring type, for two reasons: an
+     * abstract interface method has no node anywhere, so requiring the up-walk to succeed would
+     * drop every edge into a pure interface, which is the constructor-injected case supertypes
+     * exist for; and a receiver typed as the owner can only be the owner or one of its subtypes,
+     * never a sibling under some ancestor.
+     */
+    private fun computeCallGraph(): CallGraph {
+        val nodes = buildNodes()
+        val reverseSubtypes = buildReverseSubtypes()
+        val resolvedEdges = mutableMapOf<NodeKey, Set<NodeKey>>()
+        val callersOf = mutableMapOf<NodeKey, MutableSet<NodeKey>>()
+        for ((nodeKey, info) in nodes) {
+            val targets = mutableSetOf<NodeKey>()
+            for (edge in info.edges) {
+                findDeclaringType(nodes, edge.className, edge.methodName, edge.methodDescriptor)?.let {
+                    targets += NodeKey(it, edge.methodName, edge.methodDescriptor)
+                }
+                if (edge.virtual && edge.methodName != "<init>" && edge.methodName != "<clinit>") {
+                    targets += widenToSubtypes(nodes, reverseSubtypes, edge.className, edge.methodName, edge.methodDescriptor)
+                }
+            }
+            targets -= nodeKey
+            resolvedEdges[nodeKey] = targets
+            for (target in targets) callersOf.getOrPut(target) { mutableSetOf() } += nodeKey
+        }
+        return CallGraph(nodes, resolvedEdges, callersOf)
+    }
+
+    /**
+     * Every node: a manifest METHOD probe, non-inline, merged across instances by
+     * (class, method, descriptor) with hits summed and edges unioned with any matching
+     * complete-baseline declaration; plus, for a class a complete scan declared that no manifest
+     * ever mentioned, each of its non-inline declared methods, with zero hits.
+     */
+    private fun buildNodes(): Map<NodeKey, NodeInfo> {
+        val nodes = mutableMapOf<NodeKey, NodeInfo>()
+        val manifestGroups =
+            probesByKey.entries
+                .filter { (_, probe) -> probe.kind == ProbeKind.METHOD && !probe.inline }
+                .groupBy { (_, probe) -> NodeKey(probe.className, probe.methodName, probe.methodDescriptor) }
+        for ((nodeKey, entries) in manifestGroups) {
+            val hits = entries.sumOf { (key, _) -> hitsByKey[key] ?: 0L }
+            val edges = entries.flatMap { (_, probe) -> probe.calls }.toMutableSet()
+            consultedDeclaredClasses[nodeKey.className]
+                ?.methods
+                ?.filter { it.methodName == nodeKey.methodName && it.methodDescriptor == nodeKey.methodDescriptor }
+                ?.forEach { edges += it.calls }
+            val representative = entries.first()
+            nodes[nodeKey] =
+                NodeInfo(
+                    serviceInstanceId = representative.key.serviceInstanceId,
+                    line = representative.value.line,
+                    neverLoaded = false,
+                    hits = hits,
+                    edges = edges,
+                )
+        }
+        for ((className, declared) in consultedDeclaredClasses) {
+            if (className in dynamicallyKnownClassNames) continue
+            for (method in declared.methods) {
+                if (method.inline) continue
+                val nodeKey = NodeKey(className, method.methodName, method.methodDescriptor)
+                if (nodeKey in nodes) continue
+                nodes[nodeKey] =
+                    NodeInfo(
+                        serviceInstanceId = declared.serviceInstanceId,
+                        line = -1,
+                        neverLoaded = true,
+                        hits = 0L,
+                        edges = method.calls.toSet(),
+                    )
+            }
+        }
+        return nodes
+    }
+
+    /** A class's supertypes from either source: its manifest record, or a complete baseline's declaration. */
+    private fun supertypesOf(className: String): SupertypesInfo? =
+        supertypesByClassName[className]
+            ?: consultedDeclaredClasses[className]?.let { SupertypesInfo(it.superClassName, it.interfaceNames) }
+
+    /** Every known class name's direct subtypes, from either supertypes source, for widening a virtual call down. */
+    private fun buildReverseSubtypes(): Map<String, List<String>> {
+        val reverse = mutableMapOf<String, MutableList<String>>()
+        val classNames = supertypesByClassName.keys + consultedDeclaredClasses.keys
+        for (className in classNames) {
+            val info = supertypesOf(className) ?: continue
+            info.superClassName?.let { reverse.getOrPut(it) { mutableListOf() } += className }
+            info.interfaceNames.forEach { reverse.getOrPut(it) { mutableListOf() } += className }
+        }
+        return reverse
+    }
+
+    /**
+     * Breadth-first walk from [owner] up through its supertypes to the first type with a node
+     * named ([name], [desc]), [owner] itself included. Null if the whole chain, as far as it is
+     * known, never reaches one.
+     */
+    private fun findDeclaringType(
+        nodes: Map<NodeKey, NodeInfo>,
+        owner: String,
+        name: String,
+        desc: String,
+    ): String? {
+        val visited = mutableSetOf<String>()
+        val queue = ArrayDeque<String>()
+        queue += owner
+        while (queue.isNotEmpty()) {
+            val current = queue.removeFirst()
+            if (!visited.add(current)) continue
+            if (NodeKey(current, name, desc) in nodes) return current
+            val info = supertypesOf(current) ?: continue
+            info.superClassName?.let { queue += it }
+            queue += info.interfaceNames
+        }
+        return null
+    }
+
+    /** Every transitive subtype of [declaringType], excluding itself, that has a matching ([name], [desc]) node. */
+    private fun widenToSubtypes(
+        nodes: Map<NodeKey, NodeInfo>,
+        reverseSubtypes: Map<String, List<String>>,
+        declaringType: String,
+        name: String,
+        desc: String,
+    ): Set<NodeKey> {
+        val result = mutableSetOf<NodeKey>()
+        val visited = mutableSetOf(declaringType)
+        val queue = ArrayDeque<String>()
+        queue += reverseSubtypes[declaringType].orEmpty()
+        while (queue.isNotEmpty()) {
+            val current = queue.removeFirst()
+            if (!visited.add(current)) continue
+            val key = NodeKey(current, name, desc)
+            if (key in nodes) result += key
+            queue += reverseSubtypes[current].orEmpty()
+        }
+        return result
+    }
+
+    private fun toProbeRef(
+        info: NodeInfo,
+        key: NodeKey,
+    ): ProbeRef =
+        ProbeRef(
+            serviceInstanceId = info.serviceInstanceId,
+            className = key.className,
+            methodName = key.methodName,
+            methodDescriptor = key.methodDescriptor,
+            line = info.line,
+            kind = ProbeKind.METHOD,
+            branchIndex = null,
+            neverLoaded = info.neverLoaded,
+        )
+
+    /**
      * True if the endpoint identified by [verb] and [routeTemplate] has a summed call count above
      * zero. Both arguments are normalised with [RouteTemplateNormalizer.normalizeVerb] and
      * [RouteTemplateNormalizer.normalize] before lookup, so `wasCalled("get", "/checkout/")` finds
@@ -580,6 +912,10 @@ class YukonTestCollector private constructor(
                 return
             }
         val instanceId = manifest.serviceInstanceId
+        // A class's own ClassSupertypes record is always staged and committed together with its
+        // probe locations (see ProbeRegistry.computeManifestDeltas), so every classId this manifest
+        // mentions in classSupertypes also has a matching probe location earlier in this same call.
+        val classNamesByClassId = mutableMapOf<Int, String>()
         for (location in manifest.probes) {
             val key = ProbeKey(instanceId, location.classId, location.probeIndex)
             probesByKey[key] =
@@ -595,6 +931,7 @@ class YukonTestCollector private constructor(
                     location.parameterName,
                     location.overridable,
                     location.targetClassName,
+                    location.calls,
                 )
             nameIndex.computeIfAbsent(location.className) { ConcurrentHashMap.newKeySet() }.add(key)
             if (location.kind == ProbeKind.OPTIONAL_ARGUMENT) {
@@ -602,10 +939,15 @@ class YukonTestCollector private constructor(
                 omissionTargetIndex.computeIfAbsent(targetClassName) { ConcurrentHashMap.newKeySet() }.add(key)
             }
             dynamicallyKnownClassNames += location.className
+            classNamesByClassId[location.classId] = location.className
         }
         for (skipped in manifest.skippedClasses) {
             skippedByClassName.putIfAbsent(skipped.className, skipped)
             dynamicallyKnownClassNames += skipped.className
+        }
+        for (supertypes in manifest.classSupertypes) {
+            val className = classNamesByClassId[supertypes.classId] ?: continue
+            supertypesByClassName[className] = SupertypesInfo(supertypes.superClassName, supertypes.interfaceNames)
         }
         for (endpointLocation in manifest.endpoints) {
             val identity = EndpointIdentity(endpointLocation.verb, endpointLocation.routeTemplate)
@@ -641,16 +983,30 @@ class YukonTestCollector private constructor(
                 respond(exchange, 400)
                 return
             }
-        val scanKey = ScanKey(baseline.resource.serviceInstanceId, baseline.scannedAt)
+        val instanceId = baseline.resource.serviceInstanceId
+        val scanKey = ScanKey(instanceId, baseline.scannedAt)
         val progress = scans.computeIfAbsent(scanKey) { ScanProgress(baseline.chunkCount) }
         val wasComplete = progress.complete
         progress.received += baseline.chunkIndex
         progress.declaredNames += baseline.declaredClasses.map { it.className }
         progress.allInlineNames +=
             baseline.declaredClasses.filter { it.methods.isNotEmpty() && it.methods.all { method -> method.inline } }.map { it.className }
+        for (declaredClass in baseline.declaredClasses) {
+            progress.declaredClasses[declaredClass.className] =
+                DeclaredClassInfo(
+                    serviceInstanceId = instanceId,
+                    methods =
+                        declaredClass.methods.map {
+                            DeclaredMethodInfo(it.methodName, it.methodDescriptor, it.inline, it.calls)
+                        },
+                    superClassName = declaredClass.superClassName,
+                    interfaceNames = declaredClass.interfaceNames,
+                )
+        }
         if (!wasComplete && progress.complete) {
             consultedDeclaredNames += progress.declaredNames
             consultedAllInlineNames += progress.allInlineNames
+            for ((className, info) in progress.declaredClasses) consultedDeclaredClasses.putIfAbsent(className, info)
             completedScans += scanKey
         }
         respond(exchange, 200)
@@ -707,7 +1063,11 @@ class YukonTestCollector private constructor(
  * One probe's identity and location, as reported by a manifest. See [YukonTestCollector] for the
  * class name format. [inline] marks a Kotlin inline function, or a branch inside one; see ADR
  * 0022. [parameterIndex], [parameterName], [overridable], and [targetClassName] are set only when
- * [kind] is [ProbeKind.OPTIONAL_ARGUMENT]; see ADR 0021 and ADR 0023.
+ * [kind] is [ProbeKind.OPTIONAL_ARGUMENT]; see ADR 0021 and ADR 0023. [neverLoaded] is true only
+ * for an [YukonTestCollector.unreachedClusters] member that exists solely because a complete
+ * static baseline declared it: its [line] is `-1`, since the static scan records no line, and its
+ * [serviceInstanceId] names the instance whose scan declared it rather than one that loaded it.
+ * See ADR 0024.
  */
 data class ProbeRef(
     val serviceInstanceId: String,
@@ -722,6 +1082,31 @@ data class ProbeRef(
     val parameterName: String? = null,
     val overridable: Boolean = false,
     val targetClassName: String? = null,
+    val neverLoaded: Boolean = false,
+)
+
+/**
+ * Which of the two root shapes ADR 0024 distinguishes an [UnreachedCluster] by.
+ * [REACHED_FROM_HIT] means at least one in-scope caller has hits; [UNCALLED] means the root has no
+ * in-scope caller at all. The two call for different fixes: a reached-from-hit root's caller works
+ * but never takes this branch, while an uncalled root's caller may not exist yet, or may live
+ * outside scope.
+ */
+enum class RootKind { REACHED_FROM_HIT, UNCALLED }
+
+/**
+ * A root plus every never-hit method reachable from it through call edges whose every in-scope
+ * caller is itself in the cluster, as found by [YukonTestCollector.unreachedClusters]. [members]
+ * includes [root] and is sorted the same way [YukonTestCollector.neverHit] sorts its results.
+ * [neverLoadedClasses] counts the distinct classes among [members] that exist only because a
+ * complete static baseline declared them; see [ProbeRef.neverLoaded]. Deleting [root] removes the
+ * whole cluster. See ADR 0024 and CONTEXT.md, "Unreached cluster".
+ */
+data class UnreachedCluster(
+    val root: ProbeRef,
+    val rootKind: RootKind,
+    val members: List<ProbeRef>,
+    val neverLoadedClasses: Int,
 )
 
 /**

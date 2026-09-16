@@ -12,6 +12,7 @@ import java.io.File
 import java.time.Duration
 import kotlin.test.AfterTest
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -71,5 +72,48 @@ class YukonTestCollectorEndToEndTest {
 
         assertTrue(target.wasHit("com.example.testkittarget.SampleTarget", "exercised"))
         assertFalse(target.wasHit("com.example.testkittarget.SampleTarget", "neverCalled"))
+    }
+
+    @Test
+    fun `unreachedClusters reports a two-method cluster observed only through the wire protocol`() {
+        val target = YukonTestCollector.start()
+        collector = target
+
+        val registry = ProbeRegistry()
+        val config =
+            AgentConfig.parse(
+                "includePackages=com.example.testkittarget," +
+                    "endpoint=${target.endpoint}," +
+                    "flushIntervalSeconds=1," +
+                    "serviceName=testkit-e2e," +
+                    "serviceInstanceId=e2e-2",
+            )
+
+        val instrumentation = ByteBuddyAgent.install()
+        val yukon = YukonInstrumentation(config, registry)
+        installedYukon = yukon
+        installedTransformer = yukon.install(instrumentation)
+
+        val fixtureClass = Class.forName("com.example.testkittarget.SampleTarget", true, fixtureLoader())
+        val fixture = fixtureClass.getDeclaredConstructor().newInstance()
+        fixtureClass.getMethod("exercised").invoke(fixture)
+
+        val exporter = HttpOtlpStyleExporter(target.endpoint)
+        val exportScheduler = ExportScheduler(config, registry, EndpointRegistry(), exporter)
+        scheduler = exportScheduler
+        exportScheduler.start()
+
+        target.awaitProbe("com.example.testkittarget.SampleTarget", "neverCalledHelper2", Duration.ofSeconds(10))
+        target.awaitNextFlush(Duration.ofSeconds(10))
+
+        val cluster =
+            target.unreachedClusters().single {
+                it.root.className == "com.example.testkittarget.SampleTarget" && it.root.methodName == "neverCalledHelper"
+            }
+        assertEquals(RootKind.UNCALLED, cluster.rootKind)
+        assertEquals(
+            listOf("neverCalledHelper", "neverCalledHelper2"),
+            cluster.members.map { it.methodName }.sorted(),
+        )
     }
 }
