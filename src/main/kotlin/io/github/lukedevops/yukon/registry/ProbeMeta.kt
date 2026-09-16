@@ -13,6 +13,10 @@ import io.github.lukedevops.yukon.export.ProbeKind
  * probe. [methodName] and [methodDescriptor] on such a probe name the target function the
  * parameter belongs to, not the synthetic `$default` method the probe actually sits in; [line] is
  * the target's first line, and [inline] is the target's own inline flag. See ADR 0021.
+ *
+ * [targetClassName] is set only for an [ProbeKind.OPTIONAL_ARGUMENT] probe whose target lives in a
+ * different class from the probe's own, the cross-class shape a Scala constructor default getter
+ * takes. Null whenever the target is in the probe's own class. See ADR 0023.
  */
 data class ProbeMeta(
     val kind: ProbeKind,
@@ -24,4 +28,5 @@ data class ProbeMeta(
     val parameterIndex: Int? = null,
     val parameterName: String? = null,
     val overridable: Boolean = false,
+    val targetClassName: String? = null,
 )

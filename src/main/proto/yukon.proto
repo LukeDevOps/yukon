@@ -78,6 +78,12 @@ message ProbeLocation {
   // location cannot relate. It claims "always supplied" (omission total zero while the target was
   // hit) for any target, so long as inline is false.
   bool overridable = 12;
+  // Set only for an OPTIONAL_ARGUMENT probe whose target lives in another class: a Scala
+  // constructor getter declared on a companion module class, whose target constructor lives on
+  // the class the module compiles for. Empty when the target is in the probe's own class, and
+  // never set for Kotlin. A collector joins an omission probe to its target's METHOD probe by
+  // target_class_name when set, otherwise by class_name.
+  string target_class_name = 13;
 }
 
 // A class the agent matched but could not instrument (e.g. bytecode

@@ -63,6 +63,7 @@ class YukonTestCollector private constructor(
         val parameterIndex: Int? = null,
         val parameterName: String? = null,
         val overridable: Boolean = false,
+        val targetClassName: String? = null,
     )
 
     private data class ScanKey(
@@ -99,6 +100,13 @@ class YukonTestCollector private constructor(
 
     private val probesByKey = ConcurrentHashMap<ProbeKey, StoredProbe>()
     private val nameIndex = ConcurrentHashMap<String, MutableSet<ProbeKey>>()
+
+    /**
+     * Omission probes indexed by their target's class, `targetClassName ?: className`, rather than
+     * by the probe's own declared class. A Scala constructor default getter's own class is the
+     * companion module (`Cc$`), but a query names the constructor's own class (`Cc`); see ADR 0023.
+     */
+    private val omissionTargetIndex = ConcurrentHashMap<String, MutableSet<ProbeKey>>()
     private val hitsByKey = ConcurrentHashMap<ProbeKey, Long>()
     private val skippedByClassName = ConcurrentHashMap<String, SkippedClass>()
 
@@ -244,10 +252,9 @@ class YukonTestCollector private constructor(
         matchesParameter: (StoredProbe) -> Boolean,
     ): List<ProbeKey> {
         val matches =
-            nameIndex[className]?.filter { key ->
+            omissionTargetIndex[className]?.filter { key ->
                 val probe = probesByKey[key]
                 probe != null &&
-                    probe.kind == ProbeKind.OPTIONAL_ARGUMENT &&
                     probe.methodName == methodName &&
                     (methodDescriptor == null || probe.methodDescriptor == methodDescriptor) &&
                     matchesParameter(probe)
@@ -308,8 +315,9 @@ class YukonTestCollector private constructor(
         probesByKey.entries
             .filter { (_, probe) -> probe.kind == ProbeKind.OPTIONAL_ARGUMENT && !probe.inline }
             .mapNotNull { (key, probe) ->
+                val targetClassName = probe.targetClassName ?: probe.className
                 val targetKeys =
-                    findMethodProbesOrNull(probe.className, probe.methodName, probe.methodDescriptor)
+                    findMethodProbesOrNull(targetClassName, probe.methodName, probe.methodDescriptor)
                         ?.filter { it.serviceInstanceId == key.serviceInstanceId }
                         ?.takeIf { it.isNotEmpty() }
                         ?: return@mapNotNull null
@@ -319,12 +327,13 @@ class YukonTestCollector private constructor(
                 if (!claims(omitted, targetHits, probe)) return@mapNotNull null
                 OptionalParameterRef(
                     serviceInstanceId = key.serviceInstanceId,
-                    className = probe.className,
+                    className = targetClassName,
                     methodName = probe.methodName,
                     methodDescriptor = probe.methodDescriptor,
                     parameterIndex = probe.parameterIndex ?: -1,
                     parameterName = probe.parameterName ?: "",
                     line = probe.line,
+                    targetClassName = probe.targetClassName,
                 )
             }.sortedWith(compareBy({ it.className }, { it.methodName }, { it.parameterIndex }))
 
@@ -552,8 +561,13 @@ class YukonTestCollector private constructor(
                     location.parameterIndex,
                     location.parameterName,
                     location.overridable,
+                    location.targetClassName,
                 )
             nameIndex.computeIfAbsent(location.className) { ConcurrentHashMap.newKeySet() }.add(key)
+            if (location.kind == ProbeKind.OPTIONAL_ARGUMENT) {
+                val targetClassName = location.targetClassName ?: location.className
+                omissionTargetIndex.computeIfAbsent(targetClassName) { ConcurrentHashMap.newKeySet() }.add(key)
+            }
             dynamicallyKnownClassNames += location.className
         }
         for (skipped in manifest.skippedClasses) {
@@ -659,8 +673,8 @@ class YukonTestCollector private constructor(
 /**
  * One probe's identity and location, as reported by a manifest. See [YukonTestCollector] for the
  * class name format. [inline] marks a Kotlin inline function, or a branch inside one; see ADR
- * 0022. [parameterIndex], [parameterName], and [overridable] are set only when [kind] is
- * [ProbeKind.OPTIONAL_ARGUMENT]; see ADR 0021.
+ * 0022. [parameterIndex], [parameterName], [overridable], and [targetClassName] are set only when
+ * [kind] is [ProbeKind.OPTIONAL_ARGUMENT]; see ADR 0021 and ADR 0023.
  */
 data class ProbeRef(
     val serviceInstanceId: String,
@@ -674,13 +688,17 @@ data class ProbeRef(
     val parameterIndex: Int? = null,
     val parameterName: String? = null,
     val overridable: Boolean = false,
+    val targetClassName: String? = null,
 )
 
 /**
  * One optional parameter's identity, as found by [YukonTestCollector.neverSupplied] or
  * [YukonTestCollector.alwaysSupplied]. [className], [methodName], and [methodDescriptor] name the
  * target function the parameter belongs to, not the synthetic `$default` method its omission
- * probe actually sits in. See ADR 0021 and CONTEXT.md, "Optional parameter".
+ * probe actually sits in: for a Scala constructor default getter, [className] is the constructor's
+ * own class, not the companion module class the getter's slot lives on. [targetClassName] carries
+ * the same raw value the manifest reported, null unless the target crosses a class boundary. See
+ * ADR 0021, ADR 0023, and CONTEXT.md, "Optional parameter".
  */
 data class OptionalParameterRef(
     val serviceInstanceId: String,
@@ -690,6 +708,7 @@ data class OptionalParameterRef(
     val parameterIndex: Int,
     val parameterName: String,
     val line: Int,
+    val targetClassName: String? = null,
 )
 
 /**

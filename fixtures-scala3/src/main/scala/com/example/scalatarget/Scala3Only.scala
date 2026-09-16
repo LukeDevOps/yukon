@@ -14,6 +14,12 @@ object InlineHost {
   inline def inlineF(a: Int, b: Int = 7): Int = a + b
 }
 
+/** A defaulted constructor parameter on a Scala 3 enum, resolved the same way a case class's constructor default is. */
+enum Color(val code: Int = 0) {
+  case Red extends Color(1)
+  case Blue
+}
+
 /** Scala-3-only call patterns, kept separate from [[Driver]] since the scala2 fixture has no equivalents. */
 object Driver3 {
   def callExtensionAllOmitted(): String = {

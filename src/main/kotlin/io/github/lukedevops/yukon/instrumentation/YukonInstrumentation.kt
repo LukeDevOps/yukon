@@ -223,11 +223,12 @@ class YukonInstrumentation(
                         ProbeKind.OPTIONAL_ARGUMENT,
                         getterSite.targetName,
                         getterSite.targetDescriptor,
-                        line = analysis.firstLineOf(getterSite.targetName, getterSite.targetDescriptor),
+                        line = getterSite.line,
                         inline = false,
                         parameterIndex = getterSite.parameterIndex,
                         parameterName = getterSite.parameterName,
                         overridable = getterSite.overridable,
+                        targetClassName = getterSite.targetClassName,
                     )
                 } else {
                     ProbeMeta(
@@ -418,7 +419,28 @@ class YukonInstrumentation(
             classBytesCapture.take(typeDescription.internalName)
                 ?: locateClassBytes(typeDescription, classLoader)
                 ?: return BranchSiteAnalyzer.Analysis.EMPTY
-        return BranchSiteAnalyzer.analyze(bytes) { name, descriptor -> (name to descriptor) in eligible }
+        val lookup = scalaGetterTargetLookup(classLoader)
+        return BranchSiteAnalyzer.analyze(bytes, lookup) { name, descriptor -> (name to descriptor) in eligible }
+    }
+
+    /**
+     * Reads another class's bytes as a resource on [classLoader], so [BranchSiteAnalyzer] can
+     * resolve a Scala constructor default getter against its target's own class. This only reads
+     * bytecode; it never loads the class, the same way [locateClassBytes] resolves the
+     * instrumented class's own bytes from the same kind of locator. Any failure, including a class
+     * the locator cannot find, is swallowed and reported as an unresolved getter rather than as an
+     * instrumentation failure.
+     */
+    private fun scalaGetterTargetLookup(classLoader: ClassLoader?): (String) -> ByteArray? {
+        val locator = classFileLocatorFor(classLoader)
+        return { internalName ->
+            try {
+                val resolution = locator.locate(internalName.replace('/', '.'))
+                if (resolution.isResolved) resolution.resolve() else null
+            } catch (_: Exception) {
+                null
+            }
+        }
     }
 
     /**
@@ -506,12 +528,7 @@ class YukonInstrumentation(
         typeDescription: TypeDescription,
         classLoader: ClassLoader?,
     ): ByteArray? {
-        val locator =
-            if (classLoader != null) {
-                ClassFileLocator.ForClassLoader.of(classLoader)
-            } else {
-                ClassFileLocator.ForClassLoader.ofBootLoader()
-            }
+        val locator = classFileLocatorFor(classLoader)
         return try {
             val resolution = locator.locate(typeDescription.name)
             if (resolution.isResolved) resolution.resolve() else null
@@ -519,6 +536,13 @@ class YukonInstrumentation(
             null
         }
     }
+
+    private fun classFileLocatorFor(classLoader: ClassLoader?): ClassFileLocator =
+        if (classLoader != null) {
+            ClassFileLocator.ForClassLoader.of(classLoader)
+        } else {
+            ClassFileLocator.ForClassLoader.ofBootLoader()
+        }
 
     private fun methodMatcher(): ElementMatcher.Junction<MethodDescription> = TypeMatchPolicy.methodMatcher()
 
