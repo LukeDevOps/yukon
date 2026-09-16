@@ -51,6 +51,7 @@ import net.bytebuddy.utility.JavaModule
 import java.io.IOException
 import java.lang.System.Logger.Level
 import java.lang.instrument.Instrumentation
+import java.util.WeakHashMap
 
 /** A woven `$default` method's per-method constants for [OptionalArgumentAdvice]. */
 private class DefaultSiteBinding(
@@ -102,6 +103,25 @@ class YukonInstrumentation(
 ) {
     private val log = System.getLogger(YukonInstrumentation::class.java.name)
     private val classBytesCapture: ClassBytesCapture? = if (captureClassBytes) ClassBytesCapture(::isCandidateInternalName) else null
+
+    /**
+     * One parsed-table cache per defining classloader, so transforms of classes that reference
+     * the same in-scope class parse it once. Keyed weakly: a retired classloader takes its cache
+     * with it. The bootstrap loader, which the JVM represents as null, gets its own.
+     */
+    private val tableCaches = WeakHashMap<ClassLoader, BranchSiteAnalyzer.CrossClassTableCache>()
+    private val bootstrapTableCache = BranchSiteAnalyzer.CrossClassTableCache(TRANSFORM_TABLE_CACHE_ENTRIES)
+
+    private fun tableCacheFor(classLoader: ClassLoader?): BranchSiteAnalyzer.CrossClassTableCache {
+        if (classLoader == null) return bootstrapTableCache
+        return synchronized(tableCaches) {
+            tableCaches.getOrPut(classLoader) { BranchSiteAnalyzer.CrossClassTableCache(TRANSFORM_TABLE_CACHE_ENTRIES) }
+        }
+    }
+
+    /** How many parsed tables the cache for [classLoader] holds; for tests. */
+    internal fun cachedTableCount(classLoader: ClassLoader?): Int =
+        if (classLoader == null) bootstrapTableCache.size else synchronized(tableCaches) { tableCaches[classLoader]?.size ?: 0 }
 
     /**
      * Installs the bootstrap holder, points it at this registry, then registers two transformers
@@ -466,6 +486,7 @@ class YukonInstrumentation(
             lookup,
             config.instrumentedPackagePrefixes,
             config.excludedPackagePrefixes,
+            tableCacheFor(classLoader),
         ) { name, descriptor -> (name to descriptor) in eligible }
     }
 
@@ -681,3 +702,10 @@ class YukonInstrumentation(
         }
     }
 }
+
+/**
+ * Tables held per classloader. Sized for a startup burst, where most of a loader's classes
+ * transform in sequence and reference one another; an application larger than this parses its
+ * least recently referenced classes again rather than pinning every table.
+ */
+private const val TRANSFORM_TABLE_CACHE_ENTRIES = 2048
