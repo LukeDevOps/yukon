@@ -1,0 +1,128 @@
+---
+description: Deep review of a codebase or subsystem. Verified bugs only, coverage check, comment pass. Manual invocation only.
+argument-hint: [scope, e.g. a module or directory; default is the whole project]
+disable-model-invocation: true
+---
+
+# Deep review
+
+Review the project (or `$ARGUMENTS` when given) for bugs, quality-of-life
+gaps, code smells, comment quality, and test coverage. The bar for calling
+something a bug is high: most candidates turn out harmless on closer
+inspection, and the report must say which ones did.
+
+## Who does what
+
+- The main (Fable) session does the reading, the reasoning, the verification
+  and the fixes. Do not hand judgement to a subagent.
+- Delegate to a Sonnet subagent only for mechanical work that needs no
+  thinking: disassembling a jar, parsing a coverage report into a table,
+  listing test names, collecting sources from a dependency cache. Give it an
+  exact brief and expected output shape.
+- Fable reviews every subagent result before using it, and reviews its own
+  edits (read the diff, run the tests) before reporting them.
+
+## 1. Read everything in scope
+
+Read every main source file in scope in full, not a sample. Then read the
+build scripts, the wire schema or public contracts, the test scaffolding
+(test names and fixture shapes, not every assertion), and any design notes
+the repo keeps (CLAUDE.md, ADRs, CONTEXT.md). Keep a running candidate list
+as you go: one line per suspicion, with the file and the reason.
+
+Track the work with the task tools: one task per candidate, one for
+coverage, one for the report.
+
+## 2. Verify each candidate, both ways
+
+A candidate becomes a finding only after both of these, and the report
+records both:
+
+1. **Eye trace.** Follow the code path that would trigger it: callers,
+   the contract of the API it relies on (read the JDK, library or framework
+   source when the contract is the question, do not quote it from memory),
+   and the state it depends on. Write down the exact conditions.
+2. **Repro test.** Write a test that pins the intended behaviour, run it
+   against the unmodified code and confirm it fails for the reason you
+   expect. Then fix, and confirm it passes. A test that was green before the
+   fix proves nothing.
+
+If either step shows the candidate is harmless, record it under
+"checked, not a bug" with the reason. That list is part of the deliverable;
+it is what stops the next reviewer chasing the same ghost.
+
+Severity is about consequences, not code shape: silent wrong output ranks
+above a crash, and a crash ranks above a log line. A low-probability bug is
+still a bug if the consequence is a hang or wrong data; say how likely it
+is.
+
+## 3. Test coverage
+
+Measure real coverage, do not eyeball it. For a Gradle project, apply
+JaCoCo through an init script kept in the job's temp directory so the repo
+is untouched, fold every test task's and every `jvm-test-suite`'s execution
+data into one report per module, and run the whole build with it. Adapt
+the same idea to other build tools.
+
+Before reading the numbers, strip the artefacts a coverage tool cannot see:
+bytecode that is inlined into other classes (advice classes) never executes
+as its own class, classes appended to the bootstrap loader are not
+instrumented by the default agent settings, and generated code (protobuf
+descriptors) is not the project's own. Report cleaned numbers, and say what
+was excluded and why.
+
+Also treat a test that fails only under the coverage agent as a candidate
+in its own right: a second bytecode agent ahead of the one under review is
+a real deployment shape, not test noise.
+
+Then read the uncovered lines, not just the percentages. For each uncovered
+public behaviour decide: worth a test (write it, following the project's
+TDD rule), dead code (report it), or a path that only a real deployment
+reaches (report it as a known gap). Do not chase a number; chase behaviour
+that nobody would notice breaking.
+
+## 4. Comments and docs
+
+Run the `humanizer` skill's checks over every comment or doc block you add
+or touch, and scan the rest of the codebase for its patterns: stock words,
+em dashes, sentences that restate the code, time-relative wording
+("now", "previously"). Fix what you find in the files you are already in;
+list the rest.
+
+Check user-facing docs against the code: an options table that misses an
+option the parser accepts, a README command that no longer exists, an ADR
+claim the code contradicts.
+
+## 5. Quality-of-life and smells
+
+Report, and fix when small and safe: duplicated logic that has already
+drifted, a public API that lets a caller silently get the wrong answer, a
+missing log line at a point where the design notes promise one, a test that
+cannot fail. Leave larger refactors as recommendations with a reason.
+
+## 6. Verification gate before reporting
+
+- The full build (every module, every test suite) passes with the changes.
+- The project's formatter has run over every touched file (for this
+  project that is the `ktlint` CLI, run with `-F`).
+- Every finding in the report has its test named, and the test is in the
+  tree.
+
+Do not commit unless the user asked for that in the invocation; show the
+diff summary instead.
+
+## 7. Report
+
+Lead with the outcome in one line. Then, in this order:
+
+1. Verified bugs: what, the evidence from both verification steps, the fix,
+   the test that pins it, and how likely it is in practice.
+2. Checked, not bugs: each candidate and the reason it is harmless.
+3. Coverage: per-module numbers in a short table, then the uncovered
+   behaviour that matters and what was done about it.
+4. Quality-of-life and comment fixes made.
+5. Recommendations not acted on, with the reason.
+
+Short sentences. No headers in a short report. Numbers in tables, not
+prose. The report has to stand on its own for a reader who did not watch
+the session.
