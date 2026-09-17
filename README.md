@@ -93,16 +93,27 @@ five-method cluster: the handler, its helper, and the repository's method,
 static initialiser and constructor, the last three marked never loaded
 since that class never loads at all in this demo. A call into a class
 counts as a call into its static initialiser, which is why the whole
-class follows the handler into the cluster:
+class follows the handler into the cluster. The handler is a named class,
+so the endpoint record names its `handle` method and the route is printed
+beside the root; nothing in the demo's own code calls `handle`, only the
+server does, which is why the root is uncalled rather than reached from
+hit:
 
 ```
-UNREACHED CLUSTER: root io.github.lukedevops.demo.server.DemoServerMainKt#handlePromo (reached from hit), 5 methods, 1 never-loaded classes
+UNREACHED CLUSTER: root io.github.lukedevops.demo.server.PromoHandler#handle (uncalled), 5 methods, 1 never-loaded classes routes=[* /promo]
   io.github.lukedevops.demo.server.DemoServerMainKt#applyPromoCode
-  io.github.lukedevops.demo.server.DemoServerMainKt#handlePromo
+  io.github.lukedevops.demo.server.PromoHandler#handle
   io.github.lukedevops.demo.server.PromoRepository#<clinit> (never loaded)
   io.github.lukedevops.demo.server.PromoRepository#<init> (never loaded)
   io.github.lukedevops.demo.server.PromoRepository#find (never loaded)
 ```
+
+`/checkout` is registered the other way, as a function reference that
+Kotlin converts to the `HttpHandler` interface through `invokedynamic`.
+That handler is a hidden class with no stable name, so its endpoint
+carries no handler join and the two shapes sit side by side in the
+endpoint report: `* /promo` names `PromoHandler#handle`, `* /checkout`
+names nothing.
 
 Three smaller clusters follow it, each reached from the checkout handler
 under the branch the demo never takes: `LegacyDiscountCalculator`'s

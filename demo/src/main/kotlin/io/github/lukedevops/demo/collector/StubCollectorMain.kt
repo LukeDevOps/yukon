@@ -111,6 +111,8 @@ private data class EndpointInfo(
     val framework: String,
     val discoverySource: EndpointDiscoverySource,
     val handlerClass: String?,
+    val handlerMethod: String?,
+    val handlerDescriptor: String?,
 )
 
 private val manifestProbes = ConcurrentHashMap<InstanceProbeKey, ProbeInfo>()
@@ -307,6 +309,8 @@ private fun handleManifest(exchange: HttpExchange) {
                 framework = endpoint.framework,
                 discoverySource = endpoint.discoverySource,
                 handlerClass = if (endpoint.hasHandlerClass()) endpoint.handlerClass else null,
+                handlerMethod = if (endpoint.hasHandlerMethod()) endpoint.handlerMethod else null,
+                handlerDescriptor = if (endpoint.hasHandlerDescriptor()) endpoint.handlerDescriptor else null,
             )
     }
     for (disabled in manifest.disabledEndpointModulesList) {
@@ -482,7 +486,8 @@ private fun printEndpointReport() {
         .sortedWith(compareBy({ it.value.routeTemplate }, { it.value.verb }))
         .forEach { (key, info) ->
             val hits = latestEndpointHitsTotal[key] ?: 0L
-            val handlerSuffix = info.handlerClass?.let { " handler=$it" } ?: ""
+            val handlerSuffix =
+                info.handlerClass?.let { cls -> " handler=$cls${info.handlerMethod?.let { "#$it" } ?: ""}" } ?: ""
             val tag = "[${info.framework}, ${info.discoverySource}]"
             if (hits > 0L) {
                 println("  CALLED: ${info.verb} ${info.routeTemplate} calls=$hits $tag$handlerSuffix")
@@ -576,11 +581,14 @@ private fun printUnreachedClusterReport() {
     println("=== yukon demo: unreached clusters ===")
     val clusters = computeUnreachedClusters()
     println("clusters: ${clusters.size}")
+    val routesByHandler = routesByHandler()
     clusters.forEach { cluster ->
         val rootLabel = if (cluster.rootKind == ClusterRootKind.REACHED_FROM_HIT) "reached from hit" else "uncalled"
+        val routes = routesByHandler[NodeKey(cluster.root.className, cluster.root.methodName, cluster.root.methodDescriptor)]
+        val routesSuffix = routes?.let { " routes=${it.joinToString(", ", "[", "]")}" } ?: ""
         println(
             "UNREACHED CLUSTER: root ${cluster.root.className}#${cluster.root.methodName} ($rootLabel), " +
-                "${cluster.members.size} methods, ${cluster.neverLoadedClasses} never-loaded classes",
+                "${cluster.members.size} methods, ${cluster.neverLoadedClasses} never-loaded classes$routesSuffix",
         )
         cluster.members.forEach { member ->
             val suffix = if (member.neverLoaded) " (never loaded)" else ""
@@ -589,6 +597,21 @@ private fun printUnreachedClusterReport() {
     }
     println("=======================================")
 }
+
+/**
+ * The endpoints whose handler join names each method, as `verb template` strings, merged across
+ * instances the way the call graph itself is. This is the stub's version of the `routes` the real
+ * server puts on a never-hit row and on an unreached cluster's root: a never-called endpoint and
+ * the never-hit method behind it are one finding, and printing the route on the root makes that
+ * visible without a second lookup. A handler in a hidden class has no join and so no entry here.
+ */
+private fun routesByHandler(): Map<NodeKey, List<String>> =
+    manifestEndpoints.values
+        .filter { it.handlerClass != null && it.handlerMethod != null && it.handlerDescriptor != null }
+        .groupBy(
+            { NodeKey(it.handlerClass!!, it.handlerMethod!!, it.handlerDescriptor!!) },
+            { "${it.verb} ${it.routeTemplate}" },
+        ).mapValues { (_, routes) -> routes.distinct().sorted() }
 
 /**
  * Every unreached cluster in the call graph, sorted by member count descending, then by root. A

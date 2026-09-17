@@ -334,7 +334,8 @@ fun printStackReport() {
     for (probe in readApi("/never-hit$version")["probes"] as List<*>) {
         val p = probe as Map<*, *>
         val detail = p["branch_index"]?.let { "branch $it" } ?: p["kind"]
-        println("    ${p["class_name"]}#${p["method_name"]}:${p["line"]} ($detail)")
+        val routes = (p["routes"] as List<*>).takeIf { it.isNotEmpty() }?.let { " routes=$it" } ?: ""
+        println("    ${p["class_name"]}#${p["method_name"]}:${p["line"]} ($detail)$routes")
     }
     println("  NEVER LOADED:")
     for (cls in readApi("/never-loaded$version")["classes"] as List<*>) {
@@ -353,12 +354,13 @@ fun printStackReport() {
     for (cluster in readApi("/unreached-clusters$version")["clusters"] as List<*>) {
         val c = cluster as Map<*, *>
         val root = c["root"] as Map<*, *>
+        val routes = (root["routes"] as List<*>).takeIf { it.isNotEmpty() }?.let { " routes=$it" } ?: ""
         println(
             "    UNREACHED CLUSTER: root ${root["class_name"]}#${root["method_name"]} (${(root["root_kind"] as String).replace(
                 '_',
                 ' ',
             )}), " +
-                "${c["members_total"]} methods, ${c["never_loaded_classes"]} never-loaded classes",
+                "${c["members_total"]} methods, ${c["never_loaded_classes"]} never-loaded classes$routes",
         )
         for (member in c["members"] as List<*>) {
             val m = member as Map<*, *>
@@ -370,7 +372,7 @@ fun printStackReport() {
     for (endpoint in readApi("/endpoints$version&status=all")["endpoints"] as List<*>) {
         val e = endpoint as Map<*, *>
         val status = if ((e["calls_total"] as Number).toLong() > 0) "CALLED" else "NEVER CALLED"
-        val handler = e["handler_class"]?.let { " handler=$it" } ?: ""
+        val handler = e["handler_class"]?.let { cls -> " handler=$cls${e["handler_method"]?.let { "#$it" } ?: ""}" } ?: ""
         println(
             "    $status: ${e["verb"]} ${e["route_template"]} calls=${e["calls_total"]} [${e["framework"]}, ${e["discovery_source"]}]$handler",
         )
