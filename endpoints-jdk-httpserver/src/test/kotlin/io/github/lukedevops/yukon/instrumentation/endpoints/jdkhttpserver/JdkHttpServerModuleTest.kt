@@ -15,8 +15,29 @@ import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
+
+private const val HANDLE_DESCRIPTOR = "(Lcom/sun/net/httpserver/HttpExchange;)V"
+
+/** Declares `handle` itself; a subclass with no override of its own must join here, not to itself. */
+private abstract class AbstractRespondingHandler : HttpHandler {
+    override fun handle(exchange: HttpExchange) {
+        exchange.sendResponseHeaders(200, -1)
+        exchange.close()
+    }
+}
+
+/** Inherits `handle` from [AbstractRespondingHandler] without overriding it. */
+private class InheritingHandler : AbstractRespondingHandler()
+
+/** Overrides `handle` on itself, so its own class is where the join must land. */
+private class OverridingHandler : HttpHandler {
+    override fun handle(exchange: HttpExchange) {
+        exchange.sendResponseHeaders(200, -1)
+        exchange.close()
+    }
+}
 
 /**
  * Proves [JdkHttpServerModule] end to end against the real `com.sun.net.httpserver.HttpServer`,
@@ -37,10 +58,20 @@ class JdkHttpServerModuleTest {
 
         val server = HttpServer.create(InetSocketAddress("localhost", 0), 0)
         try {
-            server.createContext("/checkout", HttpHandler { exchange -> respond(exchange) })
+            val lambdaHandler = HttpHandler { exchange -> respond(exchange) }
+            assertTrue(
+                lambdaHandler.javaClass.isHidden,
+                "a Kotlin SAM lambda for a Java functional interface must compile to a hidden class, confirmed via Class.isHidden()",
+            )
+
+            server.createContext("/checkout", lambdaHandler)
             server.createContext("/promo", HttpHandler { exchange -> respond(exchange) })
+            server.createContext("/overriding", OverridingHandler())
+            server.createContext("/inherited", InheritingHandler())
             val lateContext = server.createContext("/late")
-            lateContext.setHandler(HttpHandler { exchange -> respond(exchange) })
+            lateContext.setHandler(InheritingHandler())
+            val lateHiddenContext = server.createContext("/late-hidden")
+            lateHiddenContext.setHandler(HttpHandler { exchange -> respond(exchange) })
             server.start()
 
             val port = server.address.port
@@ -48,25 +79,63 @@ class JdkHttpServerModuleTest {
             get(client, port, "/checkout")
             get(client, port, "/checkout")
             get(client, port, "/checkout/extra")
+            get(client, port, "/overriding")
+            get(client, port, "/inherited")
             get(client, port, "/late")
+            get(client, port, "/late-hidden")
             get(client, port, "/nothing")
 
             val endpoints = registry.endpoints()
             val byIdentity = endpoints.associateBy { "${it.verb} ${it.routeTemplate}" }
-            assertEquals(setOf("* /checkout", "* /promo", "* /late"), byIdentity.keys)
+            assertEquals(
+                setOf("* /checkout", "* /promo", "* /overriding", "* /inherited", "* /late", "* /late-hidden"),
+                byIdentity.keys,
+            )
             for (endpoint in endpoints) {
                 assertEquals("jdk-httpserver", endpoint.framework)
                 assertEquals(EndpointDiscoverySource.REGISTRATION, endpoint.discoverySource)
-                assertNotNull(endpoint.handlerClass, "handler class missing for ${endpoint.verbatimTemplate}")
             }
 
+            // A hidden class (a Java or Kotlin SAM lambda) has no stable name across runs, so it gets no join at
+            // all, whether attached at creation or later through setHandler.
+            val checkout = byIdentity.getValue("* /checkout")
+            assertNull(checkout.handlerClass, "a hidden lambda handler must get no join")
+            assertNull(checkout.handlerMethod)
+            assertNull(checkout.handlerDescriptor)
+            val promo = byIdentity.getValue("* /promo")
+            assertNull(promo.handlerClass, "a hidden lambda handler must get no join")
+            val lateHidden = byIdentity.getValue("* /late-hidden")
+            assertNull(lateHidden.handlerClass, "a hidden lambda attached through setHandler must get no join")
+            assertNull(lateHidden.handlerMethod)
+            assertNull(lateHidden.handlerDescriptor)
+
+            // A non-hidden handler class that overrides `handle` on itself reports its own class.
+            val overriding = byIdentity.getValue("* /overriding")
+            assertEquals(OverridingHandler::class.java.name, overriding.handlerClass)
+            assertEquals("handle", overriding.handlerMethod)
+            assertEquals(HANDLE_DESCRIPTOR, overriding.handlerDescriptor)
+
+            // A subclass that inherits `handle` from an abstract base reports the base class, not the subclass:
+            // that is where the probe on `handle` actually lives.
+            val inherited = byIdentity.getValue("* /inherited")
+            assertEquals(AbstractRespondingHandler::class.java.name, inherited.handlerClass)
+            assertEquals("handle", inherited.handlerMethod)
+            assertEquals(HANDLE_DESCRIPTOR, inherited.handlerDescriptor)
+
+            // A handler attached later through setHandler (the one-argument createContext overload) is joined
+            // the same way as one attached at creation.
+            val late = byIdentity.getValue("* /late")
+            assertEquals(AbstractRespondingHandler::class.java.name, late.handlerClass)
+            assertEquals("handle", late.handlerMethod)
+            assertEquals(HANDLE_DESCRIPTOR, late.handlerDescriptor)
+
             val deltasById = registry.computeDeltas(maxPerBatch = 10).flatMap { it.deltas }.associateBy { it.endpointId }
-            val checkoutId = byIdentity.getValue("* /checkout").endpointId
-            val lateId = byIdentity.getValue("* /late").endpointId
-            val promoId = byIdentity.getValue("* /promo").endpointId
-            assertEquals(3L, deltasById.getValue(checkoutId).hitsTotal)
-            assertEquals(1L, deltasById.getValue(lateId).hitsTotal)
-            assertTrue(promoId !in deltasById)
+            assertEquals(3L, deltasById.getValue(checkout.endpointId).hitsTotal)
+            assertEquals(1L, deltasById.getValue(overriding.endpointId).hitsTotal)
+            assertEquals(1L, deltasById.getValue(inherited.endpointId).hitsTotal)
+            assertEquals(1L, deltasById.getValue(late.endpointId).hitsTotal)
+            assertEquals(1L, deltasById.getValue(lateHidden.endpointId).hitsTotal)
+            assertTrue(promo.endpointId !in deltasById, "an endpoint never dispatched to must report no delta")
 
             assertTrue(registry.disabledModules().isEmpty())
 

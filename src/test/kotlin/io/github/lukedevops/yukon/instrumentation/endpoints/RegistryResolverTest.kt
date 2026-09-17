@@ -12,10 +12,54 @@ import net.bytebuddy.matcher.ElementMatcher
 import net.bytebuddy.matcher.ElementMatchers.none
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class RegistryResolverTest {
+    @Test
+    fun `attachHandler with a null handler class does not erase a previously attached join`() {
+        BootstrapHolder.install(ByteBuddyAgent.install())
+        val moduleName = "attach-null-${System.nanoTime()}"
+        val registry = EndpointRegistry()
+        YukonEndpoints.install(RegistryResolver(registry))
+
+        val key = "attach-null-key-${System.nanoTime()}"
+        val entry =
+            YukonEndpoints.register(moduleName, key, "GET", "/health", null, "com.example.HealthHandler", "handle", "()V")
+        assertNotNull(entry, "register must resolve an entry once a resolver is installed")
+
+        // A dispatch through a hidden class (a Java or Kotlin SAM lambda) has nothing to join with, but
+        // must never overwrite a real join a registration hook already recorded.
+        YukonEndpoints.attachHandler(moduleName, entry, null, null, null)
+
+        val endpoint = registry.endpoints().single { it.verbatimTemplate == "/health" }
+        assertEquals("com.example.HealthHandler", endpoint.handlerClass)
+        assertEquals("handle", endpoint.handlerMethod)
+        assertEquals("()V", endpoint.handlerDescriptor)
+    }
+
+    @Test
+    fun `register with a null handler class does not erase a previously attached join for the same identity`() {
+        BootstrapHolder.install(ByteBuddyAgent.install())
+        val moduleName = "register-null-${System.nanoTime()}"
+        val registry = EndpointRegistry()
+        YukonEndpoints.install(RegistryResolver(registry))
+
+        val firstKey = "register-null-key-1-${System.nanoTime()}"
+        YukonEndpoints.register(moduleName, firstKey, "GET", "/health", null, "com.example.HealthHandler", "handle", "()V")
+
+        // A second registration hook for the same (verb, template) identity that only has a hidden class
+        // to offer must not blank out the join the first registration already recorded.
+        val secondKey = "register-null-key-2-${System.nanoTime()}"
+        YukonEndpoints.register(moduleName, secondKey, "GET", "/health", null, null, null, null)
+
+        val endpoint = registry.endpoints().single { it.verbatimTemplate == "/health" }
+        assertEquals("com.example.HealthHandler", endpoint.handlerClass)
+        assertEquals("handle", endpoint.handlerMethod)
+        assertEquals("()V", endpoint.handlerDescriptor)
+    }
+
     @Test
     fun `a module whose route walk throws is switched off at the seam, not only reported disabled`() {
         BootstrapHolder.install(ByteBuddyAgent.install())

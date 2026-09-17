@@ -1,6 +1,7 @@
 package io.github.lukedevops.yukon.endpoints.springwebmvc;
 
 import io.github.lukedevops.yukon.bootstrap.YukonEndpoints;
+import java.lang.reflect.Method;
 import java.util.List;
 import net.bytebuddy.asm.Advice;
 import org.springframework.web.servlet.function.RouterFunctions;
@@ -20,6 +21,16 @@ import org.springframework.web.util.pattern.PathPattern;
  * PathPattern} or a plain {@code String}, since nothing in the surrounding API contract promises
  * the attribute stays a {@code PathPattern} forever.
  *
+ * <p>The handler join names the method functional routing actually invokes: a {@code
+ * HandlerFunction} whose class is not hidden reports {@code handle} and the class that declares
+ * it, read through {@code getMethod("handle", ServerRequest.class)} since every implementation
+ * must override that method publicly to satisfy the interface. A hidden class, generated for a
+ * Kotlin SAM-converted lambda (or a Java lambda) through {@code invokedynamic}, has no stable name
+ * across runs, so its class, method, and descriptor are all reported as null instead. A route the
+ * declare walk registered already carries this join from registration, so the reflection here
+ * runs only for a route discovered at dispatch, never on the per-request path, which stays one
+ * attribute read and a lookup.
+ *
  * <p>The dispatch key built here, {@code List.of(handlerFunction, pattern, verb)}, must match
  * {@code SpringWebMvcModule.declare}'s own key exactly, the same value-equality convention the
  * annotation-mapped side of this module already uses for {@link HandleMatchAdvice} and {@link
@@ -32,6 +43,8 @@ import org.springframework.web.util.pattern.PathPattern;
  */
 public class SetAttributesAdvice {
     private static final String MODULE = "spring-webmvc";
+    private static final String HANDLE_DESCRIPTOR =
+            "(Lorg/springframework/web/servlet/function/ServerRequest;)Lorg/springframework/web/servlet/function/ServerResponse;";
 
     @Advice.OnMethodEnter(suppress = Throwable.class)
     public static void onEnter(
@@ -53,8 +66,24 @@ public class SetAttributesAdvice {
                 entry = YukonEndpoints.lookup(MODULE, List.of(handlerFunction, pattern, "*"));
             }
             if (entry == null) {
-                String handlerClassName = handlerFunction.getClass().isHidden() ? null : handlerFunction.getClass().getName();
-                entry = YukonEndpoints.recordDispatch(MODULE, key, verb, pattern, null, handlerClassName);
+                String handlerClass = null;
+                String handlerMethod = null;
+                String handlerDescriptor = null;
+                Class<?> handlerType = handlerFunction.getClass();
+                if (!handlerType.isHidden()) {
+                    try {
+                        Method method = handlerType.getMethod("handle", ServerRequest.class);
+                        handlerClass = method.getDeclaringClass().getName();
+                        handlerMethod = "handle";
+                        handlerDescriptor = HANDLE_DESCRIPTOR;
+                    } catch (NoSuchMethodException e) {
+                        handlerClass = handlerType.getName();
+                    }
+                }
+                entry = YukonEndpoints.recordDispatch(MODULE, key, verb, pattern, null, handlerClass);
+                if (entry != null) {
+                    YukonEndpoints.attachHandler(MODULE, entry, handlerClass, handlerMethod, handlerDescriptor);
+                }
             }
             YukonEndpoints.hit(entry);
         } catch (Throwable t) {

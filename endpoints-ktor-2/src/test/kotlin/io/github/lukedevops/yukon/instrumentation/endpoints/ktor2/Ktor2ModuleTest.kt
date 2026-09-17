@@ -78,6 +78,10 @@ class Ktor2ModuleTest {
                     endpoint.handlerClass!!.contains("Ktor2ModuleTest"),
                     "handler class ${endpoint.handlerClass} is not from this test",
                 )
+                // A suspend lambda declares invokeSuspend on itself, so every handler here (a real, named
+                // class, never hidden) joins to that method rather than reporting the class alone.
+                assertEquals("invokeSuspend", endpoint.handlerMethod, "handler method missing for ${endpoint.verbatimTemplate}")
+                assertEquals("(Ljava/lang/Object;)Ljava/lang/Object;", endpoint.handlerDescriptor)
             }
 
             val deltasById = registry.computeDeltas(maxPerBatch = 10).flatMap { it.deltas }.associateBy { it.endpointId }

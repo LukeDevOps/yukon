@@ -25,6 +25,9 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
+private const val HANDLE_DESCRIPTOR =
+    "(Lorg/springframework/web/servlet/function/ServerRequest;)Lorg/springframework/web/servlet/function/ServerResponse;"
+
 /**
  * Proves [SpringWebMvcModule] end to end against a real `DispatcherServlet`, driven through
  * Spring's `MockMvc`, not a fixture. [EndpointInstrumentation.install] must run before Spring's
@@ -262,6 +265,26 @@ class SpringWebMvcModuleTest {
             assertEquals(1L, deltasById.getValue(afterDispatch.getValue("GET /api/items").endpointId).hitsTotal)
             assertTrue(afterDispatch.getValue("GET /api/items/{id}").endpointId !in deltasById)
             assertEquals(1L, deltasById.getValue(afterDispatch.getValue("GET /api/things/{id}").endpointId).hitsTotal)
+
+            // handlerA and handlerC are object expressions (never hidden) that declare handle on
+            // themselves, so the join the declare walk registered names their own class and handle.
+            val fnById = afterDispatch.getValue("GET /fn/{id}")
+            assertEquals(handlerA.javaClass.name, fnById.handlerClass)
+            assertEquals("handle", fnById.handlerMethod)
+            assertEquals(HANDLE_DESCRIPTOR, fnById.handlerDescriptor)
+            val itemsById = afterDispatch.getValue("GET /api/items")
+            assertEquals(handlerC.javaClass.name, itemsById.handlerClass)
+            assertEquals("handle", itemsById.handlerMethod)
+            assertEquals(HANDLE_DESCRIPTOR, itemsById.handlerDescriptor)
+
+            // handlerB and handlerD are hidden SAM-converted lambdas, so a dispatch through them must still
+            // attach no join: YukonEndpoints.attachHandler is a no-op for a null handler class.
+            val fnPostById = afterDispatch.getValue("POST /fn")
+            assertNull(fnPostById.handlerClass, "a hidden-class handler must get no join even after dispatch")
+            assertNull(fnPostById.handlerMethod)
+            val thingsById = afterDispatch.getValue("GET /api/things/{id}")
+            assertNull(thingsById.handlerClass, "a hidden-class handler must get no join even after dispatch")
+            assertNull(thingsById.handlerMethod)
 
             // Observed: the param-only route has no path predicate anywhere in its tree, so
             // nothing ever sets RouterFunctions.MATCHING_PATTERN_ATTRIBUTE on the request, even
