@@ -23,6 +23,11 @@ private const val ROUTER_FUNCTION = "org.springframework.web.servlet.function.Ro
 private const val REQUEST_PREDICATE = "org.springframework.web.servlet.function.RequestPredicate"
 private const val ROUTER_FUNCTIONS_VISITOR = "org.springframework.web.servlet.function.RouterFunctions\$Visitor"
 private const val REQUEST_PREDICATES_VISITOR = "org.springframework.web.servlet.function.RequestPredicates\$Visitor"
+private const val SERVER_REQUEST = "org.springframework.web.servlet.function.ServerRequest"
+
+/** `HandlerFunction.handle`'s descriptor, the same on every supported Spring version. */
+private const val HANDLE_DESCRIPTOR =
+    "(Lorg/springframework/web/servlet/function/ServerRequest;)Lorg/springframework/web/servlet/function/ServerResponse;"
 private const val ADVICE_PACKAGE = "io.github.lukedevops.yukon.endpoints.springwebmvc"
 private const val MODULE_NAME = "spring-webmvc"
 
@@ -209,15 +214,51 @@ class SpringWebMvcModule : EndpointModule {
             }
             return
         }
-        val handlerClassName = if (handlerFunction.javaClass.isHidden) null else handlerFunction.javaClass.name
+        val handler = handlerJoin(handlerFunction)
         for (alternative in predicateResult.alternatives) {
             val path = alternative.path ?: continue
             val verb = alternative.verb ?: "*"
             for (prefix in prefixes) {
                 val template = joinPaths(prefix, path)
                 val key = listOf(handlerFunction, template, verb)
-                YukonEndpoints.register(MODULE_NAME, key, verb, template, null, handlerClassName, null, null)
+                YukonEndpoints.register(
+                    MODULE_NAME,
+                    key,
+                    verb,
+                    template,
+                    null,
+                    handler?.className,
+                    handler?.methodName,
+                    handler?.descriptor,
+                )
             }
+        }
+    }
+
+    /** The class, method and descriptor an endpoint record names as its handler. */
+    private class HandlerJoin(
+        val className: String,
+        val methodName: String?,
+        val descriptor: String?,
+    )
+
+    /**
+     * The handler join for a functional route's `HandlerFunction`: the `handle` method Spring
+     * invokes and the class that declares it, so a handler inheriting `handle` from a base class
+     * joins to the probe on that base. A hidden class, generated for a SAM-converted lambda, has no
+     * stable name and gets no join at all; a class the reflection cannot see `handle` on is
+     * reported by name alone. `ServerRequest` is resolved through the handler's own loader rather
+     * than named here, so this module never links against Spring.
+     */
+    private fun handlerJoin(handlerFunction: Any): HandlerJoin? {
+        val type = handlerFunction.javaClass
+        if (type.isHidden) return null
+        return try {
+            val serverRequest = Class.forName(SERVER_REQUEST, false, type.classLoader)
+            val handle = type.getMethod("handle", serverRequest)
+            HandlerJoin(handle.declaringClass.name, "handle", HANDLE_DESCRIPTOR)
+        } catch (_: ReflectiveOperationException) {
+            HandlerJoin(type.name, null, null)
         }
     }
 }

@@ -40,11 +40,19 @@ import net.bytebuddy.asm.Advice;
  * AndRouteSelector}/{@code OrRouteSelector}) contributes nothing, so a route built from more than
  * path and verb merges with any sibling that shares the same path, an accepted v1 simplification.
  *
+ * <p>The handler join names the coroutine machinery Ktor actually calls: a suspend lambda given to
+ * {@code handle} compiles to a class of its own that declares {@code invokeSuspend}, so a body
+ * whose class carries that method reports {@code invokeSuspend} and its class; a named class that
+ * implements the function type by hand, with no such method, reports the class alone, as it always
+ * has. A hidden class, generated for a lambda through {@code invokedynamic}, has no stable name
+ * across runs, so its class, method, and descriptor are all reported as null instead.
+ *
  * <p>This method is deliberately one flat body with no private helper method of its own; see the
  * Spring MVC module's {@code RegisterHandlerMethodAdvice} Javadoc for why.
  */
 public class HandleAdvice {
     private static final String MODULE = "ktor-3";
+    private static final String INVOKE_SUSPEND_DESCRIPTOR = "(Ljava/lang/Object;)Ljava/lang/Object;";
 
     @Advice.OnMethodEnter(suppress = Throwable.class)
     public static void onEnter(@Advice.This Object node, @Advice.Argument(0) Object body) {
@@ -79,8 +87,23 @@ public class HandleAdvice {
             }
             String verbName = verb == null ? "*" : verb;
             String template = "/" + String.join("/", segments);
-            YukonEndpoints.register(
-                    MODULE, node, verbName, template, null, body == null ? null : body.getClass().getName(), null, null);
+            String handlerClass = null;
+            String handlerMethod = null;
+            String handlerDescriptor = null;
+            if (body != null) {
+                Class<?> bodyType = body.getClass();
+                if (!bodyType.isHidden()) {
+                    try {
+                        bodyType.getDeclaredMethod("invokeSuspend", Object.class);
+                        handlerClass = bodyType.getName();
+                        handlerMethod = "invokeSuspend";
+                        handlerDescriptor = INVOKE_SUSPEND_DESCRIPTOR;
+                    } catch (NoSuchMethodException e) {
+                        handlerClass = bodyType.getName();
+                    }
+                }
+            }
+            YukonEndpoints.register(MODULE, node, verbName, template, null, handlerClass, handlerMethod, handlerDescriptor);
         } catch (Throwable t) {
             YukonEndpoints.moduleFailed(MODULE, t);
         }

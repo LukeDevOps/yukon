@@ -1,8 +1,10 @@
 package io.github.lukedevops.yukon.endpoints.jdkhttpserver;
 
 import com.sun.net.httpserver.HttpContext;
+import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import io.github.lukedevops.yukon.bootstrap.YukonEndpoints;
+import java.lang.reflect.Method;
 import net.bytebuddy.asm.Advice;
 
 /**
@@ -12,9 +14,16 @@ import net.bytebuddy.asm.Advice;
  * framework's own 404 path and counts nothing. A key {@link YukonEndpoints#lookup} does not
  * resolve means no registration hook saw this context, so it is recorded here as discovered by
  * dispatch instead.
+ *
+ * <p>A context discovered this way resolves its handler join the same way {@link
+ * CreateContextAdvice} does: a non-hidden handler class reports {@code handle} and the class that
+ * declares it, a hidden class reports null for all three fields. {@code recordDispatch} only
+ * takes a class, so the method and descriptor are attached separately, through {@link
+ * YukonEndpoints#attachHandler}, once {@code recordDispatch} has resolved an entry.
  */
 public class FindContextAdvice {
     private static final String MODULE = "jdk-httpserver";
+    private static final String HANDLE_DESCRIPTOR = "(Lcom/sun/net/httpserver/HttpExchange;)V";
 
     @Advice.OnMethodExit(suppress = Throwable.class)
     public static void onExit(@Advice.Return HttpContext context) {
@@ -23,8 +32,26 @@ public class FindContextAdvice {
             Object entry = YukonEndpoints.lookup(MODULE, context);
             if (entry == null) {
                 HttpHandler handler = context.getHandler();
-                String handlerClass = handler == null ? null : handler.getClass().getName();
+                String handlerClass = null;
+                String handlerMethod = null;
+                String handlerDescriptor = null;
+                if (handler != null) {
+                    Class<?> handlerType = handler.getClass();
+                    if (!handlerType.isHidden()) {
+                        try {
+                            Method method = handlerType.getMethod("handle", HttpExchange.class);
+                            handlerClass = method.getDeclaringClass().getName();
+                            handlerMethod = "handle";
+                            handlerDescriptor = HANDLE_DESCRIPTOR;
+                        } catch (NoSuchMethodException e) {
+                            handlerClass = handlerType.getName();
+                        }
+                    }
+                }
                 entry = YukonEndpoints.recordDispatch(MODULE, context, "*", context.getPath(), null, handlerClass);
+                if (entry != null) {
+                    YukonEndpoints.attachHandler(MODULE, entry, handlerClass, handlerMethod, handlerDescriptor);
+                }
             }
             YukonEndpoints.hit(entry);
         } catch (Throwable t) {
