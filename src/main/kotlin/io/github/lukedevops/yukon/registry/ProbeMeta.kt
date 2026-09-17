@@ -21,6 +21,11 @@ import io.github.lukedevops.yukon.export.ProbeKind
  *
  * [calls] is populated only for a [ProbeKind.METHOD] probe: the in-scope call edges read from
  * that method's own bytecode at transform time. See ADR 0024.
+ *
+ * [inlinedFromClassName] is set only for a [ProbeKind.BRANCH] probe that is a kept inlined copy:
+ * a site inside code kotlinc copied from an inline function's body into this probe's own method,
+ * whose origin class is in scope. Dotted, or null when the probe is the class's own code. See
+ * ADR 0025.
  */
 data class ProbeMeta(
     val kind: ProbeKind,
@@ -34,4 +39,5 @@ data class ProbeMeta(
     val overridable: Boolean = false,
     val targetClassName: String? = null,
     val calls: List<CallEdge> = emptyList(),
+    val inlinedFromClassName: String? = null,
 )

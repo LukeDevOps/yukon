@@ -7,6 +7,7 @@ import io.github.lukedevops.yukon.export.HttpOtlpStyleExporter
 import io.github.lukedevops.yukon.export.ResourceAttributes
 import io.github.lukedevops.yukon.instrumentation.BootstrapInstallException
 import io.github.lukedevops.yukon.instrumentation.YukonInstrumentation
+import io.github.lukedevops.yukon.instrumentation.branch.BranchDropCounts
 import io.github.lukedevops.yukon.instrumentation.endpoints.EndpointInstrumentation
 import io.github.lukedevops.yukon.instrumentation.endpoints.EndpointModules
 import io.github.lukedevops.yukon.instrumentation.endpoints.api.EndpointModule
@@ -90,8 +91,10 @@ object Agent {
         val registry = ProbeRegistry()
         val endpointRegistry = EndpointRegistry()
         val staticBaselineMismatchDetector = StaticBaselineMismatchDetector()
+        val branchDropCounts = BranchDropCounts()
 
-        val yukonInstrumentation = YukonInstrumentation(config, registry, staticBaselineMismatchDetector)
+        val yukonInstrumentation =
+            YukonInstrumentation(config, registry, staticBaselineMismatchDetector, branchDropCounts = branchDropCounts)
         val transformer =
             try {
                 yukonInstrumentation.install(instrumentation)
@@ -120,7 +123,7 @@ object Agent {
         }
 
         val exporter = HttpOtlpStyleExporter(config.collectorEndpoint, config.authToken)
-        val scheduler = ExportScheduler(config, registry, endpointRegistry, exporter)
+        val scheduler = ExportScheduler(config, registry, endpointRegistry, exporter, branchDropCounts = branchDropCounts)
         scheduler.start()
 
         if (config.staticBaselineEnabled) {

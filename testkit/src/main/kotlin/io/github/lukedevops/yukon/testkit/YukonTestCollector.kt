@@ -66,6 +66,7 @@ class YukonTestCollector private constructor(
         val overridable: Boolean = false,
         val targetClassName: String? = null,
         val calls: List<CallEdge> = emptyList(),
+        val inlinedFromClassName: String? = null,
     )
 
     /** A class's superclass and direct interfaces, resolved to a class name. See ADR 0024. */
@@ -502,14 +503,15 @@ class YukonTestCollector private constructor(
             .filter { (key, probe) -> !probe.inline && probe.kind != ProbeKind.OPTIONAL_ARGUMENT && (hitsByKey[key] ?: 0L) <= 0L }
             .map { (key, probe) ->
                 ProbeRef(
-                    key.serviceInstanceId,
-                    probe.className,
-                    probe.methodName,
-                    probe.methodDescriptor,
-                    probe.line,
-                    probe.kind,
-                    probe.branchIndex,
-                    probe.inline,
+                    serviceInstanceId = key.serviceInstanceId,
+                    className = probe.className,
+                    methodName = probe.methodName,
+                    methodDescriptor = probe.methodDescriptor,
+                    line = probe.line,
+                    kind = probe.kind,
+                    branchIndex = probe.branchIndex,
+                    inline = probe.inline,
+                    inlinedFromClassName = probe.inlinedFromClassName,
                 )
             }.sortedWith(compareBy({ it.className }, { it.methodName }, { it.line }, { it.branchIndex ?: -1 }))
 
@@ -941,6 +943,7 @@ class YukonTestCollector private constructor(
                     location.overridable,
                     location.targetClassName,
                     location.calls,
+                    location.inlinedFromClassName,
                 )
             nameIndex.computeIfAbsent(location.className) { ConcurrentHashMap.newKeySet() }.add(key)
             if (location.kind == ProbeKind.OPTIONAL_ARGUMENT) {
@@ -1076,7 +1079,8 @@ class YukonTestCollector private constructor(
  * for an [YukonTestCollector.unreachedClusters] member that exists solely because a complete
  * static baseline declared it: its [line] is `-1`, since the static scan records no line, and its
  * [serviceInstanceId] names the instance whose scan declared it rather than one that loaded it.
- * See ADR 0024.
+ * See ADR 0024. [inlinedFromClassName] is set only for a [ProbeKind.BRANCH] probe that is a kept
+ * inlined copy, dotted; see ADR 0025.
  */
 data class ProbeRef(
     val serviceInstanceId: String,
@@ -1092,6 +1096,7 @@ data class ProbeRef(
     val overridable: Boolean = false,
     val targetClassName: String? = null,
     val neverLoaded: Boolean = false,
+    val inlinedFromClassName: String? = null,
 )
 
 /**

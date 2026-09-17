@@ -1,6 +1,8 @@
 package io.github.lukedevops.yukon.export
 
 import io.github.lukedevops.yukon.config.AgentConfig
+import io.github.lukedevops.yukon.instrumentation.branch.BranchDropCounts
+import io.github.lukedevops.yukon.instrumentation.branch.BranchDropReason
 import io.github.lukedevops.yukon.registry.EndpointRegistry
 import io.github.lukedevops.yukon.registry.ProbeRegistry
 import java.lang.System.Logger.Level
@@ -9,6 +11,7 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.random.Random
 
 /**
@@ -32,9 +35,12 @@ class ExportScheduler(
     private val maxDeltasPerBatch: Int = DEFAULT_MAX_DELTAS_PER_BATCH,
     /** Upper bound on probe locations plus skipped classes per manifest POST; see [ProbeRegistry.computeManifestDeltas]. */
     private val maxManifestEntriesPerChunk: Int = DEFAULT_MAX_MANIFEST_ENTRIES_PER_CHUNK,
+    /** Dropped branch site totals; see [maybeLogBranchDrops] and ADR 0025. */
+    private val branchDropCounts: BranchDropCounts = BranchDropCounts(),
 ) {
     private val log = System.getLogger(ExportScheduler::class.java.name)
     private var executor: ScheduledExecutorService? = null
+    private val branchDropsLogged = AtomicBoolean(false)
 
     /** Runs the two sends of each flush side by side; see [flush]. Two threads, created once, not two per tick. */
     private val sendPool: ExecutorService =
@@ -133,12 +139,32 @@ class ExportScheduler(
      */
     fun flush() {
         try {
+            maybeLogBranchDrops()
             val manifestSend = sendPool.submit(::sendManifestDelta)
             val deltaSend = sendPool.submit(::sendDeltaBatch)
             manifestSend.get()
             deltaSend.get()
         } catch (t: Throwable) {
             log.log(Level.ERROR, "yukon: flush failed outside its own send guards, will retry next flush", t)
+        }
+    }
+
+    /**
+     * Logs one INFO line naming the branch sites dropped so far, the first time a flush finds the
+     * total above zero. Nothing is logged on a flush that finds no drops yet, and nothing is
+     * logged again once it has. See [BranchDropCounts] and ADR 0025.
+     */
+    private fun maybeLogBranchDrops() {
+        if (branchDropsLogged.get()) return
+        val total = branchDropCounts.total()
+        if (total <= 0) return
+        if (branchDropsLogged.compareAndSet(false, true)) {
+            val inlinedOutOfScope = branchDropCounts.countOf(BranchDropReason.INLINED_OUT_OF_SCOPE)
+            log.log(
+                Level.INFO,
+                "yukon: left $total branch sites in ${branchDropCounts.classesWithDrops()} classes without a probe: " +
+                    "$inlinedOutOfScope inlined from out-of-scope code",
+            )
         }
     }
 

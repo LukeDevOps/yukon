@@ -367,6 +367,7 @@ open class ProbeRegistry {
                         overridable = meta.overridable,
                         targetClassName = meta.targetClassName,
                         calls = meta.calls,
+                        inlinedFromClassName = meta.inlinedFromClassName,
                     )
                 }
             }
@@ -472,6 +473,7 @@ open class ProbeRegistry {
                         overridable = meta.overridable,
                         targetClassName = meta.targetClassName,
                         calls = meta.calls,
+                        inlinedFromClassName = meta.inlinedFromClassName,
                     )
             }
             supertypes += ClassSupertypes(entry.classId, entry.superClassName, entry.interfaceNames)

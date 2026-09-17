@@ -9,7 +9,10 @@ import io.github.lukedevops.yukon.advice.ProbeIndex
 import io.github.lukedevops.yukon.bootstrap.YukonProbeArrays
 import io.github.lukedevops.yukon.config.AgentConfig
 import io.github.lukedevops.yukon.export.ProbeKind
+import io.github.lukedevops.yukon.instrumentation.branch.BranchDropCounts
+import io.github.lukedevops.yukon.instrumentation.branch.BranchDropReason
 import io.github.lukedevops.yukon.instrumentation.branch.BranchProbeAsmVisitorWrapper
+import io.github.lukedevops.yukon.instrumentation.branch.BranchSite
 import io.github.lukedevops.yukon.instrumentation.branch.BranchSiteAnalyzer
 import io.github.lukedevops.yukon.instrumentation.staticscan.StaticBaselineMismatchDetector
 import io.github.lukedevops.yukon.registry.ProbeMeta
@@ -100,6 +103,8 @@ class YukonInstrumentation(
      * [analyzeBytecode], the path taken when the capture has nothing for a class.
      */
     captureClassBytes: Boolean = true,
+    /** Where dropped branch sites are tallied; see [BranchDropCounts] and ADR 0025. */
+    private val branchDropCounts: BranchDropCounts = BranchDropCounts(),
 ) {
     private val log = System.getLogger(YukonInstrumentation::class.java.name)
     private val classBytesCapture: ClassBytesCapture? = if (captureClassBytes) ClassBytesCapture(::isCandidateInternalName) else null
@@ -276,23 +281,32 @@ class YukonInstrumentation(
                     )
                 }
             }
-        // Each site contributes `outcomeCount` adjacent slots: 2 for a conditional jump, or the
-        // case count plus one for a switch. BranchProbeAsmVisitorWrapper allocates them in this
-        // same order. A branch inside an inline method's body is just as invisible to a Kotlin
-        // caller as the method probe itself, so it inherits the same flag.
-        val branchProbes =
-            branchSites
-                .flatMap { site -> List(site.outcomeCount) { site } }
-                .mapIndexed { branchIndex, site ->
-                    ProbeMeta(
-                        ProbeKind.BRANCH,
-                        site.methodName,
-                        site.methodDescriptor,
-                        site.line,
-                        branchIndex = branchIndex,
-                        inline = analysis.isInline(site.methodName, site.methodDescriptor),
-                    )
+        // Each site contributes `outcomeCount` adjacent outcome ordinals, dropped sites included,
+        // so a kept site's branch_index never shifts when an earlier site is dropped (ADR 0025).
+        // Only a kept site gets a slot in the array: BranchProbeAsmVisitorWrapper allocates one
+        // per kept site, in the same siteIndex order, and branchSlotCapacity below is sized to
+        // match. A branch inside an inline method's body is just as invisible to a Kotlin caller
+        // as the method probe itself, so it inherits the same flag.
+        var branchOrdinal = 0
+        val branchProbes = mutableListOf<ProbeMeta>()
+        for (site in branchSites) {
+            if (site.dropReason == null) {
+                for (offset in 0 until site.outcomeCount) {
+                    branchProbes +=
+                        ProbeMeta(
+                            ProbeKind.BRANCH,
+                            site.methodName,
+                            site.methodDescriptor,
+                            site.line,
+                            branchIndex = branchOrdinal + offset,
+                            inline = analysis.isInline(site.methodName, site.methodDescriptor),
+                            inlinedFromClassName = site.inlinedFromClassName,
+                        )
                 }
+            }
+            branchOrdinal += site.outcomeCount
+        }
+        recordBranchDrops(typeDescription.name, branchSites)
         // Slots are packed per default site, one per optional parameter, appended after the
         // method and branch slots: bit i's slot is siteBase + bitCount(optionalBits & ((1 << i) - 1)),
         // never one slot per value parameter, so a required parameter's bit (never set) never
@@ -367,7 +381,9 @@ class YukonInstrumentation(
         val layoutHash =
             ProbeLayoutHash.of(
                 methods.map { it.internalName + it.descriptor } +
-                    branchSites.map { "${it.methodName}${it.methodDescriptor}#branch${it.siteIndex}x${it.outcomeCount}" } +
+                    branchSites
+                        .filter { it.dropReason == null }
+                        .map { "${it.methodName}${it.methodDescriptor}#branch${it.siteIndex}x${it.outcomeCount}" } +
                     defaultSites.map { "${it.defaultName}${it.defaultDescriptor}#optional${it.optionalBits}" } +
                     (if (analysis.hasTypeInitializer) listOf("<clinit>()V#typeinit") else emptyList()),
             )
@@ -422,6 +438,7 @@ class YukonInstrumentation(
                         eligibleMethods = { name, descriptor -> (name to descriptor) in eligible },
                         probeIndexBase = methodProbes.size,
                         branchSlotCapacity = branchProbes.size,
+                        droppedOrdinalsByMethod = analysis::droppedOrdinalsOf,
                         onSiteCountMismatch = { expected, actual ->
                             log.log(
                                 Level.WARNING,
@@ -460,6 +477,26 @@ class YukonInstrumentation(
         }
 
         return instrumented
+    }
+
+    /**
+     * Tallies [branchDropCounts] with [typeName]'s dropped sites, grouped by reason, and logs one
+     * DEBUG line naming the total and the out-of-scope-inlined-copy count when anything was
+     * dropped. A no-op when nothing was. See ADR 0025.
+     */
+    private fun recordBranchDrops(
+        typeName: String,
+        branchSites: List<BranchSite>,
+    ) {
+        val dropsByReason = branchSites.mapNotNull { it.dropReason }.groupingBy { it }.eachCount()
+        if (dropsByReason.isEmpty()) return
+        branchDropCounts.record(dropsByReason)
+        val total = dropsByReason.values.sum()
+        val inlinedOutOfScope = dropsByReason[BranchDropReason.INLINED_OUT_OF_SCOPE] ?: 0
+        log.log(
+            Level.DEBUG,
+            "yukon: $typeName left $total branch sites without a probe: $inlinedOutOfScope inlined from out-of-scope code",
+        )
     }
 
     /**
