@@ -1,0 +1,130 @@
+---
+description: Build a settled design as sequential chunks, autonomously through the landing order. Sonnet implements each chunk from a written brief; Fable reviews the implementation, fixes findings, runs the build, commits one chunk per commit, and continues to the next unless the user asked for a breakpoint. Manual invocation only.
+argument-hint: [which chunk to build next, or the design section that lists the landing order]
+disable-model-invocation: true
+---
+
+# Chunked build
+
+Turn an already-settled design into code one chunk at a time. Each chunk is
+built by a Sonnet subagent from a brief this session writes, reviewed here
+by reading the implementation, and committed only after a clean pass.
+`$ARGUMENTS` names the chunk to build next, or the design section whose
+landing order says what comes next.
+
+## Who does what
+
+- The main (Fable) session owns the design, the briefs, the review, the
+  fixes, the commit message and the project's status log. Judgement never
+  moves to the subagent.
+- One Sonnet subagent (`general-purpose`, `model: sonnet`) implements one
+  chunk, with "do not commit" in its brief. It reports back; it does not
+  decide.
+- Chunks run one after another, never in parallel. They share the build
+  directory and usually a few central files, and the next brief depends on
+  what the last review found.
+
+## 0. Preconditions
+
+Do not start a chunk until the design behind it is settled and written
+down: a grilling session has emptied its frontier, the decision is in an
+ADR, the terms are in `CONTEXT.md`, and the project's design notes carry
+the landing order. If any of those is missing, stop and say which. A brief
+written against an open question produces a chunk that has to be redone.
+
+## 1. Write the brief
+
+A brief is a file in the job's temp directory, one per chunk, and the same
+text goes to the subagent verbatim. It states:
+
+- **Where and how.** Repo path, branch, "work in place", "do not commit",
+  and which sections of the design notes and which ADRs to read first.
+  Point at the previous chunk's commit when the current shape of a file
+  matters.
+- **Behaviour to add.** What the code must do, in terms of the project's
+  own vocabulary, with the boundary stated as sharply as what is inside it.
+- **Facts already verified.** Everything this session has checked in
+  bytecode, library source or the running system, marked "do not
+  re-derive". The subagent starts cold; facts it has to rediscover are
+  facts it may get wrong.
+- **Tests to write, failing first.** Named by behaviour, including the
+  negative cases that pin what must stay excluded, and the instruction to
+  run the whole build at the end and report the result honestly.
+- **Do not.** Scope that belongs to a later chunk, files it must not touch
+  (glossary, ADRs, design notes), and the project's comment and formatting
+  rules.
+- **Report back.** Files changed with a reason each, exact test names, the
+  build result, and any deviation from the brief with the reason.
+
+## 2. Launch and wait
+
+Launch the subagent with the brief. Do not touch the files it is working
+in. When it reports, treat the report as a claim to check, not a result.
+
+The loop runs on its own: brief, launch, review, commit, next brief, next
+launch, through the whole landing order, without asking between chunks.
+At the start of the run ask the user once whether they want breakpoints,
+and if so which: after a named chunk, before anything that changes the
+wire schema or a public API, before the first chunk in a second repo, or
+none. Stop at exactly those points and report; everywhere else keep
+going. Stop regardless when a chunk cannot be made clean, when a review
+finding contradicts the settled design, or when the next brief would
+need a decision the design did not make.
+
+## 3. Review the implementation, not the report
+
+Read the diff of every main-source file the chunk changed, in full. Trace
+the new rule from the one place it is defined through every caller, and
+confirm two callers that must agree (a reactive path and a static one, an
+encoder and a decoder) really share it. Read the emitted bytecode, the
+wire fields or the SQL when that is what the chunk produces; the tests
+passing is evidence, not proof.
+
+Then read the tests: do they drive the real pipeline or a stand-in, do they
+pin the negative cases, and would they fail if the rule slipped. Check the
+fixtures against real compiler output when the chunk depends on a compiler
+shape.
+
+Read the subagent's deviations and flagged doubts with particular care.
+They are the places it was unsure, and in practice they are where the
+review finds something.
+
+Run the `humanizer` skill's checks over every comment and KDoc the chunk
+added: stock words, em dashes, sentences restating the code, time-relative
+wording.
+
+## 4. Fix everything found, regardless of size
+
+Fix directly when the change is small; send the chunk back with an exact
+brief when it is not. A test that pins a boundary the chunk left unpinned
+counts as a finding. Re-review the fixes the same way. Repeat until a full
+pass finds nothing. The commit follows a clean pass, not the last fix.
+
+## 5. Verify yourself
+
+Run the whole build (every module, every test suite) in this session, not
+by trusting the report. Rerun the touched test classes after the review's
+own edits and read their counts. Run the project's formatter over every
+touched file (for this project, the `ktlint` CLI with
+`-F`).
+
+## 6. Commit
+
+One chunk, one commit, directly on the branch the project's notes say to
+use. The message says what the chunk does and why in plain sentences, and
+names the bytecode or library fact the review added when there is one.
+Credit both models with `Co-Authored-By` lines. Never add a session link
+to a public repo's history.
+
+Then add a status entry to the project's design notes: what landed, what
+the review changed and why, and the facts learned that the design section
+did not predict. Update the memory directory only for guidance about the
+way of working, not for what the repo already records.
+
+## 7. Report and queue the next brief
+
+Lead with the commit hash and one line on what landed. Then what was read,
+what the review changed and why, and the verification results in a short
+table if there are numbers. Then write the next chunk's brief and
+launch it, unless this is one of the breakpoints the user asked for or
+the landing order is finished.
