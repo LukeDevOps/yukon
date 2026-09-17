@@ -70,6 +70,7 @@ private data class ProbeInfo(
     val parameterName: String? = null,
     val overridable: Boolean = false,
     val targetClassName: String? = null,
+    val inlinedFromClassName: String? = null,
 )
 
 /** One call edge read from a METHOD probe's own bytecode. See ADR 0024. */
@@ -285,6 +286,7 @@ private fun handleManifest(exchange: HttpExchange) {
                 parameterName = location.parameterName.ifEmpty { null },
                 overridable = location.overridable,
                 targetClassName = location.targetClassName.ifEmpty { null },
+                inlinedFromClassName = location.inlinedFromClassName.ifEmpty { null },
             )
         dynamicallyKnownClassNames += location.className
         if (location.callsList.isNotEmpty()) {
@@ -389,9 +391,10 @@ private fun printNeverHitReport() {
         .sortedWith(compareBy({ it.second.className }, { it.second.methodName }, { it.second.line }))
         .forEach { (key, info) ->
             val branchSuffix = info.branchIndex?.let { " branch#$it" } ?: ""
+            val inlinedFromSuffix = info.inlinedFromClassName?.let { " (inlined from $it)" } ?: ""
             println(
                 "  NEVER HIT: ${info.className}#${info.methodName}:${info.line} " +
-                    "[${info.kind}$branchSuffix] (instance ${key.serviceInstanceId}, class ${key.classId}, probe ${key.probeIndex})",
+                    "[${info.kind}$branchSuffix]$inlinedFromSuffix (instance ${key.serviceInstanceId}, class ${key.classId}, probe ${key.probeIndex})",
             )
         }
     // Kotlin inline functions copy their body into the caller, so their own probe reads near

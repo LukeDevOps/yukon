@@ -51,6 +51,14 @@ object BranchSiteAnalyzer {
         val superClassName: String? = null,
         /** Dotted, as the class file's own interfaces entries name them. See ADR 0024. */
         val interfaceNames: List<String> = emptyList(),
+        /**
+         * Per method, the ordinals of its dropped sites: the site's encounter index among every
+         * tracked conditional and switch in that method, dropped or kept, counted from zero.
+         * [BranchProbeAsmVisitorWrapper] uses this to skip a dropped site without allocating a
+         * slot for it, in step with the same encounter order [BranchProbeMethodVisitor] walks.
+         * See ADR 0025.
+         */
+        private val droppedOrdinalsByMethod: Map<Pair<String, String>, Set<Int>> = emptyMap(),
     ) {
         /** First line-number-table entry of the method, or -1 when the class carries no debug info or the bytes were never read. */
         fun firstLineOf(
@@ -76,6 +84,12 @@ object BranchSiteAnalyzer {
             name: String,
             descriptor: String,
         ): List<CallEdge> = callEdgesByMethod[name to descriptor] ?: emptyList()
+
+        /** The ordinals of [name]/[descriptor]'s dropped sites; see [droppedOrdinalsByMethod]. */
+        fun droppedOrdinalsOf(
+            name: String,
+            descriptor: String,
+        ): Set<Int> = droppedOrdinalsByMethod[name to descriptor] ?: emptySet()
 
         companion object {
             val EMPTY = Analysis(emptyList(), emptyMap())
@@ -252,12 +266,14 @@ object BranchSiteAnalyzer {
         var classAccess = 0
         var superInternalName: String? = null
         var interfaceInternalNames: List<String> = emptyList()
+        var smap = KotlinSmap.EMPTY
         val methodAccess = mutableMapOf<Pair<String, String>, Int>()
         val localNames = mutableMapOf<Pair<String, String>, MutableMap<Int, String>>()
         val defaultCandidates = mutableListOf<DefaultCandidate>()
         val defaultShapedNames = mutableListOf<Pair<String, String>>()
         val rawCandidatesByMethod = mutableMapOf<Pair<String, String>, MutableList<RawCandidate>>()
         val eligibleMethodKeys = mutableSetOf<Pair<String, String>>()
+        val droppedOrdinalsByMethod = mutableMapOf<Pair<String, String>, MutableSet<Int>>()
 
         val classVisitor =
             object : ClassVisitor(Opcodes.ASM9) {
@@ -273,6 +289,15 @@ object BranchSiteAnalyzer {
                     classAccess = access
                     superInternalName = superName
                     interfaceInternalNames = interfaces?.toList() ?: emptyList()
+                }
+
+                // Called once, after visit() and before any visitMethod(), so every method
+                // visitor below sees the class's fully parsed SMAP. See ADR 0025.
+                override fun visitSource(
+                    source: String?,
+                    debug: String?,
+                ) {
+                    smap = KotlinSmapParser.parse(debug)
                 }
 
                 override fun visitMethod(
@@ -336,6 +361,10 @@ object BranchSiteAnalyzer {
                         nextSiteIndex = { nextSiteIndex },
                         onDefaultCandidate = { defaultCandidates += it },
                         candidatesForMethod = candidatesForMethod,
+                        smap = { smap },
+                        includePackages = includePackages,
+                        excludePackages = excludePackages,
+                        onSiteDropped = { ordinal -> droppedOrdinalsByMethod.getOrPut(name to descriptor) { mutableSetOf() } += ordinal },
                     )
                 }
             }
@@ -382,6 +411,7 @@ object BranchSiteAnalyzer {
             callEdgesByMethod,
             superInternalName?.replace('/', '.'),
             interfaceInternalNames.map { it.replace('/', '.') },
+            droppedOrdinalsByMethod,
         )
     }
 
@@ -653,10 +683,16 @@ object BranchSiteAnalyzer {
         private val nextSiteIndex: () -> Int,
         private val onDefaultCandidate: (DefaultCandidate) -> Unit,
         candidatesForMethod: MutableList<RawCandidate>,
+        private val smap: () -> KotlinSmap,
+        private val includePackages: List<String>,
+        private val excludePackages: List<String>,
+        /** Called with a dropped site's per-method ordinal; see [BranchSiteAnalyzer.Analysis.droppedOrdinalsOf]. */
+        private val onSiteDropped: (ordinal: Int) -> Unit,
     ) : CallCandidateMethodVisitor(ownerInternalName, candidatesForMethod) {
         private var currentLine = -1
         private var lastLabel: Label? = null
         private val inlineMarkerName = "\$i\$f\$$name"
+        private var nextMethodOrdinal = 0
 
         private val maskLocalIndex: Int
         private val secondaryMaskRange: IntRange
@@ -702,8 +738,7 @@ object BranchSiteAnalyzer {
                 resetMaskPhase()
             }
             if (eligible && ConditionalJump.isTracked(opcode)) {
-                sites += BranchSite(name, descriptor, currentLine, nextSiteIndex())
-                onSiteIndexUsed()
+                recordSite()
             }
         }
 
@@ -715,8 +750,7 @@ object BranchSiteAnalyzer {
         ) {
             if (defaultShaped) resetMaskPhase()
             if (eligible) {
-                sites += BranchSite(name, descriptor, currentLine, nextSiteIndex(), outcomeCount = switchOutcomeCount(dflt, labels))
-                onSiteIndexUsed()
+                recordSite(switchOutcomeCount(dflt, labels))
             }
         }
 
@@ -727,9 +761,51 @@ object BranchSiteAnalyzer {
         ) {
             if (defaultShaped) resetMaskPhase()
             if (eligible) {
-                sites += BranchSite(name, descriptor, currentLine, nextSiteIndex(), outcomeCount = switchOutcomeCount(dflt, labels))
-                onSiteIndexUsed()
+                recordSite(switchOutcomeCount(dflt, labels))
             }
+        }
+
+        /**
+         * Records one tracked site at [currentLine], with [outcomeCount] outcomes. Resolves the
+         * line against the class's SMAP first: a line with no origin is the class's own code, an
+         * origin outside scope drops the site (see [BranchDropReason.INLINED_OUT_OF_SCOPE]), and
+         * an origin inside scope keeps it labelled with the origin's own line and class. Either
+         * way the site keeps its place in [nextSiteIndex]'s numbering.
+         */
+        private fun recordSite(outcomeCount: Int = 2) {
+            val ordinal = nextMethodOrdinal++
+            val origin = smap().originOf(currentLine)
+            val site =
+                when {
+                    origin == null -> {
+                        BranchSite(name, descriptor, currentLine, nextSiteIndex(), outcomeCount)
+                    }
+
+                    TypeMatchPolicy.isIncluded(origin.originClassName, includePackages, excludePackages) -> {
+                        BranchSite(
+                            name,
+                            descriptor,
+                            origin.inputLine,
+                            nextSiteIndex(),
+                            outcomeCount,
+                            inlinedFromClassName = origin.originClassName,
+                        )
+                    }
+
+                    else -> {
+                        onSiteDropped(ordinal)
+                        BranchSite(
+                            name,
+                            descriptor,
+                            currentLine,
+                            nextSiteIndex(),
+                            outcomeCount,
+                            dropReason = BranchDropReason.INLINED_OUT_OF_SCOPE,
+                        )
+                    }
+                }
+            sites += site
+            onSiteIndexUsed()
         }
 
         override fun visitVarInsn(

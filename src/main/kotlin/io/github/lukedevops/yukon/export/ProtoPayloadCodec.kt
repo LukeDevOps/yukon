@@ -149,6 +149,7 @@ object ProtoPayloadCodec {
                 .setOverridable(location.overridable)
                 .setTargetClassName(location.targetClassName ?: "")
                 .addAllCalls(location.calls.map { toProto(it) })
+                .setInlinedFromClassName(location.inlinedFromClassName ?: "")
         location.branchIndex?.let { builder.branchIndex = it }
         location.parameterIndex?.let { builder.parameterIndex = it }
         return builder.build()
@@ -173,6 +174,7 @@ object ProtoPayloadCodec {
             overridable = location.overridable,
             targetClassName = location.targetClassName.ifEmpty { null },
             calls = location.callsList.map { fromProto(it) },
+            inlinedFromClassName = location.inlinedFromClassName.ifEmpty { null },
         )
     }
 

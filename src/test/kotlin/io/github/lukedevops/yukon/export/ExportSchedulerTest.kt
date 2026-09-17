@@ -1,6 +1,8 @@
 package io.github.lukedevops.yukon.export
 
 import io.github.lukedevops.yukon.config.AgentConfig
+import io.github.lukedevops.yukon.instrumentation.branch.BranchDropCounts
+import io.github.lukedevops.yukon.instrumentation.branch.BranchDropReason
 import io.github.lukedevops.yukon.registry.EndpointRegistry
 import io.github.lukedevops.yukon.registry.ProbeMeta
 import io.github.lukedevops.yukon.registry.ProbeRegistry
@@ -8,12 +10,16 @@ import java.time.Duration
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.logging.Handler
+import java.util.logging.LogRecord
 import kotlin.concurrent.thread
 import kotlin.random.Random
 import kotlin.system.measureTimeMillis
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import java.util.logging.Level as JulLevel
+import java.util.logging.Logger as JulLogger
 
 private class RecordingExporter : Exporter {
     var deltaBatches = mutableListOf<DeltaBatch>()
@@ -594,5 +600,79 @@ class ExportSchedulerTest {
                 .single()
                 .module,
         )
+    }
+
+    /**
+     * Captures the records a [java.lang.System.Logger] obtained for [loggerName] emits, through
+     * its default `java.util.logging` backend. `System.Logger` delegates to `j.u.l.Logger` when no
+     * custom `System.LoggerFinder` is installed, which is the case in this project's own tests.
+     */
+    private fun captureLogRecords(
+        loggerName: String,
+        block: () -> Unit,
+    ): List<LogRecord> {
+        val records = mutableListOf<LogRecord>()
+        val handler =
+            object : Handler() {
+                override fun publish(record: LogRecord) {
+                    records += record
+                }
+
+                override fun flush() {}
+
+                override fun close() {}
+            }
+        val julLogger = JulLogger.getLogger(loggerName)
+        val originalLevel = julLogger.level
+        julLogger.addHandler(handler)
+        julLogger.level = JulLevel.ALL
+        try {
+            block()
+        } finally {
+            julLogger.removeHandler(handler)
+            julLogger.level = originalLevel
+        }
+        return records
+    }
+
+    @Test
+    fun `the first flush that finds dropped branch sites logs one INFO summary`() {
+        val branchDropCounts = BranchDropCounts()
+        branchDropCounts.record(mapOf(BranchDropReason.INLINED_OUT_OF_SCOPE to 3))
+        val scheduler =
+            ExportScheduler(config, ProbeRegistry(), EndpointRegistry(), RecordingExporter(), branchDropCounts = branchDropCounts)
+
+        val records = captureLogRecords(ExportScheduler::class.java.name) { scheduler.flush() }
+
+        val summary = records.filter { it.message.contains("branch sites") }
+        assertEquals(1, summary.size)
+        assertEquals(JulLevel.INFO, summary.single().level)
+        assertTrue(summary.single().message.contains("3"))
+        assertTrue(summary.single().message.contains("inlined from out-of-scope code"))
+    }
+
+    @Test
+    fun `the branch drop summary is logged only once, not on a second flush`() {
+        val branchDropCounts = BranchDropCounts()
+        branchDropCounts.record(mapOf(BranchDropReason.INLINED_OUT_OF_SCOPE to 1))
+        val scheduler =
+            ExportScheduler(config, ProbeRegistry(), EndpointRegistry(), RecordingExporter(), branchDropCounts = branchDropCounts)
+
+        val records =
+            captureLogRecords(ExportScheduler::class.java.name) {
+                scheduler.flush()
+                scheduler.flush()
+            }
+
+        assertEquals(1, records.count { it.message.contains("branch sites") })
+    }
+
+    @Test
+    fun `nothing is logged when no branch sites were dropped`() {
+        val scheduler = ExportScheduler(config, ProbeRegistry(), EndpointRegistry(), RecordingExporter())
+
+        val records = captureLogRecords(ExportScheduler::class.java.name) { scheduler.flush() }
+
+        assertTrue(records.none { it.message.contains("branch sites") })
     }
 }

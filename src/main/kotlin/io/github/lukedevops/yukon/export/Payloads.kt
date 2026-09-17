@@ -66,6 +66,11 @@ data class DeltaBatch(
  * method's own bytecode at transform time. A pass-through's callees are attributed to whatever
  * probed method referenced it, so they never appear under the pass-through's own name. See ADR
  * 0024.
+ *
+ * [inlinedFromClassName] is set only for a [ProbeKind.BRANCH] probe that is a kept inlined copy:
+ * a site inside code kotlinc copied from an inline function's body into this probe's own method,
+ * whose origin class is in scope. Dotted, or null when the probe is the class's own code. See
+ * ADR 0025.
  */
 data class ProbeLocation(
     val classId: Int,
@@ -82,6 +87,7 @@ data class ProbeLocation(
     val overridable: Boolean = false,
     val targetClassName: String? = null,
     val calls: List<CallEdge> = emptyList(),
+    val inlinedFromClassName: String? = null,
 )
 
 /** A class the agent matched but could not instrument. It never gets a classId or any probes. */

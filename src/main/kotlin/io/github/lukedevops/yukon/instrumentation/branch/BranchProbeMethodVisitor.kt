@@ -33,18 +33,31 @@ import net.bytebuddy.jar.asm.Opcodes
  * [io.github.lukedevops.yukon.instrumentation.YukonInstrumentation] lays out from
  * [BranchSiteAnalyzer]'s output. It returns [NO_SLOT] when the array has no room left, and the
  * site is then emitted exactly as it was, with no probe.
+ *
+ * [droppedOrdinals] names sites this method's analysis dropped (see ADR 0025), by their encounter
+ * index among every tracked conditional and switch in this method, counted from zero. A dropped
+ * site's ordinal is still counted here, in step with [BranchSiteAnalyzer], but it is emitted
+ * unchanged with no call to [allocateSlots]: a dropped site never asked for a slot in the first
+ * place, so it never counts against the mismatch check [BranchProbeAsmVisitorWrapper] runs.
  */
 class BranchProbeMethodVisitor(
     methodVisitor: MethodVisitor,
     private val ownerInternalName: String,
     private val probeIndexBase: Int,
+    private val droppedOrdinals: Set<Int> = emptySet(),
     private val allocateSlots: (outcomeCount: Int) -> Int,
 ) : MethodVisitor(Opcodes.ASM9, methodVisitor) {
+    private var nextOrdinal = 0
+
     override fun visitJumpInsn(
         opcode: Int,
         label: Label,
     ) {
         if (!ConditionalJump.isTracked(opcode)) {
+            super.visitJumpInsn(opcode, label)
+            return
+        }
+        if (nextOrdinal++ in droppedOrdinals) {
             super.visitJumpInsn(opcode, label)
             return
         }
@@ -73,6 +86,10 @@ class BranchProbeMethodVisitor(
         dflt: Label,
         vararg labels: Label,
     ) {
+        if (nextOrdinal++ in droppedOrdinals) {
+            super.visitTableSwitchInsn(min, max, dflt, *labels)
+            return
+        }
         val slot = allocateSlots(BranchSiteAnalyzer.switchOutcomeCount(dflt, labels))
         if (slot == NO_SLOT) {
             super.visitTableSwitchInsn(min, max, dflt, *labels)
@@ -88,6 +105,10 @@ class BranchProbeMethodVisitor(
         keys: IntArray,
         labels: Array<out Label>,
     ) {
+        if (nextOrdinal++ in droppedOrdinals) {
+            super.visitLookupSwitchInsn(dflt, keys, labels)
+            return
+        }
         val slot = allocateSlots(BranchSiteAnalyzer.switchOutcomeCount(dflt, labels))
         if (slot == NO_SLOT) {
             super.visitLookupSwitchInsn(dflt, keys, labels)

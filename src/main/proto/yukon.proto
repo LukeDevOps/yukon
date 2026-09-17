@@ -88,6 +88,10 @@ message ProbeLocation {
   // transform time. A pass-through's callees are attributed to whichever probed method referenced
   // it, so they never appear under the pass-through's own name.
   repeated CallEdge calls = 14;
+  // Set only for a BRANCH probe that is a kept inlined copy: a site inside code kotlinc copied
+  // from an inline function's body into this probe's own method, whose origin class is in scope.
+  // Dotted, and empty when the probe is the class's own code.
+  string inlined_from_class_name = 15;
 }
 
 // One caller method's static reference to one callee method, read from the caller's bytecode at
