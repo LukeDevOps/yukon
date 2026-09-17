@@ -19,3 +19,4 @@ There is no bounded queue or drop policy. The data is not a stream. It is a set 
 - A count that goes backwards should not happen with static attach, but the registry logs a one-time warning per probe if it does, rather than sending the lower value silently.
 - Delta batches are capped at 20000 probes and manifest chunks at 5000 entries, split on class boundaries, so one oversized POST cannot fail forever. Each chunk is confirmed on its own.
 - Staged state is bound to the snapshot it was computed from and applied newest-wins per class, so a shutdown flush racing a scheduled one cannot mark hits as delivered that only went out in the send that failed.
+- The shutdown-hook flush marks its delta batch as the instance's final flush. A collector can then tell an instance that ended cleanly from one that went silent, and report how many instances may have lost up to one flush interval of hits; the window itself is still not recovered.

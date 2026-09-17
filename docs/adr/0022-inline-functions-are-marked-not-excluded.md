@@ -19,3 +19,5 @@ Inline is detected from the function's own bytecode: the compiler plants a fake 
 - With debug info stripped (ProGuard, R8), the marker is gone, nothing is marked, and an inline method reads as never hit exactly as it did before this decision.
 - `neverHit()` in the testkit lists no inline method; `wasHit` and `hitCount` still answer with the raw count.
 - The omission probes of ADR 0021 carry the same flag, since a Kotlin call to an inline function with defaults never reaches `f$default` either.
+- The agent logs one warning per Kotlin class that carries a `kotlin.Metadata` annotation but no line-number table, and a collector counts probes with `line = -1` separately, so a stripped class is visible on the report rather than silently judged.
+- Branches inside an inlined copy of an inline function's body are handled by 0025: dropped when the origin class is out of scope, kept and labelled with the origin when it is in scope.
