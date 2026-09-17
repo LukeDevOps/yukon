@@ -21,8 +21,20 @@ A small integer the registry assigns to a class the first time it registers. Uni
 A hash of a class's method and branch signatures in slot order. Two loads of a class with the same name and hash share a count array; a different hash gets a fresh one.
 
 **Branch site**:
-One conditional jump or switch in a method's bytecode. A conditional has two outcomes; a switch has one per distinct case target plus the default.
+One conditional jump or switch in a method's bytecode. A conditional has two outcomes; a switch has one per distinct case target plus the default. Only a site the adopter wrote gets probes; an inlined copy from out-of-scope code and coroutine machinery keep their place in the numbering and get none.
 _Avoid_: decision, condition
+
+**Inlined copy**:
+A branch site inside code the compiler copied from an inline function into a caller, recognised from the class's SMAP. Kept and labelled with its origin class when that class is in scope; dropped otherwise.
+_Avoid_: inlined branch, foreign branch
+
+**Coroutine machinery**:
+The jumps kotlinc adds to a suspend function or suspend lambda for its state machine (the switch on the continuation's label, the compare against the suspended marker, the preamble's re-entry tests) and the continuation class it emits per suspend function. Never a probed branch site; the continuation class is never probed or declared at all.
+_Avoid_: coroutine noise, state-machine branches
+
+**Generated method**:
+A method the compiler emits from a declaration rather than from a body the adopter wrote: an enum's `values` and `valueOf`, a data class's `componentN`, `copy`, `equals`, `hashCode` and `toString`, a `$DefaultImpls` method. Probed and marked with what generated it; never reported as never hit.
+_Avoid_: synthetic method (a JVM flag; these are not synthetic), compiler method
 
 **Skipped class**:
 A class that matched the include rules but could not be instrumented, reported with a reason.
@@ -169,7 +181,11 @@ A class file the baseline could not read or resolve.
 An in-scope class with no concrete method to probe, such as an interface with only abstract methods. It can never appear in a manifest.
 
 **Never hit**:
-A probe present in a manifest whose hit total has stayed at zero. The class loaded; the code did not run.
+A probe present in a manifest whose hit total has stayed at zero. The class loaded; the code did not run. A collector claims it only for a probe that is neither inline nor generated.
+
+**Final flush**:
+The delta batch the agent's shutdown hook sends, marked as such so a collector can tell an instance that ended cleanly from one that went silent.
+_Avoid_: last batch, shutdown batch
 
 **Never loaded**:
 A class declared by a complete static baseline that never appears in any manifest from that instance. The class was never constructed.
