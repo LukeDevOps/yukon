@@ -11,7 +11,6 @@ import net.bytebuddy.pool.TypePool
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertTrue
 
 /**
  * Drives [BranchProbeAsmVisitorWrapper] directly with a dropped ordinal, on
@@ -24,7 +23,6 @@ class BranchDropRewriterTest {
     private fun loadWithDrop(
         capacity: Int,
         droppedOrdinalsByMethod: (String, String) -> Set<Int>,
-        onMismatch: (Int, Int) -> Unit,
     ): Pair<Class<*>, LongArray> {
         val classesDir = File("build/classes/java/test")
         val locator = ClassFileLocator.Compound(ClassFileLocator.ForFolder(classesDir), ClassFileLocator.ForClassLoader.ofSystemLoader())
@@ -42,7 +40,6 @@ class BranchDropRewriterTest {
                         eligibleMethods = { name, _ -> name == "classify" },
                         probeIndexBase = 0,
                         branchSlotCapacity = capacity,
-                        onSiteCountMismatch = onMismatch,
                         droppedOrdinalsByMethod = droppedOrdinalsByMethod,
                     ),
                 ).make()
@@ -53,12 +50,10 @@ class BranchDropRewriterTest {
 
     @Test
     fun `a dropped ordinal is emitted unchanged and allocates no slot, so the kept site still lands on slot zero`() {
-        val mismatches = mutableListOf<Pair<Int, Int>>()
         val (loaded, counts) =
             loadWithDrop(
                 capacity = 2,
                 droppedOrdinalsByMethod = { name, _ -> if (name == "classify") setOf(0) else emptySet() },
-                onMismatch = { expected, actual -> mismatches += expected to actual },
             )
         val target = loaded.getDeclaredConstructor().newInstance()
         val classify = loaded.getMethod("classify", Int::class.java)
@@ -67,9 +62,9 @@ class BranchDropRewriterTest {
         assertEquals("non-positive", classify.invoke(target, -5))
         assertEquals("positive", classify.invoke(target, 50))
 
-        assertTrue(mismatches.isEmpty(), "a dropped ordinal must never count against slotsWanted")
         // classify(-5) takes the kept second jump's taken edge (slot 0); classify(50) takes its
-        // not-taken edge (slot 1). The dropped first jump's own two outcomes wrote nothing.
+        // not-taken edge (slot 1). The dropped first jump's own two outcomes wrote nothing, and
+        // capacity matches the kept slot count, so the rewrite does not throw.
         assertEquals(listOf(1L, 1L), counts.toList())
     }
 }
