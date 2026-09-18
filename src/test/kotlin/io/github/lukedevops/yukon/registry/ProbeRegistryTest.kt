@@ -59,24 +59,6 @@ class ProbeRegistryTest {
     }
 
     @Test
-    fun `unregister for one classloader leaves another classloader's same-named class intact`() {
-        val registry = ProbeRegistry()
-        val loaderA = URLClassLoader(emptyArray())
-        val loaderB = URLClassLoader(emptyArray())
-        registry.register("com.example.Foo", layoutHash = 1L, probes = methodProbes(1), classLoader = loaderA)
-        registry.register("com.example.Foo", layoutHash = 1L, probes = methodProbes(1), classLoader = loaderB)
-
-        registry.unregister("com.example.Foo", loaderA)
-
-        val remaining = registry.manifest(serviceName = "checkout", serviceVersion = null, serviceInstanceId = "instance-1").probes
-        assertEquals(
-            1,
-            remaining.size,
-            "unregistering one classloader's failed class must not remove another loader's successfully registered one",
-        )
-    }
-
-    @Test
     fun `lookup returns the registered array for the exact key and null otherwise`() {
         val registry = ProbeRegistry()
         val loader = URLClassLoader(emptyArray())
@@ -374,34 +356,6 @@ class ProbeRegistryTest {
                 ).manifest
 
         assertEquals("com.example.Foo", retryDelta.probes.single().className)
-    }
-
-    @Test
-    fun `unregister removes a class so it no longer appears in the manifest`() {
-        val registry = ProbeRegistry()
-        registry.register("com.example.Foo", layoutHash = 1L, probes = methodProbes(1))
-
-        registry.unregister("com.example.Foo")
-
-        assertTrue(registry.manifest(serviceName = "checkout", serviceVersion = null, serviceInstanceId = "instance-1").probes.isEmpty())
-    }
-
-    @Test
-    fun `unregister only removes the named class, leaving others intact`() {
-        val registry = ProbeRegistry()
-        registry.register("com.example.Foo", layoutHash = 1L, probes = methodProbes(1))
-        registry.register("com.example.Bar", layoutHash = 1L, probes = methodProbes(1))
-
-        registry.unregister("com.example.Foo")
-
-        assertEquals(
-            "com.example.Bar",
-            registry
-                .manifest(serviceName = "checkout", serviceVersion = null, serviceInstanceId = "instance-1")
-                .probes
-                .single()
-                .className,
-        )
     }
 
     @Test

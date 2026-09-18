@@ -55,7 +55,6 @@ import java.io.IOException
 import java.lang.System.Logger.Level
 import java.lang.instrument.Instrumentation
 import java.util.WeakHashMap
-import java.util.concurrent.ConcurrentHashMap
 
 /** A woven `$default` method's per-method constants for [OptionalArgumentAdvice]. */
 private class DefaultSiteBinding(
@@ -187,19 +186,23 @@ class YukonInstrumentation(
     )
 
     /**
-     * Probes computed by [instrument] for a class ByteBuddy has not finished rewriting, keyed by
-     * (class name, defining classloader identity), the same pair [ProbeRegistry] keys an entry by.
-     * Classloader identity is an int, not the loader itself, so a retired loader is not pinned.
+     * Probes computed by [instrument] for the class ByteBuddy is rewriting on this thread.
+     *
+     * One slot per thread, with no key. ByteBuddy runs the transform callback, the rewrite and
+     * the result callbacks back to back on the loading thread, and its `CircularityLock` holds a
+     * per-thread entry for the whole of that, so a class load triggered from inside a transform
+     * is handed back untransformed rather than re-entering [instrument]. One thread therefore has
+     * at most one class in flight. A keyed map would have to key on classloader identity, which
+     * [System.identityHashCode] does not make unique, so two loaders sharing a hash could
+     * cross-wire each other's probes; a thread cannot collide with itself.
      */
-    private val pendingRegistrations = ConcurrentHashMap<Pair<String, Int>, PendingRegistration>()
+    private val pendingRegistration = ThreadLocal<PendingRegistration?>()
 
-    private fun pendingKey(
-        className: String,
-        classLoader: ClassLoader?,
-    ): Pair<String, Int> = className to System.identityHashCode(classLoader)
+    /** Whether this thread is holding an uncommitted registration; for tests. */
+    internal fun hasPendingRegistration(): Boolean = pendingRegistration.get() != null
 
     /**
-     * Moves a class from [pendingRegistrations] into [registry] once its bytes exist, and drops
+     * Moves a class from [pendingRegistration] into [registry] once its bytes exist, and drops
      * the pending entry for a class whose transform never got that far.
      *
      * A transform can fail after [instrument] has already computed that class's probes. ByteBuddy
@@ -211,9 +214,12 @@ class YukonInstrumentation(
      * ADR 0007 puts it directly: "not instrumented" is an honest state to report, "in the
      * manifest, permanently zero" is not.
      *
-     * So nothing reaches the registry until `onTransformation`, which ByteBuddy calls only after
-     * `make()` has produced the bytes. The class is defined after this returns and its `<clinit>`
-     * prelude runs later still, so the array is always registered before anything looks it up.
+     * So no probe reaches [ProbeRegistry] until `onTransformation`, which ByteBuddy calls only
+     * after `make()` has produced the bytes. The class is defined after this returns and its
+     * `<clinit>` prelude runs later still, so the array is always registered before anything
+     * looks it up. This covers the range ByteBuddy can see; a failure past `getBytes()`, such as
+     * the verifier rejecting the woven class, still leaves probes nothing will increment.
+     * Endpoints are declared on their own path and do not go through this listener.
      */
     private inner class TransformResultListener : AgentBuilder.Listener.Adapter() {
         override fun onTransformation(
@@ -223,7 +229,8 @@ class YukonInstrumentation(
             loaded: Boolean,
             dynamicType: DynamicType,
         ) {
-            val pending = pendingRegistrations.remove(pendingKey(typeDescription.name, classLoader)) ?: return
+            val pending = pendingRegistration.get() ?: return
+            pendingRegistration.remove()
             registry.register(
                 pending.className,
                 pending.layoutHash,
@@ -256,7 +263,7 @@ class YukonInstrumentation(
             module: JavaModule?,
             loaded: Boolean,
         ) {
-            pendingRegistrations.remove(pendingKey(typeName, classLoader))
+            pendingRegistration.remove()
         }
     }
 
@@ -310,20 +317,31 @@ class YukonInstrumentation(
         // default, with no other probe-worthy method) would otherwise never reach the omission
         // tier below at all.
         val analysis = analyzeBytecode(classBytes, classLoader, methods)
-        if (methods.isEmpty() && analysis.defaultSites.isEmpty() && !analysis.hasTypeInitializer) return builder
         if (classBytes == null) {
-            // Every mark a dead-code claim depends on is read from these bytes. Without them the
-            // class still gets entry probes, so a collector sees methods it can judge, while the
-            // marks that would block a claim are all missing: an inline function reads as
-            // ordinary code, so does a generated method, and the class calls nothing. A stripped
-            // line table has its own warning below and leaves the rest of the analysis intact.
-            // This case loses all of it and would otherwise say nothing.
+            // Warned ahead of the guard below, not after it. With no bytes the analysis is empty,
+            // so that guard reads as "no methods matched" and returns for a class whose only
+            // probe-worthy content is a <clinit> or a $default method. The agent cannot tell that
+            // class from a genuinely method-less one without the bytes, and it is the worse case:
+            // the static scanner reads the same class off the classpath, sees the <clinit> and
+            // declares it, the manifest never mentions it, and a collector calls a class that
+            // loaded "never loaded".
+            //
+            // Every mark a dead-code claim depends on is read from these bytes. The class still
+            // gets entry probes where methods matched, so a collector sees methods it can judge,
+            // while the marks that would block a claim are all missing: an inline function reads
+            // as ordinary code, so does a generated method, the class calls nothing and names no
+            // supertypes, and no optional parameter is counted. A Scala class fares worse still,
+            // since its lambda bodies are recognised from the same bytes and match no method at
+            // all. A stripped line table has its own warning below and leaves the rest of the
+            // analysis intact. This case loses all of it and would otherwise say nothing.
             log.log(
                 Level.WARNING,
-                "yukon: could not read ${typeDescription.name}'s bytecode; its methods get entry probes with no " +
-                    "line number, and it gets no branch probes, no call edges, and no inline or generated mark",
+                "yukon: could not read ${typeDescription.name}'s bytecode; any method of it that is probed at all " +
+                    "gets an entry probe with no line number, and the class gets no branch probes, no call edges, " +
+                    "no supertypes, and no inline or generated mark",
             )
         }
+        if (methods.isEmpty() && analysis.defaultSites.isEmpty() && !analysis.hasTypeInitializer) return builder
         if (analysis.isKotlinClass && !analysis.hasLineNumbers) {
             log.log(
                 Level.WARNING,
@@ -472,7 +490,7 @@ class YukonInstrumentation(
                     defaultSites.map { "${it.defaultName}${it.defaultDescriptor}#optional${it.optionalBits}" } +
                     (if (analysis.hasTypeInitializer) listOf("<clinit>()V#typeinit") else emptyList()),
             )
-        pendingRegistrations[pendingKey(typeDescription.name, classLoader)] =
+        pendingRegistration.set(
             PendingRegistration(
                 typeDescription.name,
                 layoutHash,
@@ -480,7 +498,8 @@ class YukonInstrumentation(
                 classLoader,
                 analysis.superClassName,
                 analysis.interfaceNames,
-            )
+            ),
+        )
         if (staticBaselineMismatchDetector.shouldWarnAbout(typeDescription.name)) {
             log.log(
                 Level.WARNING,
