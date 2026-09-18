@@ -96,7 +96,7 @@ class ExportScheduler(
             log.log(Level.WARNING, "yukon: no shutdown budget left for the final flush; skipping it")
             return
         }
-        val worker = Thread(::flush, "yukon-shutdown-flush").apply { isDaemon = true }
+        val worker = Thread({ flush(final = true) }, "yukon-shutdown-flush").apply { isDaemon = true }
         worker.start()
         worker.join(remaining)
         sendPool.shutdown()
@@ -136,12 +136,17 @@ class ExportScheduler(
      * exception, and would otherwise stop every future flush, heartbeat
      * included. The outer catch here covers what the sends cannot, such as
      * a rejected submission after [stop].
+     *
+     * [final] is true only for the flush [flushOnShutdown] runs. It is carried onto every delta
+     * batch this flush sends, the empty heartbeat and an endpoint-only standalone batch included,
+     * so a collector can tell an instance that ended cleanly from one that went silent. The
+     * manifest send is unaffected. See ADR 0010.
      */
-    fun flush() {
+    fun flush(final: Boolean = false) {
         try {
             maybeLogBranchDrops()
             val manifestSend = sendPool.submit(::sendManifestDelta)
-            val deltaSend = sendPool.submit(::sendDeltaBatch)
+            val deltaSend = sendPool.submit { sendDeltaBatch(final) }
             manifestSend.get()
             deltaSend.get()
         } catch (t: Throwable) {
@@ -184,12 +189,12 @@ class ExportScheduler(
      * confirmed. A failure stops the loop: the sends already confirmed stay advanced, the rest
      * are recomputed and resent on the next flush.
      */
-    private fun sendDeltaBatch() {
+    private fun sendDeltaBatch(final: Boolean) {
         try {
             val resource = resourceAttributes()
             val probeBatches = registry.computeDeltaBatches(resource, maxDeltasPerBatch)
             val endpointBatches = endpointRegistry.computeDeltas(maxDeltasPerBatch)
-            for (send in composeDeltaSends(resource, probeBatches, endpointBatches)) {
+            for (send in composeDeltaSends(resource, probeBatches, endpointBatches, final)) {
                 exporter.exportDeltaBatch(send.batch)
                 send.probeSnapshot?.let(registry::advanceBaseline)
                 send.endpointSnapshots.forEach(endpointRegistry::advanceDeltas)
@@ -209,13 +214,18 @@ class ExportScheduler(
      * one batch as the liveness heartbeat. That batch is where every endpoint snapshot lands when
      * nothing else changed, so a flush with only endpoint activity still sends exactly one
      * [DeltaBatch], carrying both the heartbeat and the endpoint deltas.
+     *
+     * [final] is stamped onto every batch built here, including the heartbeat and a standalone
+     * endpoint-only batch, so a shutdown flush with nothing to report still tells the collector
+     * this instance ended cleanly.
      */
     private fun composeDeltaSends(
         resource: ResourceAttributes,
         probeBatches: List<ProbeRegistry.DeltaSnapshot>,
         endpointBatches: List<EndpointRegistry.DeltaSnapshot>,
+        final: Boolean,
     ): List<DeltaSend> {
-        val builders = probeBatches.map { DeltaSendBuilder(it.batch, it) }.toMutableList()
+        val builders = probeBatches.map { DeltaSendBuilder(it.batch.copy(finalFlush = final), it) }.toMutableList()
         val standalone = mutableListOf<DeltaSendBuilder>()
 
         for (endpointSnapshot in endpointBatches) {
@@ -226,7 +236,7 @@ class ExportScheduler(
                 target.endpointSnapshots += endpointSnapshot
             } else {
                 standalone +=
-                    DeltaSendBuilder(DeltaBatch(resource, emptyList(), endpointSnapshot.deltas), null).apply {
+                    DeltaSendBuilder(DeltaBatch(resource, emptyList(), endpointSnapshot.deltas, finalFlush = final), null).apply {
                         endpointSnapshots += endpointSnapshot
                     }
             }

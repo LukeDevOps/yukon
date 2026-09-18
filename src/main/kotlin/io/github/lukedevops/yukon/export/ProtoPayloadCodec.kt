@@ -45,6 +45,7 @@ object ProtoPayloadCodec {
             .setResource(toProto(batch.resource))
             .addAllDeltas(batch.deltas.map { toProto(it) })
             .addAllEndpointDeltas(batch.endpointDeltas.map { toProto(it) })
+            .setFinalFlush(batch.finalFlush)
             .build()
 
     private fun fromProto(batch: ProtoDeltaBatch): DeltaBatch =
@@ -52,6 +53,7 @@ object ProtoPayloadCodec {
             resource = fromProto(batch.resource),
             deltas = batch.deltasList.map { fromProto(it) },
             endpointDeltas = batch.endpointDeltasList.map { fromProto(it) },
+            finalFlush = batch.finalFlush,
         )
 
     private fun toProto(resource: ResourceAttributes): ProtoResourceAttributes {

@@ -4,6 +4,7 @@ import io.github.lukedevops.yukon.export.CallEdge
 import io.github.lukedevops.yukon.export.GeneratedBy
 import io.github.lukedevops.yukon.instrumentation.ScalaClassDetector
 import io.github.lukedevops.yukon.instrumentation.TypeMatchPolicy
+import net.bytebuddy.jar.asm.AnnotationVisitor
 import net.bytebuddy.jar.asm.ClassReader
 import net.bytebuddy.jar.asm.ClassVisitor
 import net.bytebuddy.jar.asm.Handle
@@ -65,6 +66,18 @@ object BranchSiteAnalyzer {
          * per class from its own method table and superclass. See [generatedBy] and ADR 0026.
          */
         private val generatedByMethod: Map<Pair<String, String>, GeneratedBy> = emptyMap(),
+        /**
+         * Whether any method this analysis visited carried at least one `LineNumberTable` entry.
+         * False when debug info was stripped (ProGuard, R8), or the class carries none to begin
+         * with.
+         */
+        val hasLineNumbers: Boolean = false,
+        /**
+         * Whether the class carries a class-level annotation shaped like `kotlin.Metadata`: one
+         * package segment, then `Metadata`. Matched by shape, not by a literal, since `shadowJar`
+         * relocates any literal in this agent's own code that starts with `kotlin/`.
+         */
+        val isKotlinClass: Boolean = false,
     ) {
         /** First line-number-table entry of the method, or -1 when the class carries no debug info or the bytes were never read. */
         fun firstLineOf(
@@ -258,6 +271,14 @@ object BranchSiteAnalyzer {
     ): Boolean = name.endsWith("\$default") || (name == "<init>" && descriptor.endsWith("DefaultConstructorMarker;)V"))
 
     /**
+     * A class-level annotation descriptor shaped like `kotlin.Metadata`'s own: `L`, one package
+     * segment with no further `/`, then `/Metadata;`. Shape, not a literal, so this source file
+     * never spells out a string starting with `kotlin/`, which `shadowJar` would otherwise rewrite
+     * in this agent's own relocated copy.
+     */
+    private val kotlinMetadataDescriptorShape = Regex("^L[^/;]+/Metadata;$")
+
+    /**
      * [lookup] resolves another class's bytes by internal name, for a constructor default getter
      * whose target lives on a different class from the getter itself (see
      * [resolveScalaGetterSites]). It defaults to always returning null, which leaves such a getter
@@ -276,6 +297,8 @@ object BranchSiteAnalyzer {
         val firstLines = mutableMapOf<Pair<String, String>, Int>()
         val inlineMethods = mutableSetOf<Pair<String, String>>()
         var nextSiteIndex = 0
+        var hasLineNumbers = false
+        var isKotlinClass = false
 
         var internalClassName = ""
         var classAccess = 0
@@ -313,6 +336,16 @@ object BranchSiteAnalyzer {
                     debug: String?,
                 ) {
                     smap = KotlinSmapParser.parse(debug)
+                }
+
+                // Delivered after visitSource() and before any visitMethod(), so this flag is
+                // settled before any method visitor below could need it.
+                override fun visitAnnotation(
+                    descriptor: String,
+                    visible: Boolean,
+                ): AnnotationVisitor? {
+                    if (kotlinMetadataDescriptorShape.matches(descriptor)) isKotlinClass = true
+                    return null
                 }
 
                 override fun visitMethod(
@@ -357,6 +390,7 @@ object BranchSiteAnalyzer {
                                 line: Int,
                                 start: Label,
                             ) {
+                                hasLineNumbers = true
                                 if (isTypeInitializer) firstLines.putIfAbsent(name to descriptor, line)
                             }
                         }
@@ -382,6 +416,7 @@ object BranchSiteAnalyzer {
                         includePackages = includePackages,
                         excludePackages = excludePackages,
                         onSiteDropped = { ordinal -> droppedOrdinalsByMethod.getOrPut(name to descriptor) { mutableSetOf() } += ordinal },
+                        onLineNumberSeen = { hasLineNumbers = true },
                     )
                 }
             }
@@ -431,6 +466,8 @@ object BranchSiteAnalyzer {
             interfaceInternalNames.map { it.replace('/', '.') },
             droppedOrdinalsByMethod,
             generatedByMethod,
+            hasLineNumbers,
+            isKotlinClass,
         )
     }
 
@@ -839,6 +876,8 @@ object BranchSiteAnalyzer {
         private val excludePackages: List<String>,
         /** Called with a dropped site's per-method ordinal; see [BranchSiteAnalyzer.Analysis.droppedOrdinalsOf]. */
         private val onSiteDropped: (ordinal: Int) -> Unit,
+        /** Called once per `LineNumberTable` entry this method carries; see [BranchSiteAnalyzer.Analysis.hasLineNumbers]. */
+        private val onLineNumberSeen: () -> Unit,
     ) : CallCandidateMethodVisitor(ownerInternalName, candidatesForMethod) {
         private var currentLine = -1
         private var lastLabel: Label? = null
@@ -910,6 +949,7 @@ object BranchSiteAnalyzer {
             start: Label,
         ) {
             currentLine = line
+            onLineNumberSeen()
             if (eligible) firstLines.putIfAbsent(name to descriptor, line)
         }
 

@@ -142,6 +142,27 @@ class ProtoPayloadCodecTest {
     }
 
     @Test
+    fun `a delta batch's final flush flag round-trips through the wire, both ways`() {
+        val finalBatch =
+            DeltaBatch(resource = ResourceAttributes("checkout", "1.0.0", "instance-1", "prod"), deltas = emptyList(), finalFlush = true)
+        val scheduledBatch = finalBatch.copy(finalFlush = false)
+
+        assertTrue(ProtoDeltaBatch.parseFrom(ProtoPayloadCodec.encode(finalBatch)).finalFlush)
+        assertFalse(ProtoDeltaBatch.parseFrom(ProtoPayloadCodec.encode(scheduledBatch)).finalFlush)
+        assertEquals(finalBatch, ProtoPayloadCodec.decodeDeltaBatch(ProtoPayloadCodec.encode(finalBatch)))
+        assertEquals(scheduledBatch, ProtoPayloadCodec.decodeDeltaBatch(ProtoPayloadCodec.encode(scheduledBatch)))
+    }
+
+    @Test
+    fun `a delta batch with no final flush field set decodes as false, matching an old payload`() {
+        val wireBytes = ProtoDeltaBatch.newBuilder().build().toByteArray()
+
+        val decoded = ProtoPayloadCodec.decodeDeltaBatch(wireBytes)
+
+        assertFalse(decoded.finalFlush)
+    }
+
+    @Test
     fun `decodes a probe manifest back into the same values it was encoded from, including skipped classes`() {
         val manifest =
             ProbeManifest(

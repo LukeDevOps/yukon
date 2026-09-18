@@ -9,13 +9,20 @@ import io.github.lukedevops.yukon.registry.ProbeRegistry
 import net.bytebuddy.agent.ByteBuddyAgent
 import net.bytebuddy.agent.builder.AgentBuilder
 import net.bytebuddy.agent.builder.ResettableClassFileTransformer
+import net.bytebuddy.jar.asm.ClassReader
+import net.bytebuddy.jar.asm.ClassWriter
 import java.io.File
 import java.lang.reflect.Modifier
+import java.nio.file.Files
+import java.util.logging.Handler
+import java.util.logging.LogRecord
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import java.util.logging.Level as JulLevel
+import java.util.logging.Logger as JulLogger
 
 class YukonInstrumentationTest {
     private var installedTransformer: ResettableClassFileTransformer? = null
@@ -344,5 +351,126 @@ class YukonInstrumentationTest {
         // shouldWarnAbout only returns true the first time a given class name is found missing.
         // If install() already consumed that for this class, this call must now return false.
         assertFalse(detector.shouldWarnAbout("com.example.target.SampleTarget"))
+    }
+
+    /** Installs the transformer without loading any fixture class, for a test that loads its own. */
+    private fun installOnly(
+        registry: ProbeRegistry,
+        config: AgentConfig,
+    ): YukonInstrumentation {
+        val instrumentation = ByteBuddyAgent.install()
+        val yukon = YukonInstrumentation(config, registry)
+        installedYukon = yukon
+        installedTransformer = yukon.install(instrumentation)
+        return yukon
+    }
+
+    /** [original] with `LineNumberTable`, `LocalVariableTable`, and `SourceDebugExtension` dropped, annotations kept. */
+    private fun stripDebugInfo(original: ByteArray): ByteArray {
+        val writer = ClassWriter(0)
+        ClassReader(original).accept(writer, ClassReader.SKIP_DEBUG)
+        return writer.toByteArray()
+    }
+
+    /**
+     * Serves [internalName] from [bytes] off a scratch directory, so a class can be loaded with
+     * its debug info stripped while every other fixture class still resolves normally through
+     * [FixtureClassLoader]'s own delegation.
+     */
+    private fun strippedFixtureLoader(
+        internalName: String,
+        bytes: ByteArray,
+    ): FixtureClassLoader {
+        val dir = Files.createTempDirectory("yukon-stripped-fixture").toFile()
+        val classFile = File(dir, "$internalName.class")
+        classFile.parentFile.mkdirs()
+        classFile.writeBytes(bytes)
+        return FixtureClassLoader(arrayOf(dir.toURI().toURL()), javaClass.classLoader)
+    }
+
+    /**
+     * Records every [java.util.logging.LogRecord] [loggerName] emits while [block] runs. Yukon
+     * logs through `System.Logger`, which maps to `java.util.logging` when no custom
+     * `System.LoggerFinder` is installed, which is the case in this project's own tests.
+     */
+    private fun captureLogRecords(
+        loggerName: String,
+        block: () -> Unit,
+    ): List<LogRecord> {
+        val records = mutableListOf<LogRecord>()
+        val handler =
+            object : Handler() {
+                override fun publish(record: LogRecord) {
+                    records += record
+                }
+
+                override fun flush() {}
+
+                override fun close() {}
+            }
+        val julLogger = JulLogger.getLogger(loggerName)
+        val originalLevel = julLogger.level
+        julLogger.addHandler(handler)
+        julLogger.level = JulLevel.ALL
+        try {
+            block()
+        } finally {
+            julLogger.removeHandler(handler)
+            julLogger.level = originalLevel
+        }
+        return records
+    }
+
+    @Test
+    fun `a stripped Kotlin class logs exactly one WARNING naming the class`() {
+        val registry = ProbeRegistry()
+        val config = AgentConfig.parse("includePackages=com.example.target")
+        installOnly(registry, config)
+
+        val original = File("build/classes/kotlin/test/com/example/target/InlineTarget.class").readBytes()
+        val loader = strippedFixtureLoader("com/example/target/InlineTarget", stripDebugInfo(original))
+
+        val records =
+            captureLogRecords(YukonInstrumentation::class.java.name) {
+                Class.forName("com.example.target.InlineTarget", true, loader)
+            }
+
+        val warnings = records.filter { it.level == JulLevel.WARNING }
+        assertEquals(1, warnings.size)
+        assertTrue(warnings.single().message.contains("com.example.target.InlineTarget"))
+        assertTrue(warnings.single().message.contains("no line-number table"))
+    }
+
+    @Test
+    fun `the unstripped Kotlin fixture logs no WARNING`() {
+        val registry = ProbeRegistry()
+        val config = AgentConfig.parse("includePackages=com.example.target")
+        installOnly(registry, config)
+
+        val loader = FixtureClassLoader(arrayOf(File("build/classes/kotlin/test").toURI().toURL()), javaClass.classLoader)
+
+        val records =
+            captureLogRecords(YukonInstrumentation::class.java.name) {
+                Class.forName("com.example.target.InlineTarget", true, loader)
+            }
+
+        assertTrue(records.none { it.level == JulLevel.WARNING })
+    }
+
+    @Test
+    fun `a stripped Java fixture logs no WARNING`() {
+        val registry = ProbeRegistry()
+        val config = AgentConfig.parse("includePackages=com.example.target")
+        installOnly(registry, config)
+
+        val original = File("build/classes/java/test/com/example/target/SampleTarget.class").readBytes()
+        val loader = strippedFixtureLoader("com/example/target/SampleTarget", stripDebugInfo(original))
+
+        val records =
+            captureLogRecords(YukonInstrumentation::class.java.name) {
+                Class.forName("com.example.target.SampleTarget", true, loader)
+            }
+
+        assertTrue(records.none { it.level == JulLevel.WARNING })
     }
 }

@@ -249,6 +249,13 @@ class YukonInstrumentation(
         // tier below at all.
         val analysis = analyzeBytecode(classBytes, classLoader, methods)
         if (methods.isEmpty() && analysis.defaultSites.isEmpty() && !analysis.hasTypeInitializer) return builder
+        if (analysis.isKotlinClass && !analysis.hasLineNumbers) {
+            log.log(
+                Level.WARNING,
+                "yukon: ${typeDescription.name} is a Kotlin class with no line-number table; an inline function " +
+                    "in it cannot be recognised and reads as ordinary code, and its inlined copies cannot be traced",
+            )
+        }
         val branchSites = analysis.sites
 
         // A resolved Scala default getter (ADR 0023) keeps its ordinary method-tier slot and

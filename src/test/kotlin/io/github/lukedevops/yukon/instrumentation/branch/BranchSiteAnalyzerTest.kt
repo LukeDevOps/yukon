@@ -1,6 +1,8 @@
 package io.github.lukedevops.yukon.instrumentation.branch
 
 import io.github.lukedevops.yukon.export.GeneratedBy
+import net.bytebuddy.jar.asm.ClassReader
+import net.bytebuddy.jar.asm.ClassWriter
 import org.jacoco.core.instr.Instrumenter
 import org.jacoco.core.runtime.OfflineInstrumentationAccessGenerator
 import java.io.File
@@ -344,5 +346,39 @@ class BranchSiteAnalyzerTest {
     @Test
     fun `generatedBy is NONE for every method on an empty analysis`() {
         assertEquals(GeneratedBy.NONE, BranchSiteAnalyzer.Analysis.EMPTY.generatedBy("component1", "()I"))
+    }
+
+    @Test
+    fun `a Kotlin fixture read as compiled has line numbers and is marked Kotlin`() {
+        val analysis = BranchSiteAnalyzer.analyze(readInlineTargetBytes("InlineTarget")) { _, _ -> true }
+
+        assertTrue(analysis.hasLineNumbers)
+        assertTrue(analysis.isKotlinClass)
+    }
+
+    @Test
+    fun `the same bytes with debug info stripped have no line numbers but are still marked Kotlin`() {
+        val writer = ClassWriter(0)
+        ClassReader(readInlineTargetBytes("InlineTarget")).accept(writer, ClassReader.SKIP_DEBUG)
+        val stripped = writer.toByteArray()
+
+        val analysis = BranchSiteAnalyzer.analyze(stripped) { _, _ -> true }
+
+        assertFalse(analysis.hasLineNumbers)
+        assertTrue(analysis.isKotlinClass)
+    }
+
+    @Test
+    fun `a Java fixture is not marked Kotlin`() {
+        val analysis = BranchSiteAnalyzer.analyze(readFixtureBytes()) { _, _ -> true }
+
+        assertTrue(analysis.hasLineNumbers, "the Java fixture still has ordinary debug info")
+        assertFalse(analysis.isKotlinClass)
+    }
+
+    @Test
+    fun `hasLineNumbers and isKotlinClass are both false on an empty analysis`() {
+        assertFalse(BranchSiteAnalyzer.Analysis.EMPTY.hasLineNumbers)
+        assertFalse(BranchSiteAnalyzer.Analysis.EMPTY.isKotlinClass)
     }
 }

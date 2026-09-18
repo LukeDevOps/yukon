@@ -52,10 +52,17 @@ data class ProbeDelta(
     val hitsTotal: Long,
 )
 
+/**
+ * [finalFlush] is set on every delta batch the agent's shutdown hook sends, never on a scheduled
+ * flush. A collector uses it to tell an instance that ended cleanly from one that went silent,
+ * and may report how many instances stopped without one, since up to one flush interval of their
+ * hits may be missing. See ADR 0010.
+ */
 data class DeltaBatch(
     val resource: ResourceAttributes,
     val deltas: List<ProbeDelta>,
     val endpointDeltas: List<EndpointDelta> = emptyList(),
+    val finalFlush: Boolean = false,
 )
 
 /**
