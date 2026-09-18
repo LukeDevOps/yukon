@@ -16,6 +16,7 @@ import java.security.ProtectionDomain
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
@@ -97,6 +98,7 @@ class BranchSiteCountMismatchTest {
             "a class whose transform fails is never committed to the registry",
         )
         assertTrue("com.example.target.BranchTarget" !in registry.registeredClassNames())
+        assertFalse(yukon.hasPendingRegistration(), "a failed transform leaves nothing staged behind on this thread")
         val manifest = registry.manifest("test", null, "instance-1")
         assertTrue(manifest.probes.none { it.className == "com.example.target.BranchTarget" }, "no probe exists for the skipped class")
         val skipped = manifest.skippedClasses.filter { it.className == "com.example.target.BranchTarget" }

@@ -119,13 +119,27 @@ class YukonInstrumentationTest {
         installOnly(registry, config)
 
         val loader = FixtureClassLoader(arrayOf(File("build/classes/kotlin/test").toURI().toURL()), javaClass.classLoader)
-        val weird = Class.forName("com.example.target.WeirdName", true, loader)
+        val records =
+            captureLogRecords(YukonInstrumentation::class.java.name) {
+                val weird = Class.forName("com.example.target.WeirdName", true, loader)
+                assertEquals("hello", weird.getMethod("topLevelFunction").invoke(null), "the class must still load and run")
+            }
 
-        assertEquals("hello", weird.getMethod("topLevelFunction").invoke(null), "the class must still load and run")
         assertTrue("com.example.target.WeirdName" !in registry.registeredClassNames(), "it is never registered, so it has no probes")
         val skipped = registry.manifest("test", null, "instance-1").skippedClasses.single()
         assertEquals("com.example.target.WeirdName", skipped.className)
-        assertTrue("JvmName" in skipped.reason, "the reason names the annotation that made it unsafe")
+        // The exact reason, not just "JvmName": letting the class through to ByteBuddy would fail
+        // it inside make() instead, and that failure's own message also names the annotation. Only
+        // the exact string, plus the absence of a failure warning, says the type matcher turned it
+        // away before ByteBuddy committed to rebasing it.
+        assertEquals(
+            "@kotlin.jvm.JvmName is not a legal annotation on a class per its own @Target",
+            skipped.reason,
+        )
+        assertTrue(
+            records.none { "instrumentation failed for" in it.message },
+            "the class is turned away by the type matcher, never by a transform failure",
+        )
     }
 
     private fun fixtureLoader() = FixtureClassLoader(arrayOf(File("build/classes/java/test").toURI().toURL()), javaClass.classLoader)

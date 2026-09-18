@@ -18,15 +18,27 @@ import java.util.concurrent.atomic.AtomicLong
  * hit does one direct `arr[index]++`, with no shared map and no atomic
  * operations on the hot path.
  *
- * Two threads hitting the same probe at once can lose one of the two
- * increments. That costs an exact count and not a dead-code claim: a lost
- * update still leaves the winner's write in place, so a probe that ran at
- * least once can never read back as zero. The collector's "never hit"
- * claim depends on the zero boundary alone, which is why an unsynchronised
- * array is enough here. What the JVM memory model does not promise is
- * *when* the export thread sees a write, since neither side of the array
- * is volatile; in practice a flush is many milliseconds after the hit and
- * reads it.
+ * Counts are approximate under concurrency, and deliberately so. A thread
+ * preempted between the load and the store writes back its own stale value
+ * plus one, so any number of increments can be lost and a later read can
+ * see the count *fall*. What no race can do is put it back to zero: the
+ * lowest value any increment ever stores is one, written by a thread that
+ * read zero. A probe that ran at least once therefore stays at one or
+ * more, and the collector's "never hit" claim, which asks only whether the
+ * count is zero, survives what the exact count does not. That is why an
+ * unsynchronised array is enough here.
+ *
+ * Two caveats, neither of which the JVM memory model rules out. It permits
+ * a non-volatile `long` to be written and read in two halves (JLS 17.7),
+ * and a torn read can then combine an old half with a new one: a count
+ * crossing `0xFFFF_FFFF` could read as zero. It also permits a JIT to keep
+ * a plain array increment in a register across a loop and store once on
+ * exit, so a probe in a loop that never exits could read zero while it
+ * runs. Neither happens on 64-bit HotSpot, which makes aligned `long`
+ * accesses atomic and does not sink these stores; the guarantee rests on
+ * that, not on the specification. There is also no happens-before edge
+ * between a hit and the export thread's read, so nothing orders them; a
+ * flush is many milliseconds later and reads the write in practice.
  *
  * This type only manages bookkeeping for those arrays: allocation,
  * baseline/delta accounting, and manifest metadata. Instrumented bytecode
@@ -136,9 +148,8 @@ open class ProbeRegistry {
      * hash: a class's supertypes changing what a call resolves to at the collector never changes
      * which array slot a probe hit increments.
      *
-     * `open` only so a test can make a transform fail after registration has
-     * already happened, which is the case the transform-failure listener
-     * exists for.
+     * `open` only so a test can observe what gets committed, which is how the
+     * transform-failure path is pinned.
      */
     open fun register(
         className: String,
@@ -176,27 +187,6 @@ open class ProbeRegistry {
 
     /** Names of every class currently registered, across all classloaders. */
     fun registeredClassNames(): Set<String> = entriesByKey.keys.mapTo(HashSet()) { it.className }
-
-    /**
-     * Removes the entry registered for [className] by this specific [classLoader], if any.
-     *
-     * Use this for a class whose instrumentation was registered speculatively, but then failed
-     * to actually weave (for example, bytecode ByteBuddy refuses to redefine). It keeps that
-     * class out of every future manifest. Without it, the class's probes would be permanently
-     * reported as "never hit", when they can in fact never fire at all.
-     *
-     * Scoped to one classloader, not every entry sharing [className]: a different classloader's
-     * class of the same name is a different class (see the class-level doc), and may already be
-     * successfully instrumented. Removing it too, just because another loader's copy of the same
-     * name failed, would be its own instance of the exact bug this method exists to prevent.
-     */
-    fun unregister(
-        className: String,
-        classLoader: ClassLoader? = null,
-    ) {
-        val classLoaderId = System.identityHashCode(classLoader)
-        entriesByKey.keys.removeIf { it.className == className && it.classLoaderId == classLoaderId }
-    }
 
     /**
      * Records a class the agent matched but could not instrument. This makes it visible on the
@@ -299,11 +289,15 @@ open class ProbeRegistry {
     }
 
     /**
-     * Logs a one-time warning the first time a probe's count is seen to drop. This should never
-     * happen through this agent's own [register] calls: the only path that allocates a new,
-     * lower-starting array is a changed probe layout hash, and static attach never retransforms
-     * an already-loaded class. Logging instead of silently sending the lower value anyway means
-     * a bug that does trigger this is visible rather than hidden.
+     * Logs a one-time warning the first time a probe's count is seen to drop.
+     *
+     * A drop of a few counts on a hot probe is expected, not a bug: a stale increment overwrites
+     * whatever landed while the writer was preempted, as the class-level doc describes. A large
+     * drop, or one on a probe with little traffic, points somewhere else. Registration is the
+     * only path that hands out a new, lower-starting array, and it takes a changed probe layout
+     * hash, which static attach cannot produce since it never retransforms a loaded class.
+     * Logging instead of silently sending the lower value means a bug that does reach here is
+     * visible rather than hidden.
      */
     private fun warnOnceAboutDecrease(
         entry: ClassEntry,
