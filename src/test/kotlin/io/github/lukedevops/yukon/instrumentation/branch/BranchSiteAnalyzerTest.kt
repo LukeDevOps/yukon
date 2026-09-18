@@ -1,5 +1,6 @@
 package io.github.lukedevops.yukon.instrumentation.branch
 
+import io.github.lukedevops.yukon.export.GeneratedBy
 import org.jacoco.core.instr.Instrumenter
 import org.jacoco.core.runtime.OfflineInstrumentationAccessGenerator
 import java.io.File
@@ -13,6 +14,9 @@ class BranchSiteAnalyzerTest {
 
     private fun readInlineTargetBytes(simpleName: String): ByteArray =
         File("build/classes/kotlin/test/com/example/target/$simpleName.class").readBytes()
+
+    private fun readJavaTargetBytes(simpleName: String): ByteArray =
+        File("build/classes/java/test/com/example/target/$simpleName.class").readBytes()
 
     @Test
     fun `finds the one conditional jump in a method with a single if`() {
@@ -256,5 +260,89 @@ class BranchSiteAnalyzerTest {
         val site = analysis.defaultSites.single { it.defaultName == "copy\$default" }
         assertEquals("copy", site.targetName)
         assertEquals(0b11, site.optionalBits)
+    }
+
+    @Test
+    fun `a data class's component, copy, equals, hashCode, and toString are DATA_CLASS, its constructor and getters are not`() {
+        val analysis = BranchSiteAnalyzer.analyze(readInlineTargetBytes("GeneratedPoint")) { _, _ -> true }
+
+        assertEquals(GeneratedBy.DATA_CLASS, analysis.generatedBy("component1", "()I"))
+        assertEquals(GeneratedBy.DATA_CLASS, analysis.generatedBy("component2", "()Ljava/lang/String;"))
+        assertEquals(GeneratedBy.DATA_CLASS, analysis.generatedBy("copy", "(ILjava/lang/String;)Lcom/example/target/GeneratedPoint;"))
+        assertEquals(GeneratedBy.DATA_CLASS, analysis.generatedBy("equals", "(Ljava/lang/Object;)Z"))
+        assertEquals(GeneratedBy.DATA_CLASS, analysis.generatedBy("hashCode", "()I"))
+        assertEquals(GeneratedBy.DATA_CLASS, analysis.generatedBy("toString", "()Ljava/lang/String;"))
+        assertEquals(GeneratedBy.NONE, analysis.generatedBy("<init>", "(ILjava/lang/String;)V"))
+        assertEquals(GeneratedBy.NONE, analysis.generatedBy("getX", "()I"))
+        assertEquals(GeneratedBy.NONE, analysis.generatedBy("getY", "()Ljava/lang/String;"))
+        assertEquals(GeneratedBy.NONE, analysis.generatedBy("custom", "()I"))
+    }
+
+    @Test
+    fun `a hand-written toString on a data class is still marked DATA_CLASS`() {
+        val analysis = BranchSiteAnalyzer.analyze(readInlineTargetBytes("GeneratedPointCustomToString")) { _, _ -> true }
+
+        assertEquals(GeneratedBy.DATA_CLASS, analysis.generatedBy("toString", "()Ljava/lang/String;"))
+    }
+
+    @Test
+    fun `a class that hand-writes copy and component1 but no equals, hashCode, or toString marks nothing`() {
+        val analysis = BranchSiteAnalyzer.analyze(readInlineTargetBytes("HandWrittenCopy")) { _, _ -> true }
+
+        assertEquals(GeneratedBy.NONE, analysis.generatedBy("copy", "(I)Lcom/example/target/HandWrittenCopy;"))
+        assertEquals(GeneratedBy.NONE, analysis.generatedBy("component1", "()I"))
+        assertEquals(GeneratedBy.NONE, analysis.generatedBy("<init>", "(I)V"))
+        assertEquals(GeneratedBy.NONE, analysis.generatedBy("getV", "()I"))
+    }
+
+    @Test
+    fun `an enum's values, valueOf, and getEntries are marked ENUM, its constructor and type initializer are not`() {
+        val analysis = BranchSiteAnalyzer.analyze(readInlineTargetBytes("GeneratedColour")) { _, _ -> true }
+
+        assertEquals(GeneratedBy.ENUM, analysis.generatedBy("values", "()[Lcom/example/target/GeneratedColour;"))
+        assertEquals(GeneratedBy.ENUM, analysis.generatedBy("valueOf", "(Ljava/lang/String;)Lcom/example/target/GeneratedColour;"))
+        assertEquals(GeneratedBy.ENUM, analysis.generatedBy("getEntries", "()Lkotlin/enums/EnumEntries;"))
+        assertEquals(GeneratedBy.NONE, analysis.generatedBy("<init>", "()V"))
+        assertEquals(GeneratedBy.NONE, analysis.generatedBy("<clinit>", "()V"))
+    }
+
+    @Test
+    fun `a Java enum's values and valueOf are marked ENUM, with no getEntries to mark`() {
+        val analysis = BranchSiteAnalyzer.analyze(readJavaTargetBytes("JavaColour")) { _, _ -> true }
+
+        assertEquals(GeneratedBy.ENUM, analysis.generatedBy("values", "()[Lcom/example/target/JavaColour;"))
+        assertEquals(GeneratedBy.ENUM, analysis.generatedBy("valueOf", "(Ljava/lang/String;)Lcom/example/target/JavaColour;"))
+        assertEquals(GeneratedBy.NONE, analysis.generatedBy("getEntries", "()Lkotlin/enums/EnumEntries;"))
+    }
+
+    @Test
+    fun `every method of a DefaultImpls class is marked DEFAULT_IMPLS`() {
+        val analysis = BranchSiteAnalyzer.analyze(readInlineTargetBytes("GeneratedInterface\$DefaultImpls")) { _, _ -> true }
+
+        assertEquals(GeneratedBy.DEFAULT_IMPLS, analysis.generatedBy("withBody", "(Lcom/example/target/GeneratedInterface;)I"))
+    }
+
+    @Test
+    fun `a method on a non-DefaultImpls class named the same as a default is not marked`() {
+        val analysis = BranchSiteAnalyzer.analyze(readInlineTargetBytes("NotDefaultImpls")) { _, _ -> true }
+
+        assertEquals(GeneratedBy.NONE, analysis.generatedBy("withBody", "()I"))
+    }
+
+    @Test
+    fun `a record's equals, hashCode, and toString are marked RECORD, its accessors and extra method are not`() {
+        val analysis = BranchSiteAnalyzer.analyze(readJavaTargetBytes("RecordTarget")) { _, _ -> true }
+
+        assertEquals(GeneratedBy.RECORD, analysis.generatedBy("equals", "(Ljava/lang/Object;)Z"))
+        assertEquals(GeneratedBy.RECORD, analysis.generatedBy("hashCode", "()I"))
+        assertEquals(GeneratedBy.RECORD, analysis.generatedBy("toString", "()Ljava/lang/String;"))
+        assertEquals(GeneratedBy.NONE, analysis.generatedBy("x", "()I"))
+        assertEquals(GeneratedBy.NONE, analysis.generatedBy("y", "()Ljava/lang/String;"))
+        assertEquals(GeneratedBy.NONE, analysis.generatedBy("extra", "()I"))
+    }
+
+    @Test
+    fun `generatedBy is NONE for every method on an empty analysis`() {
+        assertEquals(GeneratedBy.NONE, BranchSiteAnalyzer.Analysis.EMPTY.generatedBy("component1", "()I"))
     }
 }

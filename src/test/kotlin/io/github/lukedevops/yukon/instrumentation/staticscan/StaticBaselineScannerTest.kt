@@ -2,6 +2,7 @@ package io.github.lukedevops.yukon.instrumentation.staticscan
 
 import io.github.lukedevops.yukon.config.AgentConfig
 import io.github.lukedevops.yukon.export.CallEdge
+import io.github.lukedevops.yukon.export.GeneratedBy
 import io.github.lukedevops.yukon.export.ProbeKind
 import io.github.lukedevops.yukon.instrumentation.FixtureClassLoader
 import io.github.lukedevops.yukon.instrumentation.YukonInstrumentation
@@ -41,6 +42,11 @@ class StaticBaselineScannerTest {
     private val functionReferenceTargetBytes = classBytes("kotlin/test/com/example/target/FunctionReferenceTarget.class")
     private val functionReferenceBodyClassBytes =
         classBytes("kotlin/test/com/example/target/FunctionReferenceTarget\$viaReference\$f\$1.class")
+    private val generatedPointBytes = classBytes("kotlin/test/com/example/target/GeneratedPoint.class")
+    private val generatedColourBytes = classBytes("kotlin/test/com/example/target/GeneratedColour.class")
+    private val generatedInterfaceDefaultImplsBytes =
+        classBytes("kotlin/test/com/example/target/GeneratedInterface\$DefaultImpls.class")
+    private val recordTargetBytes = classBytes("java/test/com/example/target/RecordTarget.class")
 
     /** The fixture root [CallEdgeAnalyzerTest][io.github.lukedevops.yukon.instrumentation.branch.CallEdgeAnalyzerTest] exercises directly. */
     private fun callEdgeFixtureRoot(): File =
@@ -361,6 +367,45 @@ class StaticBaselineScannerTest {
 
         val withoutClinit = result.declaredClasses.single { it.className == "com.example.target.SampleTarget" }
         assertTrue(withoutClinit.methods.none { it.methodName == "<clinit>" })
+    }
+
+    @Test
+    fun `declares the same generated-method marks as the manifest, and clinit is NONE`() {
+        val root =
+            directoryRoot(
+                "com/example/target/GeneratedPoint.class" to generatedPointBytes,
+                "com/example/target/GeneratedColour.class" to generatedColourBytes,
+                "com/example/target/GeneratedInterface\$DefaultImpls.class" to generatedInterfaceDefaultImplsBytes,
+                "com/example/target/RecordTarget.class" to recordTargetBytes,
+            )
+        val scanner = StaticBaselineScanner(listOf("com.example.target"))
+
+        val result = scanner.scan(listOf(root))
+
+        val point = result.declaredClasses.single { it.className == "com.example.target.GeneratedPoint" }.methods
+        assertEquals(GeneratedBy.DATA_CLASS, point.single { it.methodName == "component1" }.generatedBy)
+        assertEquals(GeneratedBy.DATA_CLASS, point.single { it.methodName == "copy" }.generatedBy)
+        assertEquals(GeneratedBy.DATA_CLASS, point.single { it.methodName == "equals" }.generatedBy)
+        assertEquals(GeneratedBy.DATA_CLASS, point.single { it.methodName == "hashCode" }.generatedBy)
+        assertEquals(GeneratedBy.DATA_CLASS, point.single { it.methodName == "toString" }.generatedBy)
+        assertEquals(GeneratedBy.NONE, point.single { it.methodName == "<init>" }.generatedBy)
+        assertEquals(GeneratedBy.NONE, point.single { it.methodName == "getX" }.generatedBy)
+
+        val colour = result.declaredClasses.single { it.className == "com.example.target.GeneratedColour" }.methods
+        assertEquals(GeneratedBy.ENUM, colour.single { it.methodName == "values" }.generatedBy)
+        assertEquals(GeneratedBy.ENUM, colour.single { it.methodName == "valueOf" }.generatedBy)
+        assertEquals(GeneratedBy.ENUM, colour.single { it.methodName == "getEntries" }.generatedBy)
+        assertEquals(GeneratedBy.NONE, colour.single { it.methodName == "<clinit>" }.generatedBy)
+
+        val defaultImpls = result.declaredClasses.single { it.className == "com.example.target.GeneratedInterface\$DefaultImpls" }.methods
+        assertEquals(GeneratedBy.DEFAULT_IMPLS, defaultImpls.single { it.methodName == "withBody" }.generatedBy)
+
+        val record = result.declaredClasses.single { it.className == "com.example.target.RecordTarget" }.methods
+        assertEquals(GeneratedBy.RECORD, record.single { it.methodName == "equals" }.generatedBy)
+        assertEquals(GeneratedBy.RECORD, record.single { it.methodName == "hashCode" }.generatedBy)
+        assertEquals(GeneratedBy.RECORD, record.single { it.methodName == "toString" }.generatedBy)
+        assertEquals(GeneratedBy.NONE, record.single { it.methodName == "x" }.generatedBy)
+        assertEquals(GeneratedBy.NONE, record.single { it.methodName == "extra" }.generatedBy)
     }
 
     @Test

@@ -250,6 +250,73 @@ class ProtoPayloadCodecTest {
     }
 
     @Test
+    fun `a probe location's generatedBy round-trips through the wire, every value`() {
+        fun probeNamed(
+            methodName: String,
+            generatedBy: GeneratedBy,
+        ) = ProbeLocation(
+            classId = 0,
+            probeIndex = 0,
+            kind = ProbeKind.METHOD,
+            className = "com.example.Foo",
+            methodName = methodName,
+            methodDescriptor = "()V",
+            line = 10,
+            branchIndex = null,
+            generatedBy = generatedBy,
+        )
+
+        val manifest =
+            ProbeManifest(
+                serviceName = "checkout",
+                serviceVersion = "1.0.0",
+                probes =
+                    listOf(
+                        probeNamed("none", GeneratedBy.NONE),
+                        probeNamed("values", GeneratedBy.ENUM),
+                        probeNamed("copy", GeneratedBy.DATA_CLASS),
+                        probeNamed("withBody", GeneratedBy.DEFAULT_IMPLS),
+                        probeNamed("toString", GeneratedBy.RECORD),
+                    ),
+            )
+
+        val decoded = ProtoPayloadCodec.decodeProbeManifest(ProtoPayloadCodec.encode(manifest))
+
+        assertEquals(manifest, decoded)
+        assertEquals(GeneratedBy.NONE, decoded.probes.single { it.methodName == "none" }.generatedBy)
+        assertEquals(GeneratedBy.ENUM, decoded.probes.single { it.methodName == "values" }.generatedBy)
+        assertEquals(GeneratedBy.DATA_CLASS, decoded.probes.single { it.methodName == "copy" }.generatedBy)
+        assertEquals(GeneratedBy.DEFAULT_IMPLS, decoded.probes.single { it.methodName == "withBody" }.generatedBy)
+        assertEquals(GeneratedBy.RECORD, decoded.probes.single { it.methodName == "toString" }.generatedBy)
+    }
+
+    @Test
+    fun `a probe location with no generatedBy set decodes as NONE, matching an old payload`() {
+        val manifest =
+            ProbeManifest(
+                serviceName = "checkout",
+                serviceVersion = "1.0.0",
+                probes =
+                    listOf(
+                        ProbeLocation(
+                            classId = 0,
+                            probeIndex = 0,
+                            kind = ProbeKind.METHOD,
+                            className = "com.example.Foo",
+                            methodName = "bar",
+                            methodDescriptor = "()V",
+                            line = 10,
+                            branchIndex = null,
+                        ),
+                    ),
+            )
+
+        val decoded = ProtoPayloadCodec.decodeProbeManifest(ProtoPayloadCodec.encode(manifest))
+
+        assertEquals(GeneratedBy.NONE, decoded.probes.single().generatedBy)
+    }
+
+    @Test
     fun `an optional argument probe's parameter fields round-trip through the wire`() {
         val manifest =
             ProbeManifest(
@@ -454,6 +521,43 @@ class ProtoPayloadCodecTest {
         val methods = decoded.declaredClasses.single().methods
         assertTrue(methods.single { it.methodName == "bar" }.inline)
         assertFalse(methods.single { it.methodName == "baz" }.inline)
+    }
+
+    @Test
+    fun `a declared method's generatedBy round-trips through the wire, every value`() {
+        val baseline =
+            StaticBaseline(
+                resource = ResourceAttributes("checkout", "1.0.0", "instance-1", "prod"),
+                declaredClasses =
+                    listOf(
+                        DeclaredClass(
+                            className = "com.example.Foo",
+                            methods =
+                                listOf(
+                                    DeclaredMethod(methodName = "none", methodDescriptor = "()V", generatedBy = GeneratedBy.NONE),
+                                    DeclaredMethod(methodName = "values", methodDescriptor = "()V", generatedBy = GeneratedBy.ENUM),
+                                    DeclaredMethod(methodName = "copy", methodDescriptor = "()V", generatedBy = GeneratedBy.DATA_CLASS),
+                                    DeclaredMethod(
+                                        methodName = "withBody",
+                                        methodDescriptor = "()V",
+                                        generatedBy = GeneratedBy.DEFAULT_IMPLS,
+                                    ),
+                                    DeclaredMethod(methodName = "toString", methodDescriptor = "()V", generatedBy = GeneratedBy.RECORD),
+                                ),
+                        ),
+                    ),
+                scannedAt = 1000L,
+            )
+
+        val decoded = ProtoPayloadCodec.decodeStaticBaseline(ProtoPayloadCodec.encode(baseline))
+
+        assertEquals(baseline, decoded)
+        val methods = decoded.declaredClasses.single().methods
+        assertEquals(GeneratedBy.NONE, methods.single { it.methodName == "none" }.generatedBy)
+        assertEquals(GeneratedBy.ENUM, methods.single { it.methodName == "values" }.generatedBy)
+        assertEquals(GeneratedBy.DATA_CLASS, methods.single { it.methodName == "copy" }.generatedBy)
+        assertEquals(GeneratedBy.DEFAULT_IMPLS, methods.single { it.methodName == "withBody" }.generatedBy)
+        assertEquals(GeneratedBy.RECORD, methods.single { it.methodName == "toString" }.generatedBy)
     }
 
     @Test

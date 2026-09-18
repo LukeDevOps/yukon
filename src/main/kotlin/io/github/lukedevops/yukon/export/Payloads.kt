@@ -14,6 +14,20 @@ package io.github.lukedevops.yukon.export
  */
 enum class ProbeKind { METHOD, BRANCH, OPTIONAL_ARGUMENT }
 
+/**
+ * What compiled a method into existence rather than the adopter writing its body, from bytecode
+ * shape alone: an enum's `values`/`valueOf`/`getEntries`, a data class's `componentN`/`copy`/
+ * `equals`/`hashCode`/`toString`, every method of a `$DefaultImpls` class, or a Java record's
+ * `equals`/`hashCode`/`toString`. Set on a [ProbeKind.METHOD] probe and a [DeclaredMethod], and
+ * on a [ProbeKind.OPTIONAL_ARGUMENT] probe as its target's own mark; a branch probe never carries
+ * this. A collector leaves a generated probe out of never-hit, stale-hit, the call graph and the
+ * two optional-parameter findings by default: the compiler will emit the method again
+ * regardless of what the adopter does, so a zero hit count is not a finding the adopter can act
+ * on. The hit count itself is still kept and counted, since a call to a generated method, such as
+ * `copy`, is still evidence of use. See ADR 0026.
+ */
+enum class GeneratedBy { NONE, ENUM, DATA_CLASS, DEFAULT_IMPLS, RECORD }
+
 data class ResourceAttributes(
     val serviceName: String,
     val serviceVersion: String?,
@@ -71,6 +85,9 @@ data class DeltaBatch(
  * a site inside code kotlinc copied from an inline function's body into this probe's own method,
  * whose origin class is in scope. Dotted, or null when the probe is the class's own code. See
  * ADR 0025.
+ *
+ * [generatedBy] is set for a [ProbeKind.METHOD] probe, and for a [ProbeKind.OPTIONAL_ARGUMENT]
+ * probe as its target's mark; a branch probe never carries it. See [GeneratedBy] and ADR 0026.
  */
 data class ProbeLocation(
     val classId: Int,
@@ -88,6 +105,7 @@ data class ProbeLocation(
     val targetClassName: String? = null,
     val calls: List<CallEdge> = emptyList(),
     val inlinedFromClassName: String? = null,
+    val generatedBy: GeneratedBy = GeneratedBy.NONE,
 )
 
 /** A class the agent matched but could not instrument. It never gets a classId or any probes. */
@@ -156,12 +174,16 @@ data class ProbeManifest(
  * [calls] is the same in-scope call-edge list [ProbeLocation.calls] carries for a loaded method,
  * read from the same analysis pass. A collector treats a baseline edge and a manifest edge as one
  * graph. See ADR 0024.
+ *
+ * [generatedBy] is read from the same bytecode shape [ProbeLocation.generatedBy] uses; see
+ * [GeneratedBy] and ADR 0026. Always [GeneratedBy.NONE] for the class's own `<clinit>` entry.
  */
 data class DeclaredMethod(
     val methodName: String,
     val methodDescriptor: String,
     val inline: Boolean = false,
     val calls: List<CallEdge> = emptyList(),
+    val generatedBy: GeneratedBy = GeneratedBy.NONE,
 )
 
 /**

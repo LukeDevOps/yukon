@@ -18,6 +18,20 @@ enum ProbeKind {
   OPTIONAL_ARGUMENT = 3;
 }
 
+// What compiled a method into existence rather than the adopter writing its body: an enum's
+// values/valueOf/getEntries, a data class's componentN/copy/equals/hashCode/toString, every
+// method of a $DefaultImpls class, or a Java record's equals/hashCode/toString. A collector
+// leaves a generated probe out of never-hit, stale-hit, and the call graph by default, since the
+// compiler will emit the method again regardless of what the adopter does; its hit count is still
+// evidence, so the probe itself is kept rather than dropped. See ADR 0026.
+enum GeneratedBy {
+  GENERATED_BY_NONE = 0;
+  ENUM = 1;
+  DATA_CLASS = 2;
+  DEFAULT_IMPLS = 3;
+  RECORD = 4;
+}
+
 message ResourceAttributes {
   string service_name = 1;
   optional string service_version = 2;
@@ -92,6 +106,11 @@ message ProbeLocation {
   // from an inline function's body into this probe's own method, whose origin class is in scope.
   // Dotted, and empty when the probe is the class's own code.
   string inlined_from_class_name = 15;
+  // Set for a METHOD probe, and for an OPTIONAL_ARGUMENT probe as its target's own mark, so a
+  // collector abstains from never-supplied and always-supplied on a generated target (a data
+  // class's copy) the way it abstains on an inline one. GENERATED_BY_NONE (the default) for an
+  // ordinary method the adopter wrote. A BRANCH probe never carries this; see GeneratedBy.
+  GeneratedBy generated_by = 16;
 }
 
 // One caller method's static reference to one callee method, read from the caller's bytecode at
@@ -176,6 +195,9 @@ message DeclaredMethod {
   // graph: for a class the agent both scanned and later loaded, the two describe the same
   // bytecode. See ADR 0024.
   repeated CallEdge calls = 4;
+  // Read from the same class shape the METHOD probe rule uses; see ProbeLocation.generated_by
+  // and GeneratedBy. GENERATED_BY_NONE for the class's own <clinit> entry.
+  GeneratedBy generated_by = 5;
 }
 
 message DeclaredClass {

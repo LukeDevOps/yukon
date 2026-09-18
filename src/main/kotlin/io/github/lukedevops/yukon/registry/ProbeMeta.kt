@@ -1,6 +1,7 @@
 package io.github.lukedevops.yukon.registry
 
 import io.github.lukedevops.yukon.export.CallEdge
+import io.github.lukedevops.yukon.export.GeneratedBy
 import io.github.lukedevops.yukon.export.ProbeKind
 
 /**
@@ -26,6 +27,9 @@ import io.github.lukedevops.yukon.export.ProbeKind
  * a site inside code kotlinc copied from an inline function's body into this probe's own method,
  * whose origin class is in scope. Dotted, or null when the probe is the class's own code. See
  * ADR 0025.
+ *
+ * [generatedBy] is set for a [ProbeKind.METHOD] probe, and for a [ProbeKind.OPTIONAL_ARGUMENT]
+ * probe as its target's mark; a branch probe never carries it. See [GeneratedBy] and ADR 0026.
  */
 data class ProbeMeta(
     val kind: ProbeKind,
@@ -40,4 +44,5 @@ data class ProbeMeta(
     val targetClassName: String? = null,
     val calls: List<CallEdge> = emptyList(),
     val inlinedFromClassName: String? = null,
+    val generatedBy: GeneratedBy = GeneratedBy.NONE,
 )

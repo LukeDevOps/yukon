@@ -9,6 +9,7 @@ import io.github.lukedevops.yukon.export.DisabledEndpointModule
 import io.github.lukedevops.yukon.export.EndpointDelta
 import io.github.lukedevops.yukon.export.EndpointDiscoverySource
 import io.github.lukedevops.yukon.export.EndpointLocation
+import io.github.lukedevops.yukon.export.GeneratedBy
 import io.github.lukedevops.yukon.export.HttpOtlpStyleExporter
 import io.github.lukedevops.yukon.export.ProbeDelta
 import io.github.lukedevops.yukon.export.ProbeKind
@@ -386,6 +387,38 @@ class YukonTestCollectorTest {
     }
 
     @Test
+    fun `neverHit omits a never-called generated component probe, but hitCount still answers zero for it`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+        exporter.exportManifest(
+            ProbeManifest(
+                "svc",
+                null,
+                listOf(
+                    methodProbe(1, 0, "com.acme.Point", "getX", "()I", 1),
+                    ProbeLocation(
+                        1,
+                        1,
+                        ProbeKind.METHOD,
+                        "com.acme.Point",
+                        "component2",
+                        "()Ljava/lang/String;",
+                        2,
+                        null,
+                        generatedBy = GeneratedBy.DATA_CLASS,
+                    ),
+                ),
+                serviceInstanceId = "i-1",
+            ),
+        )
+
+        val neverHit = target.neverHit()
+
+        assertEquals(listOf("getX"), neverHit.map { it.methodName })
+        assertEquals(0L, target.hitCount("com.acme.Point", "component2"))
+    }
+
+    @Test
     fun `omissionCount sums across instances and isolates by parameter index or name`() {
         val target = startCollector()
         val exporter = exporterFor(target)
@@ -539,6 +572,36 @@ class YukonTestCollectorTest {
         assertEquals(1, alwaysSupplied.size)
         assertEquals("count", alwaysSupplied.single().parameterName)
         assertTrue(target.neverSupplied().isEmpty())
+    }
+
+    @Test
+    fun `neverSupplied and alwaysSupplied abstain for a generated target such as a data class's copy`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+        exporter.exportManifest(
+            ProbeManifest(
+                "svc",
+                null,
+                listOf(
+                    methodProbe(1, 0, "com.acme.Point", "copy", "(II)Lcom/acme/Point;", 10).copy(generatedBy = GeneratedBy.DATA_CLASS),
+                    omissionProbe(1, 1, "com.acme.Point", "copy", "(II)Lcom/acme/Point;", 10, parameterIndex = 1, parameterName = "y")
+                        .copy(generatedBy = GeneratedBy.DATA_CLASS),
+                ),
+                serviceInstanceId = "i-1",
+            ),
+        )
+        exporter.exportDeltaBatch(
+            DeltaBatch(
+                ResourceAttributes("svc", null, "i-1", null),
+                listOf(
+                    ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 4L),
+                    ProbeDelta(1, 1, ProbeKind.OPTIONAL_ARGUMENT, 1L, 4L),
+                ),
+            ),
+        )
+
+        assertTrue(target.neverSupplied().isEmpty(), "omitting y from copy(x = ...) is how copy is used, not a dead default")
+        assertTrue(target.alwaysSupplied().isEmpty())
     }
 
     @Test
@@ -848,6 +911,41 @@ class YukonTestCollectorTest {
         )
 
         assertEquals(listOf("com.acme.Dead"), target.neverLoaded())
+    }
+
+    @Test
+    fun `neverLoaded treats a data class of generated methods plus its constructor as never loaded, an all-generated class as not`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+        exporter.exportStaticBaseline(
+            StaticBaseline(
+                resource = ResourceAttributes("svc", null, "i-1", null),
+                declaredClasses =
+                    listOf(
+                        DeclaredClass(
+                            "com.acme.Point",
+                            listOf(
+                                DeclaredMethod("<init>", "(ILjava/lang/String;)V"),
+                                DeclaredMethod(
+                                    "copy",
+                                    "(ILjava/lang/String;)Lcom/acme/Point;",
+                                    generatedBy = GeneratedBy.DATA_CLASS,
+                                ),
+                                DeclaredMethod("equals", "(Ljava/lang/Object;)Z", generatedBy = GeneratedBy.DATA_CLASS),
+                            ),
+                        ),
+                        DeclaredClass(
+                            "com.acme.Greeter\$DefaultImpls",
+                            listOf(DeclaredMethod("greet", "(Lcom/acme/Greeter;)V", generatedBy = GeneratedBy.DEFAULT_IMPLS)),
+                        ),
+                    ),
+                scannedAt = 1000L,
+                chunkIndex = 0,
+                chunkCount = 1,
+            ),
+        )
+
+        assertEquals(listOf("com.acme.Point"), target.neverLoaded())
     }
 
     @Test
@@ -1534,5 +1632,42 @@ class YukonTestCollectorTest {
         )
 
         assertTrue(target.unreachedClusters().none { c -> c.members.any { it.className == "com.acme.B" } })
+    }
+
+    @Test
+    fun `unreachedClusters never roots a cluster at a generated method, even a data class's copy that calls its own constructor`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+        exporter.exportManifest(
+            ProbeManifest(
+                "svc",
+                null,
+                probes =
+                    listOf(
+                        ProbeLocation(1, 0, ProbeKind.METHOD, "com.acme.Point", "<init>", "(ILjava/lang/String;)V", 1, null),
+                        ProbeLocation(
+                            1,
+                            1,
+                            ProbeKind.METHOD,
+                            "com.acme.Point",
+                            "copy",
+                            "(ILjava/lang/String;)Lcom/acme/Point;",
+                            2,
+                            null,
+                            generatedBy = GeneratedBy.DATA_CLASS,
+                            calls = listOf(CallEdge("com.acme.Point", "<init>", "(ILjava/lang/String;)V", false)),
+                        ),
+                    ),
+                serviceInstanceId = "i-1",
+            ),
+        )
+        // Point is constructed, but never copied: the constructor is hit and copy is not, yet
+        // copy's own generatedBy excludes it from the graph, so it can neither root nor join a
+        // cluster despite calling <init> itself.
+        exporter.exportDeltaBatch(
+            DeltaBatch(ResourceAttributes("svc", null, "i-1", null), listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 1L))),
+        )
+
+        assertTrue(target.unreachedClusters().isEmpty())
     }
 }
