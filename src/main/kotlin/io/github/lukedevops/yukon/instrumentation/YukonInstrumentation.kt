@@ -249,6 +249,19 @@ class YukonInstrumentation(
         // tier below at all.
         val analysis = analyzeBytecode(classBytes, classLoader, methods)
         if (methods.isEmpty() && analysis.defaultSites.isEmpty() && !analysis.hasTypeInitializer) return builder
+        if (classBytes == null) {
+            // Every mark a dead-code claim depends on is read from these bytes. Without them the
+            // class still gets entry probes, so a collector sees methods it can judge, while the
+            // marks that would block a claim are all missing: an inline function reads as
+            // ordinary code, so does a generated method, and the class calls nothing. A stripped
+            // line table has its own warning below and leaves the rest of the analysis intact.
+            // This case loses all of it and would otherwise say nothing.
+            log.log(
+                Level.WARNING,
+                "yukon: could not read ${typeDescription.name}'s bytecode; its methods get entry probes with no " +
+                    "line number, and it gets no branch probes, no call edges, and no inline or generated mark",
+            )
+        }
         if (analysis.isKotlinClass && !analysis.hasLineNumbers) {
             log.log(
                 Level.WARNING,

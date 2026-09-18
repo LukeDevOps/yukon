@@ -23,6 +23,7 @@ class BranchDropRewriterTest {
     private fun loadWithDrop(
         capacity: Int,
         droppedOrdinalsByMethod: (String, String) -> Set<Int>,
+        eligibleMethod: String = "classify",
     ): Pair<Class<*>, LongArray> {
         val classesDir = File("build/classes/java/test")
         val locator = ClassFileLocator.Compound(ClassFileLocator.ForFolder(classesDir), ClassFileLocator.ForClassLoader.ofSystemLoader())
@@ -32,12 +33,12 @@ class BranchDropRewriterTest {
         val loaded =
             ByteBuddy()
                 .redefine<Any>(typeDescription, locator)
-                .name("com.example.dropguard.BranchTargetWithExtraBranches$capacity")
+                .name("com.example.dropguard.BranchTargetWithExtraBranches$eligibleMethod$capacity")
                 .defineField(MethodEntryAdvice.PROBE_ARRAY_FIELD, LongArray::class.java, Visibility.PRIVATE, Ownership.STATIC)
                 .initializer(LoadedTypeInitializer.ForStaticField(MethodEntryAdvice.PROBE_ARRAY_FIELD, counts))
                 .visit(
                     BranchProbeAsmVisitorWrapper(
-                        eligibleMethods = { name, _ -> name == "classify" },
+                        eligibleMethods = { name, _ -> name == eligibleMethod },
                         probeIndexBase = 0,
                         branchSlotCapacity = capacity,
                         droppedOrdinalsByMethod = droppedOrdinalsByMethod,
@@ -66,5 +67,25 @@ class BranchDropRewriterTest {
         // not-taken edge (slot 1). The dropped first jump's own two outcomes wrote nothing, and
         // capacity matches the kept slot count, so the rewrite does not throw.
         assertEquals(listOf(1L, 1L), counts.toList())
+    }
+
+    @Test
+    fun `a dropped lookupswitch is emitted unchanged and allocates no slot`() {
+        // A lookupswitch counts its own ordinal in step with a conditional jump's. If it did not,
+        // every site after it in the same method would take the wrong slot, and a branch that was
+        // never taken would be named against the wrong conditional.
+        val (loaded, counts) =
+            loadWithDrop(
+                capacity = 0,
+                droppedOrdinalsByMethod = { name, _ -> if (name == "classifySparse") setOf(0) else emptySet() },
+                eligibleMethod = "classifySparse",
+            )
+        val target = loaded.getDeclaredConstructor().newInstance()
+        val classifySparse = loaded.getMethod("classifySparse", Int::class.java)
+
+        assertEquals(200, classifySparse.invoke(target, 1), "a case still reaches its own body")
+        assertEquals(201, classifySparse.invoke(target, 1000))
+        assertEquals(-1, classifySparse.invoke(target, 7), "the default still reaches its own body")
+        assertEquals(0, counts.size, "a dropped site asks for no slot, so the array stays empty")
     }
 }

@@ -7,7 +7,6 @@ import io.github.lukedevops.yukon.instrumentation.staticscan.StaticBaselineMisma
 import io.github.lukedevops.yukon.registry.ProbeMeta
 import io.github.lukedevops.yukon.registry.ProbeRegistry
 import net.bytebuddy.agent.ByteBuddyAgent
-import net.bytebuddy.agent.builder.AgentBuilder
 import net.bytebuddy.agent.builder.ResettableClassFileTransformer
 import net.bytebuddy.jar.asm.ClassReader
 import net.bytebuddy.jar.asm.ClassWriter
@@ -109,6 +108,25 @@ class YukonInstrumentationTest {
         target.javaClass.getMethod("ping").invoke(target)
 
         assertTrue("com.example.target.SampleTarget" !in registry.registeredClassNames())
+    }
+
+    @Test
+    fun `a class ByteBuddy cannot redefine is skipped on load and reported with its reason`() {
+        // The static scanner's own side of this is pinned by StaticBaselineScannerTest. Both tiers
+        // have to reach the same answer for the same class, or one reports a class dead that the
+        // other would never have instrumented.
+        val registry = ProbeRegistry()
+        val config = AgentConfig.parse("includePackages=com.example.target")
+        installOnly(registry, config)
+
+        val loader = FixtureClassLoader(arrayOf(File("build/classes/kotlin/test").toURI().toURL()), javaClass.classLoader)
+        val weird = Class.forName("com.example.target.WeirdName", true, loader)
+
+        assertEquals("hello", weird.getMethod("topLevelFunction").invoke(null), "the class must still load and run")
+        assertTrue("com.example.target.WeirdName" !in registry.registeredClassNames(), "it is never registered, so it has no probes")
+        val skipped = registry.manifest("test", null, "instance-1").skippedClasses.single()
+        assertEquals("com.example.target.WeirdName", skipped.className)
+        assertTrue("JvmName" in skipped.reason, "the reason names the annotation that made it unsafe")
     }
 
     @Test
@@ -357,12 +375,45 @@ class YukonInstrumentationTest {
     private fun installOnly(
         registry: ProbeRegistry,
         config: AgentConfig,
+        captureClassBytes: Boolean = true,
     ): YukonInstrumentation {
         val instrumentation = ByteBuddyAgent.install()
-        val yukon = YukonInstrumentation(config, registry)
+        val yukon = YukonInstrumentation(config, registry, captureClassBytes = captureClassBytes)
         installedYukon = yukon
         installedTransformer = yukon.install(instrumentation)
         return yukon
+    }
+
+    /**
+     * Defines one class straight from [bytes] and hides it from every resource lookup, the shape
+     * of a loader that builds a class in memory. With the class-bytes capture switched off, the
+     * transform's resource fallback then finds nothing and the analysis runs on no bytes at all.
+     */
+    private class BytesOnlyClassLoader(
+        parent: ClassLoader,
+        private val className: String,
+        private val bytes: ByteArray,
+    ) : ClassLoader(parent) {
+        private val resourcePath = className.replace('.', '/') + ".class"
+
+        override fun findClass(name: String): Class<*> =
+            if (name == className) defineClass(name, bytes, 0, bytes.size) else super.findClass(name)
+
+        override fun loadClass(
+            name: String,
+            resolve: Boolean,
+        ): Class<*> {
+            if (name != className) return super.loadClass(name, resolve)
+            synchronized(getClassLoadingLock(name)) {
+                val loaded = findLoadedClass(name) ?: findClass(name)
+                if (resolve) resolveClass(loaded)
+                return loaded
+            }
+        }
+
+        override fun getResourceAsStream(name: String) = if (name == resourcePath) null else super.getResourceAsStream(name)
+
+        override fun getResource(name: String) = if (name == resourcePath) null else super.getResource(name)
     }
 
     /** [original] with `LineNumberTable`, `LocalVariableTable`, and `SourceDebugExtension` dropped, annotations kept. */
@@ -455,6 +506,34 @@ class YukonInstrumentationTest {
             }
 
         assertTrue(records.none { it.level == JulLevel.WARNING })
+    }
+
+    @Test
+    fun `a class whose bytecode cannot be read logs one WARNING naming what the manifest loses`() {
+        val registry = ProbeRegistry()
+        val config = AgentConfig.parse("includePackages=com.example.target")
+        installOnly(registry, config, captureClassBytes = false)
+
+        val bytes = File("build/classes/kotlin/test/com/example/target/InlineTarget.class").readBytes()
+        val loader = BytesOnlyClassLoader(javaClass.classLoader, "com.example.target.InlineTarget", bytes)
+
+        val records =
+            captureLogRecords(YukonInstrumentation::class.java.name) {
+                Class.forName("com.example.target.InlineTarget", true, loader)
+            }
+
+        val warnings = records.filter { it.level == JulLevel.WARNING }
+        assertEquals(1, warnings.size, "one warning, naming the class whose bytes could not be read")
+        assertTrue(warnings.single().message.contains("com.example.target.InlineTarget"))
+        assertTrue(warnings.single().message.contains("could not read"))
+        // The inline function's probe is in the manifest unmarked, which is what the warning is
+        // about: without it, nothing anywhere says the mark is missing rather than false.
+        val inlineProbes =
+            registry
+                .manifest("test", null, "instance-1")
+                .probes
+                .filter { it.className == "com.example.target.InlineTarget" && it.inline }
+        assertTrue(inlineProbes.isEmpty(), "with no bytes to read, no probe can carry the inline mark")
     }
 
     @Test
