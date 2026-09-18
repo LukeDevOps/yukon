@@ -63,7 +63,49 @@ object TypeMatchPolicy {
         excludedPackagePrefixes: List<String>,
     ): ElementMatcher.Junction<TypeDescription> =
         not(isSynthetic<TypeDescription>())
-            .and { typeDescription -> isIncluded(typeDescription.name, instrumentedPackagePrefixes, excludedPackagePrefixes) }
+            .and { typeDescription: TypeDescription ->
+                isIncluded(typeDescription.name, instrumentedPackagePrefixes, excludedPackagePrefixes)
+            }.and { typeDescription: TypeDescription -> !isCoroutineContinuation(typeDescription) }
+
+    /**
+     * A dotted suffix of a suspend function's own continuation class's direct superclass. Matched
+     * by suffix, never as a literal starting with `kotlin.`, since `shadowJar` rewrites such a
+     * literal in this agent's own code.
+     */
+    private val CONTINUATION_SUPERCLASS_SUFFIXES =
+        listOf(
+            ".coroutines.jvm.internal.ContinuationImpl",
+            ".coroutines.jvm.internal.RestrictedContinuationImpl",
+        )
+
+    /**
+     * Whether [typeDescription] is a suspend function's own continuation class: `final class ...
+     * extends kotlin.coroutines.jvm.internal.ContinuationImpl` (or `RestrictedContinuationImpl`
+     * for restricted suspension), kotlinc's own name for it. Such a class holds no code the
+     * adopter wrote: its `invokeSuspend` runs only on resumption after a real suspension, so on a
+     * function that never suspends it reads as never hit and, as a body class, roots a false
+     * unreached cluster. See ADR 0025.
+     *
+     * Only the superclass's own name is wanted, never its members. Under a lazily resolving pool
+     * (`TypePool.Default.WithLazyResolution`, which ByteBuddy's `AgentBuilder` uses by default and
+     * `StaticBaselineScanner` builds for every root) a superclass no locator can find still
+     * answers to its name, so a continuation class is recognised even when the Kotlin stdlib sits
+     * in a dependency jar the scan never opens. Under an eagerly resolving pool the erasure lookup
+     * throws `TypePool.Resolution.NoSuchTypeException` instead; that is caught and reads as "not a
+     * continuation", so no pool choice can throw out of a type matcher. A class extending
+     * `SuspendLambda` is not caught by this check: `SuspendLambda` itself extends
+     * `ContinuationImpl`, but a suspend lambda's direct superclass is `SuspendLambda`, and it holds
+     * the adopter's own body.
+     */
+    private fun isCoroutineContinuation(typeDescription: TypeDescription): Boolean {
+        val superclassName =
+            try {
+                typeDescription.superClass?.asErasure()?.name
+            } catch (_: Exception) {
+                null
+            } ?: return false
+        return CONTINUATION_SUPERCLASS_SUFFIXES.any { superclassName.endsWith(it) }
+    }
 
     /**
      * Native methods are excluded along with abstract ones: neither has a body to plant a probe in.

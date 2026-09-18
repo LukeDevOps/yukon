@@ -160,10 +160,11 @@ class ExportScheduler(
         if (total <= 0) return
         if (branchDropsLogged.compareAndSet(false, true)) {
             val inlinedOutOfScope = branchDropCounts.countOf(BranchDropReason.INLINED_OUT_OF_SCOPE)
+            val coroutineMachinery = branchDropCounts.countOf(BranchDropReason.COROUTINE_MACHINERY)
             log.log(
                 Level.INFO,
                 "yukon: left $total branch sites in ${branchDropCounts.classesWithDrops()} classes without a probe: " +
-                    "$inlinedOutOfScope inlined from out-of-scope code",
+                    "$inlinedOutOfScope inlined from out-of-scope code, $coroutineMachinery coroutine machinery",
             )
         }
     }

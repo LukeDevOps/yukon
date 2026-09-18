@@ -138,7 +138,7 @@ class StaticBaselineScanner(
         if (!root.exists()) return
         if (root.isDirectory) {
             val locator = withSupportingTypesFallback(ClassFileLocator.ForFolder(root))
-            val pool = TypePool.Default.of(locator)
+            val pool = TypePool.Default.WithLazyResolution.of(locator)
             candidateClassNamesInFolder(root).forEach { className -> classify(className, pool, locator, buckets) }
             return
         }
@@ -157,12 +157,12 @@ class StaticBaselineScanner(
         buckets: Buckets,
     ) {
         val flatLocator = withSupportingTypesFallback(ClassFileLocator.ForJarFile(jarFile))
-        val flatPool = TypePool.Default.of(flatLocator)
+        val flatPool = TypePool.Default.WithLazyResolution.of(flatLocator)
         val nestedLocators =
             NESTED_CLASSES_PREFIXES.associateWith { prefix ->
                 withSupportingTypesFallback(PrefixedJarClassFileLocator(jarFile, prefix))
             }
-        val nestedPools = nestedLocators.mapValues { (_, locator) -> TypePool.Default.of(locator) }
+        val nestedPools = nestedLocators.mapValues { (_, locator) -> TypePool.Default.WithLazyResolution.of(locator) }
         val entries = jarFile.entries().asSequence().filter { !it.isDirectory && isClassEntry(it.name) }
         for (entry in entries) {
             val nestedPrefix = NESTED_CLASSES_PREFIXES.firstOrNull { entry.name.startsWith(it) }
@@ -373,6 +373,13 @@ class StaticBaselineScanner(
      * "never loaded". What is lost is only the "statically unsafe" label. This is the situation
      * inside a Spring Boot fat jar, where the system loader sees `BOOT-INF/classes` but not the
      * annotation types packed under `BOOT-INF/lib`.
+     *
+     * Every pool built over such a locator resolves lazily: a type it cannot find still answers
+     * to its name, and only fails when a member or annotation is asked for. The type matcher's
+     * continuation-class check reads a superclass's name alone, so a class whose superclass sits
+     * in a dependency jar this scan never opens (the Kotlin stdlib under `BOOT-INF/lib`) is still
+     * classified correctly. The agent's own transform path already uses ByteBuddy's default lazy
+     * pool strategy.
      */
     private fun withSupportingTypesFallback(locator: ClassFileLocator): ClassFileLocator =
         ClassFileLocator.Compound(locator, supportingTypesLocator)

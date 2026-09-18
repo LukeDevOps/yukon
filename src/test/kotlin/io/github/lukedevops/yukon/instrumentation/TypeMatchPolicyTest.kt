@@ -7,6 +7,8 @@ import net.bytebuddy.description.modifier.Visibility
 import net.bytebuddy.description.type.TypeDescription
 import net.bytebuddy.dynamic.ClassFileLocator
 import net.bytebuddy.implementation.FixedValue
+import net.bytebuddy.jar.asm.ClassWriter
+import net.bytebuddy.jar.asm.Opcodes
 import net.bytebuddy.pool.TypePool
 import java.io.File
 import kotlin.test.Test
@@ -174,5 +176,115 @@ class TypeMatchPolicyTest {
             "\$anonfun\$classify\$1\$adapted" !in matchedScala,
             "the forwarder only unboxes and calls the body, which has its own probe",
         )
+    }
+
+    @Test
+    fun `a suspend function's own continuation class is rejected by the type matcher`() {
+        val pool =
+            TypePool.Default.of(
+                ClassFileLocator.Compound(
+                    ClassFileLocator.ForFolder(File("build/classes/kotlin/test")),
+                    ClassFileLocator.ForClassLoader.ofSystemLoader(),
+                ),
+            )
+        val continuation = pool.describe("com.example.target.CoroutineTargetKt\$twoPoints\$1").resolve()
+
+        assertFalse(TypeMatchPolicy.typeNameMatcher(listOf("com.example"), emptyList()).matches(continuation))
+    }
+
+    @Test
+    fun `a suspend lambda's own class, extending SuspendLambda directly, is not rejected`() {
+        val pool =
+            TypePool.Default.of(
+                ClassFileLocator.Compound(
+                    ClassFileLocator.ForFolder(File("build/classes/kotlin/test")),
+                    ClassFileLocator.ForClassLoader.ofSystemLoader(),
+                ),
+            )
+        val lambda = pool.describe("com.example.target.CoroutineTargetKt\$runLambda\$1").resolve()
+
+        assertTrue(
+            TypeMatchPolicy.typeNameMatcher(listOf("com.example"), emptyList()).matches(lambda),
+            "SuspendLambda itself extends ContinuationImpl, but a suspend lambda's own direct superclass is SuspendLambda",
+        )
+    }
+
+    /** A minimal class file naming [superInternalName] as its superclass, with no other content. */
+    private fun classWithSuperclass(
+        internalName: String,
+        superInternalName: String,
+    ): ByteArray {
+        val writer = ClassWriter(0)
+        writer.visit(Opcodes.V17, Opcodes.ACC_PUBLIC or Opcodes.ACC_SUPER, internalName, null, superInternalName, null)
+        writer.visitEnd()
+        return writer.toByteArray()
+    }
+
+    @Test
+    fun `a continuation superclass name is rejected when only a minimal, member-less stub of it can be resolved`() {
+        // TypeDescription.getSuperClass() resolves the raw superclass reference's erasure, so some
+        // locator must be able to name it; it does not need the stub's own fields or methods,
+        // proving the check reads the name only. Confirmed directly: a locator with nothing at all
+        // for the superclass throws TypePool.Resolution.NoSuchTypeException out of getSuperClass()
+        // itself, which the fail-open test below covers instead.
+        val name = "com.example.target.FakeContinuation"
+        val superName = "kotlin.coroutines.jvm.internal.ContinuationImpl"
+        val bytes = classWithSuperclass(name.replace('.', '/'), superName.replace('.', '/'))
+        val stub = classWithSuperclass(superName.replace('.', '/'), "java/lang/Object")
+        val pool = TypePool.Default.of(ClassFileLocator.Simple(mapOf(name to bytes, superName to stub)))
+
+        val type = pool.describe(name).resolve()
+
+        assertFalse(TypeMatchPolicy.typeNameMatcher(listOf("com.example"), emptyList()).matches(type))
+    }
+
+    @Test
+    fun `a RestrictedContinuationImpl superclass is rejected the same way`() {
+        val name = "com.example.target.FakeRestrictedContinuation"
+        val superName = "kotlin.coroutines.jvm.internal.RestrictedContinuationImpl"
+        val bytes = classWithSuperclass(name.replace('.', '/'), superName.replace('.', '/'))
+        val stub = classWithSuperclass(superName.replace('.', '/'), "java/lang/Object")
+        val pool = TypePool.Default.of(ClassFileLocator.Simple(mapOf(name to bytes, superName to stub)))
+
+        val type = pool.describe(name).resolve()
+
+        assertFalse(TypeMatchPolicy.typeNameMatcher(listOf("com.example"), emptyList()).matches(type))
+    }
+
+    @Test
+    fun `an unrelated superclass is not mistaken for a continuation`() {
+        val name = "com.example.target.FakePlain"
+        val bytes = classWithSuperclass(name.replace('.', '/'), "java/lang/Object")
+        val pool = TypePool.Default.of(ClassFileLocator.Simple.of(name, bytes))
+
+        val type = pool.describe(name).resolve()
+
+        assertTrue(TypeMatchPolicy.typeNameMatcher(listOf("com.example"), emptyList()).matches(type))
+    }
+
+    @Test
+    fun `a continuation superclass no locator can find is still rejected under a lazily resolving pool`() {
+        // The fat-jar case: the Kotlin stdlib sits under BOOT-INF/lib, which the static scan never
+        // opens, so nothing can resolve ContinuationImpl. A lazily resolving pool still answers
+        // the superclass's name, which is all the check reads; the scanner builds exactly this
+        // kind of pool, and ByteBuddy's AgentBuilder uses one by default.
+        val name = "com.example.target.FakeOrphanContinuation"
+        val bytes = classWithSuperclass(name.replace('.', '/'), "kotlin/coroutines/jvm/internal/ContinuationImpl")
+        val pool = TypePool.Default.WithLazyResolution.of(ClassFileLocator.Simple.of(name, bytes))
+
+        val type = pool.describe(name).resolve()
+
+        assertFalse(TypeMatchPolicy.typeNameMatcher(listOf("com.example"), emptyList()).matches(type))
+    }
+
+    @Test
+    fun `under an eagerly resolving pool an unresolvable superclass reads as not a continuation rather than throwing`() {
+        val name = "com.example.target.FakeOrphanContinuation"
+        val bytes = classWithSuperclass(name.replace('.', '/'), "kotlin/coroutines/jvm/internal/ContinuationImpl")
+        val pool = TypePool.Default.of(ClassFileLocator.Simple.of(name, bytes))
+
+        val type = pool.describe(name).resolve()
+
+        assertTrue(TypeMatchPolicy.typeNameMatcher(listOf("com.example"), emptyList()).matches(type))
     }
 }

@@ -652,6 +652,20 @@ class ExportSchedulerTest {
     }
 
     @Test
+    fun `the first-flush INFO summary names both drop reasons with their own counts`() {
+        val branchDropCounts = BranchDropCounts()
+        branchDropCounts.record(mapOf(BranchDropReason.INLINED_OUT_OF_SCOPE to 3, BranchDropReason.COROUTINE_MACHINERY to 7))
+        val scheduler =
+            ExportScheduler(config, ProbeRegistry(), EndpointRegistry(), RecordingExporter(), branchDropCounts = branchDropCounts)
+
+        val records = captureLogRecords(ExportScheduler::class.java.name) { scheduler.flush() }
+
+        val summary = records.single { it.message.contains("branch sites") }
+        assertTrue(summary.message.contains("3 inlined from out-of-scope code"))
+        assertTrue(summary.message.contains("7 coroutine machinery"))
+    }
+
+    @Test
     fun `the branch drop summary is logged only once, not on a second flush`() {
         val branchDropCounts = BranchDropCounts()
         branchDropCounts.record(mapOf(BranchDropReason.INLINED_OUT_OF_SCOPE to 1))
