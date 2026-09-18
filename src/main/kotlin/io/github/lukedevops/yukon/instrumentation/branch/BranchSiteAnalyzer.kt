@@ -1,6 +1,7 @@
 package io.github.lukedevops.yukon.instrumentation.branch
 
 import io.github.lukedevops.yukon.export.CallEdge
+import io.github.lukedevops.yukon.export.GeneratedBy
 import io.github.lukedevops.yukon.instrumentation.ScalaClassDetector
 import io.github.lukedevops.yukon.instrumentation.TypeMatchPolicy
 import net.bytebuddy.jar.asm.ClassReader
@@ -59,6 +60,11 @@ object BranchSiteAnalyzer {
          * See ADR 0025.
          */
         private val droppedOrdinalsByMethod: Map<Pair<String, String>, Set<Int>> = emptyMap(),
+        /**
+         * What compiled each method into existence, keyed by (name, descriptor), computed once
+         * per class from its own method table and superclass. See [generatedBy] and ADR 0026.
+         */
+        private val generatedByMethod: Map<Pair<String, String>, GeneratedBy> = emptyMap(),
     ) {
         /** First line-number-table entry of the method, or -1 when the class carries no debug info or the bytes were never read. */
         fun firstLineOf(
@@ -90,6 +96,15 @@ object BranchSiteAnalyzer {
             name: String,
             descriptor: String,
         ): Set<Int> = droppedOrdinalsByMethod[name to descriptor] ?: emptySet()
+
+        /**
+         * What compiled this method into existence, from bytecode shape alone, per ADR 0026.
+         * [GeneratedBy.NONE] on [EMPTY], and for any method none of the shape rules matched.
+         */
+        fun generatedBy(
+            name: String,
+            descriptor: String,
+        ): GeneratedBy = generatedByMethod[name to descriptor] ?: GeneratedBy.NONE
 
         companion object {
             val EMPTY = Analysis(emptyList(), emptyMap())
@@ -387,6 +402,7 @@ object BranchSiteAnalyzer {
         val resolvedGetters = scalaGetterSites.mapTo(mutableSetOf()) { it.getterName to it.getterDescriptor }
         val unresolvedScalaGetterSites = getterCandidateNames.filterNot { it in resolvedGetters }
         val hasTypeInitializer = ("<clinit>" to "()V") in methodAccess
+        val generatedByMethod = computeGeneratedBy(internalClassName, superInternalName, methodAccess)
 
         val callEdgeEntryPoints = if (hasTypeInitializer) eligibleMethodKeys + ("<clinit>" to "()V") else eligibleMethodKeys
         val callEdgesByMethod =
@@ -414,6 +430,7 @@ object BranchSiteAnalyzer {
             superInternalName?.replace('/', '.'),
             interfaceInternalNames.map { it.replace('/', '.') },
             droppedOrdinalsByMethod,
+            generatedByMethod,
         )
     }
 
@@ -1214,6 +1231,127 @@ object BranchSiteAnalyzer {
     }
 
     private fun returnTypeOf(descriptor: String): String = descriptor.substring(descriptor.lastIndexOf(')') + 1)
+
+    /** Matches a Kotlin data class component accessor's name, capturing its one-based index. */
+    private val dataClassComponentPattern = Regex("^component(\\d+)$")
+
+    /**
+     * What compiled each of [internalClassName]'s own declared methods into existence, from
+     * bytecode shape alone, per ADR 0026. No rule here reads an annotation or `kotlin.Metadata`.
+     *
+     * A class named with the `$DefaultImpls` suffix marks every method it declares
+     * [GeneratedBy.DEFAULT_IMPLS]: the class exists only to hold interface default-method bodies,
+     * so nothing further needs checking.
+     *
+     * A class whose direct superclass is `java.lang.Enum` marks `values()` returning an array of
+     * the class, `valueOf(Ljava/lang/String;)` returning the class, and `getEntries()` of any
+     * descriptor, [GeneratedBy.ENUM].
+     *
+     * A class whose direct superclass is `java.lang.Record` marks `equals(Ljava/lang/Object;)Z`,
+     * `hashCode()I`, and `toString()Ljava/lang/String;` [GeneratedBy.RECORD]; its accessors are
+     * the adopter's own component declarations and stay [GeneratedBy.NONE].
+     *
+     * A data class is recognised by the shape the compiler alone can produce: a consecutive
+     * `component1` through `componentN`, each taking no parameters, whose return types in order
+     * equal the parameter types of some `<init>` with exactly N parameters, plus a `copy` taking
+     * those same N parameter types and returning the class itself, plus
+     * `equals(Ljava/lang/Object;)Z`, `hashCode()I`, and `toString()Ljava/lang/String;`. Every one
+     * of those members is marked [GeneratedBy.DATA_CLASS] only when all of them are present; a
+     * class that hand-writes some but not all, such as a bare `copy` and `component1` with no
+     * `equals`, `hashCode`, or `toString`, is left [GeneratedBy.NONE] throughout, since the
+     * compiler itself never produces that partial shape.
+     */
+    private fun computeGeneratedBy(
+        internalClassName: String,
+        superInternalName: String?,
+        methodAccess: Map<Pair<String, String>, Int>,
+    ): Map<Pair<String, String>, GeneratedBy> {
+        val result = mutableMapOf<Pair<String, String>, GeneratedBy>()
+
+        if (internalClassName.endsWith("\$DefaultImpls")) {
+            for (key in methodAccess.keys) result[key] = GeneratedBy.DEFAULT_IMPLS
+            return result
+        }
+
+        if (superInternalName == "java/lang/Enum") {
+            val arrayDescriptor = "()[L$internalClassName;"
+            val valueOfDescriptor = "(Ljava/lang/String;)L$internalClassName;"
+            for (key in methodAccess.keys) {
+                val (name, descriptor) = key
+                when {
+                    name == "values" && descriptor == arrayDescriptor -> result[key] = GeneratedBy.ENUM
+                    name == "valueOf" && descriptor == valueOfDescriptor -> result[key] = GeneratedBy.ENUM
+                    name == "getEntries" -> result[key] = GeneratedBy.ENUM
+                }
+            }
+        }
+
+        if (superInternalName == "java/lang/Record") {
+            for (key in methodAccess.keys) {
+                val (name, descriptor) = key
+                if (isEqualsHashCodeOrToString(name, descriptor)) result[key] = GeneratedBy.RECORD
+            }
+        }
+
+        markDataClassMembers(internalClassName, methodAccess, result)
+        return result
+    }
+
+    private fun isEqualsHashCodeOrToString(
+        name: String,
+        descriptor: String,
+    ): Boolean =
+        (name == "equals" && descriptor == "(Ljava/lang/Object;)Z") ||
+            (name == "hashCode" && descriptor == "()I") ||
+            (name == "toString" && descriptor == "()Ljava/lang/String;")
+
+    /**
+     * Finds a consecutive `component1..componentN` group, a matching `<init>`, a matching `copy`,
+     * and all three of `equals`/`hashCode`/`toString`, and marks every one of them
+     * [GeneratedBy.DATA_CLASS] in [result] only when every part of the shape is present. Leaves
+     * [result] untouched otherwise.
+     */
+    private fun markDataClassMembers(
+        internalClassName: String,
+        methodAccess: Map<Pair<String, String>, Int>,
+        result: MutableMap<Pair<String, String>, GeneratedBy>,
+    ) {
+        val components =
+            methodAccess.keys
+                .mapNotNull { key ->
+                    val (name, descriptor) = key
+                    val match = dataClassComponentPattern.matchEntire(name) ?: return@mapNotNull null
+                    if (parseParameterDescriptors(descriptor).isNotEmpty()) return@mapNotNull null
+                    val index = match.groupValues[1].toIntOrNull() ?: return@mapNotNull null
+                    index to (key to returnTypeOf(descriptor))
+                }.toMap()
+        if (components.isEmpty()) return
+        val componentCount = components.keys.max()
+        if ((1..componentCount).any { it !in components }) return
+        val componentTypes = (1..componentCount).map { components.getValue(it).second }
+
+        val hasMatchingConstructor =
+            methodAccess.keys.any { (name, descriptor) ->
+                name == "<init>" && parseParameterDescriptors(descriptor) == componentTypes
+            }
+        if (!hasMatchingConstructor) return
+
+        val ownerDescriptor = "L$internalClassName;"
+        val copyKey =
+            methodAccess.keys.firstOrNull { (name, descriptor) ->
+                name == "copy" && returnTypeOf(descriptor) == ownerDescriptor && parseParameterDescriptors(descriptor) == componentTypes
+            } ?: return
+
+        if (("equals" to "(Ljava/lang/Object;)Z") !in methodAccess) return
+        if (("hashCode" to "()I") !in methodAccess) return
+        if (("toString" to "()Ljava/lang/String;") !in methodAccess) return
+
+        for (index in 1..componentCount) result[components.getValue(index).first] = GeneratedBy.DATA_CLASS
+        result[copyKey] = GeneratedBy.DATA_CLASS
+        result["equals" to "(Ljava/lang/Object;)Z"] = GeneratedBy.DATA_CLASS
+        result["hashCode" to "()I"] = GeneratedBy.DATA_CLASS
+        result["toString" to "()Ljava/lang/String;"] = GeneratedBy.DATA_CLASS
+    }
 
     /** `long` and `double` take two local variable slots; everything else, one. */
     private fun slotWidth(type: String): Int = if (type == "J" || type == "D") 2 else 1

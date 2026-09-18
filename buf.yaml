@@ -13,6 +13,11 @@ lint:
     - PACKAGE_DIRECTORY_MATCH
     - PACKAGE_VERSION_SUFFIX
     - ENUM_VALUE_PREFIX
+    # GeneratedBy's zero value means "not generated", a legitimate and common
+    # value rather than an absent or invalid one, unlike ProbeKind's own
+    # PROBE_KIND_UNSPECIFIED. Naming it GENERATED_BY_UNSPECIFIED would
+    # misstate what it means for the sake of this rule alone.
+    - ENUM_ZERO_VALUE_SUFFIX
 breaking:
   use:
     - FILE

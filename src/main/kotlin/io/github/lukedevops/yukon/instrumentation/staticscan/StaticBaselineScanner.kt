@@ -320,6 +320,7 @@ class StaticBaselineScanner(
                     it.descriptor,
                     analysis.isInline(it.internalName, it.descriptor),
                     analysis.callsOf(it.internalName, it.descriptor),
+                    analysis.generatedBy(it.internalName, it.descriptor),
                 )
             }
         val typeInitializer =

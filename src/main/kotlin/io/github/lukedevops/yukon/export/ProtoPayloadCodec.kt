@@ -9,6 +9,7 @@ import io.github.lukedevops.yukon.proto.DisabledEndpointModule as ProtoDisabledE
 import io.github.lukedevops.yukon.proto.EndpointDelta as ProtoEndpointDelta
 import io.github.lukedevops.yukon.proto.EndpointDiscoverySource as ProtoEndpointDiscoverySource
 import io.github.lukedevops.yukon.proto.EndpointLocation as ProtoEndpointLocation
+import io.github.lukedevops.yukon.proto.GeneratedBy as ProtoGeneratedBy
 import io.github.lukedevops.yukon.proto.ProbeDelta as ProtoProbeDelta
 import io.github.lukedevops.yukon.proto.ProbeKind as ProtoProbeKind
 import io.github.lukedevops.yukon.proto.ProbeLocation as ProtoProbeLocation
@@ -150,6 +151,7 @@ object ProtoPayloadCodec {
                 .setTargetClassName(location.targetClassName ?: "")
                 .addAllCalls(location.calls.map { toProto(it) })
                 .setInlinedFromClassName(location.inlinedFromClassName ?: "")
+                .setGeneratedBy(toProto(location.generatedBy))
         location.branchIndex?.let { builder.branchIndex = it }
         location.parameterIndex?.let { builder.parameterIndex = it }
         return builder.build()
@@ -175,6 +177,7 @@ object ProtoPayloadCodec {
             targetClassName = location.targetClassName.ifEmpty { null },
             calls = location.callsList.map { fromProto(it) },
             inlinedFromClassName = location.inlinedFromClassName.ifEmpty { null },
+            generatedBy = fromProto(location.generatedBy),
         )
     }
 
@@ -234,6 +237,28 @@ object ProtoPayloadCodec {
             ProtoProbeKind.PROBE_KIND_UNSPECIFIED, ProtoProbeKind.UNRECOGNIZED -> {
                 throw IllegalArgumentException("unrecognized probe kind on the wire: $kind")
             }
+        }
+
+    private fun toProto(generatedBy: GeneratedBy): ProtoGeneratedBy =
+        when (generatedBy) {
+            GeneratedBy.NONE -> ProtoGeneratedBy.GENERATED_BY_NONE
+            GeneratedBy.ENUM -> ProtoGeneratedBy.ENUM
+            GeneratedBy.DATA_CLASS -> ProtoGeneratedBy.DATA_CLASS
+            GeneratedBy.DEFAULT_IMPLS -> ProtoGeneratedBy.DEFAULT_IMPLS
+            GeneratedBy.RECORD -> ProtoGeneratedBy.RECORD
+        }
+
+    // GENERATED_BY_NONE is a legitimate value on the wire, unlike ProbeKind's own unspecified
+    // default: it means "not generated", not "never set". Only an enum value this codec does not
+    // know about is an error.
+    private fun fromProto(generatedBy: ProtoGeneratedBy): GeneratedBy =
+        when (generatedBy) {
+            ProtoGeneratedBy.GENERATED_BY_NONE -> GeneratedBy.NONE
+            ProtoGeneratedBy.ENUM -> GeneratedBy.ENUM
+            ProtoGeneratedBy.DATA_CLASS -> GeneratedBy.DATA_CLASS
+            ProtoGeneratedBy.DEFAULT_IMPLS -> GeneratedBy.DEFAULT_IMPLS
+            ProtoGeneratedBy.RECORD -> GeneratedBy.RECORD
+            ProtoGeneratedBy.UNRECOGNIZED -> throw IllegalArgumentException("unrecognized generated-by reason on the wire: $generatedBy")
         }
 
     private fun toProto(baseline: StaticBaseline): ProtoStaticBaseline =
@@ -298,6 +323,7 @@ object ProtoPayloadCodec {
             .setMethodDescriptor(method.methodDescriptor)
             .setInline(method.inline)
             .addAllCalls(method.calls.map { toProto(it) })
+            .setGeneratedBy(toProto(method.generatedBy))
             .build()
 
     private fun fromProto(method: ProtoDeclaredMethod): DeclaredMethod =
@@ -306,6 +332,7 @@ object ProtoPayloadCodec {
             methodDescriptor = method.methodDescriptor,
             inline = method.inline,
             calls = method.callsList.map { fromProto(it) },
+            generatedBy = fromProto(method.generatedBy),
         )
 
     private fun toProto(unsafeClass: StaticallyUnsafeClass): ProtoStaticallyUnsafeClass =

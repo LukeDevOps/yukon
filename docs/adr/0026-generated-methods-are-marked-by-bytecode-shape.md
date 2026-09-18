@@ -20,3 +20,5 @@ The agent marks the probe once, with a `GeneratedBy` reason (`ENUM`, `DATA_CLASS
 - Kotlin property accessors are not generated in this sense: a never-called setter is real dead code and stays unmarked.
 - kotlinx.serialization's `$serializer` classes and `write$Self` are not covered until an adopter using them appears.
 - A generated method is not a call-graph node, so a data class that is only ever constructed cannot root an unreached cluster at its own `copy`.
+- An omission probe carries its target's mark, the way it carries the target's inline flag under ADR 0022, so a collector makes no never-supplied or always-supplied claim about a data class's `copy` parameters: `copy(x = 1)` omitting `y` is how `copy` is meant to be used, not a dead default.
+- A Kotlin `value class` (`box-impl`, `unbox-impl`, `equals-impl`, `hashCode-impl`) and kotlinx.serialization's output are not covered; they wait for an adopter who has them.

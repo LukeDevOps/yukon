@@ -269,6 +269,7 @@ class YukonInstrumentation(
                         parameterName = getterSite.parameterName,
                         overridable = getterSite.overridable,
                         targetClassName = getterSite.targetClassName,
+                        generatedBy = analysis.generatedBy(getterSite.targetName, getterSite.targetDescriptor),
                     )
                 } else {
                     ProbeMeta(
@@ -278,6 +279,7 @@ class YukonInstrumentation(
                         line = analysis.firstLineOf(it.internalName, it.descriptor),
                         inline = analysis.isInline(it.internalName, it.descriptor),
                         calls = analysis.callsOf(it.internalName, it.descriptor),
+                        generatedBy = analysis.generatedBy(it.internalName, it.descriptor),
                     )
                 }
             }
@@ -330,6 +332,7 @@ class YukonInstrumentation(
                                 parameterIndex = bit,
                                 parameterName = site.parameterNames[bit] ?: "",
                                 overridable = site.overridable,
+                                generatedBy = analysis.generatedBy(site.targetName, site.targetDescriptor),
                             )
                         }
                 omissionBase += slots.size

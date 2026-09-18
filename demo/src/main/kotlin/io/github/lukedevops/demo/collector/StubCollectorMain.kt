@@ -5,6 +5,7 @@ import com.sun.net.httpserver.HttpServer
 import io.github.lukedevops.demo.DemoPorts
 import io.github.lukedevops.yukon.proto.DeltaBatch
 import io.github.lukedevops.yukon.proto.EndpointDiscoverySource
+import io.github.lukedevops.yukon.proto.GeneratedBy
 import io.github.lukedevops.yukon.proto.ProbeKind
 import io.github.lukedevops.yukon.proto.ProbeManifest
 import io.github.lukedevops.yukon.proto.StaticBaseline
@@ -71,6 +72,7 @@ private data class ProbeInfo(
     val overridable: Boolean = false,
     val targetClassName: String? = null,
     val inlinedFromClassName: String? = null,
+    val generatedBy: GeneratedBy = GeneratedBy.GENERATED_BY_NONE,
 )
 
 /** One call edge read from a METHOD probe's own bytecode. See ADR 0024. */
@@ -103,6 +105,7 @@ private data class DeclaredMethodInfo(
     val methodDescriptor: String,
     val inline: Boolean,
     val calls: List<CallEdgeInfo> = emptyList(),
+    val generatedBy: GeneratedBy = GeneratedBy.GENERATED_BY_NONE,
 )
 
 private data class EndpointInfo(
@@ -287,6 +290,7 @@ private fun handleManifest(exchange: HttpExchange) {
                 overridable = location.overridable,
                 targetClassName = location.targetClassName.ifEmpty { null },
                 inlinedFromClassName = location.inlinedFromClassName.ifEmpty { null },
+                generatedBy = location.generatedBy,
             )
         dynamicallyKnownClassNames += location.className
         if (location.callsList.isNotEmpty()) {
@@ -340,6 +344,7 @@ private fun handleStaticBaseline(exchange: HttpExchange) {
                     it.methodDescriptor,
                     it.inline,
                     it.callsList.map { call -> CallEdgeInfo(call.className, call.methodName, call.methodDescriptor, call.virtual) },
+                    it.generatedBy,
                 )
             }
         staticallyDeclaredSupertypes[declaredClass.className] =
@@ -378,8 +383,17 @@ private fun printNeverHitReport() {
     // printOmissionReport instead. See ADR 0021.
     val judgeableKeys = manifestProbes.keys.filter { manifestProbes[it]?.kind != ProbeKind.OPTIONAL_ARGUMENT }
     val neverHitKeys = judgeableKeys.filter { it !in everHit }
-    val (inlineNeverHit, judgeable) = neverHitKeys.partition { manifestProbes[it]?.inline == true }
-    val judgeableTotal = judgeableKeys.count { manifestProbes[it]?.inline == false }
+    val (inlineNeverHit, notInlineNeverHit) = neverHitKeys.partition { manifestProbes[it]?.inline == true }
+    // A generated probe, such as a data class's copy or an enum's values, is kept and counted,
+    // but the compiler will emit it again regardless of what the adopter does, so a zero hit
+    // total is not a finding the adopter can act on. See ADR 0026.
+    val (generatedNeverHit, judgeable) =
+        notInlineNeverHit.partition { manifestProbes[it]?.generatedBy != GeneratedBy.GENERATED_BY_NONE }
+    val judgeableTotal =
+        judgeableKeys.count { key ->
+            val probe = manifestProbes[key]
+            probe != null && !probe.inline && probe.generatedBy == GeneratedBy.GENERATED_BY_NONE
+        }
     println()
     println("=== yukon demo: dead code report ===")
     println("known probes: ${manifestProbes.size}, ever hit: ${everHit.size}, never hit: ${judgeable.size}")
@@ -400,6 +414,7 @@ private fun printNeverHitReport() {
     // Kotlin inline functions copy their body into the caller, so their own probe reads near
     // zero however often they run: no "never hit" claim is made about them. See ADR 0022.
     println("inline (not judged): ${inlineNeverHit.size}")
+    println("generated (not judged): ${generatedNeverHit.size}")
     if (skippedClasses.isNotEmpty()) {
         println("skipped (matched but could not be instrumented): ${skippedClasses.size}")
         skippedClasses.entries
@@ -426,8 +441,9 @@ private fun printOmissionReport() {
     println("=== yukon demo: optional argument report ===")
     val omissionGroups =
         manifestProbes.entries
-            .filter { (_, info) -> info.kind == ProbeKind.OPTIONAL_ARGUMENT && !info.inline }
-            .groupBy { (key, info) ->
+            .filter { (_, info) ->
+                info.kind == ProbeKind.OPTIONAL_ARGUMENT && !info.inline && info.generatedBy == GeneratedBy.GENERATED_BY_NONE
+            }.groupBy { (key, info) ->
                 OmissionTargetKey(
                     key.serviceInstanceId,
                     info.targetClassName ?: info.className,
@@ -531,7 +547,10 @@ private fun printNeverLoadedReport() {
         return
     }
     val neverLoadedAll = staticallyDeclaredClasses.filterKeys { it !in dynamicallyKnownClassNames }
-    val (allInline, neverLoaded) = neverLoadedAll.entries.partition { (_, methods) -> methods.isNotEmpty() && methods.all { it.inline } }
+    val (allInlineOrGenerated, neverLoaded) =
+        neverLoadedAll.entries.partition { (_, methods) ->
+            methods.isNotEmpty() && methods.all { it.inline || it.generatedBy != GeneratedBy.GENERATED_BY_NONE }
+        }
     println(
         "statically declared: ${staticallyDeclaredClasses.size}, confirmed loaded: " +
             "${staticallyDeclaredClasses.keys.count { it in dynamicallyKnownClassNames }}, never loaded: ${neverLoaded.size}",
@@ -542,11 +561,13 @@ private fun printNeverLoadedReport() {
             val methodNames = methods.joinToString(", ") { it.methodName }
             println("  NEVER LOADED: $className (methods: $methodNames)")
         }
-    // A class made only of inline functions is never loaded by a Kotlin caller at all, so its
-    // absence here is not evidence it is dead. See ADR 0022.
-    if (allInline.isNotEmpty()) {
-        println("all inline (not judged): ${allInline.size}")
-        allInline.sortedBy { it.key }.forEach { (className, _) -> println("  ALL INLINE: $className") }
+    // A class made only of inline functions is never loaded by a Kotlin caller at all, and the
+    // compiler emits a generated method again regardless of what the adopter does, so a class
+    // whose every method is one or the other never loading is not evidence it is dead. See ADR
+    // 0022 and ADR 0026.
+    if (allInlineOrGenerated.isNotEmpty()) {
+        println("all inline or generated (not judged): ${allInlineOrGenerated.size}")
+        allInlineOrGenerated.sortedBy { it.key }.forEach { (className, _) -> println("  ALL INLINE OR GENERATED: $className") }
     }
     if (staticallyUnprobedClasses.isNotEmpty()) {
         println("nothing to probe (in scope, but no concrete methods): ${staticallyUnprobedClasses.size}")
@@ -730,16 +751,18 @@ private fun computeCallGraph(): CallGraph {
 }
 
 /**
- * Every node: a manifest METHOD probe, non-inline, merged across instances by
+ * Every node: a manifest METHOD probe, non-inline and non-generated, merged across instances by
  * (class, method, descriptor) with hits summed and edges unioned with any matching declaration
  * from [declaredClasses]; plus, for a class [declaredClasses] names that no manifest ever
- * mentioned, each of its non-inline declared methods, with zero hits.
+ * mentioned, each of its non-inline, non-generated declared methods, with zero hits. A generated
+ * method is never a node: the compiler emits it again regardless of what the adopter does, so it
+ * can neither root nor extend an unreached cluster. See ADR 0026.
  */
 private fun buildClusterNodes(declaredClasses: Map<String, List<DeclaredMethodInfo>>): Map<NodeKey, NodeInfo> {
     val nodes = mutableMapOf<NodeKey, NodeInfo>()
     val manifestGroups =
         manifestProbes.entries
-            .filter { (_, probe) -> probe.kind == ProbeKind.METHOD && !probe.inline }
+            .filter { (_, probe) -> probe.kind == ProbeKind.METHOD && !probe.inline && probe.generatedBy == GeneratedBy.GENERATED_BY_NONE }
             .groupBy { (_, probe) -> NodeKey(probe.className, probe.methodName, probe.methodDescriptor) }
     for ((nodeKey, entries) in manifestGroups) {
         val hits = entries.sumOf { (key, _) -> latestHitsTotal[key] ?: 0L }
@@ -753,7 +776,7 @@ private fun buildClusterNodes(declaredClasses: Map<String, List<DeclaredMethodIn
     for ((className, methods) in declaredClasses) {
         if (className in dynamicallyKnownClassNames) continue
         for (method in methods) {
-            if (method.inline) continue
+            if (method.inline || method.generatedBy != GeneratedBy.GENERATED_BY_NONE) continue
             val nodeKey = NodeKey(className, method.methodName, method.methodDescriptor)
             if (nodeKey in nodes) continue
             nodes[nodeKey] = NodeInfo(line = -1, neverLoaded = true, hits = 0L, edges = method.calls.toSet())
