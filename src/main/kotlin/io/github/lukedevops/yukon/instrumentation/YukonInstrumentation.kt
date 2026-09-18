@@ -55,6 +55,7 @@ import java.io.IOException
 import java.lang.System.Logger.Level
 import java.lang.instrument.Instrumentation
 import java.util.WeakHashMap
+import java.util.concurrent.ConcurrentHashMap
 
 /** A woven `$default` method's per-method constants for [OptionalArgumentAdvice]. */
 private class DefaultSiteBinding(
@@ -77,7 +78,8 @@ private fun bindingFor(
  * If that list is empty, every type outside the agent's own package is matched, less the
  * bootstrap and platform loaders' classes that ByteBuddy's `AgentBuilder` ignores by default.
  *
- * Each matched type is registered with [ProbeRegistry] once, at transform time. It gets its own
+ * Each matched type is registered with [ProbeRegistry] once, after its rewrite succeeds; see
+ * [TransformResultListener]. It gets its own
  * `public static final long[]` field, and a `<clinit>` prelude that fills it with one call to the
  * bootstrap-resident [YukonProbeArrays], which asks the registry for the array registered a
  * moment earlier. Every probe in that class then reaches [MethodEntryAdvice] with a direct read
@@ -155,7 +157,7 @@ class YukonInstrumentation(
             // No LoadedTypeInitializer is ever used, so ByteBuddy has nothing to run after load
             // and no reason to inject its Nexus class into the bootstrap loader via Unsafe.
             .with(AgentBuilder.InitializationStrategy.NoOp.INSTANCE)
-            .with(TransformFailureListener())
+            .with(TransformResultListener())
             .type(typeMatcher())
             .transform { builder, typeDescription, classLoader, _, _ -> instrument(builder, typeDescription, classLoader) }
             .installOn(instrumentation)
@@ -174,17 +176,64 @@ class YukonInstrumentation(
     private fun isCandidateInternalName(internalName: String): Boolean =
         TypeMatchPolicy.isIncluded(internalName.replace('/', '.'), config.instrumentedPackagePrefixes, config.excludedPackagePrefixes)
 
+    /** One class's probes, held between [instrument] and the transform result; see [TransformResultListener]. */
+    private class PendingRegistration(
+        val className: String,
+        val layoutHash: Long,
+        val probes: List<ProbeMeta>,
+        val classLoader: ClassLoader?,
+        val superClassName: String?,
+        val interfaceNames: List<String>,
+    )
+
     /**
-     * A class transform can still fail after [instrument] has already called
-     * [ProbeRegistry.register]. ByteBuddy only rewrites and validates the bytecode once that
-     * callback returns, so this failure is reported later than the registration that caused it.
-     *
-     * Left alone, the manifest would permanently list that class's probes as known but never hit.
-     * That looks identical to genuinely dead code. Rolling the registration back on failure keeps
-     * the manifest honest instead: a class this agent could not safely instrument is simply
-     * absent, not falsely reported as "dead".
+     * Probes computed by [instrument] for a class ByteBuddy has not finished rewriting, keyed by
+     * (class name, defining classloader identity), the same pair [ProbeRegistry] keys an entry by.
+     * Classloader identity is an int, not the loader itself, so a retired loader is not pinned.
      */
-    private inner class TransformFailureListener : AgentBuilder.Listener.Adapter() {
+    private val pendingRegistrations = ConcurrentHashMap<Pair<String, Int>, PendingRegistration>()
+
+    private fun pendingKey(
+        className: String,
+        classLoader: ClassLoader?,
+    ): Pair<String, Int> = className to System.identityHashCode(classLoader)
+
+    /**
+     * Moves a class from [pendingRegistrations] into [registry] once its bytes exist, and drops
+     * the pending entry for a class whose transform never got that far.
+     *
+     * A transform can fail after [instrument] has already computed that class's probes. ByteBuddy
+     * calls the transform callback, then rewrites and validates, and only then reports the
+     * outcome, so a failure arrives after the point that produced the probes. Registering in the
+     * callback would publish them before the outcome is known: a flush landing in that window
+     * sends the class's probes to a collector, and the rollback afterwards cannot take them back.
+     * Those probes then sit in the manifest at zero forever, which reads exactly like dead code.
+     * ADR 0007 puts it directly: "not instrumented" is an honest state to report, "in the
+     * manifest, permanently zero" is not.
+     *
+     * So nothing reaches the registry until `onTransformation`, which ByteBuddy calls only after
+     * `make()` has produced the bytes. The class is defined after this returns and its `<clinit>`
+     * prelude runs later still, so the array is always registered before anything looks it up.
+     */
+    private inner class TransformResultListener : AgentBuilder.Listener.Adapter() {
+        override fun onTransformation(
+            typeDescription: TypeDescription,
+            classLoader: ClassLoader?,
+            module: JavaModule?,
+            loaded: Boolean,
+            dynamicType: DynamicType,
+        ) {
+            val pending = pendingRegistrations.remove(pendingKey(typeDescription.name, classLoader)) ?: return
+            registry.register(
+                pending.className,
+                pending.layoutHash,
+                pending.probes,
+                pending.classLoader,
+                superClassName = pending.superClassName,
+                interfaceNames = pending.interfaceNames,
+            )
+        }
+
         override fun onError(
             typeName: String,
             classLoader: ClassLoader?,
@@ -193,8 +242,21 @@ class YukonInstrumentation(
             throwable: Throwable,
         ) {
             log.log(Level.WARNING, "yukon: instrumentation failed for $typeName, class will run uninstrumented", throwable)
-            registry.unregister(typeName, classLoader)
             registry.recordSkipped(typeName, throwable.message ?: throwable.toString())
+        }
+
+        /**
+         * Runs for every class ByteBuddy considered, whatever the outcome. A pending entry still
+         * here was never committed, so this drops it. On a successful transform `onTransformation`
+         * already took it and this finds nothing.
+         */
+        override fun onComplete(
+            typeName: String,
+            classLoader: ClassLoader?,
+            module: JavaModule?,
+            loaded: Boolean,
+        ) {
+            pendingRegistrations.remove(pendingKey(typeName, classLoader))
         }
     }
 
@@ -410,14 +472,14 @@ class YukonInstrumentation(
                     defaultSites.map { "${it.defaultName}${it.defaultDescriptor}#optional${it.optionalBits}" } +
                     (if (analysis.hasTypeInitializer) listOf("<clinit>()V#typeinit") else emptyList()),
             )
-        val counts =
-            registry.register(
+        pendingRegistrations[pendingKey(typeDescription.name, classLoader)] =
+            PendingRegistration(
                 typeDescription.name,
                 layoutHash,
                 probes,
                 classLoader,
-                superClassName = analysis.superClassName,
-                interfaceNames = analysis.interfaceNames,
+                analysis.superClassName,
+                analysis.interfaceNames,
             )
         if (staticBaselineMismatchDetector.shouldWarnAbout(typeDescription.name)) {
             log.log(
@@ -437,7 +499,7 @@ class YukonInstrumentation(
                     Ownership.STATIC,
                     FieldManifestation.FINAL,
                     SyntheticState.SYNTHETIC,
-                ).initializer(ProbeArrayInitializer(typeDescription.name, layoutHash, counts.size, typeInitializerProbeIndex))
+                ).initializer(ProbeArrayInitializer(typeDescription.name, layoutHash, probes.size, typeInitializerProbeIndex))
 
         // One Advice visitor for the whole class, with each method's slot resolved from its
         // signature at weave time. One visitor per method would stack N method visitors, each

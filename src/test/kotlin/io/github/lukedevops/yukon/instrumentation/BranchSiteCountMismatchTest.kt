@@ -1,6 +1,7 @@
 package io.github.lukedevops.yukon.instrumentation
 
 import io.github.lukedevops.yukon.config.AgentConfig
+import io.github.lukedevops.yukon.registry.ProbeMeta
 import io.github.lukedevops.yukon.registry.ProbeRegistry
 import net.bytebuddy.agent.ByteBuddyAgent
 import net.bytebuddy.agent.builder.ResettableClassFileTransformer
@@ -56,9 +57,26 @@ class BranchSiteCountMismatchTest {
         instrumentation.removeTransformer(earlierAgent)
     }
 
+    /** Records every class [YukonInstrumentation] commits, so a test can assert one was never committed at all. */
+    private class RecordingProbeRegistry : ProbeRegistry() {
+        val registered = mutableListOf<String>()
+
+        override fun register(
+            className: String,
+            layoutHash: Long,
+            probes: List<ProbeMeta>,
+            classLoader: ClassLoader?,
+            superClassName: String?,
+            interfaceNames: List<String>,
+        ): LongArray {
+            registered += className
+            return super.register(className, layoutHash, probes, classLoader, superClassName, interfaceNames)
+        }
+    }
+
     @Test
     fun `a class whose rewritten bytes disagree with its analysed bytes is skipped and still runs uninstrumented`() {
-        val registry = ProbeRegistry()
+        val registry = RecordingProbeRegistry()
         val config = AgentConfig.parse("includePackages=com.example.target")
         instrumentation.addTransformer(earlierAgent, false)
         val yukon = YukonInstrumentation(config, registry, captureClassBytes = false)
@@ -71,10 +89,14 @@ class BranchSiteCountMismatchTest {
         val classify = targetClass.getMethod("classify", Int::class.java)
         assertEquals("large", classify.invoke(target, 500), "the class still loads and runs, from the swapped, unrewritten bytes")
 
+        // Never registered at any point, not registered and then withdrawn. A flush racing this
+        // transform has no instant at which it could have picked the class up, so its probes can
+        // never reach a collector that would read them as permanently-zero dead code.
         assertTrue(
-            "com.example.target.BranchTarget" !in registry.registeredClassNames(),
-            "the speculative registration is rolled back",
+            "com.example.target.BranchTarget" !in registry.registered,
+            "a class whose transform fails is never committed to the registry",
         )
+        assertTrue("com.example.target.BranchTarget" !in registry.registeredClassNames())
         val manifest = registry.manifest("test", null, "instance-1")
         assertTrue(manifest.probes.none { it.className == "com.example.target.BranchTarget" }, "no probe exists for the skipped class")
         val skipped = manifest.skippedClasses.filter { it.className == "com.example.target.BranchTarget" }
