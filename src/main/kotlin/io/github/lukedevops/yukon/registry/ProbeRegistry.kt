@@ -18,17 +18,27 @@ import java.util.concurrent.atomic.AtomicLong
  * hit does one direct `arr[index]++`, with no shared map and no atomic
  * operations on the hot path.
  *
+ * Two threads hitting the same probe at once can lose one of the two
+ * increments. That costs an exact count and not a dead-code claim: a lost
+ * update still leaves the winner's write in place, so a probe that ran at
+ * least once can never read back as zero. The collector's "never hit"
+ * claim depends on the zero boundary alone, which is why an unsynchronised
+ * array is enough here. What the JVM memory model does not promise is
+ * *when* the export thread sees a write, since neither side of the array
+ * is volatile; in practice a flush is many milliseconds after the hit and
+ * reads it.
+ *
  * This type only manages bookkeeping for those arrays: allocation,
  * baseline/delta accounting, and manifest metadata. Instrumented bytecode
  * receives the array at class-init, and writes to it directly from there.
  *
  * The key includes the probe-layout hash, not just the class name. This
  * matters for a class reloaded by the *same* classloader identity with an
- * unchanged layout (not reachable in this v1 static-attach agent today, but
- * cheap to keep correct for later). If the layout is unchanged, the class
- * keeps its existing array and history. If the layout changed, old counts
- * would not mean anything against the new bytecode, so the class gets a
- * fresh array instead of a merge.
+ * unchanged layout, which static attach never produces but which is cheap
+ * to keep correct. If the layout is unchanged, the class keeps its existing
+ * array and history. If the layout changed, old counts would not mean
+ * anything against the new bytecode, so the class gets a fresh array
+ * instead of a merge.
  *
  * The key also includes the defining classloader's identity, not just the
  * class name. JVM class identity is (classloader, name), not name alone: two
@@ -290,11 +300,10 @@ open class ProbeRegistry {
 
     /**
      * Logs a one-time warning the first time a probe's count is seen to drop. This should never
-     * happen through this v1 static-attach agent's own [register] calls: the only path that
-     * allocates a new, lower-starting array is a changed probe layout hash, and static attach
-     * never retransforms an already-loaded class. Logging instead of silently sending the lower
-     * value anyway means a future bug that does trigger this is visible, not hidden the way the
-     * `@JvmName` transform failure was before it had its own explicit check.
+     * happen through this agent's own [register] calls: the only path that allocates a new,
+     * lower-starting array is a changed probe layout hash, and static attach never retransforms
+     * an already-loaded class. Logging instead of silently sending the lower value anyway means
+     * a bug that does trigger this is visible rather than hidden.
      */
     private fun warnOnceAboutDecrease(
         entry: ClassEntry,
