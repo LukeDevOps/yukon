@@ -33,6 +33,12 @@ class EndpointInstrumentation(
     private val log = System.getLogger(EndpointInstrumentation::class.java.name)
     private val agentClassLoader = EndpointInstrumentation::class.java.classLoader
 
+    /** Endpoints a module declared during a transform, held until that transform produces bytes. */
+    private val pendingDeclarations = PendingDeclarations()
+
+    /** Whether this thread is holding declarations from a transform; for tests. */
+    internal fun pendingDeclarationCount(): Int = pendingDeclarations.pendingCount()
+
     /**
      * One [AdviceBinder] per target classloader, since Spring's own types (unlike the JDK's
      * `HttpServer`, which loads on the bootstrap loader) live on the application's classloader,
@@ -62,7 +68,7 @@ class EndpointInstrumentation(
      */
     fun install(instrumentation: Instrumentation): ResettableClassFileTransformer {
         BootstrapHolder.install(instrumentation)
-        YukonEndpoints.install(RegistryResolver(registry, modules))
+        YukonEndpoints.install(RegistryResolver(registry, modules, pendingDeclarations))
         addSeamReadEdges(instrumentation)
 
         if (modules.isEmpty()) {
@@ -91,6 +97,10 @@ class EndpointInstrumentation(
         for (module in modules) {
             builder =
                 builder.type(module.typeMatcher()).transform { typeBuilder, typeDescription, classLoader, _, _ ->
+                    // Anything the module declares from here is held until the rewrite produces
+                    // bytes; see PendingDeclarations. A module that throws leaves its own partial
+                    // declarations staged, and the listener drops them with the failed transform.
+                    pendingDeclarations.begin()
                     try {
                         module.transform(typeBuilder, typeDescription, adviceBinderFor(classLoader), classLoader)
                     } catch (t: Throwable) {
@@ -136,8 +146,26 @@ class EndpointInstrumentation(
         }
     }
 
-    /** Reports a transform failure ByteBuddy caught on its own, outside any module's own try/catch. */
+    /**
+     * Commits what a transform declared once its bytes exist, and reports a transform failure
+     * ByteBuddy caught on its own, outside any module's own try/catch.
+     *
+     * `onTransformation` runs only after `make()` has produced the bytes, so an endpoint declared
+     * from inside the transform callback reaches the registry only for a class that really was
+     * woven. `onComplete` runs whatever the outcome, so a failed transform's declarations are
+     * dropped rather than left staged on the thread.
+     */
     private inner class EndpointTransformListener : AgentBuilder.Listener.Adapter() {
+        override fun onTransformation(
+            typeDescription: TypeDescription,
+            classLoader: ClassLoader?,
+            module: JavaModule?,
+            loaded: Boolean,
+            dynamicType: net.bytebuddy.dynamic.DynamicType,
+        ) {
+            pendingDeclarations.commit()
+        }
+
         override fun onError(
             typeName: String,
             classLoader: ClassLoader?,
@@ -150,6 +178,15 @@ class EndpointInstrumentation(
                 "yukon: endpoint instrumentation failed for $typeName, class will run without endpoint tracking",
                 throwable,
             )
+        }
+
+        override fun onComplete(
+            typeName: String,
+            classLoader: ClassLoader?,
+            module: JavaModule?,
+            loaded: Boolean,
+        ) {
+            pendingDeclarations.discard()
         }
     }
 }

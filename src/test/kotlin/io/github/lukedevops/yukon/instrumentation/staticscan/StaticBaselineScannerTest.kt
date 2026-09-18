@@ -607,7 +607,8 @@ class StaticBaselineScannerTest {
             val manifest = registry.manifest("test", null, "instance-1")
             val viaReferenceProbe =
                 manifest.probes.single {
-                    it.className == "com.example.target.FunctionReferenceTarget" && it.methodName == "viaReference" &&
+                    it.className == "com.example.target.FunctionReferenceTarget" &&
+                        it.methodName == "viaReference" &&
                         it.kind == ProbeKind.METHOD
                 }
             assertEquals(
