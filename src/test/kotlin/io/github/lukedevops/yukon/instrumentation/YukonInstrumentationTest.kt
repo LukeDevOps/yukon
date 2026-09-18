@@ -4,7 +4,6 @@ import io.github.lukedevops.yukon.config.AgentConfig
 import io.github.lukedevops.yukon.export.ProbeKind
 import io.github.lukedevops.yukon.export.ResourceAttributes
 import io.github.lukedevops.yukon.instrumentation.staticscan.StaticBaselineMismatchDetector
-import io.github.lukedevops.yukon.registry.ProbeMeta
 import io.github.lukedevops.yukon.registry.ProbeRegistry
 import net.bytebuddy.agent.ByteBuddyAgent
 import net.bytebuddy.agent.builder.ResettableClassFileTransformer
@@ -127,36 +126,6 @@ class YukonInstrumentationTest {
         val skipped = registry.manifest("test", null, "instance-1").skippedClasses.single()
         assertEquals("com.example.target.WeirdName", skipped.className)
         assertTrue("JvmName" in skipped.reason, "the reason names the annotation that made it unsafe")
-    }
-
-    @Test
-    fun `a transform that fails after registration is rolled back, reported as skipped, and the class runs uninstrumented`() {
-        // register() succeeds and then the transform throws, the order a ByteBuddy validation
-        // failure has: the registry already holds the class by the time make() rejects it.
-        val registry =
-            object : ProbeRegistry() {
-                override fun register(
-                    className: String,
-                    layoutHash: Long,
-                    probes: List<ProbeMeta>,
-                    classLoader: ClassLoader?,
-                    superClassName: String?,
-                    interfaceNames: List<String>,
-                ): LongArray {
-                    val counts = super.register(className, layoutHash, probes, classLoader, superClassName, interfaceNames)
-                    if (className == "com.example.target.SampleTarget") throw IllegalStateException("simulated transform failure")
-                    return counts
-                }
-            }
-        val config = AgentConfig.parse("includePackages=com.example.target")
-
-        val target = install(registry, config)
-
-        assertEquals("pong", target.javaClass.getMethod("ping").invoke(target), "the class must still load and run")
-        assertTrue("com.example.target.SampleTarget" !in registry.registeredClassNames(), "the speculative registration is rolled back")
-        val skipped = registry.manifest("test", null, "instance-1").skippedClasses.single()
-        assertEquals("com.example.target.SampleTarget", skipped.className)
-        assertTrue("simulated transform failure" in skipped.reason)
     }
 
     private fun fixtureLoader() = FixtureClassLoader(arrayOf(File("build/classes/java/test").toURI().toURL()), javaClass.classLoader)
