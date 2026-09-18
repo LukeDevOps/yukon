@@ -110,6 +110,12 @@ class EndpointInstrumentation(
                         // is concerned, the listener commits, and whatever this module declared
                         // before it threw would land in the registry for a class that never got
                         // its advice.
+                        //
+                        // The rollback covers this class only. moduleFailed below switches the
+                        // module off for the whole process, so routes it already declared for
+                        // earlier classes keep their manifest rows while their advice stops
+                        // counting: those do read as never called. The disabled list is the only
+                        // signal for that; see STATUS.md.
                         pendingDeclarations.rollbackTo(mark)
                         log.log(Level.WARNING, "yukon: endpoint module ${module.name} failed to transform ${typeDescription.name}", t)
                         YukonEndpoints.moduleFailed(module.name, t)

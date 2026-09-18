@@ -45,10 +45,11 @@ class PendingDeclarations internal constructor() {
      * later one leaves what earlier modules staged in place and reports the size, which its
      * caller keeps as the mark to [rollbackTo] if its own module throws.
      *
-     * ByteBuddy can also run a whole transform twice for one class: its default fallback strategy
-     * retries with a different type description after a `LinkageError`, with no listener call in
-     * between to close the list. The retry stages the same declarations a second time, which is
-     * harmless, since declaring one endpoint key twice is the same endpoint.
+     * ByteBuddy's default fallback strategy can run a whole transform twice, retrying with a
+     * different type description after a `LinkageError` and with no listener call in between to
+     * close the list. It only retries a class being retransformed, which this agent never does,
+     * so the second pass cannot happen here. It would be harmless anyway: declaring one endpoint
+     * key twice is the same endpoint.
      */
     fun begin(): Int {
         val pending = staged.get()
@@ -84,7 +85,12 @@ class PendingDeclarations internal constructor() {
             try {
                 declaration()
             } catch (t: Throwable) {
-                log.log(Level.WARNING, "yukon: an endpoint declaration failed while committing, the rest still apply", t)
+                log.log(
+                    Level.WARNING,
+                    "yukon: an endpoint a module declared during a transform could not be registered; the rest of " +
+                        "that class's endpoints still apply, and this one is discovered by dispatch if it is served",
+                    t,
+                )
             }
         }
     }
