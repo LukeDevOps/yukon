@@ -60,8 +60,13 @@ it handled successfully keep their manifest rows, so their counts freeze
 wherever they were: a route the framework still serves reads as never called
 once its count sat at zero.
 
-The manifest's disabled list is the only signal, and no read path uses it
-today. Either a collector should discount every endpoint of a disabled
-module, the way it discounts an inline or generated probe, or the agent
-should withdraw them. Same shape for a module disabled through the runtime
-`declare` walk, which predates the transform-time staging.
+Settled in favour of the collector, not the agent. The agent keeps reporting
+what it saw: the endpoints it declared, and the module it disabled, with the
+time it happened. A collector joins the two, since a module's name is the
+same string its endpoints carry as `framework`, and leaves every endpoint of
+a module disabled everywhere it is known out of its dead-code claims, the
+way it leaves out an inline probe. Withdrawing the endpoints instead would
+need a tombstone on the wire and would throw away that the route existed and
+was served at all, which is true whatever happened to the module later. Same
+shape for a module disabled through the runtime `declare` walk, which
+predates the transform-time staging.
