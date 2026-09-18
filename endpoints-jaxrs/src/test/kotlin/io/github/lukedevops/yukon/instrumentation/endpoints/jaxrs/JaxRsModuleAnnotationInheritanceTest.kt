@@ -157,7 +157,14 @@ private fun recordingResolver(calls: MutableList<RegisterCall>): Any =
         }
     }
 
-/** A resolver wired to a real [EndpointRegistry], mirroring `RegistryResolver` closely enough to stand in for it between tests. */
+/**
+ * A resolver wired to a real [EndpointRegistry], for restoring the seam between tests.
+ *
+ * It registers straight through, with none of `RegistryResolver`'s per-transform staging. That is
+ * fine for leaving the seam in a usable state, and wrong for anything that asserts on when a
+ * declaration lands, so no test should assert against this stand-in. `JaxRsModuleTest` runs in the
+ * same JVM and would otherwise inherit it.
+ */
 private fun endpointRegistryResolver(registry: EndpointRegistry): Any =
     resolverProxy { name, args ->
         when (name) {

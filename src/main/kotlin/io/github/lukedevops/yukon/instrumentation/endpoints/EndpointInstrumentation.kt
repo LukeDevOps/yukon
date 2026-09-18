@@ -98,12 +98,19 @@ class EndpointInstrumentation(
             builder =
                 builder.type(module.typeMatcher()).transform { typeBuilder, typeDescription, classLoader, _, _ ->
                     // Anything the module declares from here is held until the rewrite produces
-                    // bytes; see PendingDeclarations. A module that throws leaves its own partial
-                    // declarations staged, and the listener drops them with the failed transform.
-                    pendingDeclarations.begin()
+                    // bytes; see PendingDeclarations. The mark is where this module's own
+                    // declarations start, since another module matching the same class may have
+                    // staged some already.
+                    val mark = pendingDeclarations.begin()
                     try {
                         module.transform(typeBuilder, typeDescription, adviceBinderFor(classLoader), classLoader)
                     } catch (t: Throwable) {
+                        // This catch is why a throwing module needs the rollback: it returns the
+                        // builder unchanged, so the transform still succeeds as far as ByteBuddy
+                        // is concerned, the listener commits, and whatever this module declared
+                        // before it threw would land in the registry for a class that never got
+                        // its advice.
+                        pendingDeclarations.rollbackTo(mark)
                         log.log(Level.WARNING, "yukon: endpoint module ${module.name} failed to transform ${typeDescription.name}", t)
                         YukonEndpoints.moduleFailed(module.name, t)
                         typeBuilder
