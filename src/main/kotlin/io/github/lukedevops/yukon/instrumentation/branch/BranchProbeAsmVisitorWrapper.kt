@@ -27,9 +27,11 @@ import net.bytebuddy.pool.TypePool
  * [BranchSiteAnalyzer]'s pass over the same bytes. The rewrite must never allocate past it: a
  * site that would is left as the original instruction, uninstrumented, rather than emitting an
  * increment that would throw `ArrayIndexOutOfBoundsException` inside the application's own
- * method. A site count that differs from the analysis in either direction is reported once per
- * class through [onSiteCountMismatch], since a shortfall means slots have shifted and the
- * manifest's branch metadata no longer lines up with what each slot counts.
+ * method. A site count that differs from the analysis in either direction means the bytes being
+ * rewritten differ from the bytes analysed, so [visitEnd] throws `IllegalStateException` and the
+ * whole class is skipped and reported through the standard transform-failure path (ADR 0006,
+ * ADR 0007), rather than being left instrumented with branch metadata that describes the wrong
+ * outcomes.
  *
  * [droppedOrdinalsByMethod] names each method's dropped sites by their per-method encounter
  * ordinal (see ADR 0025); a method absent from it, or every method when the default is left in
@@ -39,7 +41,6 @@ class BranchProbeAsmVisitorWrapper(
     private val eligibleMethods: (name: String, descriptor: String) -> Boolean,
     private val probeIndexBase: Int,
     private val branchSlotCapacity: Int = Int.MAX_VALUE,
-    private val onSiteCountMismatch: (expectedSlots: Int, actualSlots: Int) -> Unit = { _, _ -> },
     private val droppedOrdinalsByMethod: (name: String, descriptor: String) -> Set<Int> = { _, _ -> emptySet() },
 ) : AsmVisitorWrapper {
     override fun mergeWriter(flags: Int): Int = flags or ClassWriter.COMPUTE_FRAMES
@@ -86,7 +87,11 @@ class BranchProbeAsmVisitorWrapper(
 
             override fun visitEnd() {
                 if (branchSlotCapacity != Int.MAX_VALUE && slotsWanted != branchSlotCapacity) {
-                    onSiteCountMismatch(branchSlotCapacity, slotsWanted)
+                    throw IllegalStateException(
+                        "yukon: ${instrumentedType.name} wants $slotsWanted branch probe slots at rewrite time but " +
+                            "$branchSlotCapacity were sized from its analysed bytecode; the bytes being rewritten " +
+                            "differ from the bytes analysed",
+                    )
                 }
                 super.visitEnd()
             }

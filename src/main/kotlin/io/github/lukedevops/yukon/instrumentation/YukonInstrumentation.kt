@@ -442,15 +442,6 @@ class YukonInstrumentation(
                         probeIndexBase = methodProbes.size,
                         branchSlotCapacity = branchProbes.size,
                         droppedOrdinalsByMethod = analysis::droppedOrdinalsOf,
-                        onSiteCountMismatch = { expected, actual ->
-                            log.log(
-                                Level.WARNING,
-                                "yukon: ${typeDescription.name} has $actual branch probe slots at rewrite time but " +
-                                    "$expected were sized from its analysed bytecode; the bytes being rewritten differ " +
-                                    "from the bytes analysed, so its branch probes are unreliable and any site past " +
-                                    "capacity is left uninstrumented",
-                            )
-                        },
                     ),
                 )
         }

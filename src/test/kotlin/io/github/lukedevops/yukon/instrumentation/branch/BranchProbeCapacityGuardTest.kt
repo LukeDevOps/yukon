@@ -12,17 +12,16 @@ import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.test.fail
 
 /**
- * Drives [BranchProbeAsmVisitorWrapper] directly, with a capacity smaller than the class's real
- * site count, to prove the last-resort guard: sites past capacity run unchanged rather than
- * writing past the end of the array, and the mismatch is reported once.
+ * Drives [BranchProbeAsmVisitorWrapper] directly, with a capacity that does not match the
+ * class's real site count, to prove the last-resort guard: a site past capacity runs unchanged
+ * rather than writing past the end of the array, and any mismatch fails the whole rewrite once,
+ * at `visitEnd`, instead of leaving the class instrumented with shifted probes.
  */
 class BranchProbeCapacityGuardTest {
-    private fun loadWithCapacity(
-        capacity: Int,
-        onMismatch: (Int, Int) -> Unit,
-    ): Pair<Class<*>, LongArray> {
+    private fun loadWithCapacity(capacity: Int): Pair<Class<*>, LongArray> {
         val classesDir = File("build/classes/java/test")
         val locator = ClassFileLocator.Compound(ClassFileLocator.ForFolder(classesDir), ClassFileLocator.ForClassLoader.ofSystemLoader())
         val typePool = TypePool.Default.of(locator)
@@ -39,7 +38,6 @@ class BranchProbeCapacityGuardTest {
                         eligibleMethods = { _, _ -> true },
                         probeIndexBase = 0,
                         branchSlotCapacity = capacity,
-                        onSiteCountMismatch = onMismatch,
                     ),
                 ).make()
                 .load(javaClass.classLoader, ClassLoadingStrategy.Default.WRAPPER)
@@ -48,30 +46,28 @@ class BranchProbeCapacityGuardTest {
     }
 
     @Test
-    fun `sites past capacity run unchanged and the shortfall is reported once`() {
+    fun `a capacity smaller than the analysed site count fails the transform naming both counts`() {
         // BranchTarget needs 2 (classify) + 4 (classifyDense) + 3 (classifySparse) = 9 slots.
-        val mismatches = mutableListOf<Pair<Int, Int>>()
-        val (loaded, counts) = loadWithCapacity(capacity = 2) { expected, actual -> mismatches += expected to actual }
-        val target = loaded.getDeclaredConstructor().newInstance()
+        val exception =
+            try {
+                loadWithCapacity(capacity = 2)
+                fail("expected the rewrite to fail")
+            } catch (e: IllegalStateException) {
+                e
+            }
 
-        assertEquals("positive", loaded.getMethod("classify", Int::class.java).invoke(target, 5))
-        assertEquals(101, loaded.getMethod("classifyDense", Int::class.java).invoke(target, 1))
-        assertEquals(201, loaded.getMethod("classifySparse", Int::class.java).invoke(target, 1000))
-
-        assertEquals(listOf(2 to 9), mismatches)
-        // classify(5) falls through its `value > 0` jump, which is the site's second slot.
-        assertEquals(listOf(0L, 1L), counts.toList(), "only the first site, which fit, was instrumented")
+        assertTrue("BranchTarget" in exception.message.orEmpty(), "message names the class")
+        assertTrue("2" in exception.message.orEmpty(), "message names the analysed slot count")
+        assertTrue("9" in exception.message.orEmpty(), "message names the slot count wanted at rewrite")
     }
 
     @Test
-    fun `a matching capacity reports nothing`() {
-        val mismatches = mutableListOf<Pair<Int, Int>>()
-        val (loaded, counts) = loadWithCapacity(capacity = 9) { expected, actual -> mismatches += expected to actual }
+    fun `a matching capacity throws nothing`() {
+        val (loaded, counts) = loadWithCapacity(capacity = 9)
         val target = loaded.getDeclaredConstructor().newInstance()
 
         loaded.getMethod("classify", Int::class.java).invoke(target, 5)
 
-        assertTrue(mismatches.isEmpty())
         assertEquals(1L, counts.sum())
     }
 }
