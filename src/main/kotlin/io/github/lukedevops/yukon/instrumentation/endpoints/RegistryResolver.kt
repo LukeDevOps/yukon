@@ -19,7 +19,7 @@ import java.util.concurrent.ConcurrentHashMap
 class RegistryResolver(
     private val registry: EndpointRegistry,
     modules: List<EndpointModule> = emptyList(),
-    private val pendingDeclarations: PendingDeclarations = PendingDeclarations(),
+    private val pendingDeclarations: PendingDeclarations,
 ) : YukonEndpoints.Resolver {
     private val log = System.getLogger(RegistryResolver::class.java.name)
     private val modulesByName = modules.associateBy { it.name }

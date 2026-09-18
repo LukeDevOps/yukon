@@ -107,12 +107,12 @@ class JaxRsModule
          * [io.github.lukedevops.yukon.endpoints.jaxrs.ResourceMethodAdvice], registers each method
          * found through the endpoint seam, then weaves the advice onto exactly those methods.
          *
-         * Binding comes before registering on purpose. Registration is a side effect on the
-         * endpoint registry that nothing rolls back, so a transform that threw after it would
-         * leave endpoints declared for a class that never got its advice: zero hits forever,
-         * reading as never called. Binding is the one step here that can fail, so it runs first,
-         * and a failure leaves nothing declared. A failure inside ByteBuddy's own weaving, after
-         * this method returns, is not covered by this ordering and is only logged.
+         * Binding comes before registering on purpose. Binding is the one step here that can
+         * fail, so a failure leaves nothing declared at all rather than a half-read route list.
+         * Beyond that, nothing declared here reaches the registry until the rewrite has produced
+         * bytes: the declarations are staged per transform and committed by
+         * `EndpointInstrumentation`'s listener, which also covers a failure inside ByteBuddy's
+         * own weaving after this method returns.
          *
          * A method with neither a verb annotation nor `@Path`, own or inherited, is not an
          * endpoint and is left alone. A method with `@Path` but no verb is a sub-resource locator:

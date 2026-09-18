@@ -7,9 +7,17 @@ import io.github.lukedevops.yukon.instrumentation.endpoints.api.EndpointModule
 import io.github.lukedevops.yukon.registry.EndpointRegistry
 import net.bytebuddy.agent.ByteBuddyAgent
 import net.bytebuddy.agent.builder.ResettableClassFileTransformer
+import net.bytebuddy.asm.AsmVisitorWrapper
+import net.bytebuddy.description.field.FieldDescription
+import net.bytebuddy.description.field.FieldList
+import net.bytebuddy.description.method.MethodList
 import net.bytebuddy.description.type.TypeDescription
 import net.bytebuddy.dynamic.DynamicType
+import net.bytebuddy.implementation.Implementation
+import net.bytebuddy.jar.asm.ClassVisitor
 import net.bytebuddy.matcher.ElementMatcher
+import net.bytebuddy.matcher.ElementMatchers.named
+import net.bytebuddy.pool.TypePool
 import java.io.File
 import java.lang.instrument.Instrumentation
 import kotlin.test.AfterTest
@@ -192,4 +200,114 @@ class EndpointInstrumentationTest {
 
         assertTrue(bootModule.canRead(seamModule))
     }
+
+    /**
+     * Drives the staging seam through a real transform, which the `PendingDeclarations` unit
+     * tests cannot: they call begin/commit/discard by hand, so nothing there would notice if
+     * [EndpointInstrumentation] stopped calling them.
+     */
+    @Test
+    fun `an endpoint a module declares from its transform is registered once the class is woven`() {
+        val registry = EndpointRegistry()
+        install(registry, listOf(DeclaringModule()), "com.example.framework.FakeRouter")
+
+        assertEquals("/declared-in-transform", registry.endpoints().single().verbatimTemplate)
+        assertEquals(0, installedEndpointInstrumentation!!.pendingDeclarationCount(), "nothing is left staged on this thread")
+    }
+
+    @Test
+    fun `an endpoint declared by a transform whose rewrite fails is never registered`() {
+        val registry = EndpointRegistry()
+        val router = install(registry, listOf(DeclaringModule(failRewrite = true)), "com.example.framework.FakeRouter")
+
+        assertTrue(registry.endpoints().isEmpty(), "the class never got its advice, so its routes are not declared")
+        assertEquals(0, installedEndpointInstrumentation!!.pendingDeclarationCount())
+        val routes = router.javaClass.getMethod("routes").invoke(router)
+        assertTrue(routes is List<*> && routes.isEmpty(), "the class still loads and runs, from its original bytes")
+    }
+
+    @Test
+    fun `a module that throws after declaring leaves none of its own endpoints behind`() {
+        val registry = EndpointRegistry()
+        install(registry, listOf(DeclaringModule(throwAfterDeclaring = true)), "com.example.framework.FakeRouter")
+
+        // The lambda catches the throwable and hands the builder back, so the transform succeeds
+        // and the listener commits. Without the rollback, the half-read route list lands anyway.
+        assertTrue(registry.endpoints().isEmpty(), "a half-read route list is worse than none")
+    }
+
+    @Test
+    fun `two modules matching one class both keep what they declared`() {
+        val registry = EndpointRegistry()
+        install(
+            registry,
+            listOf(
+                DeclaringModule(moduleName = "first", template = "/first"),
+                DeclaringModule(moduleName = "second", template = "/second"),
+            ),
+            "com.example.framework.FakeRouter",
+        )
+
+        assertEquals(
+            setOf("/first", "/second"),
+            registry.endpoints().mapTo(mutableSetOf()) { it.verbatimTemplate },
+            "the second module's begin must not discard what the first staged",
+        )
+    }
+}
+
+/**
+ * Declares one endpoint from inside its transform callback, the shape of a module that reads its
+ * routes off a class's own annotations. [failRewrite] makes ByteBuddy's `make()` throw after the
+ * callback returns; [throwAfterDeclaring] makes the callback itself throw once it has declared.
+ */
+private class DeclaringModule(
+    private val failRewrite: Boolean = false,
+    private val throwAfterDeclaring: Boolean = false,
+    private val moduleName: String = "declaring",
+    private val template: String = "/declared-in-transform",
+) : EndpointModule {
+    override val name: String = moduleName
+
+    override fun typeMatcher(): ElementMatcher<in TypeDescription> = named("com.example.framework.FakeRouter")
+
+    override fun transform(
+        builder: DynamicType.Builder<*>,
+        typeDescription: TypeDescription,
+        advice: AdviceBinder,
+        classLoader: ClassLoader?,
+    ): DynamicType.Builder<*> {
+        io.github.lukedevops.yukon.bootstrap.YukonEndpoints.register(
+            moduleName,
+            "$moduleName-key",
+            "GET",
+            template,
+            null,
+            typeDescription.name,
+            null,
+            null,
+        )
+        if (throwAfterDeclaring) throw IllegalStateException("module gave up after declaring")
+        return if (failRewrite) builder.visit(ThrowingAsmVisitorWrapper()) else builder
+    }
+
+    override fun declare(frameworkObject: Any) = Unit
+}
+
+/** Fails inside ByteBuddy's `make()`, after the transform callback has already returned. */
+private class ThrowingAsmVisitorWrapper : AsmVisitorWrapper {
+    override fun mergeWriter(flags: Int): Int = flags
+
+    override fun mergeReader(flags: Int): Int = flags
+
+    override fun wrap(
+        instrumentedType: TypeDescription,
+        classVisitor: ClassVisitor,
+        implementationContext: Implementation.Context,
+        typePool: TypePool,
+        fields: FieldList<FieldDescription.InDefinedShape>,
+        methods: MethodList<*>,
+        writerFlags: Int,
+        readerFlags: Int,
+    ): ClassVisitor = throw IllegalStateException("rewrite refused these bytes")
 }

@@ -291,13 +291,19 @@ open class ProbeRegistry {
     /**
      * Logs a one-time warning the first time a probe's count is seen to drop.
      *
-     * A drop of a few counts on a hot probe is expected, not a bug: a stale increment overwrites
-     * whatever landed while the writer was preempted, as the class-level doc describes. A large
-     * drop, or one on a probe with little traffic, points somewhere else. Registration is the
-     * only path that hands out a new, lower-starting array, and it takes a changed probe layout
-     * hash, which static attach cannot produce since it never retransforms a loaded class.
-     * Logging instead of silently sending the lower value means a bug that does reach here is
-     * visible rather than hidden.
+     * A drop on a hot probe is expected, not a bug: a stale increment overwrites whatever landed
+     * while the writer was preempted, as the class-level doc describes. How much it loses is not
+     * bounded, since it depends on how long that writer was away, so the size of a drop says
+     * little on its own. A drop on a probe with almost no traffic is the one worth looking at.
+     * Registration is the only path that hands out a new, lower-starting array, and it takes a
+     * changed probe layout hash, which static attach cannot produce since it never retransforms a
+     * loaded class. Logging instead of silently sending the lower value means a bug that does
+     * reach here is visible rather than hidden.
+     *
+     * The lower value goes out as it is. A collector that treats a falling total as a restarted
+     * instance will resume that probe from zero and add the post-drop count on top, so a lost
+     * update costs more than the increments it dropped. It still cannot turn a hit probe into an
+     * unhit one, which is the only thing a dead-code claim rests on.
      */
     private fun warnOnceAboutDecrease(
         entry: ClassEntry,

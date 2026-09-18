@@ -22,7 +22,7 @@ class RegistryResolverTest {
         BootstrapHolder.install(ByteBuddyAgent.install())
         val moduleName = "attach-null-${System.nanoTime()}"
         val registry = EndpointRegistry()
-        YukonEndpoints.install(RegistryResolver(registry))
+        YukonEndpoints.install(RegistryResolver(registry, pendingDeclarations = PendingDeclarations()))
 
         val key = "attach-null-key-${System.nanoTime()}"
         val entry =
@@ -44,7 +44,7 @@ class RegistryResolverTest {
         BootstrapHolder.install(ByteBuddyAgent.install())
         val moduleName = "register-null-${System.nanoTime()}"
         val registry = EndpointRegistry()
-        YukonEndpoints.install(RegistryResolver(registry))
+        YukonEndpoints.install(RegistryResolver(registry, pendingDeclarations = PendingDeclarations()))
 
         val firstKey = "register-null-key-1-${System.nanoTime()}"
         YukonEndpoints.register(moduleName, firstKey, "GET", "/health", null, "com.example.HealthHandler", "handle", "()V")
@@ -81,7 +81,7 @@ class RegistryResolverTest {
                 override fun declare(frameworkObject: Any): Unit = throw IllegalStateException("simulated walk failure")
             }
         val registry = EndpointRegistry()
-        YukonEndpoints.install(RegistryResolver(registry, listOf(module)))
+        YukonEndpoints.install(RegistryResolver(registry, listOf(module), PendingDeclarations()))
 
         YukonEndpoints.declare(moduleName, Any())
 
