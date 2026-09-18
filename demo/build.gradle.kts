@@ -312,10 +312,17 @@ fun printStackReport() {
     val instances = report["instances"] as Map<*, *>
     println("yukon demo: report for $stackServiceName@$stackServiceVersion from $stackServerUrl (${instances["total"]} instance(s) so far)")
     println(
-        "  probes: known=${probes["known"]} hit=${probes["hit"]} never_hit=${probes["never_hit"]} inline (not judged)=${probes["inline"]}",
+        "  probes: known=${probes["known"]} hit=${probes["hit"]} never_hit=${probes["never_hit"]} " +
+            "inline (not judged)=${probes["inline"]} generated (not judged)=${probes["generated"]} " +
+            "no_debug_info=${probes["no_debug_info"]}",
     )
     println(
-        "  classes: declared=${classes["declared"]} loaded=${classes["loaded"]} never_loaded=${classes["never_loaded"]} all inline (not judged)=${classes["all_inline"]}",
+        "  classes: declared=${classes["declared"]} loaded=${classes["loaded"]} never_loaded=${classes["never_loaded"]} " +
+            "all inline or generated (not judged)=${classes["all_inline_or_generated"]}",
+    )
+    println(
+        "  instances: total=${instances["total"]} ended_cleanly=${instances["ended_cleanly"]} " +
+            "silent_without_final_flush=${instances["silent_without_final_flush"]}",
     )
     val optionalParameters = report["optional_parameters"] as Map<*, *>
     println(
@@ -335,7 +342,8 @@ fun printStackReport() {
         val p = probe as Map<*, *>
         val detail = p["branch_index"]?.let { "branch $it" } ?: p["kind"]
         val routes = (p["routes"] as List<*>).takeIf { it.isNotEmpty() }?.let { " routes=$it" } ?: ""
-        println("    ${p["class_name"]}#${p["method_name"]}:${p["line"]} ($detail)$routes")
+        val inlinedFrom = p["inlined_from_class_name"]?.let { " (inlined from $it)" } ?: ""
+        println("    ${p["class_name"]}#${p["method_name"]}:${p["line"]} ($detail)$inlinedFrom$routes")
     }
     println("  NEVER LOADED:")
     for (cls in readApi("/never-loaded$version")["classes"] as List<*>) {
