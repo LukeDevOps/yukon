@@ -51,3 +51,17 @@ anywhere, and a collector calls it never loaded when it loaded and ran.
 Predates the staging work. The fix is to notice the case and record it the
 way an unsafe class is recorded, rather than to remove the lock, which is
 what keeps a transform from re-entering itself.
+
+### A module disabled after it has already declared routes
+
+A module that throws is switched off for the rest of the process, and its
+dispatch advice stops counting from then on. Routes it declared for classes
+it handled successfully keep their manifest rows, so their counts freeze
+wherever they were: a route the framework still serves reads as never called
+once its count sat at zero.
+
+The manifest's disabled list is the only signal, and no read path uses it
+today. Either a collector should discount every endpoint of a disabled
+module, the way it discounts an inline or generated probe, or the agent
+should withdraw them. Same shape for a module disabled through the runtime
+`declare` walk, which predates the transform-time staging.

@@ -211,6 +211,8 @@ class EndpointInstrumentationTest {
         val registry = EndpointRegistry()
         install(registry, listOf(DeclaringModule()), "com.example.framework.FakeRouter")
 
+        // This one would also pass with no staging at all. It is here to catch commit being
+        // dropped from the listener, which would leave the endpoint staged and never declared.
         assertEquals("/declared-in-transform", registry.endpoints().single().verbatimTemplate)
         assertEquals(0, installedEndpointInstrumentation!!.pendingDeclarationCount(), "nothing is left staged on this thread")
     }
@@ -242,8 +244,8 @@ class EndpointInstrumentationTest {
         install(
             registry,
             listOf(
-                DeclaringModule(moduleName = "first", template = "/first"),
-                DeclaringModule(moduleName = "second", template = "/second"),
+                DeclaringModule(template = "/first"),
+                DeclaringModule(template = "/second"),
             ),
             "com.example.framework.FakeRouter",
         )
@@ -264,7 +266,10 @@ class EndpointInstrumentationTest {
 private class DeclaringModule(
     private val failRewrite: Boolean = false,
     private val throwAfterDeclaring: Boolean = false,
-    private val moduleName: String = "declaring",
+    // Unique per instance. A module this test disables through `moduleFailed` stays disabled for
+    // the life of the JVM, and the test JVM is shared, so a fixed name would silence the module
+    // for every later test that used it and make their assertions pass for the wrong reason.
+    private val moduleName: String = "declaring-${System.nanoTime()}",
     private val template: String = "/declared-in-transform",
 ) : EndpointModule {
     override val name: String = moduleName

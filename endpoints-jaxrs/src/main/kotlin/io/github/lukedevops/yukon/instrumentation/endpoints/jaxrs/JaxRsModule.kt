@@ -107,8 +107,11 @@ class JaxRsModule
          * [io.github.lukedevops.yukon.endpoints.jaxrs.ResourceMethodAdvice], registers each method
          * found through the endpoint seam, then weaves the advice onto exactly those methods.
          *
-         * Binding comes before registering on purpose. Binding is the one step here that can
-         * fail, so a failure leaves nothing declared at all rather than a half-read route list.
+         * Binding comes before registering on purpose, so the step most likely to fail leaves
+         * nothing declared rather than a half-read route list. Reading an annotation off a type
+         * description can throw too, for an annotation type the pool cannot resolve, which is
+         * why the rollback in `EndpointInstrumentation` matters and not only this ordering.
+         *
          * Beyond that, nothing declared here reaches the registry until the rewrite has produced
          * bytes: the declarations are staged per transform and committed by
          * `EndpointInstrumentation`'s listener, which also covers a failure inside ByteBuddy's

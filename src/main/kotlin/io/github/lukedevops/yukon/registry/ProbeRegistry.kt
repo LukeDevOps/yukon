@@ -300,10 +300,11 @@ open class ProbeRegistry {
      * loaded class. Logging instead of silently sending the lower value means a bug that does
      * reach here is visible rather than hidden.
      *
-     * The lower value goes out as it is. A collector that treats a falling total as a restarted
-     * instance will resume that probe from zero and add the post-drop count on top, so a lost
-     * update costs more than the increments it dropped. It still cannot turn a hit probe into an
-     * unhit one, which is the only thing a dead-code claim rests on.
+     * The lower value goes out as it is. A collector that reads a falling total as a restarted
+     * instance adds the whole post-drop total to what it already held, so one lost update
+     * overcounts that probe from then on rather than undercounting it. The total is wrong either
+     * way; what it cannot do is turn a hit probe into an unhit one, which is the only thing a
+     * dead-code claim rests on.
      */
     private fun warnOnceAboutDecrease(
         entry: ClassEntry,
