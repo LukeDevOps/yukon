@@ -184,6 +184,24 @@ class YukonTestCollectorTest {
     }
 
     @Test
+    fun `endedCleanly is true only once a final-flush batch arrives, and only for that instance`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+
+        assertFalse(target.endedCleanly("i-1"))
+        assertTrue(target.instancesEndedCleanly().isEmpty())
+
+        exporter.exportDeltaBatch(DeltaBatch(ResourceAttributes("svc", null, "i-2", null), emptyList()))
+        assertFalse(target.endedCleanly("i-1"), "a different instance's batch must not mark this one")
+
+        exporter.exportDeltaBatch(DeltaBatch(ResourceAttributes("svc", null, "i-1", null), emptyList(), finalFlush = true))
+
+        assertTrue(target.endedCleanly("i-1"))
+        assertEquals(setOf("i-1"), target.instancesEndedCleanly())
+        assertFalse(target.endedCleanly("i-2"), "i-2 never sent a final flush")
+    }
+
+    @Test
     fun `awaitNextFlush returns once a delta batch is sent after the call, and times out if none arrives`() {
         val target = startCollector()
         val exporter = exporterFor(target)

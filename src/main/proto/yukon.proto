@@ -63,6 +63,11 @@ message DeltaBatch {
   ResourceAttributes resource = 1;
   repeated ProbeDelta deltas = 2;
   repeated EndpointDelta endpoint_deltas = 3;
+  // Set on every delta batch the agent's shutdown hook sends. A collector uses it to tell an
+  // instance that ended cleanly from one that went silent, and may report how many instances
+  // stopped without one, since up to one flush interval of their hits may be missing. Never set
+  // on a scheduled flush.
+  bool final_flush = 4;
 }
 
 message ProbeLocation {

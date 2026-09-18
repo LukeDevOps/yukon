@@ -146,6 +146,12 @@ private val latestEndpointHitsTotal = ConcurrentHashMap<InstanceEndpointKey, Lon
 // Either way, it was loaded and reached the transform stage - the opposite of what the static
 // baseline's declared-classes set is for.
 private val dynamicallyKnownClassNames = Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
+
+/** Every instance id any delta batch has ever arrived from, heartbeat included. See ADR 0010. */
+private val allInstanceIds = Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
+
+/** Instance ids whose shutdown hook has sent a delta batch with `final_flush` set. See ADR 0010. */
+private val instancesThatEndedCleanly = Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
 private val staticallyDeclaredClasses = ConcurrentHashMap<String, List<DeclaredMethodInfo>>()
 
 // A declared class's superclass and interfaces, read the same way as a loaded class's
@@ -253,6 +259,7 @@ private fun handleShutdown(exchange: HttpExchange) {
 private fun handleDeltaBatch(exchange: HttpExchange) {
     val batch = DeltaBatch.parseFrom(exchange.requestBody.readBytes())
     val instanceId = batch.resource.serviceInstanceId
+    allInstanceIds += instanceId
     for (delta in batch.deltasList) {
         val key = InstanceProbeKey(instanceId, delta.classId, delta.probeIndex)
         everHit += key
@@ -262,12 +269,14 @@ private fun handleDeltaBatch(exchange: HttpExchange) {
         val key = InstanceEndpointKey(instanceId, delta.endpointId)
         latestEndpointHitsTotal.merge(key, delta.hitsTotal, ::maxOf)
     }
+    if (batch.finalFlush) instancesThatEndedCleanly += instanceId
     val totalHits = latestHitsTotal.values.sum()
     val totalEndpointHits = latestEndpointHitsTotal.values.sum()
+    val finalFlushSuffix = if (batch.finalFlush) " final=true" else ""
     println(
         "[flush] service=${batch.resource.serviceName} instance=${batch.resource.serviceInstanceId} " +
             "probes_with_activity=${batch.deltasList.size} total_hits=$totalHits " +
-            "endpoints_with_activity=${batch.endpointDeltasList.size} total_endpoint_hits=$totalEndpointHits",
+            "endpoints_with_activity=${batch.endpointDeltasList.size} total_endpoint_hits=$totalEndpointHits$finalFlushSuffix",
     )
     respondOk(exchange)
 }
@@ -396,6 +405,7 @@ private fun printNeverHitReport() {
         }
     println()
     println("=== yukon demo: dead code report ===")
+    println("instances that sent a final flush: ${instancesThatEndedCleanly.size} of ${allInstanceIds.size}")
     println("known probes: ${manifestProbes.size}, ever hit: ${everHit.size}, never hit: ${judgeable.size}")
     if (judgeableTotal > 0) {
         println("dead: %.1f%%".format(100.0 * judgeable.size / judgeableTotal))

@@ -435,6 +435,60 @@ class ExportSchedulerTest {
         assertEquals(0, exporter.deltaSends.get(), "no final flush is attempted once the budget is gone")
     }
 
+    @Test
+    fun `flush sends every delta batch with finalFlush false`() {
+        val registry = ProbeRegistry()
+        val probes = registry.register("com.example.Foo", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "bar", "()V", 1)))
+        probes[0] += 4
+        val exporter = RecordingExporter()
+        val scheduler = ExportScheduler(config, registry, EndpointRegistry(), exporter)
+
+        scheduler.flush()
+
+        assertEquals(false, exporter.deltaBatches.single().finalFlush)
+    }
+
+    @Test
+    fun `flushOnShutdown marks the empty heartbeat batch as the final flush`() {
+        val registry = ProbeRegistry()
+        val exporter = RecordingExporter()
+        val scheduler = ExportScheduler(config, registry, EndpointRegistry(), exporter)
+
+        scheduler.flushOnShutdown(Duration.ofSeconds(5))
+
+        val batch = exporter.deltaBatches.single()
+        assertTrue(batch.deltas.isEmpty(), "nothing changed, so this is still the liveness heartbeat")
+        assertTrue(batch.finalFlush)
+    }
+
+    @Test
+    fun `flushOnShutdown marks every batch of its flush as final, standalone endpoint batch included`() {
+        val registry = ProbeRegistry()
+        val probes = registry.register("com.example.Foo", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "bar", "()V", 1)))
+        probes[0] += 1
+        val endpointRegistry = EndpointRegistry()
+        endpointRegistry.register(key = Any(), framework = "http-server", verb = "GET", verbatimTemplate = "/health").hit()
+        val exporter = RecordingExporter()
+        val scheduler = ExportScheduler(config, registry, endpointRegistry, exporter, maxDeltasPerBatch = 1)
+
+        scheduler.flushOnShutdown(Duration.ofSeconds(5))
+
+        assertEquals(2, exporter.deltaBatches.size, "the probe batch is already full, so the endpoint delta gets its own")
+        assertTrue(exporter.deltaBatches.all { it.finalFlush }, "every batch this flush sends must carry the final flush marker")
+    }
+
+    @Test
+    fun `a second plain flush call still sends finalFlush false`() {
+        val registry = ProbeRegistry()
+        val exporter = RecordingExporter()
+        val scheduler = ExportScheduler(config, registry, EndpointRegistry(), exporter)
+
+        scheduler.flush()
+        scheduler.flush()
+
+        assertEquals(listOf(false, false), exporter.deltaBatches.map { it.finalFlush })
+    }
+
     /** Counts down [delivered] on the first delta batch, so a test can wait on a scheduled tick from another thread. */
     private class LatchExporter : Exporter {
         val delivered = CountDownLatch(1)

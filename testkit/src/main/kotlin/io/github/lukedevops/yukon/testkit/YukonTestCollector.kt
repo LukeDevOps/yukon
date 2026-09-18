@@ -204,6 +204,9 @@ class YukonTestCollector private constructor(
     /** Every class name any manifest has ever mentioned, whether it got probes or was only reported as skipped. */
     private val dynamicallyKnownClassNames: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
+    /** Instance ids whose shutdown hook has sent a delta batch with `final_flush` set. See [endedCleanly]. */
+    private val instancesThatEndedCleanly: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
     private val scans = ConcurrentHashMap<ScanKey, ScanProgress>()
     private val completedScans: MutableSet<ScanKey> = ConcurrentHashMap.newKeySet()
     private val consultedDeclaredNames: MutableSet<String> = ConcurrentHashMap.newKeySet()
@@ -533,6 +536,17 @@ class YukonTestCollector private constructor(
 
     /** Every class reported as matched but not instrumented by any manifest, distinct by class name, sorted by name. */
     fun skippedClasses(): List<SkippedClass> = skippedByClassName.values.sortedBy { it.className }
+
+    /**
+     * Whether [serviceInstanceId] has sent a delta batch with `final_flush` set, meaning its
+     * shutdown hook ran. False both before that batch arrives and for an instance never seen at
+     * all: this collector cannot tell the two apart, since an instance the agent never contacted
+     * leaves no other trace either. See ADR 0010.
+     */
+    fun endedCleanly(serviceInstanceId: String): Boolean = serviceInstanceId in instancesThatEndedCleanly
+
+    /** Every instance id that has sent a delta batch with `final_flush` set. See [endedCleanly]. */
+    fun instancesEndedCleanly(): Set<String> = instancesThatEndedCleanly.toSet()
 
     /**
      * Class names declared by a complete static baseline scan that no manifest, from any
@@ -928,6 +942,7 @@ class YukonTestCollector private constructor(
             val key = InstanceEndpointKey(instanceId, delta.endpointId)
             endpointHitsByKey.merge(key, delta.hitsTotal, ::maxOf)
         }
+        if (batch.finalFlush) instancesThatEndedCleanly += instanceId
         deltaBatchSeq.incrementAndGet()
         respond(exchange, 200)
         signalAll()
