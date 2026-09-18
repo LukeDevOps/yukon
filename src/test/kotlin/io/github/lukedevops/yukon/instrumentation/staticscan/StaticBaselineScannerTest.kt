@@ -249,6 +249,72 @@ class StaticBaselineScannerTest {
     }
 
     @Test
+    fun `a suspend function's continuation class is absent from every bucket, and its facade and a suspend lambda class are declared`() {
+        val root =
+            directoryRoot(
+                "com/example/target/CoroutineTargetKt.class" to classBytes("kotlin/test/com/example/target/CoroutineTargetKt.class"),
+                "com/example/target/CoroutineTargetKt\$twoPoints\$1.class" to
+                    classBytes("kotlin/test/com/example/target/CoroutineTargetKt\$twoPoints\$1.class"),
+                "com/example/target/CoroutineTargetKt\$runLambda\$1.class" to
+                    classBytes("kotlin/test/com/example/target/CoroutineTargetKt\$runLambda\$1.class"),
+                "com/example/target/Holder.class" to classBytes("kotlin/test/com/example/target/Holder.class"),
+                "com/example/target/Holder\$member\$1.class" to
+                    classBytes("kotlin/test/com/example/target/Holder\$member\$1.class"),
+            )
+        val scanner = StaticBaselineScanner(listOf("com.example.target"))
+
+        val result = scanner.scan(listOf(root))
+
+        val declaredNames = result.declaredClasses.map { it.className }.toSet()
+        assertTrue("com.example.target.CoroutineTargetKt" in declaredNames)
+        assertTrue(
+            "com.example.target.CoroutineTargetKt\$runLambda\$1" in declaredNames,
+            "a suspend lambda's own class holds the adopter's body",
+        )
+        assertTrue("com.example.target.Holder" in declaredNames)
+        assertTrue(
+            "com.example.target.CoroutineTargetKt\$twoPoints\$1" !in declaredNames,
+            "a top-level suspend function's continuation class",
+        )
+        assertTrue("com.example.target.Holder\$member\$1" !in declaredNames, "a member suspend function's continuation class")
+
+        val everyBucketName =
+            declaredNames +
+                result.staticallyUnsafeClasses.map { it.className } +
+                result.unreadableClasses.map { it.className } +
+                result.unprobedClasses.map { it.className }
+        assertTrue(
+            "com.example.target.CoroutineTargetKt\$twoPoints\$1" !in everyBucketName,
+            "a continuation class is absent from every bucket, not just the declared one",
+        )
+        assertTrue("com.example.target.Holder\$member\$1" !in everyBucketName)
+    }
+
+    @Test
+    fun `a continuation class is still left out when nothing can resolve the Kotlin stdlib`() {
+        // The fat-jar shape: the stdlib sits in a nested dependency jar the scan never opens, so
+        // ContinuationImpl cannot be found anywhere. The scan's lazily resolving pool still gives
+        // the superclass's name, which is all the type matcher's check needs.
+        val root =
+            directoryRoot(
+                "com/example/target/CoroutineTargetKt\$twoPoints\$1.class" to
+                    classBytes("kotlin/test/com/example/target/CoroutineTargetKt\$twoPoints\$1.class"),
+                "com/example/target/Holder.class" to classBytes("kotlin/test/com/example/target/Holder.class"),
+            )
+        val scanner = StaticBaselineScanner(listOf("com.example.target"), supportingTypesLocator = ClassFileLocator.NoOp.INSTANCE)
+
+        val result = scanner.scan(listOf(root))
+
+        val everyBucketName =
+            result.declaredClasses.map { it.className } +
+                result.staticallyUnsafeClasses.map { it.className } +
+                result.unreadableClasses.map { it.className } +
+                result.unprobedClasses.map { it.className }
+        assertTrue("com.example.target.Holder" in everyBucketName)
+        assertTrue("com.example.target.CoroutineTargetKt\$twoPoints\$1" !in everyBucketName)
+    }
+
+    @Test
     fun `an in-scope class with no concrete methods is reported as unprobed, not declared`() {
         val root =
             directoryRoot(

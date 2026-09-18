@@ -350,9 +350,11 @@ object BranchSiteAnalyzer {
                     return DefaultSiteAwareMethodVisitor(
                         name = name,
                         descriptor = descriptor,
+                        isStatic = access and Opcodes.ACC_STATIC != 0,
                         eligible = eligible,
                         defaultShaped = defaultShaped,
                         ownerInternalName = internalClassName,
+                        ownerSuperInternalName = superInternalName,
                         localNamesForMethod = localNamesForMethod,
                         sites = sites,
                         firstLines = firstLines,
@@ -664,6 +666,135 @@ object BranchSiteAnalyzer {
     private const val CONSTRUCTOR_GETTER_TARGET_NAME = "\$lessinit\$greater"
 
     /**
+     * The last few real instructions [DefaultSiteAwareMethodVisitor] has walked, enough to
+     * recognise one of [CoroutineShapes]'s four patterns at the moment a tracked jump or switch is
+     * reached. Every instruction is pushed, jumps and switches included; `Label`, line-number and
+     * frame events are not, since they are not instructions, so a pattern keyed on "immediately
+     * preceding" is unaffected by debug info and stack-map frames.
+     */
+    private sealed interface RecentInsn {
+        /** No instruction has been seen yet, or the last one was not worth remembering. */
+        data object None : RecentInsn
+
+        /** `GETFIELD owner.name:descriptor`. */
+        data class GetField(
+            val owner: String,
+            val name: String,
+            val descriptor: String,
+        ) : RecentInsn
+
+        /** `ALOAD varIndex`. */
+        data class ALoad(
+            val varIndex: Int,
+        ) : RecentInsn
+
+        /** `INSTANCEOF type`. */
+        data class InstanceOf(
+            val type: String,
+        ) : RecentInsn
+
+        /** `LDC value`. */
+        data class Ldc(
+            val value: Any?,
+        ) : RecentInsn
+
+        /** `IAND`. */
+        data object Iand : RecentInsn
+
+        /** Any other instruction, kept only to break a pattern that needed something else here. */
+        data object Other : RecentInsn
+    }
+
+    /**
+     * Recognises the four bytecode shapes kotlinc's coroutine state machine leaves in a
+     * suspend-shaped method, confirmed with `javap` against Kotlin 2.2.21 output. See ADR 0025.
+     *
+     * Every match is keyed on the instructions immediately preceding a tracked jump or switch, so
+     * a coverage agent registered ahead of this one (JaCoCo) is tolerated the same way the
+     * omission tier already tolerates it: JaCoCo inverts a conditional jump around an inserted
+     * probe and leaves the instructions before it untouched, so `IFEQ` and `IFNE` (and `IF_ACMPEQ`
+     * and `IF_ACMPNE`) are both accepted.
+     */
+    private object CoroutineShapes {
+        /**
+         * A method is suspend-shaped when its descriptor's last parameter is a `Continuation`, or
+         * when it is `invokeSuspend(Object)Object` on a class whose direct superclass is a suspend
+         * lambda's. Matched by suffix: `shadowJar` rewrites a literal starting with `kotlin/` or
+         * `kotlin.` in this agent's own code.
+         */
+        fun isSuspendShaped(
+            name: String,
+            descriptor: String,
+            ownerSuperInternalName: String?,
+        ): Boolean {
+            val lastParameter = parseParameterDescriptors(descriptor).lastOrNull()
+            if (lastParameter != null && lastParameter.endsWith("coroutines/Continuation;")) return true
+            if (name != "invokeSuspend" || descriptor != "(Ljava/lang/Object;)Ljava/lang/Object;") return false
+            return ownerSuperInternalName != null &&
+                (ownerSuperInternalName.endsWith("/SuspendLambda") || ownerSuperInternalName.endsWith("/RestrictedSuspendLambda"))
+        }
+
+        /** Shape (i): a `TABLESWITCH` whose immediately preceding real instruction reads the continuation's `label` field. */
+        fun isLabelSwitch(mostRecent: RecentInsn): Boolean =
+            mostRecent is RecentInsn.GetField && mostRecent.name == "label" && mostRecent.descriptor == "I"
+
+        /**
+         * Shape (ii): `IF_ACMPEQ`/`IF_ACMPNE` where one of the two immediately preceding real
+         * instructions is `ALOAD` of a slot this method stored right after calling
+         * `IntrinsicsKt.getCOROUTINE_SUSPENDED()`. kotlinc never spends a second local on the
+         * suspension point's own result: it duplicates that value with `DUP` instead of storing
+         * and reloading it, so the other operand's own preceding instruction is a `DUP`, not a
+         * second `ALOAD`, confirmed with `javap` against Kotlin 2.2.21 output.
+         */
+        fun isSuspendedCompare(
+            mostRecent: RecentInsn,
+            secondMostRecent: RecentInsn,
+            suspendedMarkerSlots: Set<Int>,
+        ): Boolean =
+            isTrackedSuspendedLoad(mostRecent, suspendedMarkerSlots) || isTrackedSuspendedLoad(secondMostRecent, suspendedMarkerSlots)
+
+        private fun isTrackedSuspendedLoad(
+            insn: RecentInsn,
+            suspendedMarkerSlots: Set<Int>,
+        ): Boolean = insn is RecentInsn.ALoad && insn.varIndex in suspendedMarkerSlots
+
+        /**
+         * Shape (iii): `ALOAD <continuation slot>; INSTANCEOF T; IFEQ|IFNE`, where `T`'s internal
+         * name starts with the owning class's own name followed by `$`, kotlinc's own nesting for
+         * the continuation class it generates per suspend function.
+         */
+        fun isContinuationInstanceOfCheck(
+            mostRecent: RecentInsn,
+            secondMostRecent: RecentInsn,
+            ownerInternalName: String,
+            continuationSlot: Int,
+        ): Boolean {
+            val instanceOf = mostRecent as? RecentInsn.InstanceOf ?: return false
+            val load = secondMostRecent as? RecentInsn.ALoad ?: return false
+            if (load.varIndex != continuationSlot) return false
+            return instanceOf.type.startsWith("$ownerInternalName\$")
+        }
+
+        /**
+         * Shape (iv): `GETFIELD T.label:I; LDC Int.MIN_VALUE; IAND; IFEQ|IFNE`, the re-entry test
+         * on the continuation's `label` field, with the same `T` rule as shape (iii).
+         */
+        fun isLabelReentryCheck(
+            mostRecent: RecentInsn,
+            secondMostRecent: RecentInsn,
+            thirdMostRecent: RecentInsn,
+            ownerInternalName: String,
+        ): Boolean {
+            if (mostRecent !is RecentInsn.Iand) return false
+            val ldc = secondMostRecent as? RecentInsn.Ldc ?: return false
+            if (ldc.value != Int.MIN_VALUE) return false
+            val getField = thirdMostRecent as? RecentInsn.GetField ?: return false
+            if (getField.name != "label" || getField.descriptor != "I") return false
+            return getField.owner.startsWith("$ownerInternalName\$")
+        }
+    }
+
+    /**
      * Visits one method's instructions. Branch/switch sites, the first line, and the inline
      * marker are only recorded when [eligible]. A `$default`-shaped method is scanned for its
      * mask-test pattern regardless of [eligible], since it is synthetic and so never eligible
@@ -672,9 +803,12 @@ object BranchSiteAnalyzer {
     private class DefaultSiteAwareMethodVisitor(
         private val name: String,
         private val descriptor: String,
+        private val isStatic: Boolean,
         private val eligible: Boolean,
         private val defaultShaped: Boolean,
-        ownerInternalName: String,
+        private val ownerInternalName: String,
+        /** The class's own direct superclass, dotted-to-internal form; null only for `java.lang.Object`. */
+        private val ownerSuperInternalName: String?,
         private val localNamesForMethod: MutableMap<Int, String>,
         private val sites: MutableList<BranchSite>,
         private val firstLines: MutableMap<Pair<String, String>, Int>,
@@ -701,6 +835,43 @@ object BranchSiteAnalyzer {
         private var pendingConstant = 0
         private var optionalBits = 0
         private var higherMaskTested = false
+
+        /**
+         * Whether this method carries a coroutine state machine of its own: a trailing
+         * `Continuation` parameter, or `invokeSuspend` on a class whose direct superclass is a
+         * suspend lambda's. See [CoroutineShapes] and ADR 0025.
+         */
+        private val suspendShaped = CoroutineShapes.isSuspendShaped(name, descriptor, ownerSuperInternalName)
+
+        /** The local-variable slot of this method's last parameter, the continuation for a suspend function. */
+        private val lastParameterSlot = lastParameterLocalIndex(descriptor, isStatic)
+
+        /** The last three real instructions visited, most recent first. See [CoroutineShapes]. */
+        private var recentInsn1: RecentInsn = RecentInsn.None
+        private var recentInsn2: RecentInsn = RecentInsn.None
+        private var recentInsn3: RecentInsn = RecentInsn.None
+
+        /** Local slots this method assigned with `ASTORE` to hold an `IntrinsicsKt.getCOROUTINE_SUSPENDED()` result. */
+        private val suspendedMarkerSlots = mutableSetOf<Int>()
+
+        /**
+         * Set right after visiting `INVOKESTATIC IntrinsicsKt.getCOROUTINE_SUSPENDED()`, and
+         * consumed by the next `ASTORE`, whichever slot that turns out to be. kotlinc's own output
+         * has the `ASTORE` directly next, with nothing real in between, but a coverage agent
+         * registered ahead of this one (JaCoCo) inserts its own probe-array bookkeeping
+         * (`ALOAD`/`BIPUSH`/`ICONST_1`/`BASTORE`) right after the call before the `ASTORE` runs,
+         * confirmed with `javap` against JaCoCo 0.8.13's offline `Instrumenter` output. None of
+         * that bookkeeping is itself an `ASTORE`, so waiting for the next one rather than requiring
+         * strict adjacency tolerates it the same way the rest of this analyser already tolerates
+         * JaCoCo's inverted jumps.
+         */
+        private var pendingSuspendedMarkerCall = false
+
+        private fun pushInsn(insn: RecentInsn) {
+            recentInsn3 = recentInsn2
+            recentInsn2 = recentInsn1
+            recentInsn1 = insn
+        }
 
         init {
             if (defaultShaped) {
@@ -738,8 +909,9 @@ object BranchSiteAnalyzer {
                 resetMaskPhase()
             }
             if (eligible && ConditionalJump.isTracked(opcode)) {
-                recordSite()
+                recordSite(coroutineMachinery = suspendShaped && isCoroutineMachineryJump(opcode))
             }
+            pushInsn(RecentInsn.Other)
         }
 
         override fun visitTableSwitchInsn(
@@ -750,8 +922,13 @@ object BranchSiteAnalyzer {
         ) {
             if (defaultShaped) resetMaskPhase()
             if (eligible) {
-                recordSite(switchOutcomeCount(dflt, labels))
+                recordSite(
+                    switchOutcomeCount(dflt, labels),
+                    coroutineMachinery =
+                        suspendShaped && CoroutineShapes.isLabelSwitch(recentInsn1),
+                )
             }
+            pushInsn(RecentInsn.Other)
         }
 
         override fun visitLookupSwitchInsn(
@@ -763,17 +940,61 @@ object BranchSiteAnalyzer {
             if (eligible) {
                 recordSite(switchOutcomeCount(dflt, labels))
             }
+            pushInsn(RecentInsn.Other)
         }
 
         /**
-         * Records one tracked site at [currentLine], with [outcomeCount] outcomes. Resolves the
-         * line against the class's SMAP first: a line with no origin is the class's own code, an
-         * origin outside scope drops the site (see [BranchDropReason.INLINED_OUT_OF_SCOPE]), and
-         * an origin inside scope keeps it labelled with the origin's own line and class. Either
-         * way the site keeps its place in [nextSiteIndex]'s numbering.
+         * Whether an `IFEQ`/`IFNE`/`IF_ACMPEQ`/`IF_ACMPNE` about to be visited is one of
+         * [CoroutineShapes]'s compare shapes (ii, iii, or iv), given the instructions
+         * [recentInsn1]/[recentInsn2]/[recentInsn3] already pushed. Only called when [suspendShaped].
          */
-        private fun recordSite(outcomeCount: Int = 2) {
+        private fun isCoroutineMachineryJump(opcode: Int): Boolean =
+            when (opcode) {
+                Opcodes.IF_ACMPEQ, Opcodes.IF_ACMPNE -> {
+                    CoroutineShapes.isSuspendedCompare(recentInsn1, recentInsn2, suspendedMarkerSlots)
+                }
+
+                Opcodes.IFEQ, Opcodes.IFNE -> {
+                    CoroutineShapes.isContinuationInstanceOfCheck(recentInsn1, recentInsn2, ownerInternalName, lastParameterSlot) ||
+                        CoroutineShapes.isLabelReentryCheck(recentInsn1, recentInsn2, recentInsn3, ownerInternalName)
+                }
+
+                else -> {
+                    false
+                }
+            }
+
+        /**
+         * Records one tracked site at [currentLine], with [outcomeCount] outcomes.
+         *
+         * [coroutineMachinery] is checked first, ahead of the SMAP lookup: a site kotlinc wove for
+         * a suspend function's own state machine gets [BranchDropReason.COROUTINE_MACHINERY] and
+         * never reaches the inlined-copy check below, since it carries no origin of its own to
+         * resolve. Otherwise the line is resolved against the class's SMAP: a line with no origin
+         * is the class's own code, an origin outside scope drops the site (see
+         * [BranchDropReason.INLINED_OUT_OF_SCOPE]), and an origin inside scope keeps it labelled
+         * with the origin's own line and class. Either way the site keeps its place in
+         * [nextSiteIndex]'s numbering.
+         */
+        private fun recordSite(
+            outcomeCount: Int = 2,
+            coroutineMachinery: Boolean = false,
+        ) {
             val ordinal = nextMethodOrdinal++
+            if (coroutineMachinery) {
+                onSiteDropped(ordinal)
+                sites +=
+                    BranchSite(
+                        name,
+                        descriptor,
+                        currentLine,
+                        nextSiteIndex(),
+                        outcomeCount,
+                        dropReason = BranchDropReason.COROUTINE_MACHINERY,
+                    )
+                onSiteIndexUsed()
+                return
+            }
             val origin = smap().originOf(currentLine)
             val site =
                 when {
@@ -812,6 +1033,23 @@ object BranchSiteAnalyzer {
             opcode: Int,
             varIndex: Int,
         ) {
+            when (opcode) {
+                Opcodes.ALOAD -> {
+                    pushInsn(RecentInsn.ALoad(varIndex))
+                }
+
+                Opcodes.ASTORE -> {
+                    if (pendingSuspendedMarkerCall) {
+                        suspendedMarkerSlots += varIndex
+                        pendingSuspendedMarkerCall = false
+                    }
+                    pushInsn(RecentInsn.Other)
+                }
+
+                else -> {
+                    pushInsn(RecentInsn.Other)
+                }
+            }
             if (!defaultShaped) return
             if (opcode == Opcodes.ILOAD && varIndex == maskLocalIndex) {
                 phase = 1
@@ -826,6 +1064,7 @@ object BranchSiteAnalyzer {
             opcode: Int,
             operand: Int,
         ) {
+            pushInsn(RecentInsn.Other)
             if (!defaultShaped) return
             if (phase == 1 && (opcode == Opcodes.BIPUSH || opcode == Opcodes.SIPUSH) && isPowerOfTwo(operand)) {
                 pendingConstant = operand
@@ -836,6 +1075,7 @@ object BranchSiteAnalyzer {
         }
 
         override fun visitLdcInsn(value: Any?) {
+            pushInsn(RecentInsn.Ldc(value))
             if (!defaultShaped) return
             if (phase == 1 && value is Int && isPowerOfTwo(value)) {
                 pendingConstant = value
@@ -846,6 +1086,7 @@ object BranchSiteAnalyzer {
         }
 
         override fun visitInsn(opcode: Int) {
+            pushInsn(if (opcode == Opcodes.IAND) RecentInsn.Iand else RecentInsn.Other)
             if (!defaultShaped) return
             when {
                 phase == 1 && opcode in Opcodes.ICONST_0..Opcodes.ICONST_5 -> {
@@ -874,6 +1115,7 @@ object BranchSiteAnalyzer {
             fieldName: String,
             fieldDescriptor: String,
         ) {
+            pushInsn(if (opcode == Opcodes.GETFIELD) RecentInsn.GetField(owner, fieldName, fieldDescriptor) else RecentInsn.Other)
             if (defaultShaped) resetMaskPhase()
             super.visitFieldInsn(opcode, owner, fieldName, fieldDescriptor)
         }
@@ -885,6 +1127,10 @@ object BranchSiteAnalyzer {
             methodDescriptor: String,
             isInterface: Boolean,
         ) {
+            val isCoroutineSuspendedCall =
+                opcode == Opcodes.INVOKESTATIC && methodName == "getCOROUTINE_SUSPENDED" && owner.endsWith("/IntrinsicsKt")
+            if (isCoroutineSuspendedCall) pendingSuspendedMarkerCall = true
+            pushInsn(RecentInsn.Other)
             if (defaultShaped) resetMaskPhase()
             super.visitMethodInsn(opcode, owner, methodName, methodDescriptor, isInterface)
         }
@@ -893,6 +1139,7 @@ object BranchSiteAnalyzer {
             opcode: Int,
             type: String,
         ) {
+            pushInsn(if (opcode == Opcodes.INSTANCEOF) RecentInsn.InstanceOf(type) else RecentInsn.Other)
             if (defaultShaped) resetMaskPhase()
         }
 
@@ -900,6 +1147,7 @@ object BranchSiteAnalyzer {
             varIndex: Int,
             increment: Int,
         ) {
+            pushInsn(RecentInsn.Other)
             if (defaultShaped) resetMaskPhase()
         }
 
@@ -909,6 +1157,7 @@ object BranchSiteAnalyzer {
             bootstrapMethodHandle: Handle,
             vararg bootstrapMethodArguments: Any,
         ) {
+            pushInsn(RecentInsn.Other)
             if (defaultShaped) resetMaskPhase()
             super.visitInvokeDynamicInsn(invokedName, invokedDescriptor, bootstrapMethodHandle, *bootstrapMethodArguments)
         }
@@ -917,6 +1166,7 @@ object BranchSiteAnalyzer {
             arrayDescriptor: String,
             numDimensions: Int,
         ) {
+            pushInsn(RecentInsn.Other)
             if (defaultShaped) resetMaskPhase()
         }
 
@@ -1001,6 +1251,22 @@ object BranchSiteAnalyzer {
         var slot = startSlot
         for (i in 0 until maskStartParamIndex) slot += slotWidth(params[i])
         return slot to maskIntCount
+    }
+
+    /**
+     * The local-variable slot of [descriptor]'s last parameter: for a suspend function, the
+     * `Continuation` the compiler appends. Computed the same way [maskLocalInfo] locates a
+     * `$default` method's mask int, from the descriptor and [isStatic] alone, since a parameter's
+     * slot is fixed by the method's signature and never depends on the method body.
+     */
+    private fun lastParameterLocalIndex(
+        descriptor: String,
+        isStatic: Boolean,
+    ): Int {
+        val params = parseParameterDescriptors(descriptor)
+        var slot = if (isStatic) 0 else 1
+        for (i in 0 until params.size - 1) slot += slotWidth(params[i])
+        return slot
     }
 
     /**

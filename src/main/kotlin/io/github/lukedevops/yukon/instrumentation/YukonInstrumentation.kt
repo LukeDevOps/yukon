@@ -481,8 +481,8 @@ class YukonInstrumentation(
 
     /**
      * Tallies [branchDropCounts] with [typeName]'s dropped sites, grouped by reason, and logs one
-     * DEBUG line naming the total and the out-of-scope-inlined-copy count when anything was
-     * dropped. A no-op when nothing was. See ADR 0025.
+     * DEBUG line naming the total and each reason's own count when anything was dropped. A no-op
+     * when nothing was. See ADR 0025.
      */
     private fun recordBranchDrops(
         typeName: String,
@@ -493,9 +493,11 @@ class YukonInstrumentation(
         branchDropCounts.record(dropsByReason)
         val total = dropsByReason.values.sum()
         val inlinedOutOfScope = dropsByReason[BranchDropReason.INLINED_OUT_OF_SCOPE] ?: 0
+        val coroutineMachinery = dropsByReason[BranchDropReason.COROUTINE_MACHINERY] ?: 0
         log.log(
             Level.DEBUG,
-            "yukon: $typeName left $total branch sites without a probe: $inlinedOutOfScope inlined from out-of-scope code",
+            "yukon: $typeName left $total branch sites without a probe: " +
+                "$inlinedOutOfScope inlined from out-of-scope code, $coroutineMachinery coroutine machinery",
         )
     }
 

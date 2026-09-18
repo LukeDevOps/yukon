@@ -11,4 +11,11 @@ enum class BranchDropReason {
      * call site, whose origin class is outside `includePackages`/`excludePackages`.
      */
     INLINED_OUT_OF_SCOPE,
+
+    /**
+     * The site is part of the state machine kotlinc weaves into a suspend function or suspend
+     * lambda: the switch on the continuation's `label`, a compare against the suspended marker,
+     * or the preamble's re-entry tests. See ADR 0025.
+     */
+    COROUTINE_MACHINERY,
 }
