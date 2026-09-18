@@ -9,5 +9,5 @@ status: accepted
 ## Consequences
 
 - The hash is order sensitive on purpose. A sorted hash would treat a reordered class as unchanged and hand back an array whose slots do not match the woven bytecode, silently attributing hits to the wrong methods.
-- `unregister` is scoped the same way, so rolling back one loader's failed transform cannot delete another loader's entry for the same name.
+- A class is registered only once its rewrite has succeeded (ADR 0007), so one loader's failed transform never reaches the registry to be undone, and another loader's entry for the same name is untouched by it.
 - Cross-restart and cross-instance identity is the collector's job, built from the manifest's class name, method name, descriptor, line and branch index. `class_id` is per instance (0011).

@@ -23,21 +23,23 @@ class BranchDropRewriterTest {
     private fun loadWithDrop(
         capacity: Int,
         droppedOrdinalsByMethod: (String, String) -> Set<Int>,
+        eligibleMethod: String = "classify",
+        fixture: String = "BranchTargetWithExtraBranches",
     ): Pair<Class<*>, LongArray> {
         val classesDir = File("build/classes/java/test")
         val locator = ClassFileLocator.Compound(ClassFileLocator.ForFolder(classesDir), ClassFileLocator.ForClassLoader.ofSystemLoader())
         val typePool = TypePool.Default.of(locator)
-        val typeDescription = typePool.describe("com.example.target.BranchTargetWithExtraBranches").resolve()
+        val typeDescription = typePool.describe("com.example.target.$fixture").resolve()
         val counts = LongArray(capacity)
         val loaded =
             ByteBuddy()
                 .redefine<Any>(typeDescription, locator)
-                .name("com.example.dropguard.BranchTargetWithExtraBranches$capacity")
+                .name("com.example.dropguard.$fixture$eligibleMethod$capacity")
                 .defineField(MethodEntryAdvice.PROBE_ARRAY_FIELD, LongArray::class.java, Visibility.PRIVATE, Ownership.STATIC)
                 .initializer(LoadedTypeInitializer.ForStaticField(MethodEntryAdvice.PROBE_ARRAY_FIELD, counts))
                 .visit(
                     BranchProbeAsmVisitorWrapper(
-                        eligibleMethods = { name, _ -> name == "classify" },
+                        eligibleMethods = { name, _ -> name == eligibleMethod },
                         probeIndexBase = 0,
                         branchSlotCapacity = capacity,
                         droppedOrdinalsByMethod = droppedOrdinalsByMethod,
@@ -66,5 +68,31 @@ class BranchDropRewriterTest {
         // not-taken edge (slot 1). The dropped first jump's own two outcomes wrote nothing, and
         // capacity matches the kept slot count, so the rewrite does not throw.
         assertEquals(listOf(1L, 1L), counts.toList())
+    }
+
+    @Test
+    fun `a dropped lookupswitch still advances the site ordinal, so the conditional after it keeps its own slots`() {
+        // classify has two sites: the lookupswitch at ordinal 0, then the conditional at ordinal
+        // 1. Dropping the switch must leave the conditional on slots 0 and 1. If the switch did
+        // not count its ordinal, the conditional would be ordinal 0, land in droppedOrdinals, and
+        // take no slot either; the wrapper's mismatch check would then throw here, since the
+        // rewrite would want 0 slots against a capacity of 2.
+        val (loaded, counts) =
+            loadWithDrop(
+                capacity = 2,
+                droppedOrdinalsByMethod = { name, _ -> if (name == "classify") setOf(0) else emptySet() },
+                fixture = "SwitchThenBranchTarget",
+            )
+        val target = loaded.getDeclaredConstructor().newInstance()
+        val classify = loaded.getMethod("classify", Int::class.java)
+
+        assertEquals(10, classify.invoke(target, 1), "a case still reaches its own body")
+        assertEquals(20, classify.invoke(target, 1000))
+        assertEquals(40, classify.invoke(target, 7), "the default falls through to the conditional")
+        assertEquals(30, classify.invoke(target, 10_000))
+
+        // The two switch-only calls wrote nothing. The two that fell through took one edge of the
+        // conditional each, so both of its slots hold exactly one hit.
+        assertEquals(listOf(1L, 1L), counts.toList(), "the kept conditional owns slots 0 and 1")
     }
 }

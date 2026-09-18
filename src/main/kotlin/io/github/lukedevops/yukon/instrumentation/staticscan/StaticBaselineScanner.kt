@@ -1,6 +1,5 @@
 package io.github.lukedevops.yukon.instrumentation.staticscan
 
-import io.github.lukedevops.yukon.export.CallEdge
 import io.github.lukedevops.yukon.export.DeclaredClass
 import io.github.lukedevops.yukon.export.DeclaredMethod
 import io.github.lukedevops.yukon.export.StaticallyUnsafeClass
@@ -275,8 +274,7 @@ class StaticBaselineScanner(
      * treated as a non-Scala class, with every method's [DeclaredMethod.inline] and
      * [DeclaredMethod.calls] left empty, [DeclaredClass.superClassName] left null, no
      * `<clinit>` entry added, and [DeclaredClass.interfaceNames] left empty. This can only happen
-     * if the two disagree about what is readable, which does not happen for any locator this
-     * scanner builds today.
+     * if the two disagree about what is readable, which no locator this scanner builds does.
      *
      * A `<clinit>` entry is appended after every other declared method, mirroring
      * [io.github.lukedevops.yukon.instrumentation.YukonInstrumentation]'s own placement of the
