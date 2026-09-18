@@ -115,7 +115,8 @@ class CallEdgeInstrumentationTest {
 
         val viaReferenceProbe =
             registry.manifest("test", null, "instance-1").probes.single {
-                it.className == "com.example.target.FunctionReferenceTarget" && it.methodName == "viaReference" &&
+                it.className == "com.example.target.FunctionReferenceTarget" &&
+                    it.methodName == "viaReference" &&
                     it.kind == ProbeKind.METHOD
             }
         assertEquals(

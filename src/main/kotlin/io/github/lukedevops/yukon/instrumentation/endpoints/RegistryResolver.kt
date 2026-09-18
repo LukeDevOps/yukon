@@ -19,6 +19,7 @@ import java.util.concurrent.ConcurrentHashMap
 class RegistryResolver(
     private val registry: EndpointRegistry,
     modules: List<EndpointModule> = emptyList(),
+    private val pendingDeclarations: PendingDeclarations = PendingDeclarations(),
 ) : YukonEndpoints.Resolver {
     private val log = System.getLogger(RegistryResolver::class.java.name)
     private val modulesByName = modules.associateBy { it.name }
@@ -27,6 +28,14 @@ class RegistryResolver(
 
     override fun lookup(key: Any): Any? = registry.lookup(key)
 
+    /**
+     * Declares an endpoint, or holds it until the transform that declared it has produced bytes;
+     * see [PendingDeclarations].
+     *
+     * A held declaration returns null rather than the entry. Nothing that declares from inside a
+     * transform uses the return value, and the seam already answers null when a module is
+     * disabled or no resolver is installed yet, so callers handle it.
+     */
     override fun register(
         key: Any,
         framework: String,
@@ -36,8 +45,20 @@ class RegistryResolver(
         handlerClass: String?,
         handlerMethod: String?,
         handlerDescriptor: String?,
-    ): Any =
-        registry.register(
+    ): Any? {
+        val declare = {
+            registry.register(
+                key = key,
+                framework = framework,
+                verb = verb,
+                verbatimTemplate = verbatimTemplate,
+                contextPath = contextPath,
+                handler = handlerClass?.let { HandlerRef(it, handlerMethod, handlerDescriptor) },
+            )
+            Unit
+        }
+        if (pendingDeclarations.stage(declare)) return null
+        return registry.register(
             key = key,
             framework = framework,
             verb = verb,
@@ -45,6 +66,7 @@ class RegistryResolver(
             contextPath = contextPath,
             handler = handlerClass?.let { HandlerRef(it, handlerMethod, handlerDescriptor) },
         )
+    }
 
     override fun recordDispatch(
         key: Any,

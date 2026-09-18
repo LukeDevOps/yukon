@@ -95,4 +95,49 @@ class RegistryResolverTest {
         )
         assertTrue(registry.endpoints().isEmpty())
     }
+
+    @Test
+    fun `an endpoint declared during a transform reaches the registry only once that transform commits`() {
+        val registry = EndpointRegistry()
+        val pending = PendingDeclarations()
+        val resolver = RegistryResolver(registry, emptyList(), pending)
+
+        pending.begin()
+        assertNull(
+            resolver.register("key-1", "fake", "GET", "/staged", null, "com.example.Handler", "handle", "()V"),
+            "a staged declaration answers null rather than an entry",
+        )
+        assertEquals(0, registry.computeManifestEntries(100).sumOf { it.endpoints.size }, "nothing is declared while staged")
+
+        pending.commit()
+        val declared = registry.computeManifestEntries(100).flatMap { it.endpoints }
+        assertEquals(1, declared.size, "the commit declares what the transform staged")
+        assertEquals("/staged", declared.single().routeTemplate)
+    }
+
+    @Test
+    fun `an endpoint declared by a transform that never commits is dropped`() {
+        val registry = EndpointRegistry()
+        val pending = PendingDeclarations()
+        val resolver = RegistryResolver(registry, emptyList(), pending)
+
+        pending.begin()
+        resolver.register("key-1", "fake", "GET", "/dropped", null, null, null, null)
+        // What onComplete does for a transform that failed: the class runs without advice, so an
+        // endpoint declared for it would sit at zero dispatches and read as never called.
+        pending.discard()
+
+        assertEquals(0, registry.computeManifestEntries(100).sumOf { it.endpoints.size })
+        assertEquals(0, pending.pendingCount(), "the thread holds nothing afterwards")
+    }
+
+    @Test
+    fun `an endpoint declared outside any transform is registered straight away`() {
+        val registry = EndpointRegistry()
+        val resolver = RegistryResolver(registry, emptyList(), PendingDeclarations())
+
+        // The runtime path: a module walking a framework object once the application built it.
+        assertNotNull(resolver.register("key-1", "fake", "GET", "/live", null, null, null, null))
+        assertEquals(1, registry.computeManifestEntries(100).sumOf { it.endpoints.size })
+    }
 }
