@@ -72,7 +72,7 @@ object TypeMatchPolicy {
      * by suffix, never as a literal starting with `kotlin.`, since `shadowJar` rewrites such a
      * literal in this agent's own code.
      */
-    private val CONTINUATION_SUPERCLASS_SUFFIXES =
+    internal val CONTINUATION_SUPERCLASS_SUFFIXES =
         listOf(
             ".coroutines.jvm.internal.ContinuationImpl",
             ".coroutines.jvm.internal.RestrictedContinuationImpl",
