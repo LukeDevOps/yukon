@@ -245,6 +245,31 @@ open class ProbeRegistry {
         return added
     }
 
+    /**
+     * Drops any class from the unreported set that has since become accounted for, and returns
+     * how many went.
+     *
+     * Subtraction is by name, and a name can be held by more than one classloader. One loader's
+     * copy can be deflected and recorded here while another's registers normally a moment later,
+     * which would otherwise leave the same manifest carrying that name as both a probed class and
+     * an unreported one, with no rule for which wins. A sweep calls this before it looks for new
+     * ones.
+     *
+     * A row already delivered cannot be taken back: there is no tombstone on the wire, and a
+     * collector counting the class as loaded is right either way, since it did load. What this
+     * fixes is the contradiction and the count.
+     */
+    fun purgeAccountedFor(): Int {
+        val names = unreportedByClassName.keys.toList()
+        if (names.isEmpty()) return 0
+        val stillUnaccounted = unaccountedFrom(names).toSet()
+        var removed = 0
+        for (name in names) {
+            if (name !in stillUnaccounted && unreportedByClassName.remove(name) != null) removed++
+        }
+        return removed
+    }
+
     /** How many classes the sweep has found unreported so far; for tests and logging. */
     fun unreportedClassCount(): Int = unreportedByClassName.size
 
