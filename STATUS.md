@@ -39,18 +39,30 @@ the report.
 
 Both pipelines build on `AgentBuilder.Default()`, which shares one static
 `CircularityLock`. It holds a per-thread entry for the whole of a transform,
-so a class load triggered from inside one is handed straight back
-untransformed, by both pipelines, with no listener call.
+so a class load triggered from inside one is never transformed, by either
+pipeline, and no listener runs for it.
 
-That is the right answer for the agent's own re-entrancy, and it leaves the
-class unreported. It never registers, so it has no probes, and it never
-reaches `recordSkipped`, so it is not in the manifest's skipped list either.
-A complete static baseline that declared it then has no mention of it
-anywhere, and a collector calls it never loaded when it loaded and ran.
+That leaves the class unreported. It never registers, so it has no probes,
+and it never reaches `recordSkipped`, so it is not in the manifest's skipped
+list either. A complete static baseline that declared it then has no mention
+of it anywhere, and a collector calls it never loaded when it loaded and ran.
 
-Predates the staging work. The fix is to notice the case and record it the
-way an unsafe class is recorded, rather than to remove the lock, which is
-what keeps a transform from re-entering itself.
+The lock is not the whole reason, and this is why no transformer can fix it.
+The JVM does not run its class file load hook for a class defined while that
+same thread is already inside the hook. No transformer in the chain is handed
+such a class: not ByteBuddy's, and not one registered ahead of ByteBuddy's,
+which is where the agent's own `ClassBytesCapture` sits.
+`DeflectedClassLoadTest` pins that behaviour: the class loads, runs, and
+reaches nothing. Recording it the way an unsafe class is recorded is
+therefore not possible from a transformer, however the lock behaves.
+
+What is left is a sweep. `Instrumentation.getAllLoadedClasses()` names every
+class the JVM holds, so comparing the in-scope ones against what the registry
+has registered or skipped finds every class that loaded and went unreported,
+whatever the reason. That covers this case and the failure past `getBytes()`
+above, which has no signal of its own either. It costs a walk of every loaded
+class, so when to run it (every flush, once after startup, at shutdown) is
+the open question. Not started.
 
 ### A module disabled after it has already declared routes
 
