@@ -6,6 +6,7 @@ import io.github.lukedevops.yukon.export.Exporter
 import io.github.lukedevops.yukon.export.HttpOtlpStyleExporter
 import io.github.lukedevops.yukon.export.ResourceAttributes
 import io.github.lukedevops.yukon.instrumentation.BootstrapInstallException
+import io.github.lukedevops.yukon.instrumentation.UnreportedClassSweep
 import io.github.lukedevops.yukon.instrumentation.YukonInstrumentation
 import io.github.lukedevops.yukon.instrumentation.branch.BranchDropCounts
 import io.github.lukedevops.yukon.instrumentation.endpoints.EndpointInstrumentation
@@ -123,7 +124,15 @@ object Agent {
         }
 
         val exporter = HttpOtlpStyleExporter(config.collectorEndpoint, config.authToken)
-        val scheduler = ExportScheduler(config, registry, endpointRegistry, exporter, branchDropCounts = branchDropCounts)
+        val scheduler =
+            ExportScheduler(
+                config,
+                registry,
+                endpointRegistry,
+                exporter,
+                branchDropCounts = branchDropCounts,
+                unreportedClassSweep = UnreportedClassSweep(instrumentation, registry, config),
+            )
         scheduler.start()
 
         if (config.staticBaselineEnabled) {

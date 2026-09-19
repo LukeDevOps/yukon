@@ -36,6 +36,7 @@ class DeflectedClassLoadTest {
     private companion object {
         const val OUTER = "com.example.target.BranchTarget"
         const val NESTED = "com.example.target.SampleTarget"
+        const val NOTHING_TO_PROBE = "com.example.target.AbstractOnlyInterface"
     }
 
     private val instrumentation: Instrumentation = ByteBuddyAgent.install()
@@ -126,5 +127,36 @@ class DeflectedClassLoadTest {
         val manifest = registry.manifest("test", null, "instance-1")
         assertTrue(manifest.probes.none { it.className == NESTED }, "a class no transformer saw cannot have probes")
         assertTrue(manifest.skippedClasses.none { it.className == NESTED }, "and cannot be recorded as skipped either")
+    }
+
+    @Test
+    fun `the sweep reports the deflected class, and does not report one with nothing to probe`() {
+        val registry = ProbeRegistry()
+        val config = AgentConfig.parse("includePackages=com.example.target")
+        val instrumented = YukonInstrumentation(config, registry)
+        yukon = instrumented
+        installedTransformer = instrumented.install(instrumentation)
+
+        val loader = ReentrantLoader(arrayOf(File("build/classes/java/test").toURI().toURL()), javaClass.classLoader)
+        Class.forName(OUTER, true, loader)
+        // An interface with only abstract methods: the transform sees it and finds nothing to
+        // probe, so it never registers either. It is loaded and unregistered like the deflected
+        // class, and it is not a blind spot.
+        Class.forName(NOTHING_TO_PROBE, true, loader)
+        assertTrue(loader.nested != null, "the nested class never loaded, so this test proved nothing")
+
+        UnreportedClassSweep(instrumentation, registry, config).run()
+
+        val manifest = registry.manifest("test", null, "instance-1")
+        val unreported = manifest.unreportedClasses.map { it.className }
+        assertTrue(NESTED in unreported, "the deflected class is what the sweep exists to find")
+        assertTrue(
+            NOTHING_TO_PROBE !in unreported,
+            "a class the agent looked at and found nothing in is accounted for, not a blind spot",
+        )
+        assertTrue(
+            OUTER !in unreported,
+            "a class that registered normally is accounted for",
+        )
     }
 }

@@ -115,6 +115,19 @@ data class ProbeLocation(
     val generatedBy: GeneratedBy = GeneratedBy.NONE,
 )
 
+/**
+ * A class the JVM has loaded that reached no manifest, neither as a probed class nor as a skipped
+ * one. Found by the sweep rather than by a transform, so the agent has no reason to give and this
+ * carries none. See ADR 0027.
+ *
+ * [firstSeenUnreportedAt] is when a sweep first found it, which tells a blind spot that existed
+ * from startup apart from one that appeared later.
+ */
+data class UnreportedClass(
+    val className: String,
+    val firstSeenUnreportedAt: Long,
+)
+
 /** A class the agent matched but could not instrument. It never gets a classId or any probes. */
 data class SkippedClass(
     val className: String,
@@ -171,6 +184,7 @@ data class ProbeManifest(
     val endpoints: List<EndpointLocation> = emptyList(),
     val disabledEndpointModules: List<DisabledEndpointModule> = emptyList(),
     val classSupertypes: List<ClassSupertypes> = emptyList(),
+    val unreportedClasses: List<UnreportedClass> = emptyList(),
 )
 
 /**

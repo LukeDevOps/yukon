@@ -20,6 +20,7 @@ import io.github.lukedevops.yukon.proto.StaticBaseline as ProtoStaticBaseline
 import io.github.lukedevops.yukon.proto.StaticallyUnsafeClass as ProtoStaticallyUnsafeClass
 import io.github.lukedevops.yukon.proto.UnprobedClass as ProtoUnprobedClass
 import io.github.lukedevops.yukon.proto.UnreadableClass as ProtoUnreadableClass
+import io.github.lukedevops.yukon.proto.UnreportedClass as ProtoUnreportedClass
 
 /**
  * Encodes and decodes [DeltaBatch], [ProbeManifest], and [StaticBaseline] to and from the wire
@@ -105,6 +106,7 @@ object ProtoPayloadCodec {
                 .addAllEndpoints(manifest.endpoints.map { toProto(it) })
                 .addAllDisabledEndpointModules(manifest.disabledEndpointModules.map { toProto(it) })
                 .addAllClassSupertypes(manifest.classSupertypes.map { toProto(it) })
+                .addAllUnreportedClasses(manifest.unreportedClasses.map { toProto(it) })
         manifest.serviceVersion?.let { builder.serviceVersion = it }
         return builder.build()
     }
@@ -119,6 +121,20 @@ object ProtoPayloadCodec {
             endpoints = manifest.endpointsList.map { fromProto(it) },
             disabledEndpointModules = manifest.disabledEndpointModulesList.map { fromProto(it) },
             classSupertypes = manifest.classSupertypesList.map { fromProto(it) },
+            unreportedClasses = manifest.unreportedClassesList.map { fromProto(it) },
+        )
+
+    private fun toProto(unreportedClass: UnreportedClass): ProtoUnreportedClass =
+        ProtoUnreportedClass
+            .newBuilder()
+            .setClassName(unreportedClass.className)
+            .setFirstSeenUnreportedAt(unreportedClass.firstSeenUnreportedAt)
+            .build()
+
+    private fun fromProto(unreportedClass: ProtoUnreportedClass): UnreportedClass =
+        UnreportedClass(
+            className = unreportedClass.className,
+            firstSeenUnreportedAt = unreportedClass.firstSeenUnreportedAt,
         )
 
     private fun toProto(skippedClass: SkippedClass): ProtoSkippedClass =
