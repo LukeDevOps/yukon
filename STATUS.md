@@ -47,14 +47,18 @@ and it never reaches `recordSkipped`, so it is not in the manifest's skipped
 list either. A complete static baseline that declared it then has no mention
 of it anywhere, and a collector calls it never loaded when it loaded and ran.
 
-The lock is not the whole reason, and this is why no transformer can fix it.
-The JVM does not run its class file load hook for a class defined while that
-same thread is already inside the hook. No transformer in the chain is handed
-such a class: not ByteBuddy's, and not one registered ahead of ByteBuddy's,
-which is where the agent's own `ClassBytesCapture` sits.
-`DeflectedClassLoadTest` pins that behaviour: the class loads, runs, and
-reaches nothing. Recording it the way an unsafe class is recorded is
-therefore not possible from a transformer, however the lock behaves.
+The lock is not the whole reason, and this is why no transformer the agent
+registers can fix it. `java.lang.instrument` refuses to call a transformer
+while that thread is already inside another transform on the same
+`Instrumentation`, through a per-thread re-entrancy token in its own native
+layer. Every transformer the agent registers sits on that one
+`Instrumentation`, so none of them is handed such a class: not ByteBuddy's,
+and not one registered ahead of ByteBuddy's, which is where the agent's own
+`ClassBytesCapture` sits. A second `-javaagent` holds its own token and would
+be handed the class, which is no help to an agent that is only itself.
+`DeflectedClassLoadTest` pins the behaviour: the class is defined, is usable,
+and reaches no transformer. Recording it the way an unsafe class is recorded
+is therefore not possible from a transformer, however the lock behaves.
 
 What is left is a sweep. `Instrumentation.getAllLoadedClasses()` names every
 class the JVM holds, so comparing the in-scope ones against what the registry
