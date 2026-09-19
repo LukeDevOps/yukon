@@ -341,7 +341,14 @@ class YukonInstrumentation(
                     "no supertypes, and no inline or generated mark",
             )
         }
-        if (methods.isEmpty() && analysis.defaultSites.isEmpty() && !analysis.hasTypeInitializer) return builder
+        if (methods.isEmpty() && analysis.defaultSites.isEmpty() && !analysis.hasTypeInitializer) {
+            // Nothing here to probe: a marker interface, a constants holder, a class whose every
+            // method the matcher excludes. Recorded so the sweep can tell it apart from a class
+            // that went unreported for a reason the agent cannot see. Local only; see
+            // ProbeRegistry.recordNothingToProbe and ADR 0027.
+            registry.recordNothingToProbe(typeDescription.name)
+            return builder
+        }
         if (analysis.isKotlinClass && !analysis.hasLineNumbers) {
             log.log(
                 Level.WARNING,

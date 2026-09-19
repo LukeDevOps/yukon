@@ -146,6 +146,19 @@ message ClassSupertypes {
   repeated string interface_names = 3;
 }
 
+// A class the JVM has loaded that reached no manifest, neither as a probed
+// class nor as a skipped one. The agent has no reason to give: a class it
+// turned away on purpose carries one, and this is what is left over after
+// those are accounted for. Carries no reason field for that reason.
+//
+// first_seen_unreported_at is when a sweep first found it, which separates a
+// blind spot that existed from startup from one that appeared later. See
+// ADR 0027.
+message UnreportedClass {
+  string class_name = 1;
+  int64 first_seen_unreported_at = 2;
+}
+
 // A class the agent matched but could not instrument (e.g. bytecode
 // ByteBuddy refuses to redefine), so it never gets a class_id or any probes.
 // Reported by name rather than class_id for exactly that reason: it never
@@ -182,6 +195,9 @@ message ProbeManifest {
   repeated DisabledEndpointModule disabled_endpoint_modules = 7;
   // Sent once per class alongside its probes, staged and committed the same way. See ADR 0024.
   repeated ClassSupertypes class_supertypes = 8;
+  // Found by the sweep, not by a transform. Delivered incrementally like the
+  // rest of this message. See ADR 0027.
+  repeated UnreportedClass unreported_classes = 9;
 }
 
 // No line field, unlike ProbeLocation. A method's first source line is

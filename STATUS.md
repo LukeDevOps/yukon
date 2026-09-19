@@ -20,53 +20,29 @@ that class's probes, the manifest carries them, and nothing ever increments
 them: permanently zero, which is what a collector reads as dead code. An
 endpoint the same class declared is in the same position.
 
-Nothing in the transformer chain reports any of this back, so staging cannot
-help and the fix needs a different signal. The `<clinit>` probe is a partial
-one: a class that never initialised has it at zero, and the method probes
-under it are then zero for a reason that says nothing about the adopter's
-code. Two things stop that being the whole answer. Only a class with a
-static initializer of its own gets that probe, since the agent's own woven
-prelude does not add one, so a class without one carries no such signal. And
-a class that loaded and was genuinely never initialised is a real finding
-rather than a blind spot, so a collector cannot suppress every probe under a
-zero `<clinit>` without losing it.
+The sweep ADR 0027 added does not catch this, and cannot as it stands. It
+compares one way, loaded against what the registry knows, which is race-free
+because a class is registered before the JVM defines it. These classes go the
+other way: registered, then never loaded, so they never appear in
+`getAllLoadedClasses()` and a loaded-against-known comparison sees nothing
+wrong. The reverse check, registered against loaded, has no such property. A
+class registered moments ago has not finished being defined, and a class
+whose classloader has since been collected is gone for an ordinary reason.
+Both would read as failures, so the reverse check needs a grace period and an
+answer for unloading before it can run at all.
+
+The `<clinit>` probe is a partial signal in the meantime: a class that never
+initialised has it at zero, and the method probes under it are then zero for
+a reason that says nothing about the adopter's code. Two things stop it being
+the whole answer. Only a class with a static initializer of its own gets that
+probe, since the agent's own woven prelude does not add one. And a class that
+loaded and was genuinely never initialised is a real finding rather than a
+blind spot, so a collector cannot suppress every probe under a zero `<clinit>`
+without losing it.
 
 Rare in practice: it needs a second agent in the chain, or bytecode the
 verifier rejects, which would break the application itself rather than only
-the report.
-
-### A class that loads while another class is being transformed
-
-Both pipelines build on `AgentBuilder.Default()`, which shares one static
-`CircularityLock`. It holds a per-thread entry for the whole of a transform,
-so a class load triggered from inside one is never transformed, by either
-pipeline, and no listener runs for it.
-
-That leaves the class unreported. It never registers, so it has no probes,
-and it never reaches `recordSkipped`, so it is not in the manifest's skipped
-list either. A complete static baseline that declared it then has no mention
-of it anywhere, and a collector calls it never loaded when it loaded and ran.
-
-The lock is not the whole reason, and this is why no transformer the agent
-registers can fix it. `java.lang.instrument` refuses to call a transformer
-while that thread is already inside another transform on the same
-`Instrumentation`, through a per-thread re-entrancy token in its own native
-layer. Every transformer the agent registers sits on that one
-`Instrumentation`, so none of them is handed such a class: not ByteBuddy's,
-and not one registered ahead of ByteBuddy's, which is where the agent's own
-`ClassBytesCapture` sits. A second `-javaagent` holds its own token and would
-be handed the class, which is no help to an agent that is only itself.
-`DeflectedClassLoadTest` pins the behaviour: the class is defined, is usable,
-and reaches no transformer. Recording it the way an unsafe class is recorded
-is therefore not possible from a transformer, however the lock behaves.
-
-What is left is a sweep. `Instrumentation.getAllLoadedClasses()` names every
-class the JVM holds, so comparing the in-scope ones against what the registry
-has registered or skipped finds every class that loaded and went unreported,
-whatever the reason. That covers this case and the failure past `getBytes()`
-above, which has no signal of its own either. It costs a walk of every loaded
-class, so when to run it (every flush, once after startup, at shutdown) is
-the open question. Not started.
+the report. Not started.
 
 ### A module disabled after it has already declared routes
 

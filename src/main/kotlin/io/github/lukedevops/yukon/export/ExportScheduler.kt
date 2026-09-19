@@ -1,6 +1,7 @@
 package io.github.lukedevops.yukon.export
 
 import io.github.lukedevops.yukon.config.AgentConfig
+import io.github.lukedevops.yukon.instrumentation.UnreportedClassSweep
 import io.github.lukedevops.yukon.instrumentation.branch.BranchDropCounts
 import io.github.lukedevops.yukon.instrumentation.branch.BranchDropReason
 import io.github.lukedevops.yukon.registry.EndpointRegistry
@@ -37,10 +38,16 @@ class ExportScheduler(
     private val maxManifestEntriesPerChunk: Int = DEFAULT_MAX_MANIFEST_ENTRIES_PER_CHUNK,
     /** Dropped branch site totals; see [maybeLogBranchDrops] and ADR 0025. */
     private val branchDropCounts: BranchDropCounts = BranchDropCounts(),
+    /**
+     * Finds classes that loaded but reached no transformer; see [maybeSweep] and ADR 0027. Null
+     * when nothing supplied one, which is every test that does not exercise the sweep.
+     */
+    private val unreportedClassSweep: UnreportedClassSweep? = null,
 ) {
     private val log = System.getLogger(ExportScheduler::class.java.name)
     private var executor: ScheduledExecutorService? = null
     private val branchDropsLogged = AtomicBoolean(false)
+    private var flushesSinceSweep = SWEEP_EVERY_N_FLUSHES
 
     /** Runs the two sends of each flush side by side; see [flush]. Two threads, created once, not two per tick. */
     private val sendPool: ExecutorService =
@@ -145,12 +152,35 @@ class ExportScheduler(
     fun flush(final: Boolean = false) {
         try {
             maybeLogBranchDrops()
+            maybeSweep(final)
             val manifestSend = sendPool.submit(::sendManifestDelta)
             val deltaSend = sendPool.submit { sendDeltaBatch(final) }
             manifestSend.get()
             deltaSend.get()
         } catch (t: Throwable) {
             log.log(Level.ERROR, "yukon: flush failed outside its own send guards, will retry next flush", t)
+        }
+    }
+
+    /**
+     * Runs the unreported-class sweep before this flush's sends, so what it finds goes out on the
+     * same manifest rather than waiting a whole cycle.
+     *
+     * Not on every flush. A class that loaded unreported stays unreported, so the finding has no
+     * expiry, while the sweep walks every class the JVM holds and allocates an array of them. The
+     * shutdown flush always sweeps, so an instance that ends cleanly always gives a final answer.
+     *
+     * Guarded like the sends are: this runs under `scheduleAtFixedRate`, which stops calling a
+     * task forever the first time one lets a throwable escape.
+     */
+    private fun maybeSweep(final: Boolean) {
+        val sweep = unreportedClassSweep ?: return
+        if (!final && --flushesSinceSweep > 0) return
+        flushesSinceSweep = SWEEP_EVERY_N_FLUSHES
+        try {
+            sweep.run()
+        } catch (t: Throwable) {
+            log.log(Level.WARNING, "yukon: the unreported-class sweep failed, will retry on a later flush", t)
         }
     }
 
@@ -362,5 +392,12 @@ class ExportScheduler(
 
         /** A probe location carries class and method strings, so it is roughly ten times a delta's size. */
         const val DEFAULT_MAX_MANIFEST_ENTRIES_PER_CHUNK: Int = 5_000
+
+        /**
+         * How many flushes pass between sweeps, roughly five minutes at the default interval. Not
+         * an option: nobody can pick a better number without knowing what the walk costs on their
+         * own application, and the finding it produces does not go stale.
+         */
+        const val SWEEP_EVERY_N_FLUSHES: Int = 10
     }
 }

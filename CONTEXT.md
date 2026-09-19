@@ -190,3 +190,11 @@ _Avoid_: last batch, shutdown batch
 **Never loaded**:
 A class declared by a complete static baseline that never appears in any manifest from that instance. The class was never constructed.
 _Avoid_: dead (a collector's verdict, not an observation)
+
+**Unreported class**:
+A class the JVM has loaded that reached no manifest, neither as a probed class nor as a skipped one. Found by comparing the loaded classes against what the registry knows, never by a transformer, since the ones this catches are the ones no transformer was offered.
+_Avoid_: deflected class (names one cause of several), missed class, unknown class
+
+**Sweep**:
+One pass over every class the JVM holds, keeping the ones in scope that the registry has never heard of. Runs on a flush, not on a transform.
+_Avoid_: scan (the static baseline's own act), audit

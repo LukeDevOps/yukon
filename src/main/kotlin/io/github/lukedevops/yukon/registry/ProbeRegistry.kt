@@ -7,6 +7,7 @@ import io.github.lukedevops.yukon.export.ProbeLocation
 import io.github.lukedevops.yukon.export.ProbeManifest
 import io.github.lukedevops.yukon.export.ResourceAttributes
 import io.github.lukedevops.yukon.export.SkippedClass
+import io.github.lukedevops.yukon.export.UnreportedClass
 import java.lang.System.Logger.Level
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
@@ -108,6 +109,12 @@ open class ProbeRegistry {
         var manifestIncluded: Boolean = false
     }
 
+    private class UnreportedEntry(
+        val firstSeenUnreportedAt: Long,
+    ) {
+        var manifestIncluded: Boolean = false
+    }
+
     /**
      * One computed delta batch, together with the exact per-class snapshots it was built from.
      *
@@ -129,10 +136,13 @@ open class ProbeRegistry {
         val manifest: ProbeManifest,
         internal val stagedEntries: List<Any>,
         internal val stagedSkipped: List<Any>,
+        internal val stagedUnreported: List<Any>,
     )
 
     private val entriesByKey = ConcurrentHashMap<RegistryKey, ClassEntry>()
     private val skippedByClassName = ConcurrentHashMap<String, SkippedEntry>()
+    private val unreportedByClassName = ConcurrentHashMap<String, UnreportedEntry>()
+    private val nothingToProbeClassNames = ConcurrentHashMap.newKeySet<String>()
     private val nextClassId = AtomicInteger(0)
     private val nextSnapshotSequence = AtomicLong(0)
 
@@ -187,6 +197,56 @@ open class ProbeRegistry {
 
     /** Names of every class currently registered, across all classloaders. */
     fun registeredClassNames(): Set<String> = entriesByKey.keys.mapTo(HashSet()) { it.className }
+
+    /**
+     * Of [candidates], the names this registry has never heard of: not registered, not recorded
+     * as skipped, and not recorded as having nothing to probe. That remainder is the definition
+     * of an unreported class. See ADR 0027.
+     *
+     * Takes the whole candidate set rather than answering one name at a time, so the registered
+     * names are collected once per sweep instead of once per loaded class. A membership test per
+     * class against a live scan of the key set would cost the product of the two.
+     */
+    fun unaccountedFrom(candidates: Collection<String>): List<String> {
+        val registered = registeredClassNames()
+        return candidates.filter {
+            it !in registered && !skippedByClassName.containsKey(it) && it !in nothingToProbeClassNames
+        }
+    }
+
+    /**
+     * Records a class the agent matched and looked at, and found nothing in to probe: no method
+     * the method matcher admits, no default-argument site, no type initializer of its own. A
+     * marker interface or a constants holder is the ordinary case.
+     *
+     * Local only. It never reaches the wire, because nothing claims anything about such a class:
+     * the static scanner puts its own copy in the baseline's unprobed bucket rather than
+     * declaring it, so no "never loaded" claim can name it. This exists so the sweep can tell a
+     * class with nothing to probe apart from one that went unreported for a reason the agent
+     * cannot see, which is the whole value of the count the sweep produces.
+     */
+    fun recordNothingToProbe(className: String) {
+        nothingToProbeClassNames += className
+    }
+
+    /**
+     * Records a class the sweep found loaded but unreported, keeping the time it was first found.
+     *
+     * Idempotent per class name, like [recordSkipped]: a later sweep finds the same class again
+     * and must not restate when the blind spot started. Returns true the first time, so a caller
+     * can count what each sweep newly found.
+     */
+    fun recordUnreported(className: String): Boolean {
+        var added = false
+        unreportedByClassName.computeIfAbsent(className) {
+            added = true
+            UnreportedEntry(System.currentTimeMillis())
+        }
+        return added
+    }
+
+    /** How many classes the sweep has found unreported so far; for tests and logging. */
+    fun unreportedClassCount(): Int = unreportedByClassName.size
 
     /**
      * Records a class the agent matched but could not instrument. This makes it visible on the
@@ -387,7 +447,19 @@ open class ProbeRegistry {
                 SkippedClass(className, entry.reason, entry.skippedAt)
             }
         val supertypes = entriesByKey.values.map { entry -> ClassSupertypes(entry.classId, entry.superClassName, entry.interfaceNames) }
-        return ProbeManifest(serviceName, serviceVersion, locations, skipped, serviceInstanceId, classSupertypes = supertypes)
+        val unreported =
+            unreportedByClassName.map { (className, entry) ->
+                UnreportedClass(className, entry.firstSeenUnreportedAt)
+            }
+        return ProbeManifest(
+            serviceName,
+            serviceVersion,
+            locations,
+            skipped,
+            serviceInstanceId,
+            classSupertypes = supertypes,
+            unreportedClasses = unreported,
+        )
     }
 
     /**
@@ -410,6 +482,7 @@ open class ProbeRegistry {
         computeManifestDeltas(serviceName, serviceVersion, serviceInstanceId, Int.MAX_VALUE).singleOrNull()
             ?: ManifestSnapshot(
                 ProbeManifest(serviceName, serviceVersion, emptyList(), emptyList(), serviceInstanceId),
+                emptyList(),
                 emptyList(),
                 emptyList(),
             )
@@ -437,6 +510,8 @@ open class ProbeRegistry {
         var supertypes = mutableListOf<ClassSupertypes>()
         var stagedEntries = mutableListOf<Any>()
         var stagedSkipped = mutableListOf<Any>()
+        var unreported = mutableListOf<UnreportedClass>()
+        var stagedUnreported = mutableListOf<Any>()
 
         // The running chunk weight is tracked explicitly rather than derived from the staged
         // lists' sizes: a class's call edges add to its weight but never become list entries of
@@ -448,15 +523,26 @@ open class ProbeRegistry {
         fun seal() {
             chunks +=
                 ManifestSnapshot(
-                    ProbeManifest(serviceName, serviceVersion, locations, skipped, serviceInstanceId, classSupertypes = supertypes),
+                    ProbeManifest(
+                        serviceName,
+                        serviceVersion,
+                        locations,
+                        skipped,
+                        serviceInstanceId,
+                        classSupertypes = supertypes,
+                        unreportedClasses = unreported,
+                    ),
                     stagedEntries,
                     stagedSkipped,
+                    stagedUnreported,
                 )
             locations = mutableListOf()
             skipped = mutableListOf()
             supertypes = mutableListOf()
             stagedEntries = mutableListOf()
             stagedSkipped = mutableListOf()
+            unreported = mutableListOf()
+            stagedUnreported = mutableListOf()
             chunkWeight = 0
         }
         for (entry in entriesByKey.values) {
@@ -498,6 +584,15 @@ open class ProbeRegistry {
             skipped += SkippedClass(className, entry.reason, entry.skippedAt)
             chunkWeight += 1
         }
+        // One entry each, the same weight a skipped class carries: both are a class name and a
+        // couple of scalars on the wire.
+        for ((className, entry) in unreportedByClassName) {
+            if (entry.manifestIncluded) continue
+            if (chunkWeight > 0 && chunkWeight + 1 > maxEntriesPerChunk) seal()
+            stagedUnreported += entry
+            unreported += UnreportedClass(className, entry.firstSeenUnreportedAt)
+            chunkWeight += 1
+        }
         if (chunkWeight > 0) seal()
         return chunks
     }
@@ -513,5 +608,6 @@ open class ProbeRegistry {
     fun advanceManifestBaseline(snapshot: ManifestSnapshot) {
         for (entry in snapshot.stagedEntries) (entry as ClassEntry).manifestIncluded = true
         for (entry in snapshot.stagedSkipped) (entry as SkippedEntry).manifestIncluded = true
+        for (entry in snapshot.stagedUnreported) (entry as UnreportedEntry).manifestIncluded = true
     }
 }
