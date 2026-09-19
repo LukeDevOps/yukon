@@ -35,6 +35,10 @@ class UnreportedClassSweep(
      * unreported, which is zero on every sweep after the blind spot stops growing.
      */
     fun run(): Int {
+        // A name recorded by an earlier sweep can have become accounted for since, when a second
+        // classloader's copy of it registered normally. Dropping those first keeps one manifest
+        // from carrying the same name as both a probed class and an unreported one.
+        registry.purgeAccountedFor()
         val candidates = instrumentation.allLoadedClasses.filter(::isCandidate).map { it.name }
         val unaccounted = registry.unaccountedFrom(candidates)
         val newlyFound = unaccounted.count { registry.recordUnreported(it) }

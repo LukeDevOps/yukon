@@ -859,4 +859,17 @@ class ProbeRegistryTest {
 
         assertEquals(listOf("com.example.Deflected"), unaccounted)
     }
+
+    @Test
+    fun `an unreported class is dropped once another classloader registers the same name`() {
+        val registry = ProbeRegistry()
+        registry.recordUnreported("com.example.Foo")
+        assertEquals(1, registry.unreportedClassCount())
+
+        registry.register("com.example.Foo", layoutHash = 1L, probes = methodProbes(1))
+
+        assertEquals(1, registry.purgeAccountedFor(), "the name is accounted for now")
+        assertEquals(0, registry.unreportedClassCount())
+        assertTrue(registry.manifest("checkout", null, "instance-1").unreportedClasses.isEmpty())
+    }
 }
