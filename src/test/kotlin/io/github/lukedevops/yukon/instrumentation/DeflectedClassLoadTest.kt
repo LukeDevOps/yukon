@@ -21,14 +21,16 @@ import kotlin.test.assertTrue
  * Pins the blind spot STATUS.md describes: a class that loads while the same thread is already
  * inside another class's transform is reported nowhere, and cannot be.
  *
- * The JVM does not run the load hook for such a class, so no transformer in the chain is handed
- * it: not ByteBuddy's, and not one registered ahead of ByteBuddy's either. The spy below stands in
- * for any such transformer and never sees the nested class, while the class itself is defined and
- * usable. That is why the agent cannot record this case the way it records a class ByteBuddy
- * declined to transform.
+ * `java.lang.instrument` refuses to call a transformer while that thread is already inside
+ * another transform on the same `Instrumentation`, so no transformer the agent registers is
+ * handed such a class: not ByteBuddy's, and not one registered ahead of ByteBuddy's either. The
+ * spy below stands in for any of them and never sees the nested class, while the class itself is
+ * defined and usable. That is why the agent cannot record this case the way it records a class
+ * ByteBuddy declined to transform.
  *
- * This test fails if a JVM ever starts offering these classes to the chain, which is the signal
- * that the case can be recorded after all.
+ * This test fails if a JDK ever starts offering these classes to the transformers of the
+ * `Instrumentation` already in a transform, which is the signal that the case can be recorded
+ * after all.
  */
 class DeflectedClassLoadTest {
     private companion object {
@@ -105,7 +107,6 @@ class DeflectedClassLoadTest {
                     return null
                 }
             }
-        // Registered ahead of the agent's own transformers, so the JVM offers it every class first.
         instrumentation.addTransformer(spy, false)
         watcher = spy
 
