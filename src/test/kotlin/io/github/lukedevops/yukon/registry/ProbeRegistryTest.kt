@@ -808,4 +808,55 @@ class ProbeRegistryTest {
                 .superClassName,
         )
     }
+
+    @Test
+    fun `an unreported class goes out once and is not resent after a confirmed delivery`() {
+        val registry = ProbeRegistry()
+        assertTrue(registry.recordUnreported("com.example.Deflected"), "the first sighting is new")
+        assertFalse(registry.recordUnreported("com.example.Deflected"), "a later sweep finds the same class again")
+
+        val first = registry.computeManifestDelta("checkout", null, "instance-1")
+        assertEquals(
+            "com.example.Deflected",
+            first.manifest.unreportedClasses
+                .single()
+                .className,
+        )
+        registry.advanceManifestBaseline(first)
+
+        val second = registry.computeManifestDelta("checkout", null, "instance-1")
+        assertTrue(second.manifest.unreportedClasses.isEmpty(), "a delivered class is not sent again")
+    }
+
+    @Test
+    fun `an unreported class that failed to send is staged again on the next manifest`() {
+        val registry = ProbeRegistry()
+        registry.recordUnreported("com.example.Deflected")
+
+        // The snapshot is computed and its send fails, so advanceManifestBaseline is never called.
+        registry.computeManifestDelta("checkout", null, "instance-1")
+
+        val retry = registry.computeManifestDelta("checkout", null, "instance-1")
+        assertEquals(
+            "com.example.Deflected",
+            retry.manifest.unreportedClasses
+                .single()
+                .className,
+        )
+    }
+
+    @Test
+    fun `unaccountedFrom keeps only names the registry has never heard of`() {
+        val registry = ProbeRegistry()
+        registry.register("com.example.Registered", layoutHash = 1L, probes = methodProbes(1))
+        registry.recordSkipped("com.example.Skipped", "unsafe annotation")
+        registry.recordNothingToProbe("com.example.Empty")
+
+        val unaccounted =
+            registry.unaccountedFrom(
+                listOf("com.example.Registered", "com.example.Skipped", "com.example.Empty", "com.example.Deflected"),
+            )
+
+        assertEquals(listOf("com.example.Deflected"), unaccounted)
+    }
 }

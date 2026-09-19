@@ -9,6 +9,7 @@ import io.github.lukedevops.yukon.export.GeneratedBy
 import io.github.lukedevops.yukon.export.ProbeKind
 import io.github.lukedevops.yukon.export.ProtoPayloadCodec
 import io.github.lukedevops.yukon.export.SkippedClass
+import io.github.lukedevops.yukon.export.UnreportedClass
 import io.github.lukedevops.yukon.registry.RouteTemplateNormalizer
 import java.net.InetSocketAddress
 import java.time.Duration
@@ -198,10 +199,16 @@ class YukonTestCollector private constructor(
     /** A class's supertypes, by name, from any manifest. Populated alongside its probes; see [handleManifest]. */
     private val supertypesByClassName = ConcurrentHashMap<String, SupertypesInfo>()
 
+    /** Classes a sweep found loaded but unreported, by name, from any manifest. See ADR 0027. */
+    private val unreportedByClassName = ConcurrentHashMap<String, UnreportedClass>()
+
     /** Declared classes from every complete static baseline scan, by name. See [handleStaticBaseline]. */
     private val consultedDeclaredClasses = ConcurrentHashMap<String, DeclaredClassInfo>()
 
-    /** Every class name any manifest has ever mentioned, whether it got probes or was only reported as skipped. */
+    /**
+     * Every class name any manifest has ever mentioned: with probes, as skipped, or as unreported.
+     * All three mean the class loaded, which is what a "never loaded" claim asks about.
+     */
     private val dynamicallyKnownClassNames: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
     /** Instance ids whose shutdown hook has sent a delta batch with `final_flush` set. See [endedCleanly]. */
@@ -547,6 +554,16 @@ class YukonTestCollector private constructor(
 
     /** Every instance id that has sent a delta batch with `final_flush` set. See [endedCleanly]. */
     fun instancesEndedCleanly(): Set<String> = instancesThatEndedCleanly.toSet()
+
+    /**
+     * Class names a sweep reported as loaded but unreported, sorted. Empty until a manifest
+     * carries one.
+     *
+     * These are classes no transformer was offered, so the agent knows only that they loaded.
+     * [neverLoaded] already leaves them out; this exposes them so a test can assert the blind
+     * spot itself rather than only its absence from a claim. See ADR 0027.
+     */
+    fun unreportedClasses(): List<String> = unreportedByClassName.keys.sorted()
 
     /**
      * Class names declared by a complete static baseline scan that no manifest, from any
@@ -992,6 +1009,13 @@ class YukonTestCollector private constructor(
         for (skipped in manifest.skippedClasses) {
             skippedByClassName.putIfAbsent(skipped.className, skipped)
             dynamicallyKnownClassNames += skipped.className
+        }
+        // An unreported class loaded and reached no transformer, so the agent has nothing to say
+        // about it beyond that. Counting it as known is the whole point: without this it stays a
+        // "never loaded" answer for a class that ran. See ADR 0027.
+        for (unreported in manifest.unreportedClasses) {
+            unreportedByClassName.putIfAbsent(unreported.className, unreported)
+            dynamicallyKnownClassNames += unreported.className
         }
         for (supertypes in manifest.classSupertypes) {
             val className = classNamesByClassId[supertypes.classId] ?: continue

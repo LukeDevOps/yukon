@@ -1037,4 +1037,22 @@ class ProtoPayloadCodecTest {
         assertTrue(decoded.classSupertypes.isEmpty())
         assertEquals(manifest, decoded)
     }
+
+    @Test
+    fun `a manifest's unreported classes survive a round trip`() {
+        val manifest =
+            ProbeManifest(
+                serviceName = "checkout",
+                serviceVersion = null,
+                probes = emptyList(),
+                serviceInstanceId = "instance-1",
+                unreportedClasses = listOf(UnreportedClass("com.example.Deflected", 1_700_000_000_000L)),
+            )
+
+        val decoded = ProtoPayloadCodec.decodeProbeManifest(ProtoPayloadCodec.encode(manifest))
+
+        val unreported = decoded.unreportedClasses.single()
+        assertEquals("com.example.Deflected", unreported.className)
+        assertEquals(1_700_000_000_000L, unreported.firstSeenUnreportedAt)
+    }
 }

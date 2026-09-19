@@ -346,7 +346,13 @@ class YukonInstrumentation(
             // method the matcher excludes. Recorded so the sweep can tell it apart from a class
             // that went unreported for a reason the agent cannot see. Local only; see
             // ProbeRegistry.recordNothingToProbe and ADR 0027.
-            registry.recordNothingToProbe(typeDescription.name)
+            //
+            // Only when the bytes were readable. Without them the analysis is empty whatever the
+            // class holds, and a Scala class whose lambda bodies are its only probe-worthy methods
+            // reads as empty too, since the Scala marker comes from those same bytes. Recording
+            // that as nothing to probe would tell the sweep the class is accounted for and hide
+            // the one case the warning above exists to report.
+            if (classBytes != null) registry.recordNothingToProbe(typeDescription.name)
             return builder
         }
         if (analysis.isKotlinClass && !analysis.hasLineNumbers) {

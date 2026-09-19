@@ -60,17 +60,33 @@ class UnreportedClassSweep(
     /**
      * Whether a loaded class is one the agent would have instrumented, had it been offered it.
      *
-     * Three of the four checks the type matcher runs, evaluated against the loaded class itself:
-     * the name rules, the synthetic flag, and the coroutine-continuation check, which needs only
-     * the direct superclass's name. The fourth, whether the class carries an annotation that is
-     * illegal on a type, is deliberately left out. Reading a class's annotations resolves each
-     * annotation's own type and can load classes, and a sweep must not load anything to look;
-     * a class turned away for that reason is recorded as skipped anyway, so it never reaches
-     * this test.
+     * ByteBuddy applies its own ignore matcher before any `.type(...)` matcher runs, and a class
+     * it ignores reaches no transform callback and no registry bucket. That gate is what supplies
+     * "every class outside the JDK" in the agent's own description of an empty include list, so a
+     * sweep that only replicated the type matcher would call the whole JDK a blind spot the moment
+     * `includePackages` was left at its default. The first three checks here are that gate: a class
+     * on the bootstrap or platform loader, and one named under ByteBuddy's own package or the
+     * reflection internals, is ignored rather than instrumented.
+     *
+     * The rest mirror `TypeMatchPolicy`: the synthetic flag, the name rules, and the
+     * coroutine-continuation check, which needs only the direct superclass's name. An array class
+     * and a hidden class are dropped too, neither of which a transformer is ever offered. A hidden
+     * class carries its own `/0x...` suffix in its name, so it could not be joined to anything a
+     * collector holds even if it were a blind spot.
+     *
+     * One check from the type matcher is left out on purpose: whether the class carries an
+     * annotation that is illegal on a type. Reading a class's annotations resolves each
+     * annotation's own type and can load classes, and a sweep must not load anything in order to
+     * look. A class turned away for that reason is recorded as skipped, so it never reaches here.
      */
     private fun isCandidate(loaded: Class<*>): Boolean {
+        if (loaded.isArray || loaded.isPrimitive || loaded.isHidden) return false
         if (loaded.isSynthetic) return false
-        if (!TypeMatchPolicy.isIncluded(loaded.name, config.instrumentedPackagePrefixes, config.excludedPackagePrefixes)) {
+        val loader = loaded.classLoader ?: return false
+        if (loader === ClassLoader.getPlatformClassLoader()) return false
+        val name = loaded.name
+        if (IGNORED_NAME_PREFIXES.any { name.startsWith(it) }) return false
+        if (!TypeMatchPolicy.isIncluded(name, config.instrumentedPackagePrefixes, config.excludedPackagePrefixes)) {
             return false
         }
         return !isCoroutineContinuation(loaded)
@@ -85,15 +101,15 @@ class UnreportedClassSweep(
      */
     private fun isCoroutineContinuation(loaded: Class<*>): Boolean {
         val superclassName = loaded.superclass?.name ?: return false
-        return CONTINUATION_SUPERCLASS_SUFFIXES.any { superclassName.endsWith(it) }
+        return TypeMatchPolicy.CONTINUATION_SUPERCLASS_SUFFIXES.any { superclassName.endsWith(it) }
     }
 
     private companion object {
-        /** Kept in step with `TypeMatchPolicy`'s own list, matched by suffix for the same shading reason. */
-        val CONTINUATION_SUPERCLASS_SUFFIXES =
-            listOf(
-                ".coroutines.jvm.internal.ContinuationImpl",
-                ".coroutines.jvm.internal.RestrictedContinuationImpl",
-            )
+        /**
+         * Names ByteBuddy's own ignore matcher turns away, beyond the classloader gate. Kept as
+         * literal prefixes rather than read from ByteBuddy, which exposes the matcher only as a
+         * composed predicate over its own type descriptions.
+         */
+        val IGNORED_NAME_PREFIXES = listOf("net.bytebuddy.", "sun.reflect.", "jdk.internal.reflect.")
     }
 }

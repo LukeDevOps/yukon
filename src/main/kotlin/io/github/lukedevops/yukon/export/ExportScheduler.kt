@@ -374,7 +374,12 @@ class ExportScheduler(
         var manifest: ProbeManifest,
         val probeSnapshot: ProbeRegistry.ManifestSnapshot?,
     ) {
-        var size = manifest.probes.size + manifest.skippedClasses.size + manifest.endpoints.size + manifest.disabledEndpointModules.size
+        // Every list the chunker weighted, so packing an endpoint chunk onto this one cannot
+        // overshoot the cap. A bucket missing here reads as weightless and absorbs a full chunk.
+        var size =
+            manifest.probes.size + manifest.skippedClasses.size + manifest.endpoints.size +
+                manifest.disabledEndpointModules.size + manifest.classSupertypes.size +
+                manifest.unreportedClasses.size
         val endpointSnapshots = mutableListOf<EndpointRegistry.ManifestSnapshot>()
     }
 
