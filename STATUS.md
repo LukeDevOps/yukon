@@ -5,6 +5,38 @@ history covers that.
 
 ## TODO
 
+### The unreported-class field is sent but not yet read
+
+The sweep ADR 0027 describes is done here and reports on the wire, as
+`ProbeManifest.unreported_classes` (tag 9). Nothing reads it yet: yukon-server
+takes its generated Go from the Buf Schema Registry, and the pinned commit
+predates the field, so until the schema is republished and that dependency is
+bumped the agent is emitting into a payload the store cannot see. The claim
+this closes therefore still reads wrong on the server, though the agent is no
+longer the reason.
+
+The steps, and what is already in place at the other end, are in
+`yukon-server/STATUS.md` under "Unreported classes need a proto bump".
+Publishing the schema is a `buf push` from this repo; see ADR 0012.
+
+yukon-collector needs nothing. It unmarshals a manifest and marshals it again
+when forwarding, and protobuf-go keeps fields its generated code does not
+know, so tag 9 passes through its older bindings untouched. Confirmed by
+round-tripping a hand-built tag 9 through that module's own `ProbeManifest`.
+
+### The sweep's chunking and cadence are untested
+
+Two paths the sweep added have no test. `computeManifestDeltas` weights an
+unreported class at one and seals a chunk at the cap, but nothing drives it
+with more unreported classes than the cap. And `ExportSchedulerTest` never
+passes an `unreportedClassSweep`, so every scheduler test takes the null
+branch in `maybeSweep` and "every tenth flush, always on the final one" is
+asserted nowhere.
+
+Neither is load-bearing for a dead-code claim: the worst a chunking bug does
+is an oversized POST, and a cadence bug means sweeping too often or too
+rarely. Worth closing when the file is next open.
+
 ### A transform that fails after ByteBuddy hands back the bytes
 
 Probes and endpoint declarations are both committed from
