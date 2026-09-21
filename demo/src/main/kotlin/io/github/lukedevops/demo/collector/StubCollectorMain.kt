@@ -229,15 +229,20 @@ private data class UnreachedClusterInfo(
  * no delta that ever reported a hit) and, since the demo server opts into
  * `staticBaselineEnabled=true`, "never loaded" (classes the static scan found that never once
  * appeared in the reactive manifest at all).
+ *
+ * Takes the port to bind as its one argument, defaulting to [DemoPorts.COLLECTOR_PORT] for a run
+ * by hand. Port 0 binds an ephemeral one; either way the port that was actually bound is printed,
+ * so a caller that asked for 0 learns which one it got by reading this process's output.
  */
-fun main() {
-    val server = HttpServer.create(InetSocketAddress(DemoPorts.COLLECTOR_PORT), 0)
+fun main(args: Array<String>) {
+    val requestedPort = args.firstOrNull()?.toIntOrNull() ?: DemoPorts.COLLECTOR_PORT
+    val server = HttpServer.create(InetSocketAddress(requestedPort), 0)
     server.createContext("/v1/yukon/deltas", ::handleDeltaBatch)
     server.createContext("/v1/yukon/manifest", ::handleManifest)
     server.createContext("/v1/yukon/static-baseline", ::handleStaticBaseline)
     server.createContext("/__shutdown", ::handleShutdown)
     server.start()
-    println("yukon stub collector listening on ${DemoPorts.COLLECTOR_PORT}")
+    println("yukon stub collector listening on ${server.address.port}")
 
     Runtime.getRuntime().addShutdownHook(
         Thread {

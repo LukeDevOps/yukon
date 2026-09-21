@@ -6,6 +6,7 @@ import java.net.Socket
 import java.net.URI
 import java.time.Instant
 import java.util.UUID
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 
 plugins {
@@ -59,16 +60,14 @@ tasks.register("runDemo") {
                 .asFile
 
         println("yukon demo: starting stub collector")
-        val collector = startProcess("collector", javaBin, listOf("-cp", demoClasspath, stubCollectorMainClass))
+        val (collector, collectorPort) = startStubCollector("collector", javaBin, demoClasspath)
         try {
-            waitForPort(DemoPorts.COLLECTOR_PORT, portWaitTimeoutSeconds)
-
             println("yukon demo: starting instrumented demo server")
             val agentArg =
                 "-javaagent:${agentJar.absolutePath}=" +
                     "serviceName=yukon-demo," +
                     "flushIntervalSeconds=$flushIntervalSeconds," +
-                    "endpoint=http://localhost:${DemoPorts.COLLECTOR_PORT}," +
+                    "endpoint=http://localhost:$collectorPort," +
                     "includePackages=io.github.lukedevops.demo.server," +
                     "staticBaselineEnabled=true"
             val server = startProcess("server", javaBin, listOf(agentArg, "-cp", demoClasspath, demoServerMainClass))
@@ -86,7 +85,7 @@ tasks.register("runDemo") {
                 gracefulShutdown("server", server, DemoPorts.SERVER_PORT)
             }
         } finally {
-            gracefulShutdown("collector", collector, DemoPorts.COLLECTOR_PORT)
+            gracefulShutdown("collector", collector, collectorPort)
         }
         println("yukon demo: done")
     }
@@ -129,17 +128,15 @@ tasks.register("runSpringDemo") {
                 .asFile
 
         println("yukon spring demo: starting stub collector")
-        val collector = startProcess("spring-collector", javaBin, listOf("-cp", demoClasspath, stubCollectorMainClass))
+        val (collector, collectorPort) = startStubCollector("spring-collector", javaBin, demoClasspath)
         try {
-            waitForPort(DemoPorts.COLLECTOR_PORT, portWaitTimeoutSeconds)
-
             println("yukon spring demo: starting instrumented Spring Boot fat jar")
             val agentArg =
                 "-javaagent:${agentJar.absolutePath}=" +
                     "serviceName=yukon-spring-demo," +
                     "serviceVersion=spring-demo," +
                     "flushIntervalSeconds=$flushIntervalSeconds," +
-                    "endpoint=http://localhost:${DemoPorts.COLLECTOR_PORT}," +
+                    "endpoint=http://localhost:$collectorPort," +
                     "includePackages=io.github.lukedevops.demo.spring," +
                     "staticBaselineEnabled=true"
             val server =
@@ -162,7 +159,7 @@ tasks.register("runSpringDemo") {
                 gracefulShutdown("spring-server", server, DemoPorts.SPRING_SERVER_PORT)
             }
         } finally {
-            gracefulShutdown("spring-collector", collector, DemoPorts.COLLECTOR_PORT)
+            gracefulShutdown("spring-collector", collector, collectorPort)
         }
         println("yukon spring demo: done")
     }
@@ -390,7 +387,37 @@ fun printStackReport() {
 class DemoProcess(
     val process: Process,
     val outputThread: Thread,
+    val captured: CompletableFuture<String>,
 )
+
+// The stub collector binds whatever port it is given and prints the one it actually bound, so
+// asking it for 0 and reading the number back out of its output is how a demo run stays clear of
+// the compose stack's collector on 4319 and of the testkit's. Reading it rather than picking a
+// free port here and passing it in leaves no window between choosing the port and binding it for
+// something else to take it.
+val collectorPortPattern = Regex("""yukon stub collector listening on (\d+)""")
+
+fun startStubCollector(
+    tag: String,
+    javaBin: String,
+    demoClasspath: String,
+): Pair<DemoProcess, Int> {
+    val collector =
+        startProcess(
+            tag,
+            javaBin,
+            listOf("-cp", demoClasspath, stubCollectorMainClass, "0"),
+            capturePattern = collectorPortPattern,
+        )
+    val port =
+        try {
+            collector.captured.get(portWaitTimeoutSeconds, TimeUnit.SECONDS)
+        } catch (e: Exception) {
+            collector.process.destroy()
+            throw GradleException("yukon demo: the stub collector never reported a port ($e)")
+        }
+    return collector to port.toInt()
+}
 
 // Redirect.INHERIT would inherit the Gradle daemon's own stdio, not this
 // build invocation's terminal, so child output would silently disappear.
@@ -403,20 +430,30 @@ fun startProcess(
     javaBin: String,
     args: List<String>,
     env: Map<String, String> = emptyMap(),
+    capturePattern: Regex? = null,
 ): DemoProcess {
     val builder =
         ProcessBuilder(listOf(javaBin) + args)
             .redirectErrorStream(true)
     builder.environment().putAll(env)
     val process = builder.start()
+    val captured = CompletableFuture<String>()
     val outputThread =
         Thread({
-            process.inputStream.bufferedReader().forEachLine { println("[$tag] $it") }
+            process.inputStream.bufferedReader().forEachLine { line ->
+                println("[$tag] $line")
+                if (!captured.isDone) {
+                    capturePattern?.find(line)?.let { captured.complete(it.groupValues[1]) }
+                }
+            }
+            // The stream ends when the process does, so a process that died before printing what
+            // was wanted fails its waiter here instead of leaving it to time out.
+            captured.completeExceptionally(IOException("$tag exited without matching $capturePattern"))
         }, "yukon-demo-$tag-output").apply {
             isDaemon = true
             start()
         }
-    return DemoProcess(process, outputThread)
+    return DemoProcess(process, outputThread, captured)
 }
 
 // POSTing to /__shutdown lets each process exit itself and flush any final output first;
@@ -461,8 +498,9 @@ fun waitForPort(
     throw GradleException("yukon demo: timed out waiting for port $port")
 }
 
+// The stub collector's port is not here: the demo tasks let it bind an ephemeral one and read
+// back what it got. See startStubCollector.
 object DemoPorts {
-    const val COLLECTOR_PORT = 4319
     const val SERVER_PORT = 8085
     const val SPRING_SERVER_PORT = 8090
 }

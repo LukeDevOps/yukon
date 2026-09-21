@@ -32,15 +32,6 @@ nothing a collector holds by name.
 One `@Bean`-bearing configuration class in `demo-spring` would show what
 actually happens, which is the point: nobody has looked yet.
 
-### The stub demos and the compose stack fight over port 4319
-
-`:demo:runDemo` starts `StubCollectorMain` on 4319, the same port the
-testkit's collector defaults to and the port the compose stack's collector
-binds on the host. With the stack up, the stub dies on bind and the demo run
-fails for a reason that has nothing to do with the agent. A port taken from
-config, or a stub that picks a free port and tells the demo server which one,
-would close it.
-
 ### Follow-ups the branch-probe round left open
 
 Each is recorded rather than started. The first needs evidence before it can
