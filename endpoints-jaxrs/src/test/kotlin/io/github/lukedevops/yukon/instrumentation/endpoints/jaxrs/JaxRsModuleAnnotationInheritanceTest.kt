@@ -5,10 +5,14 @@ import io.github.lukedevops.yukon.instrumentation.endpoints.api.AdviceBinder
 import io.github.lukedevops.yukon.registry.EndpointRegistry
 import io.github.lukedevops.yukon.registry.HandlerRef
 import jakarta.ws.rs.GET
+import jakarta.ws.rs.HttpMethod
 import jakarta.ws.rs.Path
 import net.bytebuddy.ByteBuddy
 import net.bytebuddy.description.type.TypeDescription
+import net.bytebuddy.dynamic.ClassFileLocator
+import net.bytebuddy.pool.TypePool
 import java.lang.reflect.Proxy
+import java.net.URLClassLoader
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -87,6 +91,133 @@ class JaxRsModuleAnnotationInheritanceTest {
 
             assertEquals(listOf("GET" to "/ping-a"), calls.map { it.verb to it.template })
         }
+    }
+
+    @Test
+    fun `a superclass's class-level Path is inherited when Jersey is present`() {
+        assertEquals(setOf("GET" to "/legacy/{id}"), declaredBy(LegacyResource::class.java, jerseyPresent = true))
+    }
+
+    @Test
+    fun `a superclass's class-level Path is dropped when Jersey is absent`() {
+        assertEquals(setOf("GET" to "/{id}"), declaredBy(LegacyResource::class.java, jerseyPresent = false))
+    }
+
+    @Test
+    fun `a class-level Path two superclasses up is inherited`() {
+        assertEquals(setOf("GET" to "/deep/leaf"), declaredBy(DeepLeafResource::class.java, jerseyPresent = true))
+    }
+
+    @Test
+    fun `a superclass's class-level Path wins over an interface's, as Jersey resolves it`() {
+        assertEquals(setOf("GET" to "/from-class/both"), declaredBy(BothSourcesResource::class.java, jerseyPresent = true))
+    }
+
+    @Test
+    fun `a class-level Path on a superclass's own interface is inherited`() {
+        assertEquals(setOf("GET" to "/from-iface/mid"), declaredBy(MidInterfaceResource::class.java, jerseyPresent = true))
+    }
+
+    @Test
+    fun `a method with no annotation anywhere is not an endpoint`() {
+        assertEquals(emptySet(), declaredBy(UnannotatedResource::class.java, jerseyPresent = true))
+    }
+
+    @Test
+    fun `a method inherits its verb and path from the superclass method it overrides`() {
+        assertEquals(setOf("GET" to "/inherited"), declaredBy(OverridingResource::class.java, jerseyPresent = false))
+    }
+
+    @Test
+    fun `a method inherits its annotations through a superinterface of an implemented interface`() {
+        assertEquals(setOf("GET" to "/grandparent"), declaredBy(GrandInterfaceResource::class.java, jerseyPresent = false))
+    }
+
+    @Test
+    fun `a custom annotation meta-annotated with HttpMethod is read as that verb, uppercased`() {
+        assertEquals(setOf("PURGE" to "/cache"), declaredBy(CustomVerbResource::class.java, jerseyPresent = false))
+    }
+
+    @Test
+    fun `a supertype the type pool cannot resolve leaves the method declared without a class prefix`() {
+        // The description ByteBuddy hands a real transform is TypePool-backed and resolves a
+        // supertype lazily, so a resource whose superclass is not on its own loader (an optional
+        // dependency, a jar trimmed at packaging) raises on first touch. Degrading to "no class
+        // prefix" keeps the method; letting it escape would disable this module for the process.
+        val hidden = LegacyBase::class.java.name
+        val loader = LegacyResource::class.java.classLoader
+        val locator =
+            object : ClassFileLocator {
+                private val delegate = ClassFileLocator.ForClassLoader.of(loader)
+
+                override fun locate(name: String): ClassFileLocator.Resolution =
+                    if (name == hidden) ClassFileLocator.Resolution.Illegal(name) else delegate.locate(name)
+
+                override fun close() = delegate.close()
+            }
+        val described =
+            TypePool.Default
+                .of(locator)
+                .describe(LegacyResource::class.java.name)
+                .resolve()
+
+        lateinit var declared: Set<Pair<String, String>>
+        withRecordingResolver { calls ->
+            JaxRsModule(jerseyPresent = { true }).transform(
+                ByteBuddy().decorate(LegacyResource::class.java),
+                described,
+                advice,
+                loader,
+            )
+            declared = calls.map { it.verb to it.template }.toSet()
+        }
+
+        assertEquals(setOf("GET" to "/{id}"), declared)
+    }
+
+    @Test
+    fun `the default module reads Jersey's presence from the loader it is given`() {
+        // Jersey is on this test's own classpath, so the real isJerseyPresent finds its marker
+        // through the fixture's loader and applies the inherited class prefix; a loader with no
+        // parent and no classpath sees nothing, and the prefix is dropped.
+        val withJersey = declaredByDefaultModule(LegacyResource::class.java.classLoader)
+        val withoutJersey = declaredByDefaultModule(URLClassLoader(arrayOf(), null))
+
+        assertEquals(setOf("GET" to "/legacy/{id}"), withJersey)
+        assertEquals(setOf("GET" to "/{id}"), withoutJersey)
+    }
+
+    /** What a [JaxRsModule] built with no injected Jersey check declares for [LegacyResource] on [classLoader]. */
+    private fun declaredByDefaultModule(classLoader: ClassLoader?): Set<Pair<String, String>> {
+        lateinit var declared: Set<Pair<String, String>>
+        withRecordingResolver { calls ->
+            JaxRsModule().transform(
+                ByteBuddy().decorate(LegacyResource::class.java),
+                TypeDescription.ForLoadedType.of(LegacyResource::class.java),
+                advice,
+                classLoader,
+            )
+            declared = calls.map { it.verb to it.template }.toSet()
+        }
+        return declared
+    }
+
+    /** Every `(verb, template)` [JaxRsModule.transform] declares for [type]. */
+    private fun declaredBy(
+        type: Class<*>,
+        jerseyPresent: Boolean,
+    ): Set<Pair<String, String>> {
+        lateinit var declared: Set<Pair<String, String>>
+        withRecordingResolver { calls ->
+            JaxRsModule(jerseyPresent = { jerseyPresent }).transform(
+                ByteBuddy().decorate(type),
+                TypeDescription.ForLoadedType.of(type),
+                advice,
+                type.classLoader,
+            )
+            declared = calls.map { it.verb to it.template }.toSet()
+        }
+        return declared
     }
 
     /**
@@ -250,4 +381,91 @@ private class PingResource :
     PingA,
     PingB {
     override fun ping(): String = "pong"
+}
+
+@Path("/legacy")
+private abstract class LegacyBase
+
+/** Inherits its class-level `@Path` from [LegacyBase], which only Jersey's resolution order honours. */
+private class LegacyResource : LegacyBase() {
+    @GET
+    @Path("/{id}")
+    fun find(): String = "one"
+}
+
+@Path("/deep")
+private abstract class DeepRoot
+
+private abstract class DeepMiddle : DeepRoot()
+
+/** Two classes below the one carrying `@Path`, so the superclass walk has to keep going. */
+private class DeepLeafResource : DeepMiddle() {
+    @GET
+    @Path("/leaf")
+    fun leaf(): String = "leaf"
+}
+
+@Path("/from-iface")
+private interface PathBearingInterface
+
+@Path("/from-class")
+private abstract class PathBearingBase
+
+/** Carries a class-level `@Path` on both a superclass and an interface; Jersey's order takes the superclass. */
+private class BothSourcesResource :
+    PathBearingBase(),
+    PathBearingInterface {
+    @GET
+    @Path("/both")
+    fun both(): String = "both"
+}
+
+private abstract class MidWithInterface : PathBearingInterface
+
+/** Its own interfaces carry no `@Path`; the one on its superclass's interface is the only source. */
+private class MidInterfaceResource : MidWithInterface() {
+    @GET
+    @Path("/mid")
+    fun mid(): String = "mid"
+}
+
+/** No JAX-RS annotation on the class, its supertypes, or the method: not an endpoint at all. */
+private class UnannotatedResource {
+    fun plain(): String = "plain"
+}
+
+private abstract class AnnotatedMethodBase {
+    @GET
+    @Path("/inherited")
+    open fun read(): String = "base"
+}
+
+/** Overrides an annotated method without annotating the override, which the specification inherits. */
+private class OverridingResource : AnnotatedMethodBase() {
+    override fun read(): String = "child"
+}
+
+private interface GrandparentInterface {
+    @GET
+    @Path("/grandparent")
+    fun read(): String
+}
+
+private interface ParentInterface : GrandparentInterface
+
+/** Reaches its annotations only through [ParentInterface]'s own superinterface. */
+private class GrandInterfaceResource : ParentInterface {
+    override fun read(): String = "grandchild"
+}
+
+@Target(AnnotationTarget.FUNCTION)
+@Retention(AnnotationRetention.RUNTIME)
+@HttpMethod("purge")
+private annotation class Purge
+
+/** Declares a verb JAX-RS has no annotation of its own for, the way `@PATCH` was defined before the spec had one. */
+private class CustomVerbResource {
+    @Purge
+    @Path("/cache")
+    fun purge(): String = "purged"
 }

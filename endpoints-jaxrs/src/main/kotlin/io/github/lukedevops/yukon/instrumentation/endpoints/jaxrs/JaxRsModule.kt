@@ -262,9 +262,8 @@ class JaxRsModule
          * interface, [type] itself included.
          */
         private fun findInheritedClassPath(type: TypeDescription): String? {
-            var foundInterfacePath: String? = null
+            var foundInterfacePath = interfaceErasures(type).firstNotNullOfOrNull { pathValue(it) }
             var current: TypeDescription? = superErasure(type)
-            if (foundInterfacePath == null) foundInterfacePath = interfaceErasures(type).firstNotNullOfOrNull { pathValue(it) }
             while (current != null) {
                 pathValue(current)?.let { return it }
                 if (foundInterfacePath == null) foundInterfacePath = interfaceErasures(current).firstNotNullOfOrNull { pathValue(it) }

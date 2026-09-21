@@ -324,20 +324,25 @@ private fun walkPredicate(
                     // Pure markers: every combination is resolved at its matching end* call below.
                 }
 
+                // Every operand is popped tolerantly: a predicate whose own `accept` describes it
+                // to the visitor not at all pushes nothing, and a missing operand narrows nothing,
+                // exactly as a neutral leaf does. Popping it strictly would raise
+                // NoSuchElementException out of the visitor proxy, which the seam can only treat
+                // as this module failing, taking every Spring endpoint in the process down with it.
                 "endAnd" -> {
-                    val right = stack.removeLast()
-                    val left = stack.removeLast()
+                    val right = stack.removeLastOrNull() ?: NEUTRAL
+                    val left = stack.removeLastOrNull() ?: NEUTRAL
                     stack.addLast(combineAnd(left, right))
                 }
 
                 "endOr" -> {
-                    val right = stack.removeLast()
-                    val left = stack.removeLast()
+                    val right = stack.removeLastOrNull() ?: NEUTRAL
+                    val left = stack.removeLastOrNull() ?: NEUTRAL
                     stack.addLast(PredicateResult(left.alternatives + right.alternatives, left.unknown || right.unknown))
                 }
 
                 "endNegate" -> {
-                    stack.removeLast()
+                    stack.removeLastOrNull()
                     stack.addLast(NEUTRAL)
                 }
 
