@@ -20,11 +20,13 @@ import org.springframework.web.bind.annotation.RestController
  * The demo client calls [get], [create], and [ping]. [invoice] and [delete] are declared but
  * never called, and [InvoiceService.render], reachable only through [invoice], is never hit at
  * the method tier either. [get]'s legacy-pricing branch is always off in this demo, the same
- * feature-flag shape as the plain demo server's `/checkout`.
+ * feature-flag shape as the plain demo server's `/checkout`, and its [PriceFormatter] comes from
+ * [PricingConfiguration], the `@Bean`-bearing class Spring proxies with CGLIB.
  */
 @RestController
 class OrderController(
     private val invoiceService: InvoiceService,
+    private val priceFormatter: PriceFormatter,
 ) {
     @GetMapping("/orders/{id}")
     fun get(
@@ -36,7 +38,7 @@ class OrderController(
             } else {
                 100.0
             }
-        return "order $id price=$price"
+        return "order $id price=${priceFormatter.withTax(price)}"
     }
 
     @PostMapping("/orders")

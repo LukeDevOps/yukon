@@ -287,4 +287,67 @@ class TypeMatchPolicyTest {
 
         assertTrue(TypeMatchPolicy.typeNameMatcher(listOf("com.example"), emptyList()).matches(type))
     }
+
+    /**
+     * Spring 6 and 7 name an enhanced configuration class and its fast-class helpers with this
+     * marker, confirmed by reading `SpringNamingPolicy.getClassName` out of spring-core 6.2.19 and
+     * 7.0.9, and by the classes Spring actually generated for `demo-spring`'s `PricingConfiguration`.
+     */
+    @Test
+    fun `a Spring CGLIB proxy name is rejected by the type matcher`() {
+        for (
+        name in
+        listOf(
+            "com.example.target.Config\$\$SpringCGLIB\$\$0",
+            "com.example.target.Config\$\$SpringCGLIB\$\$FastClass\$\$0",
+        )
+        ) {
+            val bytes = classWithSuperclass(name.replace('.', '/'), "java/lang/Object")
+            val pool = TypePool.Default.of(ClassFileLocator.Simple.of(name, bytes))
+
+            assertFalse(
+                TypeMatchPolicy.typeNameMatcher(listOf("com.example"), emptyList()).matches(pool.describe(name).resolve()),
+                name,
+            )
+        }
+    }
+
+    /**
+     * Spring 5.3 spells the same thing differently: `SpringNamingPolicy.getTag()` returns
+     * `BySpringCGLIB` and `DefaultNamingPolicy.getClassName` puts the generating class's simple
+     * name in front of it, confirmed by reading both out of spring-core 5.3.39. The
+     * `endpoints-spring-webmvc` module supports 5.3, so both spellings have to be rejected.
+     */
+    @Test
+    fun `a Spring 5 CGLIB proxy name is rejected by the type matcher`() {
+        for (
+        name in
+        listOf(
+            "com.example.target.Config\$\$EnhancerBySpringCGLIB\$\$1a2b3c4d",
+            "com.example.target.Config\$\$FastClassBySpringCGLIB\$\$1a2b3c4d",
+        )
+        ) {
+            val bytes = classWithSuperclass(name.replace('.', '/'), "java/lang/Object")
+            val pool = TypePool.Default.of(ClassFileLocator.Simple.of(name, bytes))
+
+            assertFalse(
+                TypeMatchPolicy.typeNameMatcher(listOf("com.example"), emptyList()).matches(pool.describe(name).resolve()),
+                name,
+            )
+        }
+    }
+
+    /**
+     * Why the rule names its markers rather than turning away any `$$` in a class name: kotlinc
+     * puts `$$` in the name of the class it generates for a lambda passed to an inlined stdlib
+     * function, and that class holds the adopter's own body.
+     */
+    @Test
+    fun `a Kotlin inlined-lambda class name is not mistaken for a generated proxy`() {
+        val name = "com.example.target.OrdersKt\$special\$\$inlined\$sortedBy\$1"
+        val bytes = classWithSuperclass(name.replace('.', '/'), "java/lang/Object")
+        val pool = TypePool.Default.of(ClassFileLocator.Simple.of(name, bytes))
+
+        assertTrue(TypeMatchPolicy.typeNameMatcher(listOf("com.example"), emptyList()).matches(pool.describe(name).resolve()))
+    }
 }

@@ -4,7 +4,9 @@ import io.github.lukedevops.yukon.config.AgentConfig
 import io.github.lukedevops.yukon.export.ProbeKind
 import io.github.lukedevops.yukon.registry.ProbeMeta
 import io.github.lukedevops.yukon.registry.ProbeRegistry
+import net.bytebuddy.ByteBuddy
 import net.bytebuddy.agent.ByteBuddyAgent
+import net.bytebuddy.dynamic.loading.ClassLoadingStrategy
 import java.lang.instrument.Instrumentation
 import java.util.logging.Handler
 import java.util.logging.LogRecord
@@ -139,5 +141,29 @@ class LoadedClassSweepTest {
         val records = captureLogRecords(LoadedClassSweep::class.java.name) { sweep.run(runForwardPass = false, final = true) }
 
         assertTrue(records.none { it.message.contains("never confirmed") })
+    }
+
+    /**
+     * The forward direction has to turn away a runtime-generated class for the same reason the
+     * type matcher does, or every Spring CGLIB proxy would be reported as a class no transformer
+     * saw. See ADR 0029.
+     */
+    @Test
+    fun `a runtime-generated proxy class the JVM has loaded is not reported as a blind spot`() {
+        val name = "com.example.target.Config\$\$SpringCGLIB\$\$0"
+        val generated =
+            ByteBuddy()
+                .subclass(Any::class.java)
+                .name(name)
+                .make()
+                .load(javaClass.classLoader, ClassLoadingStrategy.Default.WRAPPER)
+                .loaded
+        val registry = ProbeRegistry()
+        val config = AgentConfig.parse("includePackages=com.example.target")
+
+        LoadedClassSweep(instrumentation, registry, config).run(runForwardPass = true)
+
+        val unreported = registry.manifest("test", null, "instance-1").unreportedClasses.map { it.className }
+        assertTrue(generated.name !in unreported, "a proxy the agent leaves alone on purpose is not a blind spot: $unreported")
     }
 }

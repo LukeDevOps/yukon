@@ -128,8 +128,9 @@ open class LoadedClassSweep(
      * on the bootstrap or platform loader, and one named under ByteBuddy's own package or the
      * reflection internals, is ignored rather than instrumented.
      *
-     * The rest mirror `TypeMatchPolicy`: the synthetic flag, the name rules, and the
-     * coroutine-continuation check, which needs only the direct superclass's name. An array class
+     * The rest mirror `TypeMatchPolicy`: the synthetic flag, the name rules, the
+     * runtime-generated proxy names, and the coroutine-continuation check, which needs only the
+     * direct superclass's name. An array class
      * and a hidden class are dropped too, neither of which a transformer is ever offered. A hidden
      * class carries its own `/0x...` suffix in its name, so it could not be joined to anything a
      * collector holds even if it were a blind spot.
@@ -149,6 +150,7 @@ open class LoadedClassSweep(
         if (!TypeMatchPolicy.isIncluded(name, config.instrumentedPackagePrefixes, config.excludedPackagePrefixes)) {
             return false
         }
+        if (TypeMatchPolicy.isRuntimeGenerated(name)) return false
         return !isCoroutineContinuation(loaded)
     }
 

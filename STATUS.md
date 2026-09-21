@@ -20,17 +20,35 @@ Two things fall out of it when it happens. The poms need licence metadata,
 which nothing generates today. And a published testkit fixes its own API, so
 the query surface is worth a look before it is frozen rather than after.
 
-### The demo never produces a CGLIB proxy
+### Generated methods are marked, their branches are not
 
-`demo-spring` has no `@Bean` method and nothing `@Transactional`, so Spring
-never generates a proxy in the demo's own packages, and how the agent treats
-one is untested end to end. A proxy class is synthesized in memory under a
-run-specific name, so on the face of it the type matcher takes it, the
-static baseline cannot know it exists, and whatever probes it gets join to
-nothing a collector holds by name.
+`GeneratedBy` is set on a METHOD probe and on an omission probe, and never on
+a BRANCH probe: `YukonInstrumentation` builds a branch `ProbeMeta` without it
+while the two lines above it pass `analysis.generatedBy(...)`. So a data
+class's `equals` is marked and left out of the judged set, and the six branch
+probes inside that same `equals` are reported as ordinary never-hit
+conditionals. ADR 0025 is entirely about not reporting branches the adopter
+did not write, and these are as generated as the method holding them.
 
-One `@Bean`-bearing configuration class in `demo-spring` would show what
-actually happens, which is the point: nobody has looked yet.
+Found while adding `demo-spring`'s `PricingConfiguration`: a `data class` in
+the demo printed six never-hit rows for a generated `equals`, which is why
+`TaxRate` is a plain class. The fix is to pass the method's own `GeneratedBy`
+through to its branch probes, which touches the wire data the server and the
+testkit both read, so it wants its own chunk rather than a line in this one.
+
+### Generators other than Spring are not recognised
+
+ADR 0029 turns away a runtime-generated class by the markers its generator
+puts in the name, and covers only Spring's, which are the only ones confirmed
+against their own source and run end to end here. Hibernate's
+`$HibernateProxy$`, ByteBuddy's own `$ByteBuddy$`, javassist's `_$$_jvst` and
+JDK dynamic proxies (`$Proxy` in a non-public interface's package) produce the
+same shape and are not covered.
+
+Each is one marker and one test, gated on confirming the naming against that
+library's own source the way Spring's was. Hibernate is the one worth doing
+first: an entity package full of `$HibernateProxy$` classes is the exact shape
+that took `demo-spring`'s report to 81% dead.
 
 ### Follow-ups the branch-probe round left open
 

@@ -65,7 +65,46 @@ object TypeMatchPolicy {
         not(isSynthetic<TypeDescription>())
             .and { typeDescription: TypeDescription ->
                 isIncluded(typeDescription.name, instrumentedPackagePrefixes, excludedPackagePrefixes)
-            }.and { typeDescription: TypeDescription -> !isCoroutineContinuation(typeDescription) }
+            }.and { typeDescription: TypeDescription -> !isRuntimeGenerated(typeDescription.name) }
+            .and { typeDescription: TypeDescription -> !isCoroutineContinuation(typeDescription) }
+
+    /**
+     * Markers in the name of a class a framework synthesized in memory, carried in the middle of
+     * the name rather than as a prefix: a proxy is named after the class it proxies, so it lands
+     * in the adopter's own package and no package rule can tell it apart.
+     *
+     * Spring 6 and 7 use `$$SpringCGLIB$$`, with `FastClass` appended for the two helper classes
+     * that go with an enhanced configuration class; Spring 5.3 tags the same classes
+     * `BySpringCGLIB$$` behind the generating class's simple name (`$$EnhancerBySpringCGLIB$$`,
+     * `$$FastClassBySpringCGLIB$$`). Both spellings were read out of `SpringNamingPolicy` and
+     * `DefaultNamingPolicy` in spring-core 5.3.39, 6.2.19 and 7.0.9 rather than recalled.
+     */
+    private val RUNTIME_GENERATED_NAME_MARKERS = listOf("\$\$SpringCGLIB\$\$", "BySpringCGLIB\$\$")
+
+    /**
+     * Whether [className] names a class a framework generated at runtime, which this agent leaves
+     * alone: it holds no code the adopter wrote, so a never-hit finding about it names nothing
+     * anyone can delete. The class it proxies is instrumented normally and is where the real
+     * signal lives, since a proxy reaches the method it overrides through `super`.
+     *
+     * Such a class also has no identity worth reporting. Its name carries a counter or a hash from
+     * the order the generator happened to produce it in, so two instances of one service disagree
+     * about it and a collector can never merge them into "never hit across the fleet"; it has no
+     * `.class` file, so the static baseline scan cannot declare it and the blind-spot warning for
+     * a class the scan missed fires on every one of them; and it carries no line numbers, so every
+     * row it produces points at line -1. Left in, one `@Bean`-bearing Spring configuration class
+     * put 274 of `demo-spring`'s 289 probes into three generated classes and took the demo's
+     * report from 4 never-hit probes to 230.
+     *
+     * The rule is the generator's own naming, not the shape of the bytecode, because the
+     * structural signals all collide with something real: Spring's CGLIB classes are neither
+     * synthetic nor missing a `SourceFile` attribute (theirs reads `<generated>`), and the one
+     * thing they do lack, line numbers, is exactly what a class compiled without debug info lacks
+     * too, which ADR 0026 keeps and labels rather than drops. A bare `$$` test is no good either:
+     * kotlinc puts `$$` in the name of a class it generates for a lambda passed to an inlined
+     * function, and that class holds the adopter's body. See ADR 0029.
+     */
+    fun isRuntimeGenerated(className: String): Boolean = RUNTIME_GENERATED_NAME_MARKERS.any { it in className }
 
     /**
      * A dotted suffix of a suspend function's own continuation class's direct superclass. Matched

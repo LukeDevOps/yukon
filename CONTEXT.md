@@ -36,6 +36,10 @@ _Avoid_: coroutine noise, state-machine branches
 A method the compiler emits from a declaration rather than from a body the adopter wrote: an enum's `values` and `valueOf`, a data class's `componentN`, `copy`, `equals`, `hashCode` and `toString`, a `$DefaultImpls` method. Probed and marked with what generated it; never reported as never hit.
 _Avoid_: synthetic method (a JVM flag; these are not synthetic), compiler method
 
+**Runtime-generated class**:
+A class a framework synthesized in memory rather than compiled from source, named after the class it proxies so that it falls inside the adopter's own packages: a Spring CGLIB proxy and its fast-class helpers. Recognised by the generator's naming, never probed, never declared, and never reported at all, the way coroutine machinery is.
+_Avoid_: proxy class (a Spring bean proxy is one shape of it), synthetic class (a JVM flag; these are not synthetic), skipped class (a skipped class is one the agent wanted and could not have)
+
 **Skipped class**:
 A class that matched the include rules but could not be instrumented, reported with a reason.
 _Avoid_: failed class, excluded class (excluded means outside `includePackages`)
