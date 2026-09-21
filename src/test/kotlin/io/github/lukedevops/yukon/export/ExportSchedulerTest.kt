@@ -6,6 +6,7 @@ import io.github.lukedevops.yukon.instrumentation.branch.BranchDropCounts
 import io.github.lukedevops.yukon.instrumentation.branch.BranchDropReason
 import io.github.lukedevops.yukon.registry.DependencyRegistry
 import io.github.lukedevops.yukon.registry.EndpointRegistry
+import io.github.lukedevops.yukon.registry.ExternalClassRegistry
 import io.github.lukedevops.yukon.registry.ProbeMeta
 import io.github.lukedevops.yukon.registry.ProbeRegistry
 import net.bytebuddy.agent.ByteBuddyAgent
@@ -777,6 +778,86 @@ class ExportSchedulerTest {
                 manifest.probes.size + manifest.probes.sumOf { it.calls.size } + manifest.classSupertypes.size +
                     manifest.skippedClasses.size + manifest.unreportedClasses.size + manifest.endpoints.size +
                     manifest.disabledEndpointModules.size + manifest.dependencies.size
+            assertTrue(weight <= 6, "a sent manifest must not exceed the cap it was chunked under, got $weight")
+        }
+    }
+
+    private fun externalClassRegistryWith(vararg classNames: String): ExternalClassRegistry =
+        ExternalClassRegistry({ true }) { 7 }.apply {
+            for (name in classNames) record(name, "jar:file:/libs/lib.jar!/")
+        }
+
+    @Test
+    fun `external classes ride on the class manifest chunk and go out once`() {
+        val registry = ProbeRegistry()
+        registry.register(
+            "com.example.Foo",
+            1L,
+            listOf(ProbeMeta(ProbeKind.METHOD, "bar", "()V", 1, referencedClasses = listOf("org.lib.A"))),
+        )
+        val exporter = RecordingExporter()
+        val scheduler =
+            ExportScheduler(config, registry, EndpointRegistry(), exporter, externalClassRegistry = externalClassRegistryWith("org.lib.A"))
+
+        scheduler.flush()
+        scheduler.flush()
+
+        assertEquals(1, exporter.manifests.size, "the second flush has nothing new to send")
+        assertEquals(listOf(ExternalClass("org.lib.A", 7)), exporter.manifests.single().externalClasses)
+    }
+
+    @Test
+    fun `a failed manifest send leaves external classes undelivered, so the next flush sends them again`() {
+        val externalClassRegistry = externalClassRegistryWith("org.lib.A")
+        ExportScheduler(
+            config,
+            ProbeRegistry(),
+            EndpointRegistry(),
+            FailingExporter(),
+            externalClassRegistry = externalClassRegistry,
+        ).flush()
+
+        val exporter = RecordingExporter()
+        ExportScheduler(config, ProbeRegistry(), EndpointRegistry(), exporter, externalClassRegistry = externalClassRegistry).flush()
+
+        assertEquals(
+            1,
+            exporter.manifests
+                .single()
+                .externalClasses.size,
+        )
+    }
+
+    @Test
+    fun `packing external classes counts a chunk's references, so the cap holds`() {
+        val registry = ProbeRegistry()
+        registry.register(
+            "com.example.Foo",
+            1L,
+            listOf(ProbeMeta(ProbeKind.METHOD, "bar", "()V", 1, referencedClasses = listOf("org.lib.A", "org.lib.B"))),
+            classReferences = listOf("org.lib.C"),
+        )
+        val exporter = RecordingExporter()
+        // The class weighs 5 (1 probe, 2 method references, its supertypes record, 1 class
+        // reference). Two external classes do not fit beside it under a cap of 6.
+        val scheduler =
+            ExportScheduler(
+                config,
+                registry,
+                EndpointRegistry(),
+                exporter,
+                maxManifestEntriesPerChunk = 6,
+                externalClassRegistry = externalClassRegistryWith("org.lib.A", "org.lib.B"),
+            )
+
+        scheduler.flush()
+
+        assertEquals(listOf(0, 2), exporter.manifests.map { it.externalClasses.size })
+        for (manifest in exporter.manifests) {
+            val weight =
+                manifest.probes.size + manifest.probes.sumOf { it.calls.size + it.referencedClasses.size } +
+                    manifest.classSupertypes.size + manifest.classReferences.sumOf { it.referencedClasses.size } +
+                    manifest.externalClasses.size
             assertTrue(weight <= 6, "a sent manifest must not exceed the cap it was chunked under, got $weight")
         }
     }

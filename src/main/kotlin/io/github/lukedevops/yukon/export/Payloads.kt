@@ -102,9 +102,13 @@ data class DeltaBatch(
  *
  * [referencedClasses] is set only for a [ProbeKind.METHOD] probe: the out-of-scope classes this
  * method's own bytecode references, dotted. A reference is wider than a call edge, since
- * annotations, casts, descriptor types, catch types and class literals all count. Every name listed
- * has an [ExternalClass] entry on the same instance; classes the bootstrap or platform loader
- * provides, and the adopter's own out-of-scope classes, are never listed. See ADR 0030.
+ * runtime-visible annotations, casts and type tests, types in a descriptor or generic signature,
+ * catch types and class literals all count. Classes the
+ * bootstrap or platform loader provides, and classes read from a directory on the classpath, are
+ * never listed. A name's [ExternalClass] entry may arrive on a later manifest than the name itself,
+ * since it is resolved only once the startup listing has finished; a name that never gets one
+ * belongs to no dependency (a jar of the adopter's own, an agent jar) and a collector ignores it.
+ * See ADR 0030.
  */
 data class ProbeLocation(
     val classId: Int,
@@ -233,9 +237,11 @@ data class DeclaredMethod(
  * read to analyse them; a class read successfully always has a superclass, since
  * `java.lang.Object` itself is never instrumented. See ADR 0024.
  *
- * [referencedClasses] holds class-level references only: annotations on the class, its
- * supertypes, its field types, and anything else outside a method body. Method-level references
- * travel on [DeclaredMethod.referencedClasses]. See ADR 0030.
+ * [referencedClasses] holds the class's references outside any probed method: annotations on the
+ * class, its supertypes, its field types, the signatures of methods without a probe, and anything
+ * else not held by a probed method. Method-level references travel on
+ * [DeclaredMethod.referencedClasses]. The same listing rule as [ProbeLocation.referencedClasses]
+ * applies. See ADR 0030.
  */
 data class DeclaredClass(
     val className: String,
@@ -422,8 +428,9 @@ data class DependencyDelta(
 )
 
 /**
- * A loaded class's own references outside any method body: annotations on the class, its
- * supertypes, its field types, and anything else not held by a method. The same listing rule as
+ * A loaded class's own references outside any probed method: annotations on the class, its
+ * supertypes, its field types, the signatures of methods without a probe (abstract, native), and
+ * anything else not held by a probed method. The same listing rule as
  * [ProbeLocation.referencedClasses] applies.
  */
 data class ClassReferences(

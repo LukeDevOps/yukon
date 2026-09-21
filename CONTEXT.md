@@ -171,7 +171,7 @@ One jar on the classpath that is not the adopter's own code, identified by the `
 _Avoid_: library, artifact, jar (as synonyms), call edge (a dependency is never an edge)
 
 **Reference**:
-Any mention of a class in the adopter's bytecode: a call, a field access, a construction, a cast or type test, a catch type, a class literal, a type in a descriptor, a supertype, or an annotation. Wider than a call edge, so a dependency used only through its annotations or a base class still counts as referenced.
+Any mention of a class in the adopter's bytecode that the running JVM can need: a call, a field access, a construction, a cast or type test, a catch type, a class literal, a type in a descriptor or generic signature, a supertype, or a runtime-visible annotation. Wider than a call edge, so a dependency used only through its annotations or a base class still counts as referenced. An annotation the compiler keeps out of runtime reach (class retention, such as `@NotNull`) is not a reference, since removing its jar changes nothing at runtime.
 _Avoid_: usage, import (a source-level notion with no bytecode trace)
 
 **Absent reference**:

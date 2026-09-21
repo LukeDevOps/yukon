@@ -6,6 +6,7 @@ import io.github.lukedevops.yukon.instrumentation.branch.BranchDropCounts
 import io.github.lukedevops.yukon.instrumentation.branch.BranchDropReason
 import io.github.lukedevops.yukon.registry.DependencyRegistry
 import io.github.lukedevops.yukon.registry.EndpointRegistry
+import io.github.lukedevops.yukon.registry.ExternalClassRegistry
 import io.github.lukedevops.yukon.registry.ProbeRegistry
 import java.lang.System.Logger.Level
 import java.time.Duration
@@ -47,6 +48,8 @@ class ExportScheduler(
     private val loadedClassSweep: LoadedClassSweep? = null,
     /** Dependencies found on the startup classpath, delivered on the manifest; see ADR 0030. */
     private val dependencyRegistry: DependencyRegistry = DependencyRegistry(),
+    /** Referenced out-of-scope classes, resolved to dependencies and delivered on the manifest; see ADR 0030. */
+    private val externalClassRegistry: ExternalClassRegistry = ExternalClassRegistry(),
 ) {
     private val log = System.getLogger(ExportScheduler::class.java.name)
     private var executor: ScheduledExecutorService? = null
@@ -332,8 +335,8 @@ class ExportScheduler(
     )
 
     /**
-     * Sends only the probes, endpoints and dependencies not yet included in a successfully
-     * delivered manifest.
+     * Sends only the probes, endpoints, dependencies and external classes not yet included in a
+     * successfully delivered manifest.
      *
      * This runs on the first flush, not at agent startup. By the first
      * flush, classes have actually started loading, so there are probes to
@@ -356,7 +359,8 @@ class ExportScheduler(
                 )
             val riders =
                 endpointRegistry.computeManifestEntries(maxManifestEntriesPerChunk).map(::endpointManifestRider) +
-                    dependencyRegistry.computeManifestEntries(maxManifestEntriesPerChunk).map(::dependencyManifestRider)
+                    dependencyRegistry.computeManifestEntries(maxManifestEntriesPerChunk).map(::dependencyManifestRider) +
+                    externalClassRegistry.computeManifestEntries(maxManifestEntriesPerChunk).map(::externalClassManifestRider)
             for (send in composeManifestSends(classChunks, riders)) {
                 exporter.exportManifest(send.manifest)
                 send.probeSnapshot?.let(registry::advanceManifestBaseline)
@@ -386,8 +390,15 @@ class ExportScheduler(
             advance = { dependencyRegistry.advanceManifest(chunk) },
         )
 
+    private fun externalClassManifestRider(chunk: ExternalClassRegistry.ManifestSnapshot): Rider<ProbeManifest> =
+        Rider(
+            size = chunk.externalClasses.size,
+            attach = { it.copy(externalClasses = it.externalClasses + chunk.externalClasses) },
+            advance = { externalClassRegistry.advanceManifest(chunk) },
+        )
+
     /**
-     * Packs endpoint and dependency chunks onto class manifest chunks, in [riders] order. Each
+     * Packs endpoint, dependency and external-class chunks onto class manifest chunks, in [riders] order. Each
      * rider goes on the first manifest with room for it, room being [maxManifestEntriesPerChunk]
      * minus that manifest's weight so far. A rider that fits nowhere, including when there are no
      * class chunks at all, becomes its own [ProbeManifest] with no probes, which a later rider may
@@ -423,14 +434,15 @@ class ExportScheduler(
         var manifest: ProbeManifest,
         val probeSnapshot: ProbeRegistry.ManifestSnapshot?,
     ) {
-        // Every list the chunker weighted, call edges included, so packing a rider onto this one
-        // cannot overshoot the cap. A bucket missing here reads as weightless and absorbs a full
-        // chunk; the edges nest inside each probe location rather than sitting beside it, which is
-        // why they need summing rather than a list size.
+        // Every list the chunker weighted, call edges and references included, so packing a rider
+        // onto this one cannot overshoot the cap. A bucket missing here reads as weightless and
+        // absorbs a full chunk; edges and references nest inside each probe location or class
+        // record rather than sitting beside it, which is why they need summing rather than a list size.
         var size =
-            manifest.probes.size + manifest.probes.sumOf { it.calls.size } + manifest.skippedClasses.size +
-                manifest.endpoints.size + manifest.disabledEndpointModules.size + manifest.classSupertypes.size +
-                manifest.unreportedClasses.size + manifest.dependencies.size
+            manifest.probes.size + manifest.probes.sumOf { it.calls.size + it.referencedClasses.size } +
+                manifest.skippedClasses.size + manifest.endpoints.size + manifest.disabledEndpointModules.size +
+                manifest.classSupertypes.size + manifest.classReferences.sumOf { it.referencedClasses.size } +
+                manifest.unreportedClasses.size + manifest.dependencies.size + manifest.externalClasses.size
         val riders = mutableListOf<Rider<ProbeManifest>>()
     }
 

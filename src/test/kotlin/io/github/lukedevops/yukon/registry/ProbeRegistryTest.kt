@@ -1078,4 +1078,111 @@ class ProbeRegistryTest {
             "the withheld class's own ClassSupertypes record must not appear either",
         )
     }
+
+    @Test
+    fun `a METHOD probe's references reach its manifest location, and the class's references go out as one record`() {
+        val registry = ProbeRegistry()
+        registry.register(
+            "com.example.Foo",
+            layoutHash = 1L,
+            probes = listOf(ProbeMeta(ProbeKind.METHOD, "run", "()V", line = 1, referencedClasses = listOf("org.lib.Widget"))),
+            classReferences = listOf("org.lib.Base", "org.lib.Marker"),
+        )
+
+        for (manifest in listOf(
+            registry.manifest("checkout", null, "instance-1"),
+            registry.computeManifestDelta("checkout", null, "instance-1").manifest,
+        )) {
+            val location = manifest.probes.single()
+            assertEquals(listOf("org.lib.Widget"), location.referencedClasses)
+            assertEquals(
+                listOf(
+                    io.github.lukedevops.yukon.export
+                        .ClassReferences(location.classId, listOf("org.lib.Base", "org.lib.Marker")),
+                ),
+                manifest.classReferences,
+            )
+        }
+    }
+
+    @Test
+    fun `a class with no class-level references emits no ClassReferences record`() {
+        val registry = ProbeRegistry()
+        registry.register("com.example.Foo", layoutHash = 1L, probes = methodProbes(1))
+
+        assertTrue(registry.manifest("checkout", null, "instance-1").classReferences.isEmpty())
+        assertTrue(
+            registry
+                .computeManifestDelta("checkout", null, "instance-1")
+                .manifest.classReferences
+                .isEmpty(),
+        )
+    }
+
+    @Test
+    fun `a class's references are withheld until it is confirmed, like its supertypes`() {
+        val registry = ProbeRegistry(confirmsDefinitions = true)
+        registry.register("com.example.Withheld", layoutHash = 1L, probes = methodProbes(1), classReferences = listOf("org.lib.Base"))
+
+        assertTrue(registry.manifest("checkout", null, "instance-1").classReferences.isEmpty())
+        assertTrue(
+            registry
+                .computeManifestDelta("checkout", null, "instance-1")
+                .manifest.classReferences
+                .isEmpty(),
+        )
+
+        registry.confirmFrom(setOf("com.example.Withheld"))
+
+        assertEquals(
+            listOf("org.lib.Base"),
+            registry
+                .computeManifestDelta("checkout", null, "instance-1")
+                .manifest.classReferences
+                .single()
+                .referencedClasses,
+        )
+    }
+
+    @Test
+    fun `a class's ClassReferences record is marked included together with its probes`() {
+        val registry = ProbeRegistry()
+        registry.register("com.example.Foo", layoutHash = 1L, probes = methodProbes(1), classReferences = listOf("org.lib.Base"))
+
+        registry.advanceManifestBaseline(registry.computeManifestDelta("checkout", null, "instance-1"))
+
+        assertTrue(
+            registry
+                .computeManifestDelta("checkout", null, "instance-1")
+                .manifest.classReferences
+                .isEmpty(),
+        )
+    }
+
+    @Test
+    fun `references weigh one each against the chunk cap, so a class whose references push it over seals first`() {
+        val registry = ProbeRegistry()
+        registry.register(
+            "com.example.Heavy",
+            layoutHash = 1L,
+            probes = listOf(ProbeMeta(ProbeKind.METHOD, "run", "()V", line = 1, referencedClasses = listOf("org.a.A", "org.a.B"))),
+            classReferences = listOf("org.a.C", "org.a.D"),
+        )
+        registry.register("com.example.Light", layoutHash = 1L, probes = methodProbes(1))
+
+        // Heavy weighs 1 probe + 2 method references + 1 supertypes record + 2 class references = 6;
+        // Light weighs 2. Without the references they would share a chunk under a cap of 6.
+        val chunks = registry.computeManifestDeltas("checkout", null, "instance-1", maxEntriesPerChunk = 6)
+
+        assertEquals(2, chunks.size)
+        assertEquals(
+            setOf(setOf("com.example.Heavy"), setOf("com.example.Light")),
+            chunks
+                .map { chunk ->
+                    chunk.manifest.probes
+                        .map { it.className }
+                        .toSet()
+                }.toSet(),
+        )
+    }
 }

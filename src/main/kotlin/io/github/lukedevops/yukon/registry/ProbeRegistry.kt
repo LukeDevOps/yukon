@@ -1,5 +1,6 @@
 package io.github.lukedevops.yukon.registry
 
+import io.github.lukedevops.yukon.export.ClassReferences
 import io.github.lukedevops.yukon.export.ClassSupertypes
 import io.github.lukedevops.yukon.export.DeltaBatch
 import io.github.lukedevops.yukon.export.ProbeDelta
@@ -75,7 +76,7 @@ import java.util.concurrent.atomic.AtomicLong
  * as described in the design notes for the export payloads.
  *
  * @property confirmsDefinitions Switches the whole confirmation mechanism on: [computeManifestDeltas]
- * and [manifest] withhold a class's probe locations and its [ClassSupertypes] record until the
+ * and [manifest] withhold a class's probe locations and its [ClassSupertypes] and [ClassReferences] records until the
  * class is confirmed defined, by a probe count above zero or a name [confirmFrom] is told the JVM
  * has loaded, and [confirmFrom] itself does the tracking. False leaves all of it inert, so a
  * caller that wires a sweep to a registry that does not withhold cannot be told a class's probes
@@ -101,6 +102,7 @@ open class ProbeRegistry(
         val superClassName: String?,
         val interfaceNames: List<String>,
         val classLoaderRef: WeakReference<ClassLoader>?,
+        val classReferences: List<String>,
     ) {
         /** The last cumulative count successfully delivered to the collector, per probe. */
         var lastSent: LongArray = LongArray(counts.size)
@@ -185,6 +187,11 @@ open class ProbeRegistry(
      * hash: a class's supertypes changing what a call resolves to at the collector never changes
      * which array slot a probe hit increments.
      *
+     * [classReferences] are the class's own out-of-scope references outside any probed method,
+     * dotted (ADR 0030). They travel as one [ClassReferences] record, staged, withheld and committed
+     * with the class exactly as its supertypes are, and like them play no part in the key or the
+     * hash.
+     *
      * `open` only so a test can observe what gets committed, which is how the
      * transform-failure path is pinned.
      */
@@ -195,6 +202,7 @@ open class ProbeRegistry(
         classLoader: ClassLoader? = null,
         superClassName: String? = null,
         interfaceNames: List<String> = emptyList(),
+        classReferences: List<String> = emptyList(),
     ): LongArray {
         val key = RegistryKey(className, layoutHash, System.identityHashCode(classLoader))
         val entry =
@@ -207,6 +215,7 @@ open class ProbeRegistry(
                     superClassName = superClassName,
                     interfaceNames = interfaceNames,
                     classLoaderRef = weakClassLoaderRef(classLoader),
+                    classReferences = classReferences,
                 )
             }
         return entry.counts
@@ -567,6 +576,7 @@ open class ProbeRegistry(
                         calls = meta.calls,
                         inlinedFromClassName = meta.inlinedFromClassName,
                         generatedBy = meta.generatedBy,
+                        referencedClasses = meta.referencedClasses,
                     )
                 }
             }
@@ -575,6 +585,7 @@ open class ProbeRegistry(
                 SkippedClass(className, entry.reason, entry.skippedAt)
             }
         val supertypes = published.map { entry -> ClassSupertypes(entry.classId, entry.superClassName, entry.interfaceNames) }
+        val classReferences = published.mapNotNull(::classReferencesOf)
         val unreported =
             unreportedByClassName.map { (className, entry) ->
                 UnreportedClass(className, entry.firstSeenUnreportedAt)
@@ -587,8 +598,13 @@ open class ProbeRegistry(
             serviceInstanceId,
             classSupertypes = supertypes,
             unreportedClasses = unreported,
+            classReferences = classReferences,
         )
     }
+
+    /** [entry]'s [ClassReferences] record, or null when it has no class-level references. */
+    private fun classReferencesOf(entry: ClassEntry): ClassReferences? =
+        entry.classReferences.takeIf { it.isNotEmpty() }?.let { ClassReferences(entry.classId, it) }
 
     /**
      * Returns only the probe locations for classes not yet included in a successfully sent
@@ -618,8 +634,9 @@ open class ProbeRegistry(
     /**
      * Like [computeManifestDelta], but splits the not-yet-sent classes into chunks of at most
      * [maxEntriesPerChunk] entries each. A skipped class counts as one entry. A registered class
-     * counts as its probe locations, plus its probes' total call-edge count, plus one for its own
-     * [ClassSupertypes] record, since all three are staged and committed together. The first
+     * counts as its probe locations, plus its probes' total call-edge and referenced-class count,
+     * plus one for its own [ClassSupertypes] record, plus the names in its [ClassReferences]
+     * record, since all of it is staged and committed together. The first
      * manifest after a busy startup can otherwise carry every probe in the app in one POST.
      *
      * Classes are never split across chunks, so [advanceManifestBaseline] on one chunk marks
@@ -636,6 +653,7 @@ open class ProbeRegistry(
         var locations = mutableListOf<ProbeLocation>()
         var skipped = mutableListOf<SkippedClass>()
         var supertypes = mutableListOf<ClassSupertypes>()
+        var classReferences = mutableListOf<ClassReferences>()
         var stagedEntries = mutableListOf<Any>()
         var stagedSkipped = mutableListOf<Any>()
         var unreported = mutableListOf<UnreportedClass>()
@@ -659,6 +677,7 @@ open class ProbeRegistry(
                         serviceInstanceId,
                         classSupertypes = supertypes,
                         unreportedClasses = unreported,
+                        classReferences = classReferences,
                     ),
                     stagedEntries,
                     stagedSkipped,
@@ -667,6 +686,7 @@ open class ProbeRegistry(
             locations = mutableListOf()
             skipped = mutableListOf()
             supertypes = mutableListOf()
+            classReferences = mutableListOf()
             stagedEntries = mutableListOf()
             stagedSkipped = mutableListOf()
             unreported = mutableListOf()
@@ -676,10 +696,13 @@ open class ProbeRegistry(
         for (entry in entriesByKey.values) {
             if (entry.manifestIncluded) continue
             if (confirmsDefinitions && !isConfirmed(entry)) continue
-            // A class's weight is its probe count, plus its total call-edge count, plus one for
-            // its own ClassSupertypes record: all three are staged and committed together, so a
-            // class with many edges seals a chunk earlier than one without.
-            val weight = entry.probes.size + entry.probes.sumOf { it.calls.size } + 1
+            // A class's weight is its probe count, plus its total call-edge and referenced-class
+            // count, plus one for its own ClassSupertypes record, plus its class-level references:
+            // all of it is staged and committed together, so a class with many edges or references
+            // seals a chunk earlier than one without.
+            val weight =
+                entry.probes.size + entry.probes.sumOf { it.calls.size + it.referencedClasses.size } + 1 +
+                    entry.classReferences.size
             if (chunkWeight > 0 && chunkWeight + weight > maxEntriesPerChunk) seal()
             stagedEntries += entry
             entry.probes.forEachIndexed { index, meta ->
@@ -701,9 +724,11 @@ open class ProbeRegistry(
                         calls = meta.calls,
                         inlinedFromClassName = meta.inlinedFromClassName,
                         generatedBy = meta.generatedBy,
+                        referencedClasses = meta.referencedClasses,
                     )
             }
             supertypes += ClassSupertypes(entry.classId, entry.superClassName, entry.interfaceNames)
+            classReferencesOf(entry)?.let { classReferences += it }
             chunkWeight += weight
         }
         for ((className, entry) in skippedByClassName) {

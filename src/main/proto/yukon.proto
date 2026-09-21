@@ -120,10 +120,13 @@ message ProbeLocation {
   // ordinary method the adopter wrote. A BRANCH probe never carries this; see GeneratedBy.
   GeneratedBy generated_by = 16;
   // Set only for a METHOD probe: the out-of-scope classes this method's own bytecode references,
-  // dotted. A reference is wider than a call edge: annotations, casts and type tests, types in a
-  // descriptor, catch types and class literals all count; see CONTEXT.md, "Reference". Every name
-  // listed has an ExternalClass entry on the same instance. Classes the bootstrap or platform
-  // loader provides, and the adopter's own out-of-scope classes, are never listed. See ADR 0030.
+  // dotted. A reference is wider than a call edge: runtime-visible annotations, casts and type
+  // tests, types in a descriptor or generic signature, catch types and class literals all count;
+  // see CONTEXT.md, "Reference". Classes the bootstrap or platform loader provides, and classes read
+  // from a directory on the classpath, are never listed. A name's ExternalClass entry may arrive on a later manifest than the name itself,
+  // since it is resolved only once the startup listing has finished; a name that never gets one
+  // belongs to no dependency (a jar of the adopter's own, an agent jar) and a collector ignores it.
+  // See ADR 0030.
   repeated string referenced_classes = 17;
 }
 
@@ -253,8 +256,9 @@ message DeclaredClass {
   // See ADR 0024.
   string super_class_name = 3;
   repeated string interface_names = 4;
-  // The out-of-scope classes this class references outside any method body: annotations on the
-  // class, its supertypes, its field types, and anything else not held by a method. Method-level
+  // The out-of-scope classes this class references outside any probed method: annotations on the
+  // class, its supertypes, its field types, the signatures of methods without a probe, and
+  // anything else not held by a probed method. Method-level
   // references travel on DeclaredMethod.referenced_classes. The same listing rule as
   // ProbeLocation.referenced_classes applies. See ADR 0030.
   repeated string referenced_classes = 5;
@@ -434,10 +438,10 @@ message DependencyDelta {
   int64 loaded_classes_total = 3;
 }
 
-// A loaded class's own references outside any method body: annotations on the class, its
-// supertypes, its field types, and anything else not held by a method. The same listing rule as
-// ProbeLocation.referenced_classes applies, and every name listed has an ExternalClass entry on the
-// same instance.
+// A loaded class's own references outside any probed method: annotations on the class, its
+// supertypes, its field types, the signatures of methods without a probe (abstract, native), and
+// anything else not held by a probed method. The same listing rule as
+// ProbeLocation.referenced_classes applies.
 message ClassReferences {
   int32 class_id = 1;
   repeated string referenced_classes = 2;

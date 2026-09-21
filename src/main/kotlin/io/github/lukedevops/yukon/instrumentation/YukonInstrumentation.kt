@@ -15,6 +15,7 @@ import io.github.lukedevops.yukon.instrumentation.branch.BranchProbeAsmVisitorWr
 import io.github.lukedevops.yukon.instrumentation.branch.BranchSite
 import io.github.lukedevops.yukon.instrumentation.branch.BranchSiteAnalyzer
 import io.github.lukedevops.yukon.instrumentation.staticscan.StaticBaselineMismatchDetector
+import io.github.lukedevops.yukon.registry.ExternalClassRegistry
 import io.github.lukedevops.yukon.registry.ProbeMeta
 import io.github.lukedevops.yukon.registry.ProbeRegistry
 import net.bytebuddy.ByteBuddy
@@ -106,8 +107,11 @@ class YukonInstrumentation(
     captureClassBytes: Boolean = true,
     /** Where dropped branch sites are tallied; see [BranchDropCounts] and ADR 0025. */
     private val branchDropCounts: BranchDropCounts = BranchDropCounts(),
+    /** Where each out-of-scope class a transformed class references was found; see ADR 0030. */
+    private val externalClassRegistry: ExternalClassRegistry = ExternalClassRegistry(),
 ) {
     private val log = System.getLogger(YukonInstrumentation::class.java.name)
+    private val referencedClassLocator = ReferencedClassLocator()
     private val classBytesCapture: ClassBytesCapture? = if (captureClassBytes) ClassBytesCapture(::isCandidateInternalName) else null
 
     /**
@@ -183,6 +187,9 @@ class YukonInstrumentation(
         val classLoader: ClassLoader?,
         val superClassName: String?,
         val interfaceNames: List<String>,
+        val classReferences: List<String>,
+        /** Every referenced class kept, dotted, with where it was found; see [ReferencedClassLocator.Found]. */
+        val externalClasses: Map<String, String?>,
     )
 
     /**
@@ -238,7 +245,9 @@ class YukonInstrumentation(
                 pending.classLoader,
                 superClassName = pending.superClassName,
                 interfaceNames = pending.interfaceNames,
+                classReferences = pending.classReferences,
             )
+            for ((className, location) in pending.externalClasses) externalClassRegistry.record(className, location)
         }
 
         override fun onError(
@@ -363,6 +372,7 @@ class YukonInstrumentation(
             )
         }
         val branchSites = analysis.sites
+        val references = ReferencesKept(classLoader)
 
         // A resolved Scala default getter (ADR 0023) keeps its ordinary method-tier slot and
         // advice; only its manifest row changes, from a METHOD probe under the getter's own name
@@ -393,6 +403,7 @@ class YukonInstrumentation(
                         inline = analysis.isInline(it.internalName, it.descriptor),
                         calls = analysis.callsOf(it.internalName, it.descriptor),
                         generatedBy = analysis.generatedBy(it.internalName, it.descriptor),
+                        referencedClasses = references.keep(analysis.referencesOf(it.internalName, it.descriptor)),
                     )
                 }
             }
@@ -487,6 +498,7 @@ class YukonInstrumentation(
                     "()V",
                     line = analysis.firstLineOf("<clinit>", "()V"),
                     calls = analysis.callsOf("<clinit>", "()V"),
+                    referencedClasses = references.keep(analysis.referencesOf("<clinit>", "()V")),
                 )
             } else {
                 null
@@ -511,6 +523,8 @@ class YukonInstrumentation(
                 classLoader,
                 analysis.superClassName,
                 analysis.interfaceNames,
+                references.keep(analysis.classReferences),
+                references.kept(),
             ),
         )
         if (staticBaselineMismatchDetector.shouldWarnAbout(typeDescription.name)) {
@@ -585,6 +599,27 @@ class YukonInstrumentation(
         }
 
         return instrumented
+    }
+
+    /**
+     * Filters one class's references down to the ones worth sending, asking
+     * [referencedClassLocator] once per distinct name through [classLoader], the loader defining the
+     * class: a JDK class or a class read from a classpath directory is dropped from every list, and
+     * every other name is kept with where it was found. See ADR 0030.
+     */
+    private inner class ReferencesKept(
+        private val classLoader: ClassLoader?,
+    ) {
+        private val found = LinkedHashMap<String, ReferencedClassLocator.Found?>()
+
+        fun keep(names: List<String>): List<String> =
+            names.filter { name ->
+                if (name !in found) found[name] = referencedClassLocator.locate(name, classLoader)
+                found[name] != null
+            }
+
+        /** Every name kept so far, with its location, or null for a class no loader could find. */
+        fun kept(): Map<String, String?> = found.entries.mapNotNull { (name, where) -> where?.let { name to it.location } }.toMap()
     }
 
     /**

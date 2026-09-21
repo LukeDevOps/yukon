@@ -39,9 +39,9 @@ differ by Spring Boot version (`jar:nested:<outer>/!BOOT-INF/lib/x.jar!/` from 3
 !/BOOT-INF/lib/x.jar!/` before it), and differ again for a library Boot unpacks to `java.io.tmpdir`.
 
 A *reference* is wider than a call edge: invokes, field accesses, `new`, casts, `instanceof`, catch
-types, class literals, types in method and field descriptors, supertypes, and annotations on classes,
-methods, fields and parameters. A dependency used only through `@JsonProperty`, or only as a base
-class, is still referenced. A reference in a pass-through is attributed to whatever references the
+types, class literals, types in method and field descriptors and generic signatures, supertypes, and
+runtime-visible annotations on classes, methods, fields and parameters. A dependency used only through
+`@JsonProperty`, or only as a base class, is still referenced. A reference in a pass-through is attributed to whatever references the
 pass-through, and a lambda body or body class keeps its own, by the same rules as call edges. A
 referenced class the bootstrap or platform loader provides is not a dependency and is dropped. A
 referenced class that no loader can find is an *absent reference* and is reported, not dropped.
@@ -89,6 +89,12 @@ referenced class that no loader can find is an *absent reference* and is reporte
   in all 21 cases, since Boot and Gradle name a packaged jar `<artifactId>-<version>.jar`. The
   manifest's `Implementation-Version` still fills in the version when the filename carries none.
   `DependencyIdentitySource.JAR_MANIFEST` stays on the wire, never produced.
+- **Counting every annotation as a reference.** Rejected once references ran against `demo-spring`:
+  kotlinc puts `@NotNull` and `@Nullable` from `org.jetbrains:annotations` on nearly every Kotlin
+  class, so that jar always read as referenced and live. Those annotations have class retention: the
+  JVM never resolves their types, and the jar can leave the runtime classpath with nothing changing.
+  Only runtime-visible annotations (ASM's `visible` flag) are references, together with the values
+  inside them.
 - **Recognising agent jars from `-javaagent` flags.** Rejected: reading the JVM's input arguments
   means `java.lang.management`, which loads classes in `premain`. The manifest, already read during
   the listing, says the same thing.

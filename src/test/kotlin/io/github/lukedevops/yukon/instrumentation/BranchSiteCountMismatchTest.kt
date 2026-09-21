@@ -69,9 +69,10 @@ class BranchSiteCountMismatchTest {
             classLoader: ClassLoader?,
             superClassName: String?,
             interfaceNames: List<String>,
+            classReferences: List<String>,
         ): LongArray {
             registered += className
-            return super.register(className, layoutHash, probes, classLoader, superClassName, interfaceNames)
+            return super.register(className, layoutHash, probes, classLoader, superClassName, interfaceNames, classReferences)
         }
     }
 

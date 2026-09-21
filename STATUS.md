@@ -59,7 +59,22 @@ loader is in the local caches to check it against. And a flat jar first seen at
 load still goes through the agent-jar rule, which rightly turns away a
 dynamically attached agent's jar but would also turn away `byte-buddy-agent`
 sitting flat in an exploded war's `WEB-INF/lib`; it would then read as no
-dependency rather than as one. Landing order, one chunk and one commit each:
+dependency rather than as one.
+
+Chunk 3 (references in the analyser, `ExternalClass` on the manifest) has
+landed, with one change to the design: only runtime-visible annotations are
+references. Counting every annotation made `org.jetbrains:annotations` read as
+referenced on every Kotlin service, through kotlinc's class-retention
+`@NotNull`, though the jar can leave the runtime classpath with nothing
+changing. On `demo-spring` 14 referenced classes map to five jars
+(kotlin-stdlib, spring-boot, spring-boot-autoconfigure, spring-context,
+spring-web), none absent, no JDK type listed. Every Kotlin class references
+`kotlin.Metadata`, so kotlin-stdlib always reads as referenced and live, which
+is true. A referenced class whose loader throws from `getResource` is recorded
+as absent. The proto no longer promises every referenced name an
+`ExternalClass` entry: one may arrive a manifest later, and a name that never
+gets one belongs to no dependency. Landing order, one chunk and one commit
+each:
 
 0. Wire and codec: `DependencyLocation`, `DependencyDelta`,
    `referenced_classes`, `ClassReferences`, `ExternalClass`.

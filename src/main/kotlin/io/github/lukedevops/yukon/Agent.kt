@@ -1,6 +1,8 @@
 package io.github.lukedevops.yukon
 
 import io.github.lukedevops.yukon.config.AgentConfig
+import io.github.lukedevops.yukon.dependencies.DependencyResolver
+import io.github.lukedevops.yukon.dependencies.JarClassifier
 import io.github.lukedevops.yukon.dependencies.ListedDependency
 import io.github.lukedevops.yukon.dependencies.LoadedDependencyCounter
 import io.github.lukedevops.yukon.dependencies.StartupClasspathLister
@@ -22,6 +24,7 @@ import io.github.lukedevops.yukon.instrumentation.staticscan.StaticBaselineScann
 import io.github.lukedevops.yukon.registry.DependencyOrigin
 import io.github.lukedevops.yukon.registry.DependencyRegistry
 import io.github.lukedevops.yukon.registry.EndpointRegistry
+import io.github.lukedevops.yukon.registry.ExternalClassRegistry
 import io.github.lukedevops.yukon.registry.ProbeRegistry
 import net.bytebuddy.agent.builder.ResettableClassFileTransformer
 import java.lang.System.Logger.Level
@@ -102,11 +105,23 @@ object Agent {
         val registry = ProbeRegistry(confirmsDefinitions = true)
         val endpointRegistry = EndpointRegistry()
         val dependencyRegistry = DependencyRegistry()
+        // One resolver for both users, so its caches and its registrations of jars discovered by
+        // load are shared: the loaded-class count and the external-class mapping must agree on a
+        // jar's dependency id.
+        val dependencyResolver =
+            DependencyResolver(dependencyRegistry, JarClassifier(config.instrumentedPackagePrefixes, config.excludedPackagePrefixes))
+        val externalClassRegistry = ExternalClassRegistry(dependencyRegistry::isListingComplete, dependencyResolver::resolveLocation)
         val staticBaselineMismatchDetector = StaticBaselineMismatchDetector()
         val branchDropCounts = BranchDropCounts()
 
         val yukonInstrumentation =
-            YukonInstrumentation(config, registry, staticBaselineMismatchDetector, branchDropCounts = branchDropCounts)
+            YukonInstrumentation(
+                config,
+                registry,
+                staticBaselineMismatchDetector,
+                branchDropCounts = branchDropCounts,
+                externalClassRegistry = externalClassRegistry,
+            )
         val transformer =
             try {
                 yukonInstrumentation.install(instrumentation)
@@ -147,9 +162,10 @@ object Agent {
                         instrumentation,
                         registry,
                         config,
-                        LoadedDependencyCounter(dependencyRegistry, config.instrumentedPackagePrefixes, config.excludedPackagePrefixes),
+                        LoadedDependencyCounter(dependencyRegistry, dependencyResolver::resolve),
                     ),
                 dependencyRegistry = dependencyRegistry,
+                externalClassRegistry = externalClassRegistry,
             )
         scheduler.start()
 

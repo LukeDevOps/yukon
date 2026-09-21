@@ -7,10 +7,13 @@ import io.github.lukedevops.yukon.instrumentation.TypeMatchPolicy
 import net.bytebuddy.jar.asm.AnnotationVisitor
 import net.bytebuddy.jar.asm.ClassReader
 import net.bytebuddy.jar.asm.ClassVisitor
+import net.bytebuddy.jar.asm.FieldVisitor
 import net.bytebuddy.jar.asm.Handle
 import net.bytebuddy.jar.asm.Label
 import net.bytebuddy.jar.asm.MethodVisitor
 import net.bytebuddy.jar.asm.Opcodes
+import net.bytebuddy.jar.asm.RecordComponentVisitor
+import net.bytebuddy.jar.asm.TypePath
 
 /**
  * Finds every [ConditionalJump], every `TABLESWITCH`/`LOOKUPSWITCH`, and every Kotlin `$default`
@@ -78,7 +81,25 @@ object BranchSiteAnalyzer {
          * relocates any literal in this agent's own code that starts with `kotlin/`.
          */
         val isKotlinClass: Boolean = false,
+        private val referencesByMethod: Map<Pair<String, String>, List<String>> = emptyMap(),
+        /**
+         * The out-of-scope classes the class references outside any probed method, dotted: its
+         * header, fields and record components, methods with no body, re-kinded Scala default
+         * getters, and pass-throughs nothing in the class reaches. See [placeReferences] and ADR 0030.
+         */
+        val classReferences: List<String> = emptyList(),
     ) {
+        /**
+         * The out-of-scope classes this method references, dotted, first seen first: its own
+         * bytecode, signature and annotations, plus those of every pass-through it reaches, by the
+         * call-edge rules of ADR 0024. Empty for any method that does not get a METHOD probe. JDK
+         * classes are still listed here; the transform drops them. See ADR 0030.
+         */
+        fun referencesOf(
+            name: String,
+            descriptor: String,
+        ): List<String> = referencesByMethod[name to descriptor] ?: emptyList()
+
         /** First line-number-table entry of the method, or -1 when the class carries no debug info or the bytes were never read. */
         fun firstLineOf(
             name: String,
@@ -203,7 +224,10 @@ object BranchSiteAnalyzer {
     private open class CallCandidateMethodVisitor(
         private val ownerInternalName: String,
         private val candidatesForMethod: MutableList<RawCandidate>,
+        referencesForMethod: MutableSet<String>,
     ) : MethodVisitor(Opcodes.ASM9) {
+        private val references = ReferenceCollector(referencesForMethod)
+
         override fun visitMethodInsn(
             opcode: Int,
             owner: String,
@@ -211,6 +235,8 @@ object BranchSiteAnalyzer {
             descriptor: String,
             isInterface: Boolean,
         ) {
+            references.internalName(owner)
+            references.descriptor(descriptor)
             val virtualRaw = opcode == Opcodes.INVOKEVIRTUAL || opcode == Opcodes.INVOKEINTERFACE
             candidatesForMethod += RawCandidate(owner, name, descriptor, virtualRaw)
         }
@@ -221,8 +247,82 @@ object BranchSiteAnalyzer {
             bootstrapMethodHandle: Handle,
             vararg bootstrapMethodArguments: Any,
         ) {
+            references.descriptor(descriptor)
+            references.handle(bootstrapMethodHandle)
+            bootstrapMethodArguments.forEach(references::constant)
             lambdaCandidateOrNull(bootstrapMethodHandle, bootstrapMethodArguments)?.let { candidatesForMethod += it }
         }
+
+        override fun visitTypeInsn(
+            opcode: Int,
+            type: String,
+        ) {
+            references.internalName(type)
+        }
+
+        override fun visitMultiANewArrayInsn(
+            descriptor: String,
+            numDimensions: Int,
+        ) {
+            references.descriptor(descriptor)
+        }
+
+        override fun visitLdcInsn(value: Any?) {
+            references.constant(value)
+        }
+
+        override fun visitTryCatchBlock(
+            start: Label,
+            end: Label,
+            handler: Label,
+            type: String?,
+        ) {
+            references.internalName(type)
+        }
+
+        override fun visitAnnotation(
+            descriptor: String,
+            visible: Boolean,
+        ): AnnotationVisitor? = references.annotation(descriptor, visible)
+
+        override fun visitParameterAnnotation(
+            parameter: Int,
+            descriptor: String,
+            visible: Boolean,
+        ): AnnotationVisitor? = references.annotation(descriptor, visible)
+
+        override fun visitTypeAnnotation(
+            typeRef: Int,
+            typePath: TypePath?,
+            descriptor: String,
+            visible: Boolean,
+        ): AnnotationVisitor? = references.annotation(descriptor, visible)
+
+        override fun visitAnnotationDefault(): AnnotationVisitor = references.annotationDefault()
+
+        override fun visitInsnAnnotation(
+            typeRef: Int,
+            typePath: TypePath?,
+            descriptor: String,
+            visible: Boolean,
+        ): AnnotationVisitor? = references.annotation(descriptor, visible)
+
+        override fun visitTryCatchAnnotation(
+            typeRef: Int,
+            typePath: TypePath?,
+            descriptor: String,
+            visible: Boolean,
+        ): AnnotationVisitor? = references.annotation(descriptor, visible)
+
+        override fun visitLocalVariableAnnotation(
+            typeRef: Int,
+            typePath: TypePath?,
+            start: Array<out Label>,
+            end: Array<out Label>,
+            index: IntArray,
+            descriptor: String,
+            visible: Boolean,
+        ): AnnotationVisitor? = references.annotation(descriptor, visible)
 
         override fun visitFieldInsn(
             opcode: Int,
@@ -230,6 +330,8 @@ object BranchSiteAnalyzer {
             fieldName: String,
             fieldDescriptor: String,
         ) {
+            references.internalName(owner)
+            references.descriptor(fieldDescriptor)
             if (owner == ownerInternalName) return
             if (opcode != Opcodes.GETSTATIC && opcode != Opcodes.PUTSTATIC) return
             candidatesForMethod += RawCandidate(owner, "<clinit>", "()V", virtualRaw = false)
@@ -312,6 +414,9 @@ object BranchSiteAnalyzer {
         val rawCandidatesByMethod = mutableMapOf<Pair<String, String>, MutableList<RawCandidate>>()
         val eligibleMethodKeys = mutableSetOf<Pair<String, String>>()
         val droppedOrdinalsByMethod = mutableMapOf<Pair<String, String>, MutableSet<Int>>()
+        val rawReferencesByMethod = mutableMapOf<Pair<String, String>, MutableSet<String>>()
+        val rawClassReferences = LinkedHashSet<String>()
+        val classReferenceCollector = ReferenceCollector(rawClassReferences)
 
         val classVisitor =
             object : ClassVisitor(Opcodes.ASM9) {
@@ -327,6 +432,9 @@ object BranchSiteAnalyzer {
                     classAccess = access
                     superInternalName = superName
                     interfaceInternalNames = interfaces?.toList() ?: emptyList()
+                    classReferenceCollector.internalName(superName)
+                    interfaces?.forEach(classReferenceCollector::internalName)
+                    classReferenceCollector.signature(signature)
                 }
 
                 // Called once, after visit() and before any visitMethod(), so every method
@@ -345,8 +453,29 @@ object BranchSiteAnalyzer {
                     visible: Boolean,
                 ): AnnotationVisitor? {
                     if (kotlinMetadataDescriptorShape.matches(descriptor)) isKotlinClass = true
-                    return null
+                    return classReferenceCollector.annotation(descriptor, visible)
                 }
+
+                override fun visitTypeAnnotation(
+                    typeRef: Int,
+                    typePath: TypePath?,
+                    descriptor: String,
+                    visible: Boolean,
+                ): AnnotationVisitor? = classReferenceCollector.annotation(descriptor, visible)
+
+                override fun visitField(
+                    access: Int,
+                    name: String,
+                    descriptor: String,
+                    signature: String?,
+                    value: Any?,
+                ): FieldVisitor = classLevelMemberReferences(classReferenceCollector, descriptor, signature)
+
+                override fun visitRecordComponent(
+                    name: String,
+                    descriptor: String,
+                    signature: String?,
+                ): RecordComponentVisitor = recordComponentReferences(classReferenceCollector, descriptor, signature)
 
                 override fun visitMethod(
                     access: Int,
@@ -363,6 +492,8 @@ object BranchSiteAnalyzer {
                     val isTypeInitializer = name == "<clinit>" && descriptor == "()V"
                     if (eligible) eligibleMethodKeys += name to descriptor
                     val candidatesForMethod = rawCandidatesByMethod.getOrPut(name to descriptor) { mutableListOf() }
+                    val referencesForMethod = rawReferencesByMethod.getOrPut(name to descriptor) { LinkedHashSet() }
+                    recordSignatureReferences(referencesForMethod, descriptor, signature, exceptions)
 
                     if (!eligible && !defaultShaped) {
                         // Out of scope for the method, branch, and inline tiers, but this method
@@ -374,7 +505,7 @@ object BranchSiteAnalyzer {
                         // Its call candidates are still worth capturing too: this method may be a
                         // same-class pass-through (a bridge, an access$ accessor) referenced by a
                         // probed method elsewhere in the class. See ADR 0024.
-                        return object : CallCandidateMethodVisitor(internalClassName, candidatesForMethod) {
+                        return object : CallCandidateMethodVisitor(internalClassName, candidatesForMethod, referencesForMethod) {
                             override fun visitLocalVariable(
                                 localName: String,
                                 localDescriptor: String,
@@ -412,6 +543,7 @@ object BranchSiteAnalyzer {
                         nextSiteIndex = { nextSiteIndex },
                         onDefaultCandidate = { defaultCandidates += it },
                         candidatesForMethod = candidatesForMethod,
+                        referencesForMethod = referencesForMethod,
                         smap = { smap },
                         includePackages = includePackages,
                         excludePackages = excludePackages,
@@ -440,7 +572,7 @@ object BranchSiteAnalyzer {
         val generatedByMethod = computeGeneratedBy(internalClassName, superInternalName, methodAccess)
 
         val callEdgeEntryPoints = if (hasTypeInitializer) eligibleMethodKeys + ("<clinit>" to "()V") else eligibleMethodKeys
-        val callEdgesByMethod =
+        val resolvedCalls =
             resolveCallEdges(
                 internalClassName = internalClassName,
                 methodAccess = methodAccess,
@@ -450,6 +582,19 @@ object BranchSiteAnalyzer {
                 includePackages = includePackages,
                 excludePackages = excludePackages,
                 tableCache = tableCache,
+                rawReferencesByMethod = rawReferencesByMethod,
+            )
+        val references =
+            placeReferences(
+                internalClassName = internalClassName,
+                methodAccess = methodAccess,
+                entryPoints = callEdgeEntryPoints,
+                resolvedCalls = resolvedCalls,
+                rawReferencesByMethod = rawReferencesByMethod,
+                rawClassReferences = rawClassReferences,
+                rekindedGetters = resolvedGetters,
+                includePackages = includePackages,
+                excludePackages = excludePackages,
             )
 
         return Analysis(
@@ -461,14 +606,137 @@ object BranchSiteAnalyzer {
             scalaGetterSites,
             unresolvedScalaGetterSites,
             hasTypeInitializer,
-            callEdgesByMethod,
+            resolvedCalls.edgesByMethod,
             superInternalName?.replace('/', '.'),
             interfaceInternalNames.map { it.replace('/', '.') },
             droppedOrdinalsByMethod,
             generatedByMethod,
             hasLineNumbers,
             isKotlinClass,
+            references.byMethod,
+            references.onClass,
         )
+    }
+
+    /** Where each of a class's references ends up: on a probed method, or on the class. */
+    private class PlacedReferences(
+        val byMethod: Map<Pair<String, String>, List<String>>,
+        val onClass: List<String>,
+    )
+
+    /**
+     * Places every reference the class's bytecode holds, per ADR 0030: each entry point (a method
+     * with a METHOD probe, and `<clinit>` when there is one) keeps its own references plus those of
+     * every pass-through it reaches, as [resolveCallEdges] gathered them, and everything else goes
+     * to the class. That is the class header, fields and record components, a method with no body
+     * (abstract, native), a resolved Scala default getter (whose probe is re-kinded onto its target,
+     * ADR 0023, so it carries no METHOD probe to hold them), and a pass-through no entry point in
+     * this class reaches, such as an `access$` accessor only a nested class calls. Nothing is
+     * dropped, so the class is the fallback for a reference no probed method can hold.
+     *
+     * Each list is deduplicated, first seen first, dotted, and keeps only names outside the include
+     * rules, other than the class itself.
+     */
+    private fun placeReferences(
+        internalClassName: String,
+        methodAccess: Map<Pair<String, String>, Int>,
+        entryPoints: Set<Pair<String, String>>,
+        resolvedCalls: ResolvedCalls,
+        rawReferencesByMethod: Map<Pair<String, String>, Set<String>>,
+        rawClassReferences: Set<String>,
+        rekindedGetters: Set<Pair<String, String>>,
+        includePackages: List<String>,
+        excludePackages: List<String>,
+    ): PlacedReferences {
+        fun outOfScope(rawNames: Collection<String>): List<String> =
+            rawNames
+                .asSequence()
+                .filter { it != internalClassName }
+                .map { it.replace('/', '.') }
+                .filterNot { TypeMatchPolicy.isIncluded(it, includePackages, excludePackages) }
+                .distinct()
+                .toList()
+
+        // A method with no body never gets a METHOD probe, whatever the method filter said, so its
+        // references go to the class rather than to a probe that does not exist.
+        fun isProbed(key: Pair<String, String>): Boolean =
+            key in entryPoints && key !in rekindedGetters && (methodAccess[key] ?: 0) and BODYLESS_FLAGS == 0
+
+        val onClass = LinkedHashSet(rawClassReferences)
+        // A method without a probe hands its references to the class unless some entry point
+        // reached it as a pass-through and took them. A method with no body is never reached that
+        // way, since a call to one stays an edge. An entry point without a probe (a re-kinded
+        // Scala getter) hands over everything it gathered, pass-throughs it reached included.
+        for (key in methodAccess.keys) {
+            if (!isProbed(key) && key !in resolvedCalls.reachedPassThroughs) onClass += rawReferencesByMethod[key].orEmpty()
+        }
+        for ((key, gathered) in resolvedCalls.referencesByMethod) {
+            if (!isProbed(key)) onClass += gathered
+        }
+        val byMethod =
+            resolvedCalls.referencesByMethod
+                .filterKeys(::isProbed)
+                .mapValues { (_, rawNames) -> outOfScope(rawNames) }
+        return PlacedReferences(byMethod, outOfScope(onClass))
+    }
+
+    /** Records the types a field or method signature names, from its descriptor, generic signature and throws clause. */
+    private fun recordSignatureReferences(
+        references: MutableSet<String>,
+        descriptor: String,
+        signature: String?,
+        exceptions: Array<out String>?,
+    ) {
+        val collector = ReferenceCollector(references)
+        collector.descriptor(descriptor)
+        collector.signature(signature)
+        exceptions?.forEach(collector::internalName)
+    }
+
+    /** A field's descriptor and signature, and a visitor for its runtime-visible annotations, all recorded as class references. */
+    private fun classLevelMemberReferences(
+        collector: ReferenceCollector,
+        descriptor: String,
+        signature: String?,
+    ): FieldVisitor {
+        collector.descriptor(descriptor)
+        collector.signature(signature)
+        return object : FieldVisitor(Opcodes.ASM9) {
+            override fun visitAnnotation(
+                descriptor: String,
+                visible: Boolean,
+            ): AnnotationVisitor? = collector.annotation(descriptor, visible)
+
+            override fun visitTypeAnnotation(
+                typeRef: Int,
+                typePath: TypePath?,
+                descriptor: String,
+                visible: Boolean,
+            ): AnnotationVisitor? = collector.annotation(descriptor, visible)
+        }
+    }
+
+    /** A record component's descriptor, signature and runtime-visible annotations, recorded as class references. */
+    private fun recordComponentReferences(
+        collector: ReferenceCollector,
+        descriptor: String,
+        signature: String?,
+    ): RecordComponentVisitor {
+        collector.descriptor(descriptor)
+        collector.signature(signature)
+        return object : RecordComponentVisitor(Opcodes.ASM9) {
+            override fun visitAnnotation(
+                descriptor: String,
+                visible: Boolean,
+            ): AnnotationVisitor? = collector.annotation(descriptor, visible)
+
+            override fun visitTypeAnnotation(
+                typeRef: Int,
+                typePath: TypePath?,
+                descriptor: String,
+                visible: Boolean,
+            ): AnnotationVisitor? = collector.annotation(descriptor, visible)
+        }
     }
 
     /**
@@ -519,6 +787,13 @@ object BranchSiteAnalyzer {
      * substituted forwarder on another class can carry back in when it reads a static field of
      * the class being analysed: a method of this class that runs has already initialised it. Edges are deduplicated per entry point by (owner, name, descriptor,
      * virtual).
+     *
+     * References (ADR 0030) ride the same walk, unfiltered: an entry point starts with its own, and
+     * every pass-through substituted into it, same-class or cross-class, adds its own, so a
+     * reference is attributed exactly where the pass-through's callees are. A cross-class `$default`
+     * resolved to its target also adds its own references, since its body evaluates the default
+     * expressions on the caller's behalf. A body-class join adds none: the body class's methods hold
+     * their own references in their own class's analysis.
      */
     private fun resolveCallEdges(
         internalClassName: String,
@@ -529,7 +804,8 @@ object BranchSiteAnalyzer {
         includePackages: List<String>,
         excludePackages: List<String>,
         tableCache: CrossClassTableCache? = null,
-    ): Map<Pair<String, String>, List<CallEdge>> {
+        rawReferencesByMethod: Map<Pair<String, String>, Set<String>> = emptyMap(),
+    ): ResolvedCalls {
         val crossClassMethodTables = mutableMapOf<String, MethodTable?>()
 
         fun readTable(ownerInternalName: String): MethodTable? {
@@ -563,8 +839,13 @@ object BranchSiteAnalyzer {
 
         val dottedClassName = internalClassName.replace('/', '.')
 
+        val reachedPassThroughs = mutableSetOf<Pair<String, String>>()
+        val referencesByMethod = mutableMapOf<Pair<String, String>, Set<String>>()
+
         fun resolveOne(methodKey: Pair<String, String>): List<CallEdge> {
             val edges = LinkedHashSet<CallEdge>()
+            val references = LinkedHashSet<String>(rawReferencesByMethod[methodKey].orEmpty())
+            referencesByMethod[methodKey] = references
             val visited = mutableSetOf<Triple<String, String, String>>()
 
             fun visit(
@@ -584,6 +865,8 @@ object BranchSiteAnalyzer {
                     if ((name to descriptor) in eligibleMethodKeys || !declaredWithBody) {
                         edges += CallEdge(dottedClassName, name, descriptor, virtual)
                     } else {
+                        reachedPassThroughs += name to descriptor
+                        references += rawReferencesByMethod[name to descriptor].orEmpty()
                         for (candidate in rawCandidatesByMethod[name to descriptor].orEmpty()) {
                             visit(candidate.owner, candidate.name, candidate.descriptor, candidate.virtualRaw)
                         }
@@ -598,6 +881,7 @@ object BranchSiteAnalyzer {
                     val target = methodTableFor(owner)?.let { resolveCrossClassDefaultTarget(owner, name, descriptor, it) }
                     if (target != null) {
                         edges += CallEdge(dottedOwner, target.name, target.descriptor, target.virtual)
+                        references += methodTableFor(owner)?.rawReferencesByMethod?.get(name to descriptor).orEmpty()
                         return
                     }
                 }
@@ -612,6 +896,7 @@ object BranchSiteAnalyzer {
                 val declaredWithBody = access and BODYLESS_FLAGS == 0
                 val isConstructorOrInitializer = name == "<init>" || name == "<clinit>"
                 if (declaredWithBody && !isConstructorOrInitializer && wouldNotBeProbedByMethodTier(access, name, table.isScalaClass)) {
+                    references += table.rawReferencesByMethod[name to descriptor].orEmpty()
                     for (candidate in table.rawCandidatesByMethod[name to descriptor].orEmpty()) {
                         visit(candidate.owner, candidate.name, candidate.descriptor, candidate.virtualRaw)
                     }
@@ -641,8 +926,20 @@ object BranchSiteAnalyzer {
             return edges.filterNot { it.className == dottedClassName && it.methodName == selfName && it.methodDescriptor == selfDescriptor }
         }
 
-        return eligibleMethodKeys.associateWith(::resolveOne)
+        val edgesByMethod = eligibleMethodKeys.associateWith(::resolveOne)
+        return ResolvedCalls(edgesByMethod, referencesByMethod, reachedPassThroughs)
     }
+
+    /**
+     * What [resolveCallEdges] yields: each entry point's edges and its references (raw internal
+     * names, the entry point's own and every pass-through's it reaches), and the same-class
+     * pass-throughs some entry point reached.
+     */
+    private class ResolvedCalls(
+        val edgesByMethod: Map<Pair<String, String>, List<CallEdge>>,
+        val referencesByMethod: Map<Pair<String, String>, Set<String>>,
+        val reachedPassThroughs: Set<Pair<String, String>>,
+    )
 
     /**
      * Finds the one method [defaultName]/[defaultDescriptor] fills defaults for, on a different
@@ -880,6 +1177,7 @@ object BranchSiteAnalyzer {
         private val nextSiteIndex: () -> Int,
         private val onDefaultCandidate: (DefaultCandidate) -> Unit,
         candidatesForMethod: MutableList<RawCandidate>,
+        referencesForMethod: MutableSet<String>,
         private val smap: () -> KotlinSmap,
         private val includePackages: List<String>,
         private val excludePackages: List<String>,
@@ -887,7 +1185,7 @@ object BranchSiteAnalyzer {
         private val onSiteDropped: (ordinal: Int) -> Unit,
         /** Called once per `LineNumberTable` entry this method carries; see [BranchSiteAnalyzer.Analysis.hasLineNumbers]. */
         private val onLineNumberSeen: () -> Unit,
-    ) : CallCandidateMethodVisitor(ownerInternalName, candidatesForMethod) {
+    ) : CallCandidateMethodVisitor(ownerInternalName, candidatesForMethod, referencesForMethod) {
         private var currentLine = -1
         private var lastLabel: Label? = null
         private val inlineMarkerName = "\$i\$f\$$name"
@@ -1141,6 +1439,7 @@ object BranchSiteAnalyzer {
         }
 
         override fun visitLdcInsn(value: Any?) {
+            super.visitLdcInsn(value)
             pushInsn(RecentInsn.Ldc(value))
             if (!defaultShaped) return
             if (phase == 1 && value is Int && isPowerOfTwo(value)) {
@@ -1205,6 +1504,7 @@ object BranchSiteAnalyzer {
             opcode: Int,
             type: String,
         ) {
+            super.visitTypeInsn(opcode, type)
             pushInsn(if (opcode == Opcodes.INSTANCEOF) RecentInsn.InstanceOf(type) else RecentInsn.Other)
             if (defaultShaped) resetMaskPhase()
         }
@@ -1232,6 +1532,7 @@ object BranchSiteAnalyzer {
             arrayDescriptor: String,
             numDimensions: Int,
         ) {
+            super.visitMultiANewArrayInsn(arrayDescriptor, numDimensions)
             pushInsn(RecentInsn.Other)
             if (defaultShaped) resetMaskPhase()
         }
@@ -1708,6 +2009,7 @@ object BranchSiteAnalyzer {
         val rawCandidatesByMethod: Map<Pair<String, String>, List<RawCandidate>> = emptyMap(),
         val isScalaClass: Boolean = false,
         val hasEnclosingMethod: Boolean = false,
+        val rawReferencesByMethod: Map<Pair<String, String>, Set<String>> = emptyMap(),
     )
 
     /**
@@ -1726,6 +2028,7 @@ object BranchSiteAnalyzer {
         val localNames = mutableMapOf<Pair<String, String>, MutableMap<Int, String>>()
         val firstLines = mutableMapOf<Pair<String, String>, Int>()
         val rawCandidatesByMethod = mutableMapOf<Pair<String, String>, MutableList<RawCandidate>>()
+        val rawReferencesByMethod = mutableMapOf<Pair<String, String>, MutableSet<String>>()
 
         val classVisitor =
             object : ClassVisitor(Opcodes.ASM9) {
@@ -1759,7 +2062,9 @@ object BranchSiteAnalyzer {
                     methodAccess[name to descriptor] = access
                     val localNamesForMethod = localNames.getOrPut(name to descriptor) { mutableMapOf() }
                     val candidatesForMethod = rawCandidatesByMethod.getOrPut(name to descriptor) { mutableListOf() }
-                    return object : CallCandidateMethodVisitor(internalName, candidatesForMethod) {
+                    val referencesForMethod = rawReferencesByMethod.getOrPut(name to descriptor) { LinkedHashSet() }
+                    recordSignatureReferences(referencesForMethod, descriptor, signature, exceptions)
+                    return object : CallCandidateMethodVisitor(internalName, candidatesForMethod, referencesForMethod) {
                         override fun visitLineNumber(
                             line: Int,
                             start: Label,
@@ -1783,6 +2088,15 @@ object BranchSiteAnalyzer {
 
         ClassReader(classBytes).accept(classVisitor, ClassReader.SKIP_FRAMES)
         val isScalaClass = ScalaClassDetector.isScalaClass(classBytes)
-        return MethodTable(classAccess, methodAccess, localNames, firstLines, rawCandidatesByMethod, isScalaClass, hasEnclosingMethod)
+        return MethodTable(
+            classAccess,
+            methodAccess,
+            localNames,
+            firstLines,
+            rawCandidatesByMethod,
+            isScalaClass,
+            hasEnclosingMethod,
+            rawReferencesByMethod,
+        )
     }
 }
