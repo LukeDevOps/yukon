@@ -2,6 +2,7 @@ package io.github.lukedevops.yukon
 
 import io.github.lukedevops.yukon.config.AgentConfig
 import io.github.lukedevops.yukon.dependencies.ListedDependency
+import io.github.lukedevops.yukon.dependencies.LoadedDependencyCounter
 import io.github.lukedevops.yukon.dependencies.StartupClasspathLister
 import io.github.lukedevops.yukon.export.DependencyDiscoverySource
 import io.github.lukedevops.yukon.export.ExportScheduler
@@ -18,12 +19,16 @@ import io.github.lukedevops.yukon.instrumentation.endpoints.api.EndpointModule
 import io.github.lukedevops.yukon.instrumentation.staticscan.StaticBaselineMismatchDetector
 import io.github.lukedevops.yukon.instrumentation.staticscan.StaticBaselinePublisher
 import io.github.lukedevops.yukon.instrumentation.staticscan.StaticBaselineScanner
+import io.github.lukedevops.yukon.registry.DependencyOrigin
 import io.github.lukedevops.yukon.registry.DependencyRegistry
 import io.github.lukedevops.yukon.registry.EndpointRegistry
 import io.github.lukedevops.yukon.registry.ProbeRegistry
 import net.bytebuddy.agent.builder.ResettableClassFileTransformer
 import java.lang.System.Logger.Level
 import java.lang.instrument.Instrumentation
+import java.net.URL
+import java.nio.file.Files
+import java.nio.file.Paths
 import java.time.Duration
 
 /** `-javaagent:yukon-agent.jar` entry point. */
@@ -137,7 +142,13 @@ object Agent {
                 endpointRegistry,
                 exporter,
                 branchDropCounts = branchDropCounts,
-                loadedClassSweep = LoadedClassSweep(instrumentation, registry, config),
+                loadedClassSweep =
+                    LoadedClassSweep(
+                        instrumentation,
+                        registry,
+                        config,
+                        LoadedDependencyCounter(dependencyRegistry, config.instrumentedPackagePrefixes, config.excludedPackagePrefixes),
+                    ),
                 dependencyRegistry = dependencyRegistry,
             )
         scheduler.start()
@@ -209,10 +220,42 @@ object Agent {
         config: AgentConfig,
         registry: DependencyRegistry,
     ) {
-        val lister = StartupClasspathLister(config.instrumentedPackagePrefixes, config.excludedPackagePrefixes)
-        val worker = Thread({ runDependencyListing(lister::list, registry) }, "yukon-dependency-listing")
+        val lister =
+            StartupClasspathLister(
+                config.instrumentedPackagePrefixes,
+                config.excludedPackagePrefixes,
+                onNotADependency = registry::recordNotADependency,
+            )
+        val worker =
+            Thread({
+                recordAgentJar(
+                    Agent::class.java.protectionDomain.codeSource
+                        ?.location,
+                    registry,
+                )
+                runDependencyListing(lister::list, registry)
+            }, "yukon-dependency-listing")
         worker.isDaemon = true
         worker.start()
+    }
+
+    /**
+     * Records the jar this agent was loaded from, [location], as not a dependency. A `-jar` launch
+     * leaves the agent jar off `java.class.path`, so the listing never judges it, and without this
+     * the sweep would read the whole agent jar once only to find `Premain-Class` in it. Nothing is
+     * recorded when [location] is not a jar file, as in a test run from a classes directory.
+     */
+    internal fun recordAgentJar(
+        location: URL?,
+        registry: DependencyRegistry,
+    ) {
+        try {
+            if (location == null || location.protocol != "file") return
+            val path = Paths.get(location.toURI())
+            if (Files.isRegularFile(path)) registry.recordNotADependency(DependencyOrigin.FlatJar(path.toAbsolutePath()))
+        } catch (e: Exception) {
+            log.log(Level.DEBUG, "yukon: could not read the agent's own location $location", e)
+        }
     }
 
     /**

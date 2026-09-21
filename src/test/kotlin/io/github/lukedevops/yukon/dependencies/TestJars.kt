@@ -1,5 +1,6 @@
 package io.github.lukedevops.yukon.dependencies
 
+import net.bytebuddy.ByteBuddy
 import java.io.ByteArrayOutputStream
 import java.nio.file.Files
 import java.nio.file.Path
@@ -31,6 +32,15 @@ internal object TestJars {
     }
 
     fun classEntry(className: String): Pair<String, ByteArray> = className.replace('.', '/') + ".class" to ByteArray(4)
+
+    /** A class entry holding real bytecode for an empty class, for tests that load it. */
+    fun loadableClassEntry(className: String): Pair<String, ByteArray> =
+        className.replace('.', '/') + ".class" to
+            ByteBuddy()
+                .subclass(Any::class.java)
+                .name(className)
+                .make()
+                .bytes
 
     fun bytes(
         entries: List<Pair<String, ByteArray>>,

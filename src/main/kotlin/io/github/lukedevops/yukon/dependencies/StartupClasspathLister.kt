@@ -2,7 +2,6 @@ package io.github.lukedevops.yukon.dependencies
 
 import io.github.lukedevops.yukon.export.DependencyIdentity
 import io.github.lukedevops.yukon.export.DependencyIdentitySource
-import io.github.lukedevops.yukon.instrumentation.TypeMatchPolicy
 import io.github.lukedevops.yukon.registry.DependencyOrigin
 import io.github.lukedevops.yukon.registry.DependencyRegistry
 import java.io.File
@@ -13,7 +12,10 @@ import java.util.jar.JarFile
 import java.util.jar.Manifest
 import java.util.zip.ZipInputStream
 
-/** One dependency the startup listing found. [origin] is where its bytes live, kept off the wire. */
+/**
+ * One dependency the startup listing found, or the sweep found at load. [origin] is where its
+ * bytes live, kept off the wire.
+ */
 data class ListedDependency(
     val identities: List<DependencyIdentity>,
     val identitySource: DependencyIdentitySource,
@@ -37,20 +39,26 @@ data class ListedDependency(
  * Boot's launcher puts on the classpath (see [nestedJarNames]), each streamed from the outer jar
  * with nothing extracted to disk.
  *
- * With [includes] set, a jar holding any class [TypeMatchPolicy.isIncluded] admits is the
- * adopter's own and not a dependency. With [includes] empty, every class is in scope, so every jar
- * is a dependency and only directories and a fat jar's own classes are the adopter's.
+ * With [includes] set, a jar holding any class the include rules admit is the adopter's own and
+ * not a dependency. With [includes] empty, every class is in scope, so every jar is a dependency
+ * and only directories and a fat jar's own classes are the adopter's. [JarClassifier] holds these
+ * rules, shared with the sweep's discovery at load.
  *
  * Two jars with one identity key ([DependencyRegistry.identityKey]) are one dependency, and the
  * first found keeps its location and class count. A jar that cannot be read is skipped with one
  * WARNING and the rest of the listing continues.
+ *
+ * Every jar read and judged not a dependency (an agent jar, a fat jar, a jar of the adopter's own)
+ * goes to [onNotADependency], so the sweep can recognise its classes without reading it again.
  */
 class StartupClasspathLister(
-    private val includes: List<String>,
-    private val excludes: List<String>,
+    includes: List<String>,
+    excludes: List<String>,
     private val classPath: String = System.getProperty("java.class.path").orEmpty(),
+    private val onNotADependency: (DependencyOrigin) -> Unit = {},
 ) {
     private val log = System.getLogger(StartupClasspathLister::class.java.name)
+    private val classifier = JarClassifier(includes, excludes)
 
     /** Walks the classpath and returns the dependencies found, in the order the JDK would search them. */
     fun list(): List<ListedDependency> {
@@ -78,14 +86,20 @@ class StartupClasspathLister(
             JarFile(jar).use { jarFile ->
                 val manifest = jarFile.manifest
                 val referenced = classPathEntries(jar, manifest)
-                val attributes = manifest?.mainAttributes ?: Attributes()
-                if (AGENT_ATTRIBUTES.any { attributes.getValue(it) != null }) return referenced
-                if (BOOT_ATTRIBUTES.any { attributes.getValue(it) != null }) {
-                    listNestedJars(jar, jarFile, attributes, emit)
-                } else {
-                    val contents = JarContents.of(jarFile)
-                    if (!isAdoptersOwn(contents, jar.path)) {
-                        emit(listed(contents, jar.name, jar.path, DependencyOrigin.FlatJar(jar.toPath())))
+                val origin = DependencyOrigin.FlatJar(jar.toPath())
+                when (classifier.kindOf(manifest)) {
+                    JarClassifier.Kind.AGENT -> {
+                        onNotADependency(origin)
+                    }
+
+                    JarClassifier.Kind.BOOT_APPLICATION -> {
+                        onNotADependency(origin)
+                        listNestedJars(jar, jarFile, manifest?.mainAttributes ?: Attributes(), emit)
+                    }
+
+                    JarClassifier.Kind.ORDINARY -> {
+                        val listed = classifier.classifyFlat(JarContents.of(jarFile), jar.name, jar.path, origin)
+                        if (listed != null) emit(listed) else onNotADependency(origin)
                     }
                 }
                 return referenced
@@ -106,15 +120,9 @@ class StartupClasspathLister(
             val entry = jarFile.getJarEntry(entryName) ?: continue
             try {
                 val contents = ZipInputStream(jarFile.getInputStream(entry)).use(JarContents::of)
-                if (isAdoptersOwn(contents, "$outer!/$entryName")) continue
-                emit(
-                    listed(
-                        contents,
-                        entryName.substringAfterLast('/'),
-                        entryName,
-                        DependencyOrigin.NestedJar(outer.toPath(), entryName),
-                    ),
-                )
+                val origin = DependencyOrigin.NestedJar(outer.toPath(), entryName)
+                val listed = classifier.classifyNested(contents, entryName.substringAfterLast('/'), entryName, "$outer!/$entryName", origin)
+                if (listed != null) emit(listed) else onNotADependency(origin)
             } catch (e: Exception) {
                 log.log(Level.WARNING, "yukon: could not read $outer!/$entryName for the dependency listing, skipping it", e)
             }
@@ -149,39 +157,6 @@ class StartupClasspathLister(
     }
 
     /**
-     * With [includes] set, whether [contents] holds a class the include rules admit, logging one
-     * INFO line when it also holds classes they do not: the shaded single-jar shape, where
-     * bundled libraries are reported as the adopter's own rather than as a dependency. With
-     * [includes] empty, never.
-     */
-    private fun isAdoptersOwn(
-        contents: JarContents,
-        displayName: String,
-    ): Boolean {
-        if (includes.isEmpty()) return false
-        val outside = contents.classNames.count { !TypeMatchPolicy.isIncluded(it, includes, excludes) }
-        if (outside == contents.classNames.size) return false
-        if (outside > 0) {
-            log.log(
-                Level.INFO,
-                "yukon: $displayName holds classes under the include rules, so it is treated as the adopter's own; " +
-                    "its $outside classes outside the include rules are not reported as a dependency",
-            )
-        }
-        return true
-    }
-
-    private fun listed(
-        contents: JarContents,
-        fileName: String,
-        location: String,
-        origin: DependencyOrigin,
-    ): ListedDependency {
-        val identity = DependencyIdentityReader.identify(contents, fileName)
-        return ListedDependency(identity.identities, identity.identitySource, location, identity.classCount, origin)
-    }
-
-    /**
      * The jars [manifest]'s `Class-Path` names. Each entry is a URL, relative to [jar] unless it
      * names a scheme, the way the system loader reads it, so a space in a path arrives as `%20`.
      * An entry that is not a valid URI, or names a scheme other than `file`, is dropped.
@@ -201,10 +176,7 @@ class StartupClasspathLister(
     }
 
     private companion object {
-        const val CLASSPATH_INDEX = "Spring-Boot-Classpath-Index"
         const val BOOT_LIB = "Spring-Boot-Lib"
-        val AGENT_ATTRIBUTES = listOf("Premain-Class", "Launcher-Agent-Class")
-        val BOOT_ATTRIBUTES = listOf(CLASSPATH_INDEX, BOOT_LIB)
         const val WAR_PREFIX = "WEB-INF/"
         const val WAR_LAUNCHER = ".WarLauncher"
         val JAR_LIB_PREFIXES = listOf("BOOT-INF/lib/")

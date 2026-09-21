@@ -16,9 +16,11 @@ import net.bytebuddy.description.type.TypeDescription
 import net.bytebuddy.dynamic.DynamicType
 import net.bytebuddy.matcher.ElementMatcher
 import net.bytebuddy.matcher.ElementMatchers
+import org.junit.jupiter.api.io.TempDir
 import java.lang.instrument.Instrumentation
 import java.lang.reflect.Proxy
 import java.net.InetSocketAddress
+import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
@@ -190,6 +192,21 @@ class AgentTest {
 
         assertFalse(registry.isListingComplete)
         assertTrue(registry.entries().isEmpty())
+    }
+
+    @Test
+    fun `the agent's own jar is recorded as not a dependency, and a classes directory records nothing`(
+        @TempDir dir: Path,
+    ) {
+        val jar = Files.write(dir.resolve("agent.jar"), ByteArray(0))
+        val registry = DependencyRegistry()
+
+        Agent.recordAgentJar(jar.toUri().toURL(), registry)
+        Agent.recordAgentJar(dir.toUri().toURL(), registry)
+        Agent.recordAgentJar(null, registry)
+
+        assertTrue(registry.isJudgedNotADependency(DependencyOrigin.FlatJar(jar)))
+        assertFalse(registry.isJudgedNotADependency(DependencyOrigin.FlatJar(dir)))
     }
 
     @Test

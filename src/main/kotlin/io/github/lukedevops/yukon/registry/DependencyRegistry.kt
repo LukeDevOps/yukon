@@ -1,5 +1,6 @@
 package io.github.lukedevops.yukon.registry
 
+import io.github.lukedevops.yukon.export.DependencyDelta
 import io.github.lukedevops.yukon.export.DependencyDiscoverySource
 import io.github.lukedevops.yukon.export.DependencyIdentity
 import io.github.lukedevops.yukon.export.DependencyIdentitySource
@@ -7,6 +8,7 @@ import io.github.lukedevops.yukon.export.DependencyLocation
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Where a dependency's bytes live on this instance, kept so a loaded class can be matched back to
@@ -40,7 +42,12 @@ sealed interface DependencyOrigin {
  * the send carrying them is confirmed. A record never changes after registration, so unlike an
  * endpoint it needs no version, only a delivered flag.
  *
- * Safe to use from several threads: the listing thread registers while the export thread reads.
+ * Each record also holds the distinct class names the sweep has matched to it ([recordLoaded]).
+ * Their count goes out as a cumulative total through [computeDeltas] and [advanceDeltas], the same
+ * snapshot pattern, whenever it differs from the last total delivered.
+ *
+ * Safe to use from several threads: the listing thread registers, the sweep records loads and
+ * registers jars found at load on the scheduler thread, and the send pool computes and advances.
  */
 class DependencyRegistry {
     /** One tracked dependency. Instantiable only by [DependencyRegistry]. */
@@ -56,6 +63,19 @@ class DependencyRegistry {
         @Volatile
         internal var delivered: Boolean = false
 
+        /** Every distinct class name a sweep has matched to this dependency, kept for the life of the process. */
+        internal val loadedClassNames: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+        /** Stamped by the first [computeDeltas] that sees a non-zero total; 0 until then. */
+        @Volatile
+        internal var firstLoadedAt: Long = 0
+
+        /** The last loaded-class total a confirmed delta send carried. */
+        internal var lastDelivered: Long = 0
+
+        /** Sequence number of the newest [DeltaSnapshot] applied to [lastDelivered]; see [advanceDeltas]. */
+        internal var lastAppliedDeltaSequence: Long = 0
+
         internal fun toLocation(): DependencyLocation =
             DependencyLocation(dependencyId, identities, identitySource, location, discoverySource, classCount)
     }
@@ -69,8 +89,22 @@ class DependencyRegistry {
         internal val staged: List<DependencyEntry>,
     )
 
+    /**
+     * One computed delta batch, together with the totals it was built from. [advanceDeltas] takes
+     * this back, so a snapshot confirmed late never marks totals it did not carry as delivered.
+     */
+    class DeltaSnapshot internal constructor(
+        val deltas: List<DependencyDelta>,
+        internal val sequence: Long,
+        internal val staged: List<Pair<DependencyEntry, Long>>,
+    )
+
     private val entriesByKey = ConcurrentHashMap<List<String>, DependencyEntry>()
+    private val entriesById = ConcurrentHashMap<Int, DependencyEntry>()
+    private val entriesByOrigin = ConcurrentHashMap<DependencyOrigin, DependencyEntry>()
+    private val judgedNotDependencies: MutableSet<DependencyOrigin> = ConcurrentHashMap.newKeySet()
     private val nextDependencyId = AtomicInteger(0)
+    private val nextDeltaSequence = AtomicLong(0)
 
     @Volatile
     private var listingComplete = false
@@ -104,16 +138,95 @@ class DependencyRegistry {
         require(identities.isNotEmpty()) { "a dependency at $location needs at least one identity" }
         return entriesByKey
             .computeIfAbsent(identityKey(identities)) {
-                DependencyEntry(
-                    nextDependencyId.getAndIncrement(),
-                    identities,
-                    identitySource,
-                    location,
-                    discoverySource,
-                    classCount,
-                    origin,
-                )
+                val entry =
+                    DependencyEntry(
+                        nextDependencyId.getAndIncrement(),
+                        identities,
+                        identitySource,
+                        location,
+                        discoverySource,
+                        classCount,
+                        origin,
+                    )
+                entriesById[entry.dependencyId] = entry
+                if (origin != null) entriesByOrigin.putIfAbsent(origin.canonical(), entry)
+                entry
             }.dependencyId
+    }
+
+    /**
+     * The id of the dependency registered with [origin], compared by canonical path so a symlinked
+     * or relative classpath entry still matches the location the JVM reports. Null when none was.
+     */
+    fun idForOrigin(origin: DependencyOrigin): Int? = entriesByOrigin[origin.canonical()]?.dependencyId
+
+    /**
+     * Records that the startup listing read the jar at [origin] and judged it not a dependency (an
+     * agent jar, a Spring Boot fat jar, a jar of the adopter's own), so the sweep treats it as
+     * such without reading it a second time.
+     */
+    fun recordNotADependency(origin: DependencyOrigin) {
+        judgedNotDependencies += origin.canonical()
+    }
+
+    /** Whether the startup listing judged the jar at [origin] not a dependency, compared by canonical path. */
+    fun isJudgedNotADependency(origin: DependencyOrigin): Boolean = origin.canonical() in judgedNotDependencies
+
+    /** The id of the dependency registered under [identityKey], or null. */
+    fun idForKey(identityKey: List<String>): Int? = entriesByKey[identityKey]?.dependencyId
+
+    /**
+     * Adds [className] to the distinct class names seen from dependency [dependencyId]. A name
+     * already seen, from any loader, adds nothing. An unknown id is ignored.
+     */
+    fun recordLoaded(
+        dependencyId: Int,
+        className: String,
+    ) {
+        entriesById[dependencyId]?.loadedClassNames?.add(className)
+    }
+
+    /**
+     * Returns batches of at most [maxPerBatch] deltas, each weighing one entry, covering every
+     * dependency whose distinct loaded-class total differs from its last delivered total. Empty
+     * when nothing changed. Stamps a dependency's first-loaded time the first time a compute sees
+     * its total above zero, so the time has the precision of a flush.
+     *
+     * Nothing is marked delivered here; see [advanceDeltas].
+     */
+    fun computeDeltas(maxPerBatch: Int): List<DeltaSnapshot> {
+        val batches = mutableListOf<DeltaSnapshot>()
+        var deltas = mutableListOf<DependencyDelta>()
+        var staged = mutableListOf<Pair<DependencyEntry, Long>>()
+        for (entry in entries()) {
+            val total = entry.loadedClassNames.size.toLong()
+            if (total == synchronized(entry) { entry.lastDelivered }) continue
+            if (total > 0 && entry.firstLoadedAt == 0L) entry.firstLoadedAt = System.currentTimeMillis()
+            if (deltas.size == maxPerBatch) {
+                batches += DeltaSnapshot(deltas, nextDeltaSequence.incrementAndGet(), staged)
+                deltas = mutableListOf()
+                staged = mutableListOf()
+            }
+            deltas += DependencyDelta(entry.dependencyId, entry.firstLoadedAt, total)
+            staged += entry to total
+        }
+        if (deltas.isNotEmpty()) batches += DeltaSnapshot(deltas, nextDeltaSequence.incrementAndGet(), staged)
+        return batches
+    }
+
+    /**
+     * Records the totals [snapshot] staged as delivered. Call this only once the send carrying it
+     * is confirmed. An older snapshot confirmed after a newer one is ignored per entry, so a
+     * confirmed total is never rolled back.
+     */
+    fun advanceDeltas(snapshot: DeltaSnapshot) {
+        for ((entry, total) in snapshot.staged) {
+            synchronized(entry) {
+                if (snapshot.sequence <= entry.lastAppliedDeltaSequence) return@synchronized
+                entry.lastAppliedDeltaSequence = snapshot.sequence
+                entry.lastDelivered = total
+            }
+        }
     }
 
     /** Every registered dependency, in id order. */
@@ -145,5 +258,14 @@ class DependencyRegistry {
          */
         fun identityKey(identities: List<DependencyIdentity>): List<String> =
             identities.map { "${it.groupId.orEmpty()}:${it.artifactId}" }.distinct().sorted()
+
+        private fun DependencyOrigin.canonical(): DependencyOrigin =
+            when (this) {
+                is DependencyOrigin.FlatJar -> DependencyOrigin.FlatJar(canonicalPath(path))
+                is DependencyOrigin.NestedJar -> DependencyOrigin.NestedJar(canonicalPath(outerJar), entryName)
+            }
+
+        private fun canonicalPath(path: Path): Path =
+            runCatching { path.toFile().canonicalFile.toPath() }.getOrDefault(path.toAbsolutePath())
     }
 }

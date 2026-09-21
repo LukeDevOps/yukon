@@ -46,8 +46,20 @@ reads `classpath.idx`. Against `demo-spring` the listing finds all 36 nested
 jars, 14 identified by `pom.properties` and 22 by filename, every Spring jar
 among the latter with an empty group. Chunk 2 matches loaded classes back
 through `DependencyOrigin` and must count nothing until
-`DependencyRegistry.isListingComplete`. Landing order, one chunk and one commit
-each:
+`DependencyRegistry.isListingComplete`.
+
+Chunk 2 (counting, discovery by load, `DependencyDelta`) has landed. On
+`demo-spring` a nested class's code source is
+`jar:nested:<outer>/!BOOT-INF/lib/<jar>!/`, parsed as Boot 4.1.1's
+`NestedLocation` does (split at the last `/!`, `%` escapes decoded, the Windows
+drive fix); 31 of the 36 dependencies load a class, none is discovered by load,
+and the sweep reads no jar. Two things stay open. The Boot 2
+`jar:file:<outer>!/<entry>!/` form is pinned only by unit tests: no Boot 2
+loader is in the local caches to check it against. And a flat jar first seen at
+load still goes through the agent-jar rule, which rightly turns away a
+dynamically attached agent's jar but would also turn away `byte-buddy-agent`
+sitting flat in an exploded war's `WEB-INF/lib`; it would then read as no
+dependency rather than as one. Landing order, one chunk and one commit each:
 
 0. Wire and codec: `DependencyLocation`, `DependencyDelta`,
    `referenced_classes`, `ClassReferences`, `ExternalClass`.

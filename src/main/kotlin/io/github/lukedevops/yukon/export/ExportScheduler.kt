@@ -149,9 +149,9 @@ class ExportScheduler(
      * a rejected submission after [stop].
      *
      * [final] is true only for the flush [flushOnShutdown] runs. It is carried onto every delta
-     * batch this flush sends, the empty heartbeat and an endpoint-only standalone batch included,
-     * so a collector can tell an instance that ended cleanly from one that went silent. The
-     * manifest send is unaffected. See ADR 0010.
+     * batch this flush sends, the empty heartbeat and a standalone batch of endpoint or dependency
+     * deltas included, so a collector can tell an instance that ended cleanly from one that went
+     * silent. The manifest send is unaffected. See ADR 0010.
      */
     fun flush(final: Boolean = false) {
         try {
@@ -178,10 +178,13 @@ class ExportScheduler(
      * existing every-tenth-flush cadence; the shutdown flush always runs it, so an instance that
      * ends cleanly always gives a final answer.
      *
-     * The walk is skipped entirely, with no call into the sweep at all, when there is nothing for
-     * either direction to do: no class awaiting confirmation and the forward direction not due.
-     * `getAllLoadedClasses` allocates an array of every class the JVM holds, and on a settled
-     * process there is usually nothing to confirm.
+     * Before the dependency listing completes, the walk is skipped entirely, with no call into the
+     * sweep at all, when there is nothing for either direction to do: no class awaiting
+     * confirmation and the forward direction not due. `getAllLoadedClasses` allocates an array of
+     * every class the JVM holds, and on a settled process there is usually nothing to confirm.
+     * Once the listing completes the walk runs on every flush, since the sweep counts the classes
+     * loaded from each dependency from the same array (ADR 0030); the two directions keep the
+     * cadences above.
      *
      * Guarded like the sends are: this runs under `scheduleAtFixedRate`, which stops calling a
      * task forever the first time one lets a throwable escape.
@@ -190,7 +193,8 @@ class ExportScheduler(
         val sweep = loadedClassSweep ?: return
         val forwardPassDue = final || --flushesSinceSweep <= 0
         if (forwardPassDue) flushesSinceSweep = SWEEP_EVERY_N_FLUSHES
-        if (!forwardPassDue && registry.unconfirmedClassCount() == 0) return
+        val countsDependencies = dependencyRegistry.isListingComplete
+        if (!forwardPassDue && !countsDependencies && registry.unconfirmedClassCount() == 0) return
         try {
             sweep.run(runForwardPass = forwardPassDue, final = final)
         } catch (t: Throwable) {
@@ -219,73 +223,94 @@ class ExportScheduler(
     }
 
     /**
-     * One outgoing [DeltaBatch], together with the probe and endpoint snapshots it carries. A
-     * confirmed send advances exactly these, and nothing else.
+     * One outgoing [DeltaBatch], together with the probe snapshot and the endpoint and dependency
+     * snapshots it carries. A confirmed send advances exactly these, and nothing else.
      */
     private class DeltaSend(
         val batch: DeltaBatch,
         val probeSnapshot: ProbeRegistry.DeltaSnapshot?,
-        val endpointSnapshots: List<EndpointRegistry.DeltaSnapshot>,
+        val riders: List<Rider<DeltaBatch>>,
     )
 
     /**
-     * Sends probe and endpoint deltas together, advancing each snapshot only once its send is
-     * confirmed. A failure stops the loop: the sends already confirmed stay advanced, the rest
-     * are recomputed and resent on the next flush.
+     * A chunk from a registry other than the probe registry, packed onto a probe delta batch or a
+     * class manifest chunk: its weight against the cap, how it adds itself to the payload, and how
+     * its registry marks it delivered once that payload's send is confirmed.
+     */
+    private class Rider<T>(
+        val size: Int,
+        val attach: (T) -> T,
+        val advance: () -> Unit,
+    )
+
+    /**
+     * Sends probe, endpoint and dependency deltas together, advancing each snapshot only once its
+     * send is confirmed. A failure stops the loop: the sends already confirmed stay advanced, the
+     * rest are recomputed and resent on the next flush.
      */
     private fun sendDeltaBatch(final: Boolean) {
         try {
             val resource = resourceAttributes()
             val probeBatches = registry.computeDeltaBatches(resource, maxDeltasPerBatch)
-            val endpointBatches = endpointRegistry.computeDeltas(maxDeltasPerBatch)
-            for (send in composeDeltaSends(resource, probeBatches, endpointBatches, final)) {
+            val riders =
+                endpointRegistry.computeDeltas(maxDeltasPerBatch).map(::endpointDeltaRider) +
+                    dependencyRegistry.computeDeltas(maxDeltasPerBatch).map(::dependencyDeltaRider)
+            for (send in composeDeltaSends(resource, probeBatches, riders, final)) {
                 exporter.exportDeltaBatch(send.batch)
                 send.probeSnapshot?.let(registry::advanceBaseline)
-                send.endpointSnapshots.forEach(endpointRegistry::advanceDeltas)
+                send.riders.forEach { it.advance() }
             }
         } catch (t: Throwable) {
             log.log(Level.WARNING, "yukon: delta export failed, will retry next flush", t)
         }
     }
 
+    private fun endpointDeltaRider(snapshot: EndpointRegistry.DeltaSnapshot): Rider<DeltaBatch> =
+        Rider(
+            size = snapshot.deltas.size,
+            attach = { it.copy(endpointDeltas = it.endpointDeltas + snapshot.deltas) },
+            advance = { endpointRegistry.advanceDeltas(snapshot) },
+        )
+
+    private fun dependencyDeltaRider(snapshot: DependencyRegistry.DeltaSnapshot): Rider<DeltaBatch> =
+        Rider(
+            size = snapshot.deltas.size,
+            attach = { it.copy(dependencyDeltas = it.dependencyDeltas + snapshot.deltas) },
+            advance = { dependencyRegistry.advanceDeltas(snapshot) },
+        )
+
     /**
-     * Packs endpoint delta snapshots onto probe delta batches. Each endpoint snapshot goes on the
-     * first probe batch with room for it, room being [maxDeltasPerBatch] minus the probe deltas
-     * and any endpoint snapshot already packed onto that batch; a snapshot that fits nowhere
-     * becomes its own [DeltaBatch] with no probe deltas.
+     * Packs endpoint and dependency delta snapshots onto probe delta batches, in [riders] order.
+     * Each goes on the first batch with room for it, room being [maxDeltasPerBatch] minus that
+     * batch's weight so far; a snapshot that fits nowhere becomes its own [DeltaBatch] with no
+     * probe deltas, which a later rider may then share.
      *
      * [probeBatches] is never empty: [ProbeRegistry.computeDeltaBatches] always returns at least
-     * one batch as the liveness heartbeat. That batch is where every endpoint snapshot lands when
-     * nothing else changed, so a flush with only endpoint activity still sends exactly one
-     * [DeltaBatch], carrying both the heartbeat and the endpoint deltas.
+     * one batch as the liveness heartbeat. That batch is where every rider lands when nothing else
+     * changed, so a flush with only endpoint or dependency activity still sends exactly one
+     * [DeltaBatch], carrying both the heartbeat and those deltas.
      *
      * [final] is stamped onto every batch built here, including the heartbeat and a standalone
-     * endpoint-only batch, so a shutdown flush with nothing to report still tells the collector
-     * this instance ended cleanly.
+     * batch, so a shutdown flush with nothing to report still tells the collector this instance
+     * ended cleanly.
      */
     private fun composeDeltaSends(
         resource: ResourceAttributes,
         probeBatches: List<ProbeRegistry.DeltaSnapshot>,
-        endpointBatches: List<EndpointRegistry.DeltaSnapshot>,
+        riders: List<Rider<DeltaBatch>>,
         final: Boolean,
     ): List<DeltaSend> {
         val builders = probeBatches.map { DeltaSendBuilder(it.batch.copy(finalFlush = final), it) }.toMutableList()
-        val standalone = mutableListOf<DeltaSendBuilder>()
 
-        for (endpointSnapshot in endpointBatches) {
-            val target = builders.firstOrNull { it.size + endpointSnapshot.deltas.size <= maxDeltasPerBatch }
-            if (target != null) {
-                target.batch = target.batch.copy(endpointDeltas = target.batch.endpointDeltas + endpointSnapshot.deltas)
-                target.size += endpointSnapshot.deltas.size
-                target.endpointSnapshots += endpointSnapshot
-            } else {
-                standalone +=
-                    DeltaSendBuilder(DeltaBatch(resource, emptyList(), endpointSnapshot.deltas, finalFlush = final), null).apply {
-                        endpointSnapshots += endpointSnapshot
-                    }
-            }
+        for (rider in riders) {
+            val target =
+                builders.firstOrNull { it.size + rider.size <= maxDeltasPerBatch }
+                    ?: DeltaSendBuilder(DeltaBatch(resource, emptyList(), finalFlush = final), null).also(builders::add)
+            target.batch = rider.attach(target.batch)
+            target.size += rider.size
+            target.riders += rider
         }
-        return (builders + standalone).map { DeltaSend(it.batch, it.probeSnapshot, it.endpointSnapshots) }
+        return builders.map { DeltaSend(it.batch, it.probeSnapshot, it.riders) }
     }
 
     private class DeltaSendBuilder(
@@ -293,7 +318,7 @@ class ExportScheduler(
         val probeSnapshot: ProbeRegistry.DeltaSnapshot?,
     ) {
         var size = batch.deltas.size
-        val endpointSnapshots = mutableListOf<EndpointRegistry.DeltaSnapshot>()
+        val riders = mutableListOf<Rider<DeltaBatch>>()
     }
 
     /**
@@ -303,18 +328,7 @@ class ExportScheduler(
     private class ManifestSend(
         val manifest: ProbeManifest,
         val probeSnapshot: ProbeRegistry.ManifestSnapshot?,
-        val riders: List<ManifestRider>,
-    )
-
-    /**
-     * A chunk from a registry other than the probe registry, packed onto a class manifest chunk:
-     * its weight against the cap, how it adds itself to a manifest, and how its registry marks it
-     * delivered once that manifest's send is confirmed.
-     */
-    private class ManifestRider(
-        val size: Int,
-        val attach: (ProbeManifest) -> ProbeManifest,
-        val advance: () -> Unit,
+        val riders: List<Rider<ProbeManifest>>,
     )
 
     /**
@@ -341,8 +355,8 @@ class ExportScheduler(
                     maxManifestEntriesPerChunk,
                 )
             val riders =
-                endpointRegistry.computeManifestEntries(maxManifestEntriesPerChunk).map(::endpointRider) +
-                    dependencyRegistry.computeManifestEntries(maxManifestEntriesPerChunk).map(::dependencyRider)
+                endpointRegistry.computeManifestEntries(maxManifestEntriesPerChunk).map(::endpointManifestRider) +
+                    dependencyRegistry.computeManifestEntries(maxManifestEntriesPerChunk).map(::dependencyManifestRider)
             for (send in composeManifestSends(classChunks, riders)) {
                 exporter.exportManifest(send.manifest)
                 send.probeSnapshot?.let(registry::advanceManifestBaseline)
@@ -353,8 +367,8 @@ class ExportScheduler(
         }
     }
 
-    private fun endpointRider(chunk: EndpointRegistry.ManifestSnapshot): ManifestRider =
-        ManifestRider(
+    private fun endpointManifestRider(chunk: EndpointRegistry.ManifestSnapshot): Rider<ProbeManifest> =
+        Rider(
             size = chunk.endpoints.size + chunk.disabledModules.size,
             attach = {
                 it.copy(
@@ -365,8 +379,8 @@ class ExportScheduler(
             advance = { endpointRegistry.advanceManifest(chunk) },
         )
 
-    private fun dependencyRider(chunk: DependencyRegistry.ManifestSnapshot): ManifestRider =
-        ManifestRider(
+    private fun dependencyManifestRider(chunk: DependencyRegistry.ManifestSnapshot): Rider<ProbeManifest> =
+        Rider(
             size = chunk.dependencies.size,
             attach = { it.copy(dependencies = it.dependencies + chunk.dependencies) },
             advance = { dependencyRegistry.advanceManifest(chunk) },
@@ -381,7 +395,7 @@ class ExportScheduler(
      */
     private fun composeManifestSends(
         classChunks: List<ProbeRegistry.ManifestSnapshot>,
-        riders: List<ManifestRider>,
+        riders: List<Rider<ProbeManifest>>,
     ): List<ManifestSend> {
         val builders = classChunks.map { ManifestSendBuilder(it.manifest, it) }.toMutableList()
 
@@ -417,7 +431,7 @@ class ExportScheduler(
             manifest.probes.size + manifest.probes.sumOf { it.calls.size } + manifest.skippedClasses.size +
                 manifest.endpoints.size + manifest.disabledEndpointModules.size + manifest.classSupertypes.size +
                 manifest.unreportedClasses.size + manifest.dependencies.size
-        val riders = mutableListOf<ManifestRider>()
+        val riders = mutableListOf<Rider<ProbeManifest>>()
     }
 
     private fun resourceAttributes() =

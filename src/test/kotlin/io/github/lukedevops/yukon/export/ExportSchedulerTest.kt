@@ -932,6 +932,97 @@ class ExportSchedulerTest {
     }
 
     @Test
+    fun `once the dependency listing completes the sweep runs on every flush, with the directions' cadences unchanged`() {
+        val registry = ProbeRegistry(confirmsDefinitions = true)
+        val sweep = RecordingSweep(ByteBuddyAgent.install(), registry, config)
+        val dependencyRegistry = DependencyRegistry().apply { markListingComplete() }
+        val scheduler =
+            ExportScheduler(
+                config,
+                registry,
+                EndpointRegistry(),
+                RecordingExporter(),
+                loadedClassSweep = sweep,
+                dependencyRegistry = dependencyRegistry,
+            )
+
+        repeat(10) { scheduler.flush() }
+        scheduler.flushOnShutdown(Duration.ofSeconds(5))
+
+        assertEquals(11, sweep.calls.size, "nothing awaits confirmation, but dependency counting needs the walk on every flush")
+        assertEquals(List(9) { false } + listOf(true, true), sweep.calls.map { it.runForwardPass })
+        assertEquals(List(10) { false } + listOf(true), sweep.calls.map { it.final })
+    }
+
+    private fun dependencyRegistryWithLoads(vararg artifacts: String): DependencyRegistry =
+        dependencyRegistryWith(*artifacts).apply {
+            markListingComplete()
+            for (entry in entries()) recordLoaded(entry.dependencyId, "org.lib.Class${entry.dependencyId}")
+        }
+
+    @Test
+    fun `dependency deltas ride on the probe batch when there is room`() {
+        val registry = ProbeRegistry()
+        val probes = registry.register("com.example.Foo", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "bar", "()V", 1)))
+        probes[0] += 1
+        val exporter = RecordingExporter()
+        val scheduler =
+            ExportScheduler(config, registry, EndpointRegistry(), exporter, dependencyRegistry = dependencyRegistryWithLoads("a", "b"))
+
+        scheduler.flush()
+        scheduler.flush()
+
+        assertEquals(2, exporter.deltaBatches.size, "one batch per flush")
+        val first = exporter.deltaBatches.first()
+        assertEquals(1, first.deltas.size)
+        assertEquals(listOf(0, 1), first.dependencyDeltas.map { it.dependencyId })
+        assertEquals(listOf(1L, 1L), first.dependencyDeltas.map { it.loadedClassesTotal })
+        assertTrue(exporter.deltaBatches[1].dependencyDeltas.isEmpty(), "an unchanged total is not sent again")
+    }
+
+    @Test
+    fun `dependency deltas that do not fit go on a standalone batch carrying final`() {
+        val registry = ProbeRegistry()
+        val probes = registry.register("com.example.Foo", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "bar", "()V", 1)))
+        probes[0] += 1
+        val endpointRegistry = EndpointRegistry()
+        endpointRegistry.register(key = Any(), framework = "http-server", verb = "GET", verbatimTemplate = "/health").hit()
+        val exporter = RecordingExporter()
+        val scheduler =
+            ExportScheduler(
+                config,
+                registry,
+                endpointRegistry,
+                exporter,
+                maxDeltasPerBatch = 1,
+                dependencyRegistry = dependencyRegistryWithLoads("a"),
+            )
+
+        scheduler.flushOnShutdown(Duration.ofSeconds(5))
+
+        assertEquals(listOf(1, 0, 0), exporter.deltaBatches.map { it.deltas.size })
+        assertEquals(listOf(0, 1, 0), exporter.deltaBatches.map { it.endpointDeltas.size })
+        assertEquals(listOf(0, 0, 1), exporter.deltaBatches.map { it.dependencyDeltas.size })
+        assertTrue(exporter.deltaBatches.all { it.finalFlush })
+    }
+
+    @Test
+    fun `a failed delta send leaves dependency totals undelivered, so the next flush sends them again`() {
+        val dependencyRegistry = dependencyRegistryWithLoads("a")
+        ExportScheduler(config, ProbeRegistry(), EndpointRegistry(), FailingExporter(), dependencyRegistry = dependencyRegistry).flush()
+
+        val exporter = RecordingExporter()
+        ExportScheduler(config, ProbeRegistry(), EndpointRegistry(), exporter, dependencyRegistry = dependencyRegistry).flush()
+
+        assertEquals(
+            1,
+            exporter.deltaBatches
+                .single()
+                .dependencyDeltas.size,
+        )
+    }
+
+    @Test
     fun `packing an endpoint chunk onto a class chunk counts the class's call edges against the cap`() {
         val registry = ProbeRegistry()
         val edges = (1..3).map { CallEdge("com.example.Callee$it", "m", "()V", virtual = false) }

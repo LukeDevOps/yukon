@@ -1,6 +1,7 @@
 package io.github.lukedevops.yukon.instrumentation
 
 import io.github.lukedevops.yukon.config.AgentConfig
+import io.github.lukedevops.yukon.dependencies.LoadedDependencyCounter
 import io.github.lukedevops.yukon.registry.ProbeRegistry
 import java.lang.System.Logger.Level
 import java.lang.instrument.Instrumentation
@@ -24,11 +25,15 @@ import java.lang.instrument.Instrumentation
  * Both directions read [Instrumentation.getAllLoadedClasses] once per [run] call and compare it
  * against the registry from opposite sides, so one sweep serves both rather than two independent
  * walks of the same array.
+ *
+ * The same array feeds [dependencyCounter], when one is given, which counts the distinct classes
+ * loaded from each dependency. See ADR 0030.
  */
 open class LoadedClassSweep(
     private val instrumentation: Instrumentation,
     private val registry: ProbeRegistry,
     private val config: AgentConfig,
+    private val dependencyCounter: LoadedDependencyCounter? = null,
 ) {
     private val log = System.getLogger(LoadedClassSweep::class.java.name)
     private var everFoundUnreported = false
@@ -36,8 +41,8 @@ open class LoadedClassSweep(
     /**
      * Runs the confirmation pass over every loaded class, unfiltered, and the unreported-class
      * pass over the same array, filtered through [isCandidate], only when [runForwardPass] is
-     * true. [final] additionally logs a one-line summary of how many classes were withheld for
-     * good, when that count is above zero.
+     * true. Every call hands the array to [dependencyCounter] as well. [final] additionally logs a
+     * one-line summary of how many classes were withheld for good, when that count is above zero.
      *
      * The confirmation pass must see every loaded name, not the forward direction's filtered
      * candidate list. The two ask opposite questions: the forward direction asks which classes
@@ -56,6 +61,7 @@ open class LoadedClassSweep(
         val loaded = instrumentation.allLoadedClasses
         confirm(loaded)
         if (runForwardPass) reportUnreported(loaded)
+        dependencyCounter?.count(loaded)
         if (final) logShutdownSummary()
     }
 
@@ -65,6 +71,8 @@ open class LoadedClassSweep(
      * `confirmFrom` returns a name once and never again, so this cannot repeat for the same class.
      */
     private fun confirm(loaded: Array<Class<*>>) {
+        // The walk runs on every flush once dependencies are counted; skip building the name set when nothing awaits it.
+        if (registry.unconfirmedClassCount() == 0) return
         val loadedNames = loaded.mapTo(mutableSetOf()) { it.name }
         for (name in registry.confirmFrom(loadedNames)) {
             log.log(
