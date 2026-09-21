@@ -1,28 +1,11 @@
 # Status
 
 Working notes on what is in flight and what is parked. Not a changelog; git
-history covers that.
+history covers that. `CLAUDE.md` holds the design in long form, `docs/adr/`
+one record per decision, and `CONTEXT.md` the glossary. Where this file and
+`CLAUDE.md` disagree about the state of the code, this one is right.
 
 ## TODO
-
-### The unreported-class field is sent but not yet read
-
-The sweep ADR 0027 describes is done here and reports on the wire, as
-`ProbeManifest.unreported_classes` (tag 9). Nothing reads it yet: yukon-server
-takes its generated Go from the Buf Schema Registry, and the pinned commit
-predates the field, so until the schema is republished and that dependency is
-bumped the agent is emitting into a payload the store cannot see. The claim
-this closes therefore still reads wrong on the server, though the agent is no
-longer the reason.
-
-The steps, and what is already in place at the other end, are in
-`yukon-server/STATUS.md` under "Unreported classes need a proto bump".
-Publishing the schema is a `buf push` from this repo; see ADR 0012.
-
-yukon-collector needs nothing. It unmarshals a manifest and marshals it again
-when forwarding, and protobuf-go keeps fields its generated code does not
-know, so tag 9 passes through its older bindings untouched. Confirmed by
-round-tripping a hand-built tag 9 through that module's own `ProbeManifest`.
 
 ### The sweep's chunking and cadence are untested
 
@@ -76,6 +59,71 @@ Rare in practice: it needs a second agent in the chain, or bytecode the
 verifier rejects, which would break the application itself rather than only
 the report. Not started.
 
+### Nothing is published anywhere
+
+No build in this repo publishes an artifact. An adopter cannot depend on the
+agent jar or on `yukon-testkit` except by building them, which also means the
+testkit's whole reason for existing, letting someone else's test suite assert
+on dead code, has no distribution. The wire schema is the one thing that is
+published, to the Buf Schema Registry, and CI does that on every push that
+touches the proto.
+
+Two things fall out of it when it happens. The poms need licence metadata,
+which nothing generates today. And a published testkit fixes its own API, so
+the query surface is worth a look before it is frozen rather than after.
+
+### The demo never produces a CGLIB proxy
+
+`demo-spring` has no `@Bean` method and nothing `@Transactional`, so Spring
+never generates a proxy in the demo's own packages, and how the agent treats
+one is untested end to end. A proxy class is synthesized in memory under a
+run-specific name, so on the face of it the type matcher takes it, the
+static baseline cannot know it exists, and whatever probes it gets join to
+nothing a collector holds by name.
+
+One `@Bean`-bearing configuration class in `demo-spring` would show what
+actually happens, which is the point: nobody has looked yet.
+
+### The stub demos and the compose stack fight over port 4319
+
+`:demo:runDemo` starts `StubCollectorMain` on 4319, the same port the
+testkit's collector defaults to and the port the compose stack's collector
+binds on the host. With the stack up, the stub dies on bind and the demo run
+fails for a reason that has nothing to do with the agent. A port taken from
+config, or a stub that picks a free port and tells the demo server which one,
+would close it.
+
+### Follow-ups the branch-probe round left open
+
+Each is recorded rather than started. The first needs evidence before it can
+be designed; the rest are small and wait for a reason to touch the code.
+
+- The true-but-uninteresting classification: the null path of a safe call or
+  an elvis, `!!` and `lateinit` checks, `when` exhaustiveness throws, and
+  `finally` copies on the exception path are all branches an adopter did not
+  write in any useful sense. ADR 0025 dropped the two categories that could
+  be measured; this one waits for a report from a real service to show how
+  much of what remains is this shape.
+- Kotlin `value class` `-impl` methods and kotlinx.serialization's generated
+  output as further `GeneratedBy` values.
+- javac's string-switch and try-with-resources shapes, which were zero in
+  every Kotlin corpus measured and wait for a Java corpus to be worth
+  recognising.
+
+### Endpoint follow-ups not started
+
+- Static analysis of registration call sites, to declare an endpoint whose
+  registration the agent never sees at runtime.
+- A `runSpringDemoStack` counterpart to `runDemoStack`, so the Spring demo is
+  proven against the real collector and server rather than only the stub.
+- Per-framework disable flags. One `endpointsEnabled` switch and the
+  self-disabling modules cover everything known so far; this is only worth
+  building if an adopter needs to turn one module off by hand.
+
+OpenAPI import was settled as `yukon-server` work and is tracked there.
+
+## Parked
+
 ### A module disabled after it has already declared routes
 
 A module that throws is switched off for the rest of the process, and its
@@ -94,3 +142,35 @@ need a tombstone on the wire and would throw away that the route existed and
 was served at all, which is true whatever happened to the module later. Same
 shape for a module disabled through the runtime `declare` walk, which
 predates the transform-time staging.
+
+### A named class implementing a framework interface reads as an uncalled root
+
+ADR 0024's known gap. A call that leaves scope and comes back, a framework
+invoking an adopter's class, shows as no edge, so such a class's never-hit
+method appears as a cluster root with no caller. Lambdas are covered, since
+a body is reached from its creator, and the endpoint join carries the route
+to a handler class, which is what the demo's `PromoHandler` shows. What is
+left is the shape with no endpoint beside it. If uncalled roots in a real
+report turn out to be mostly this, recording out-of-scope callees is the
+answer; until then it is a labelled root rather than a wrong one.
+
+### JFR-sampled observed edges
+
+An opt-in overlay marking which static call edges were actually taken, from
+`jdk.ExecutionSample`. The wire shape leaves room for an additive marking on
+an edge. It gets its own grill once real manifest sizes are known; per-call
+dynamic edge tracking stays rejected.
+
+### No CI-gate or threshold helper in the testkit
+
+The testkit stops at query primitives on purpose. Baking in a rule for when
+a count is low enough to fail a build is the confidence policy ADR 0015
+keeps out of the agent, so composing one is an adopter's own call.
+
+### Deliberate v1 boundaries
+
+Not gaps, and not on anyone's list: static attach only (ADR 0013), the
+static scan not opening `BOOT-INF/lib` nested dependency jars, and the
+classpath blind spot for app-server, OSGi and plugin-loaded deployments.
+Each has its own section in `CLAUDE.md` with the reasoning and what it would
+take to change.

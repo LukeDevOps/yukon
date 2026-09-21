@@ -4,6 +4,9 @@ build/
 ### Project (temporary) ###
 # Untracked until it accurately and coherently reflects the finished project.
 CLAUDE.md
+# The running changelog CLAUDE.md used to carry, kept because it is the only
+# copy. History, not a tracker: STATUS.md is the tracker and is in git.
+STATUS-ARCHIVE.md
 !gradle/wrapper/gradle-wrapper.jar
 !**/src/main/**/build/
 !**/src/test/**/build/
