@@ -183,6 +183,10 @@ class StaticBaselineScanner(
                         Triple(entry.name, flatPool, flatLocator)
                     }
                 }
+            // Checked again on the name inside the nested root, not only on the whole entry name:
+            // a multi-release jar packed under BOOT-INF/classes keeps its versioned variants at
+            // BOOT-INF/classes/META-INF/versions/N/, which only the stripped name reveals.
+            if (!isClassEntry(relativeName)) continue
             val className = relativeName.removeSuffix(".class").replace('/', '.')
             classify(className, pool, locator, buckets)
         }

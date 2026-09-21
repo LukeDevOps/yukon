@@ -57,6 +57,41 @@ inline fun inlineWithDefault(
 ): Int = a + b
 
 /**
+ * A member extension function with a default: the receiver is the target's first JVM parameter
+ * (slot 1, named `$this$decorate` in the LocalVariableTable), but the compiler's mask counts value
+ * parameters only, so bit 0 is `suffix`, not the receiver.
+ */
+class MemberExtensionTarget {
+    fun String.decorate(suffix: String = "!"): String = this + suffix
+
+    fun call(): String = "hi".decorate()
+}
+
+/**
+ * Sixteen optional parameters: bit 15's mask constant, 32768, no longer fits `SIPUSH`, so kotlinc
+ * emits that test with `LDC`, the third of the three constant shapes the mask scan recognises.
+ */
+@Suppress("LongParameterList")
+fun sixteenDefaults(
+    p0: Int = 0,
+    p1: Int = 0,
+    p2: Int = 0,
+    p3: Int = 0,
+    p4: Int = 0,
+    p5: Int = 0,
+    p6: Int = 0,
+    p7: Int = 0,
+    p8: Int = 0,
+    p9: Int = 0,
+    p10: Int = 0,
+    p11: Int = 0,
+    p12: Int = 0,
+    p13: Int = 0,
+    p14: Int = 0,
+    p15: Int = 0,
+): Int = p0 + p1 + p2 + p3 + p4 + p5 + p6 + p7 + p8 + p9 + p10 + p11 + p12 + p13 + p14 + p15
+
+/**
  * `b`'s default expression itself does `a and 4`, on `a`, a real parameter rather than the
  * `$default` mask local. The analyser must not mistake this for a mask test just because it
  * shares the `ILOAD; ICONST_4; IAND` shape.

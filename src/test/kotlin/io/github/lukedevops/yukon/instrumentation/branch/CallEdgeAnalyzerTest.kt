@@ -578,4 +578,51 @@ class CallEdgeAnalyzerTest {
         assertTrue(counts.values.sum() > distinctOwners, "with room for one table, a second analysis must read again")
         assertEquals(1, cache.size)
     }
+
+    @Test
+    fun `a shared table cache asks the lookup for an unreadable owner once per analysis, not twice`() {
+        val counts = mutableMapOf<String, Int>()
+        val cache = BranchSiteAnalyzer.CrossClassTableCache(maxEntries = 64)
+        val unreadableLookup: (String) -> ByteArray? = { internalName ->
+            counts.merge(internalName, 1, Int::plus)
+            null
+        }
+
+        BranchSiteAnalyzer.analyze(
+            readTargetBytes("AccessorTarget\$Inner"),
+            unreadableLookup,
+            includePackages,
+            emptyList(),
+            cache,
+        ) { _, _ -> true }
+
+        assertTrue(counts.isNotEmpty(), "the fixture references another in-scope class, so the lookup must be asked at all")
+        assertEquals(
+            counts.keys.associateWith {
+                1
+            },
+            counts.toMap(),
+            "an owner the lookup cannot read is asked for once, then remembered as unreadable",
+        )
+    }
+
+    @Test
+    fun `a lookup that throws is treated as an unreadable owner, leaving the callee verbatim`() {
+        val throwing: (String) -> ByteArray? = { throw IllegalStateException("lookup failed") }
+        val cache = BranchSiteAnalyzer.CrossClassTableCache(maxEntries = 64)
+
+        val analysis =
+            BranchSiteAnalyzer.analyze(
+                readTargetBytes("AccessorTarget\$Inner"),
+                throwing,
+                includePackages,
+                emptyList(),
+                cache,
+            ) { _, _ -> true }
+
+        assertEquals(
+            analyzeTarget("AccessorTarget\$Inner", useLookup = false).callsOf("callSecret", "()I"),
+            analysis.callsOf("callSecret", "()I"),
+        )
+    }
 }

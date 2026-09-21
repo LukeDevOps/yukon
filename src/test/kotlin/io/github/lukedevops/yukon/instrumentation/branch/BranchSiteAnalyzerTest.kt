@@ -198,6 +198,30 @@ class BranchSiteAnalyzerTest {
     }
 
     @Test
+    fun `a member extension function's receiver is excluded from the parameter name, the same as a top-level one`() {
+        // Confirmed with javap on Kotlin 2.2.21 output: decorate$default tests `iload_3; iconst_1;
+        // iand`, so mask bit 0 is `suffix`, while the target's LocalVariableTable has the receiver
+        // `$this$decorate` at slot 1 and `suffix` at slot 2.
+        val analysis = analyzeDefaultSites("MemberExtensionTarget")
+
+        val site = analysis.defaultSites.single { it.defaultName == "decorate\$default" }
+        assertEquals("decorate", site.targetName)
+        assertEquals("(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;", site.targetDescriptor)
+        assertEquals(0b1, site.optionalBits, "suffix is value-parameter index 0; the receiver owns no bit")
+        assertEquals(mapOf(0 to "suffix"), site.parameterNames)
+    }
+
+    @Test
+    fun `a mask bit whose constant only fits an LDC is found like the BIPUSH and SIPUSH ones`() {
+        val analysis = analyzeDefaultSites("DefaultArgumentTargetKt")
+
+        val site = analysis.defaultSites.single { it.defaultName == "sixteenDefaults\$default" }
+        assertEquals(0xFFFF, site.optionalBits, "every one of the sixteen parameters is optional")
+        assertEquals("p15", site.parameterNames[15])
+        assertFalse(site.higherMaskTested, "sixteen parameters fit in one mask int")
+    }
+
+    @Test
     fun `a synthetic constructor resolves against the plain constructor it calls`() {
         val analysis = analyzeDefaultSites("ConstructedWithDefault")
 

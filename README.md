@@ -177,8 +177,13 @@ Class names are the dotted binary names the manifest carries
 (`com.acme.OrdersKt` for a Kotlin file's top-level functions,
 `com.acme.Outer$Inner` for a nested class).
 
-Queries are `wasHit`, `hitCount`, `neverHit`, `skippedClasses`, and, when
-the agent runs with `staticBaselineEnabled=true`, `neverLoaded`. Asking
+Queries cover methods (`wasHit`, `hitCount`, `neverHit`, `skippedClasses`,
+`unreportedClasses`), endpoints (`wasCalled`, `callCount`, `neverCalled`,
+`endpoints`, `disabledEndpointModules`), optional parameters
+(`omissionCount`, `neverSupplied`, `alwaysSupplied`), the call graph
+(`callEdges`, `unreachedClusters`), a clean shutdown (`endedCleanly`,
+`instancesEndedCleanly`) and, when the agent runs with
+`staticBaselineEnabled=true`, `neverLoaded`. Asking
 about a probe the collector has never seen throws `UnknownProbeException`
 rather than answering `false`; the message says whether the class was
 skipped, declared by the static baseline but never loaded, instrumented but

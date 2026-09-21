@@ -140,4 +140,30 @@ class RegistryResolverTest {
         assertNotNull(resolver.register("key-1", "fake", "GET", "/live", null, null, null, null))
         assertEquals(1, registry.computeManifestEntries(100).sumOf { it.endpoints.size })
     }
+
+    @Test
+    fun `declare for a name no module registered under is ignored, and is not a module failure`() {
+        val registry = EndpointRegistry()
+        val resolver = RegistryResolver(registry, emptyList(), PendingDeclarations())
+
+        resolver.declare("nobody", Any())
+        resolver.declare("nobody", Any())
+
+        assertTrue(registry.endpoints().isEmpty())
+        assertTrue(registry.disabledModules().isEmpty())
+    }
+
+    @Test
+    fun `a staged declaration that throws on commit does not stop the ones after it`() {
+        val pending = PendingDeclarations()
+        pending.begin()
+        var ranAfterTheFailure = false
+        pending.stage { throw IllegalStateException("bad route") }
+        pending.stage { ranAfterTheFailure = true }
+
+        pending.commit()
+
+        assertTrue(ranAfterTheFailure)
+        assertEquals(0, pending.pendingCount())
+    }
 }

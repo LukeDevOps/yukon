@@ -414,6 +414,28 @@ class ScalaGetterResolutionTest {
     fun `scala 2 - the static forwarder on Cc resolves in class`() =
         `the static forwarder on Cc itself resolves in class against its own init`("scala2")
 
+    private fun `a companion the lookup cannot read is asked for once, not once per constructor getter`(module: String) {
+        val asked = mutableMapOf<String, Int>()
+        val analysis =
+            analyzeFixtureWithLookup(module, "Cc\$", lookup = { name ->
+                asked.merge(name, 1, Int::plus)
+                null
+            })
+
+        assertTrue(analysis.unresolvedScalaGetterSites.size > 1, "Cc has more than one constructor default, so more than one getter asks")
+        // The call-edge pass asks the same lookup about other owners (java.lang.Object here, since
+        // the include list is empty); only the companion's own count is under test.
+        assertEquals(1, asked["com/example/scalatarget/Cc"], "asked $asked")
+    }
+
+    @Test
+    fun `scala 3 - a companion the lookup cannot read is asked for once, not once per constructor getter`() =
+        `a companion the lookup cannot read is asked for once, not once per constructor getter`("scala3")
+
+    @Test
+    fun `scala 2 - a companion the lookup cannot read is asked for once, not once per constructor getter`() =
+        `a companion the lookup cannot read is asked for once, not once per constructor getter`("scala2")
+
     private fun `a lookup returning null leaves the companion's constructor getters unresolved`(module: String) {
         val analysis = analyzeFixtureWithLookup(module, "Cc\$", lookup = { null })
 

@@ -167,6 +167,21 @@ class StaticBaselineScannerTest {
     }
 
     @Test
+    fun `a multi-release jar's versioned entries under BOOT-INF slash classes are not classes of their own either`() {
+        val jar =
+            jarRoot(
+                "BOOT-INF/classes/com/example/target/SampleTarget.class" to sampleTargetBytes,
+                "BOOT-INF/classes/META-INF/versions/9/com/example/target/SampleTarget.class" to sampleTargetBytes,
+            )
+        // Empty includePackages, as above: only the entry check itself can keep the phantom out.
+        val scanner = StaticBaselineScanner(emptyList())
+
+        val result = scanner.scan(listOf(jar))
+
+        assertEquals(listOf("com.example.target.SampleTarget"), result.allClassNames().sorted())
+    }
+
+    @Test
     fun `a root named with an uppercase JAR extension or a zip extension is scanned like any jar`() {
         val dir = directoryRoot()
         val upper = File(dir, "app.JAR").also { writeJar(it, listOf("com/example/target/SampleTarget.class" to sampleTargetBytes)) }

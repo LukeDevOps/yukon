@@ -48,7 +48,13 @@ class YukonExtension :
     ParameterResolver {
     override fun beforeAll(context: ExtensionContext) {
         val store = context.root.getStore(NAMESPACE)
-        val collector = store.getOrComputeIfAbsent(COLLECTOR_KEY, { startCollector() }, YukonTestCollector::class.java)
+        val collector =
+            store
+                .getOrComputeIfAbsent(
+                    COLLECTOR_KEY,
+                    { CollectorHolder(startCollector()) },
+                    CollectorHolder::class.java,
+                ).collector
         sharedCollector = collector
 
         val heartbeatSeen = store.get(HEARTBEAT_SEEN_KEY, Boolean::class.javaObjectType) ?: false
@@ -71,6 +77,17 @@ class YukonExtension :
         parameterContext: ParameterContext,
         extensionContext: ExtensionContext,
     ): Any = collector()
+
+    /**
+     * What the root store holds instead of the collector itself. [YukonTestCollector] is
+     * `AutoCloseable`, and from JUnit 5.13 the store closes every `AutoCloseable` value it holds
+     * when it closes, at the end of the test run and before the JVM exits. Wrapping the collector
+     * in a class that is not `AutoCloseable` keeps it listening for the agent's shutdown-hook
+     * flush on every JUnit version, which is what [startCollector]'s note relies on.
+     */
+    private class CollectorHolder(
+        val collector: YukonTestCollector,
+    )
 
     companion object {
         private val NAMESPACE = ExtensionContext.Namespace.create(YukonExtension::class.java)
@@ -99,10 +116,10 @@ class YukonExtension :
         /**
          * The collector started here is deliberately never stopped when JUnit's root store
          * closes at the end of the test run. The agent's own shutdown-hook flush needs the
-         * collector to still be listening at JVM exit, so this store entry does not implement
-         * `CloseableResource`. Leaving the collector running cannot itself keep the test JVM
-         * alive: [YukonTestCollector.start] already runs its HTTP server's dispatcher thread as
-         * a daemon thread.
+         * collector to still be listening at JVM exit, so the store entry is a [CollectorHolder]
+         * that implements neither `CloseableResource` nor `AutoCloseable`. Leaving the collector
+         * running cannot itself keep the test JVM alive: [YukonTestCollector.start] already runs
+         * its HTTP server's dispatcher thread as a daemon thread.
          */
         private fun startCollector(): YukonTestCollector {
             val port = resolvePort()

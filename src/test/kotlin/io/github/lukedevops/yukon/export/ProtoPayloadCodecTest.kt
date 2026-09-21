@@ -8,7 +8,9 @@ import kotlin.test.assertTrue
 import io.github.lukedevops.yukon.proto.DeltaBatch as ProtoDeltaBatch
 import io.github.lukedevops.yukon.proto.EndpointDiscoverySource as ProtoEndpointDiscoverySource
 import io.github.lukedevops.yukon.proto.EndpointLocation as ProtoEndpointLocation
+import io.github.lukedevops.yukon.proto.ProbeDelta as ProtoProbeDelta
 import io.github.lukedevops.yukon.proto.ProbeKind as ProtoProbeKind
+import io.github.lukedevops.yukon.proto.ProbeLocation as ProtoProbeLocation
 import io.github.lukedevops.yukon.proto.ProbeManifest as ProtoProbeManifest
 
 class ProtoPayloadCodecTest {
@@ -1054,5 +1056,43 @@ class ProtoPayloadCodecTest {
         val unreported = decoded.unreportedClasses.single()
         assertEquals("com.example.Deflected", unreported.className)
         assertEquals(1_700_000_000_000L, unreported.firstSeenUnreportedAt)
+    }
+
+    @Test
+    fun `an enum number this codec does not know is an error on decode, never silently the default`() {
+        val batch =
+            ProtoDeltaBatch
+                .newBuilder()
+                .addDeltas(
+                    ProtoProbeDelta
+                        .newBuilder()
+                        .setClassId(1)
+                        .setProbeIndex(0)
+                        .setKindValue(99)
+                        .setHitsTotal(1),
+                ).build()
+                .toByteArray()
+        assertFailsWith<IllegalArgumentException> { ProtoPayloadCodec.decodeDeltaBatch(batch) }
+
+        val generatedBy =
+            ProtoProbeManifest
+                .newBuilder()
+                .addProbes(
+                    ProtoProbeLocation
+                        .newBuilder()
+                        .setClassId(1)
+                        .setKind(ProtoProbeKind.METHOD)
+                        .setGeneratedByValue(99),
+                ).build()
+                .toByteArray()
+        assertFailsWith<IllegalArgumentException> { ProtoPayloadCodec.decodeProbeManifest(generatedBy) }
+
+        val discoverySource =
+            ProtoProbeManifest
+                .newBuilder()
+                .addEndpoints(ProtoEndpointLocation.newBuilder().setEndpointId(1).setDiscoverySourceValue(99))
+                .build()
+                .toByteArray()
+        assertFailsWith<IllegalArgumentException> { ProtoPayloadCodec.decodeProbeManifest(discoverySource) }
     }
 }

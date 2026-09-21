@@ -182,7 +182,7 @@ class SpringWebMvcModuleTest {
      * same reflective precaution [buildUrlMappedWebApplicationContext] does.
      *
      * Every handler here is written in Kotlin, not Java: adding a Java source set to this
-     * module's `spring7Test`/`spring53Test` suites, which currently only add
+     * module's `spring7Test`/`spring53Test` suites, which only add
      * `kotlin.srcDir("src/test/kotlin")` and would need their own `java.srcDir` wiring too, was
      * judged more churn than the coverage is worth here. Kotlin's default `indy`-based SAM
      * conversion for a Java functional interface such as `HandlerFunction`, though, makes a

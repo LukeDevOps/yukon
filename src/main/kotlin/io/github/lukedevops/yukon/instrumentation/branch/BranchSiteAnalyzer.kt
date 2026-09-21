@@ -546,11 +546,20 @@ object BranchSiteAnalyzer {
             }
         }
 
-        fun methodTableFor(ownerInternalName: String): MethodTable? =
-            crossClassMethodTables.getOrPut(ownerInternalName) {
-                tableCache?.getOrRead(ownerInternalName) { readTable(ownerInternalName) }
-                    ?: readTable(ownerInternalName).takeIf { tableCache == null }
-            }
+        // Memoised by containsKey rather than getOrPut: an unreadable owner's table is null, and
+        // getOrPut treats a null value as absent, which would read the owner again on every
+        // reference to it.
+        fun methodTableFor(ownerInternalName: String): MethodTable? {
+            if (ownerInternalName in crossClassMethodTables) return crossClassMethodTables[ownerInternalName]
+            val table =
+                if (tableCache != null) {
+                    tableCache.getOrRead(ownerInternalName) { readTable(ownerInternalName) }
+                } else {
+                    readTable(ownerInternalName)
+                }
+            crossClassMethodTables[ownerInternalName] = table
+            return table
+        }
 
         val dottedClassName = internalClassName.replace('/', '.')
 
@@ -1515,9 +1524,11 @@ object BranchSiteAnalyzer {
 
     /**
      * The target's own parameter names, keyed by [DefaultSite.optionalBits] bit, read from its
-     * `LocalVariableTable`. Slot 0 is skipped for an instance method (`this`) and for a static
-     * method whose own slot 0 is named `$this$...` (an extension receiver); neither is a value
-     * parameter, so neither owns a mask bit.
+     * `LocalVariableTable`. Slot 0 is skipped for an instance method (`this`), and the first
+     * declared parameter is skipped when its local is named `$this$...`: kotlinc's name for an
+     * extension receiver, which sits at slot 0 of a top-level extension function and at slot 1 of
+     * a member extension function. Neither `this` nor a receiver is a value parameter, so neither
+     * owns a mask bit. Checked against `javap` of Kotlin 2.2.21 output for both shapes.
      */
     private fun parameterNamesOf(
         candidate: DefaultCandidate,
@@ -1526,10 +1537,10 @@ object BranchSiteAnalyzer {
         targetLocalNames: Map<Int, String>,
     ): Map<Int, String> {
         val targetParams = parseParameterDescriptors(targetDescriptor)
-        val firstSlotName = if (targetIsStatic) targetLocalNames[0] else null
-        val skipFirst = targetIsStatic && firstSlotName != null && firstSlotName.startsWith("\$this\$")
-        val remainingParams = if (skipFirst) targetParams.drop(1) else targetParams
         val startSlot = if (targetIsStatic) 0 else 1
+        val firstParameterName = targetLocalNames[startSlot]
+        val skipFirst = targetParams.isNotEmpty() && firstParameterName != null && firstParameterName.startsWith("\$this\$")
+        val remainingParams = if (skipFirst) targetParams.drop(1) else targetParams
         var slot = if (skipFirst) startSlot + slotWidth(targetParams[0]) else startSlot
 
         val names = mutableMapOf<Int, String>()
@@ -1576,28 +1587,14 @@ object BranchSiteAnalyzer {
         val ownNamespace = GetterTargetNamespace(methodAccess, localNames, firstLines, classAccess, targetClassName = null)
         val companionNamespaces = mutableMapOf<String, GetterTargetNamespace?>()
 
-        fun companionNamespace(companionInternalName: String): GetterTargetNamespace? =
-            companionNamespaces.getOrPut(companionInternalName) {
-                val bytes =
-                    try {
-                        lookupCompanionBytes(companionInternalName)
-                    } catch (_: Exception) {
-                        null
-                    } ?: return@getOrPut null
-                val table =
-                    try {
-                        readMethodTable(bytes)
-                    } catch (_: Exception) {
-                        null
-                    } ?: return@getOrPut null
-                GetterTargetNamespace(
-                    table.methodAccess,
-                    table.localNames,
-                    table.firstLines,
-                    table.classAccess,
-                    targetClassName = companionInternalName.replace('/', '.'),
-                )
-            }
+        // Memoised by containsKey rather than getOrPut, which treats a null value as absent: an
+        // unreadable companion would otherwise be looked up again for every constructor getter.
+        fun companionNamespace(companionInternalName: String): GetterTargetNamespace? {
+            if (companionInternalName in companionNamespaces) return companionNamespaces[companionInternalName]
+            val namespace = readCompanionNamespace(companionInternalName, lookupCompanionBytes)
+            companionNamespaces[companionInternalName] = namespace
+            return namespace
+        }
 
         return candidateNames.mapNotNull { (getterName, getterDescriptor) ->
             val match = scalaGetterPattern.matchEntire(getterName) ?: return@mapNotNull null
@@ -1667,6 +1664,32 @@ object BranchSiteAnalyzer {
         val classAccess: Int,
         val targetClassName: String?,
     )
+
+    /** The [GetterTargetNamespace] of a companion module's sibling class, or null when its bytes cannot be read or parsed. */
+    private fun readCompanionNamespace(
+        companionInternalName: String,
+        lookupCompanionBytes: (String) -> ByteArray?,
+    ): GetterTargetNamespace? {
+        val bytes =
+            try {
+                lookupCompanionBytes(companionInternalName)
+            } catch (_: Exception) {
+                null
+            } ?: return null
+        val table =
+            try {
+                readMethodTable(bytes)
+            } catch (_: Exception) {
+                null
+            } ?: return null
+        return GetterTargetNamespace(
+            table.methodAccess,
+            table.localNames,
+            table.firstLines,
+            table.classAccess,
+            targetClassName = companionInternalName.replace('/', '.'),
+        )
+    }
 
     /**
      * A class's method access flags, local variable names, first line numbers, and raw call

@@ -17,7 +17,7 @@ import java.util.concurrent.ConcurrentHashMap
  * [classId] is assigned independently by each agent instance's own registry, in that process's
  * own class-loading order, so the same [classId] can mean a different class in two different
  * instances. Every probe key used by this stub collector is scoped to [serviceInstanceId] for
- * that reason: `ProbeManifest` now carries its own `service_instance_id`, the same as
+ * that reason: `ProbeManifest` carries its own `service_instance_id`, the same as
  * `DeltaBatch`'s resource, so there is always an instance to key on.
  */
 private data class InstanceProbeKey(

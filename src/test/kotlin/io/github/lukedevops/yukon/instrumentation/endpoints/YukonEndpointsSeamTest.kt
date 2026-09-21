@@ -22,7 +22,7 @@ import kotlin.test.assertTrue
 // YukonEndpoints is a bootstrap-resident singleton: install() has no matching uninstall, so once
 // any test calls it the resolver stays set for the rest of this JVM. The pre-install behaviour
 // (buffering, no-op with nothing installed) is only observable before the first ever install()
-// call. Other test classes now install a resolver too (EndpointInstrumentationTest directly,
+// call. Other test classes install a resolver too (EndpointInstrumentationTest directly,
 // AgentTest through Agent.start()'s default endpointsEnabled=true), so the class-level @Order
 // below, together with src/test/resources/junit-platform.properties enabling
 // ClassOrderer.OrderAnnotation, is what actually guarantees this class runs before any of them;

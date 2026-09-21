@@ -21,6 +21,7 @@ import io.github.lukedevops.yukon.export.StaticBaseline
 import io.github.lukedevops.yukon.export.StaticallyUnsafeClass
 import io.github.lukedevops.yukon.export.UnprobedClass
 import io.github.lukedevops.yukon.export.UnreadableClass
+import io.github.lukedevops.yukon.export.UnreportedClass
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
@@ -1687,5 +1688,82 @@ class YukonTestCollectorTest {
         )
 
         assertTrue(target.unreachedClusters().isEmpty())
+    }
+
+    @Test
+    fun `a class a sweep reported as unreported counts as loaded, and is listed on its own`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+        exporter.exportStaticBaseline(
+            StaticBaseline(
+                resource = ResourceAttributes("svc", null, "i-1", null),
+                declaredClasses =
+                    listOf(
+                        DeclaredClass("com.acme.Deflected", listOf(DeclaredMethod("m", "()V"))),
+                        DeclaredClass("com.acme.Dead", listOf(DeclaredMethod("m", "()V"))),
+                    ),
+                scannedAt = 1000L,
+            ),
+        )
+        exporter.exportManifest(
+            ProbeManifest(
+                "svc",
+                null,
+                emptyList(),
+                serviceInstanceId = "i-1",
+                unreportedClasses = listOf(UnreportedClass("com.acme.Deflected", 5L)),
+            ),
+        )
+
+        assertEquals(listOf("com.acme.Deflected"), target.unreportedClasses())
+        assertEquals(listOf("com.acme.Dead"), target.neverLoaded())
+    }
+
+    @Test
+    fun `a payload that does not decode is answered 400 on every endpoint`() {
+        val target = startCollector()
+        val client = HttpClient.newHttpClient()
+
+        for (path in listOf("deltas", "manifest", "static-baseline")) {
+            val request =
+                HttpRequest
+                    .newBuilder(URI.create("${target.endpoint}/v1/yukon/$path"))
+                    .POST(HttpRequest.BodyPublishers.ofByteArray(byteArrayOf(0x7f, 0x7f, 0x7f)))
+                    .build()
+            val response = client.send(request, HttpResponse.BodyHandlers.discarding())
+            assertEquals(400, response.statusCode(), path)
+        }
+    }
+
+    @Test
+    fun `a loaded class's node takes its call edges from a complete baseline declaration too`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+        val edge = CallEdge("com.acme.B", "n", "()V", virtual = false)
+        exporter.exportStaticBaseline(
+            StaticBaseline(
+                resource = ResourceAttributes("svc", null, "i-1", null),
+                declaredClasses = listOf(DeclaredClass("com.acme.A", listOf(DeclaredMethod("m", "()V", calls = listOf(edge))))),
+                scannedAt = 1000L,
+            ),
+        )
+        // The manifest's own row for A.m carries no edges, as a class whose bytes the agent could
+        // not read at transform time would; the baseline's declaration is the only source.
+        exporter.exportManifest(
+            ProbeManifest(
+                "svc",
+                null,
+                listOf(methodProbe(1, 0, "com.acme.A", "m", "()V", 1), methodProbe(2, 0, "com.acme.B", "n", "()V", 1)),
+                serviceInstanceId = "i-1",
+            ),
+        )
+        exporter.exportDeltaBatch(
+            DeltaBatch(ResourceAttributes("svc", null, "i-1", null), listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 1L))),
+        )
+
+        assertEquals(listOf(edge), target.callEdges("com.acme.A", "m"))
+        val cluster = target.unreachedClusters().single()
+        assertEquals(RootKind.REACHED_FROM_HIT, cluster.rootKind)
+        assertEquals("n", cluster.root.methodName)
     }
 }

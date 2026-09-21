@@ -308,7 +308,7 @@ class ExportSchedulerTest {
             probes[0] = 1
         }
         val exporter = RecordingExporter()
-        // Each class now weighs 2 in the manifest cap (1 probe + 0 edges + 1 for its own
+        // Each class weighs 2 in the manifest cap (1 probe + 0 edges + 1 for its own
         // ClassSupertypes record, ADR 0024), so the cap is 4, not 2, to keep two classes per
         // chunk: 2 + 2 = 4 fits, and a third class's own 2 would push it past the cap.
         val scheduler =
@@ -832,5 +832,48 @@ class ExportSchedulerTest {
 
         assertEquals(1, sweep.calls.size)
         assertTrue(sweep.calls.single().runForwardPass, "the tenth flush runs the forward direction regardless of confirmation state")
+    }
+
+    @Test
+    fun `packing an endpoint chunk onto a class chunk counts the class's call edges against the cap`() {
+        val registry = ProbeRegistry()
+        val edges = (1..3).map { CallEdge("com.example.Callee$it", "m", "()V", virtual = false) }
+        registry.register("com.example.Foo", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "m", "()V", 1, calls = edges)))
+        val endpointRegistry = EndpointRegistry()
+        endpointRegistry.register(key = "k", framework = "fake", verb = "GET", verbatimTemplate = "/x")
+        val exporter = RecordingExporter()
+        // The class alone weighs 5 (1 probe + 3 edges + 1 for its own ClassSupertypes record),
+        // exactly the cap, so the endpoint cannot share its chunk without overshooting.
+        val scheduler = ExportScheduler(config, registry, endpointRegistry, exporter, maxManifestEntriesPerChunk = 5)
+
+        scheduler.flush()
+
+        assertEquals(2, exporter.manifests.size, "the endpoint must go out in a chunk of its own")
+        for (manifest in exporter.manifests) {
+            val weight =
+                manifest.probes.size + manifest.probes.sumOf { it.calls.size } + manifest.classSupertypes.size +
+                    manifest.skippedClasses.size + manifest.unreportedClasses.size + manifest.endpoints.size +
+                    manifest.disabledEndpointModules.size
+            assertTrue(weight <= 5, "a sent manifest must not exceed the cap it was chunked under, got $weight")
+        }
+    }
+
+    @Test
+    fun `a sweep that throws is logged and the flush still sends, on that flush and the next`() {
+        val registry = ProbeRegistry()
+        val exporter = RecordingExporter()
+        val sweep =
+            object : LoadedClassSweep(ByteBuddyAgent.install(), registry, config) {
+                override fun run(
+                    runForwardPass: Boolean,
+                    final: Boolean,
+                ): Unit = throw IllegalStateException("the walk failed")
+            }
+        val scheduler = ExportScheduler(config, registry, EndpointRegistry(), exporter, loadedClassSweep = sweep)
+
+        scheduler.flush(final = true)
+        scheduler.flush(final = true)
+
+        assertEquals(2, exporter.deltaBatches.size, "the heartbeat goes out on both flushes")
     }
 }
