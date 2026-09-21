@@ -7,58 +7,6 @@ one record per decision, and `CONTEXT.md` the glossary. Where this file and
 
 ## TODO
 
-### The sweep's chunking and cadence are untested
-
-Two paths the sweep added have no test. `computeManifestDeltas` weights an
-unreported class at one and seals a chunk at the cap, but nothing drives it
-with more unreported classes than the cap. And `ExportSchedulerTest` never
-passes an `unreportedClassSweep`, so every scheduler test takes the null
-branch in `maybeSweep` and "every tenth flush, always on the final one" is
-asserted nowhere.
-
-Neither is load-bearing for a dead-code claim: the worst a chunking bug does
-is an oversized POST, and a cadence bug means sweeping too often or too
-rarely. Worth closing when the file is next open.
-
-### A transform that fails after ByteBuddy hands back the bytes
-
-Probes and endpoint declarations are both committed from
-`AgentBuilder.Listener.onTransformation`, which runs only once `make()` has
-produced the class's bytes. That closes the window ADR 0007 is about, for
-every failure ByteBuddy can see.
-
-It does not cover what happens after `getBytes()` returns. The JVM verifier
-can reject the woven class, a transformer registered later in the chain can
-replace the bytes, and `defineClass` can fail with a `LinkageError` for a
-supertype that is missing at load. In each case the registry already holds
-that class's probes, the manifest carries them, and nothing ever increments
-them: permanently zero, which is what a collector reads as dead code. An
-endpoint the same class declared is in the same position.
-
-The sweep ADR 0027 added does not catch this, and cannot as it stands. It
-compares one way, loaded against what the registry knows, which is race-free
-because a class is registered before the JVM defines it. These classes go the
-other way: registered, then never loaded, so they never appear in
-`getAllLoadedClasses()` and a loaded-against-known comparison sees nothing
-wrong. The reverse check, registered against loaded, has no such property. A
-class registered moments ago has not finished being defined, and a class
-whose classloader has since been collected is gone for an ordinary reason.
-Both would read as failures, so the reverse check needs a grace period and an
-answer for unloading before it can run at all.
-
-The `<clinit>` probe is a partial signal in the meantime: a class that never
-initialised has it at zero, and the method probes under it are then zero for
-a reason that says nothing about the adopter's code. Two things stop it being
-the whole answer. Only a class with a static initializer of its own gets that
-probe, since the agent's own woven prelude does not add one. And a class that
-loaded and was genuinely never initialised is a real finding rather than a
-blind spot, so a collector cannot suppress every probe under a zero `<clinit>`
-without losing it.
-
-Rare in practice: it needs a second agent in the chain, or bytecode the
-verifier rejects, which would break the application itself rather than only
-the report. Not started.
-
 ### Nothing is published anywhere
 
 No build in this repo publishes an artifact. An adopter cannot depend on the
@@ -110,6 +58,39 @@ be designed; the rest are small and wait for a reason to touch the code.
   every Kotlin corpus measured and wait for a Java corpus to be worth
   recognising.
 
+### Telling a failed load apart from an unreferenced class
+
+A class woven and registered that the JVM never defined is withheld from the
+manifest (ADR 0028), so a collector diffing the static baseline against it
+calls the class never loaded, which is true. What it cannot say is why. "Never
+loaded because nothing referenced it" is dead code to delete; "never loaded
+because loading it failed" is a deployment to fix, and only the agent can tell
+them apart.
+
+Closing it means a bucket on `ProbeManifest` beside `unreported_classes`: a
+proto field, a registry bucket, a chunk weight, codec work and a collector
+change. That was judged out of proportion to a population nobody has shown
+exists yet, so the agent logs a WARNING per class and nothing goes on the
+wire. Build it when a report from a real service shows these classes turning
+up. If they never do, this dies honestly.
+
+### The endpoint tier has no confirmation
+
+`EndpointInstrumentation` stages and commits declarations from its own
+listener for the ADR 0007 reason, so a class that declares endpoints and then
+fails to define leaves rows nothing will ever increment: a route reading as
+never called, the endpoint form of what ADR 0028 fixed for probes.
+
+Deferred with its reason in that ADR rather than left to omission. The
+exposure is narrower than the probe tier's, which registers every class the
+agent weaves: `JaxRsModule` is the only module that declares from inside a
+transform, and every other module declares at runtime from a framework object
+that already exists, so its class certainly loaded. The link, when it is
+wanted, is `PendingDeclarations.begin()` taking the declaring class name and
+`commit()` attaching it. Not `EndpointEntry.handlerClass`, which happens to
+hold the same string for JAX-RS but is a display label: nullable, and set at
+dispatch for the other modules.
+
 ### Endpoint follow-ups not started
 
 - Static analysis of registration call sites, to declare an endpoint whose
@@ -153,6 +134,21 @@ to a handler class, which is what the demo's `PromoHandler` shows. What is
 left is the shape with no endpoint beside it. If uncalled roots in a real
 report turn out to be mostly this, recording out-of-scope callees is the
 answer; until then it is a labelled root rather than a wrong one.
+
+### A transformer later in the chain replacing the agent's bytes
+
+The third failure past `onTransformation`, and the one ADR 0028 does not
+cover. The class is defined and running, with the woven probes gone, so no
+comparison against the loaded set can see it: it is present, and its counts
+sit at zero exactly like a class that loaded and was never initialised.
+
+The one signal that separates them is reading the loaded class for
+`$yukonProbeCounts`, and `Class.getDeclaredFields()` resolves every field's
+type. Confirmed on JDK 22: a field type `findLoadedClass` reported absent was
+loaded by the call itself. A detector that manufactures class loads corrupts
+the data it reports on, which is worse than the gap. It also needs a second
+agent in the chain that discards its input bytes rather than building on them;
+OpenTelemetry's agent carries the same exposure.
 
 ### JFR-sampled observed edges
 
