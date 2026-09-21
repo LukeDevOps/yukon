@@ -20,6 +20,53 @@ Two things fall out of it when it happens. The poms need licence metadata,
 which nothing generates today. And a published testkit fixes its own API, so
 the query surface is worth a look before it is frozen rather than after.
 
+### Dependency usage: designed, not started
+
+Grilled and settled on 2026-09-21; ADR 0030 holds the decision and
+`CONTEXT.md` the terms (dependency, reference, absent reference, live
+reference, and the unloaded, unreferenced and unreached statuses). Nothing is
+built. Landing order, one Sonnet chunk and one commit each:
+
+0. Wire and codec: `DependencyLocation`, `DependencyDelta`,
+   `referenced_classes`, `ClassReferences`, `ExternalClass`.
+1. The startup listing and identity reading: flat jars, `classpath.idx`,
+   nested `pom.properties`, the agent-jar rule, the adopter's-own-jar rule.
+2. Sweep counting and `DependencyDelta`.
+3. Analyser references, resolution to a dependency, absent references, in the
+   manifest.
+4. The same in the static baseline.
+5. Stub collector and demo. `demo-spring` gains one runtime dependency nothing
+   touches (unloaded); `jackson-databind`, which Spring loads and the demo never
+   names, is the unreferenced case, which needs the baseline flag in `runDemo`;
+   one reference in the never-hit promo branch is the unreached case.
+6. Testkit.
+7. `yukon-collector` bindings bump.
+8. `yukon-server`: `GET /api/v1/services/{s}/dependencies` with a status
+   filter, and a `dependencies` block on `report`.
+
+### What the agent does when `includePackages` is unset
+
+Parked during the dependency grill, not settled. Today the agent logs a
+WARNING and instruments every class outside the JDK, third-party libraries
+included, which puts probes on the hottest code in the process (serialisers,
+servlet containers, dispatch) and multiplies transform time, memory and
+manifest size, all to produce findings about code the adopter cannot delete.
+
+The options weighed: refuse to start, logging an ERROR that names the flag and
+suggests the main class's package, the same visible failure the holder-install
+path already uses; infer the boundary from where each class came from
+(directories and `BOOT-INF/classes` are the adopter's, jars are not), which
+drops the adopter's own code silently in a multi-module build or a shaded jar;
+infer it from the main class's package, which is a guess at how many segments
+to keep; infer and announce the guess on the wire; or keep today's behaviour
+and filter at the collector. The recommendation on the table was to refuse to
+start. Skipping only private library methods was measured and set aside: 3.5 to
+12 percent of methods in the three libraries checked, against a cost that is
+mostly per class (ADR 0030).
+
+ADR 0030 does not depend on the answer. Its origin rule already covers the
+unset case for deciding which jars are dependencies.
+
 ### A branch inside a generated method is judged as the adopter's own
 
 `YukonInstrumentation.kt:411` builds a branch `ProbeMeta` with no

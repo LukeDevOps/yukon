@@ -144,7 +144,7 @@ A Kotlin `inline` function, whose body is copied into Kotlin callers so its own 
 
 **Call edge**:
 One caller method's static reference to one callee method, or its use of a class that runs that class's initializer, read from the caller's bytecode at transform time and deduplicated per caller. The callee is named as the bytecode names it: owner class, method name and descriptor. Only callees inside the include rules are recorded.
-_Avoid_: call site (one invoke instruction; never on the wire), edge (one outcome of a branch site), dependency
+_Avoid_: call site (one invoke instruction; never on the wire), edge (one outcome of a branch site), dependency (a jar, never an edge)
 
 **Supertypes**:
 A class's superclass and direct interfaces, sent with the class so a collector can widen a virtual call edge to the methods that override or inherit its callee.
@@ -163,6 +163,33 @@ _Avoid_: dead cluster, dead code (a collector's verdict, not an observation)
 **Root**:
 A never-hit method that starts an unreached cluster. *Reached from hit* when one of its callers has hits; *uncalled* when nothing in scope calls it.
 _Avoid_: entry point (a root may be deep inside the code), node
+
+### Dependencies
+
+**Dependency**:
+One jar on the classpath that is not the adopter's own code, identified by the `groupId:artifactId` its `pom.properties` names, with the version carried beside the identity rather than in it. A jar that bundles several libraries is one dependency labelled with all of them, since it cannot be half-removed. The same identity loaded by two classloaders is one dependency. A jar whose classes all fall under the include rules is the adopter's own and is not a dependency.
+_Avoid_: library, artifact, jar (as synonyms), call edge (a dependency is never an edge)
+
+**Reference**:
+Any mention of a class in the adopter's bytecode: a call, a field access, a construction, a cast or type test, a catch type, a class literal, a type in a descriptor, a supertype, or an annotation. Wider than a call edge, so a dependency used only through its annotations or a base class still counts as referenced.
+_Avoid_: usage, import (a source-level notion with no bytecode trace)
+
+**Absent reference**:
+A reference to a class no loader can find, such as code guarded by a check for an optional library. Reported rather than dropped, since it maps to no dependency.
+
+**Live reference**:
+A reference held by a method with hits, or by a class itself (an annotation, a supertype, a field type) when that class loaded. An inline method's own references never count, since its callers carry copies.
+
+**Unloaded dependency**:
+A dependency on an instance's startup classpath from which no class has loaded.
+_Avoid_: never loaded (a class's status), unused dependency (the product phrase, not the observation)
+
+**Unreferenced dependency**:
+A dependency with at least one loaded class that nothing in the adopter's code references. Often a library another library needs, or one reached only through a service lookup.
+
+**Unreached dependency**:
+A dependency the adopter's code references only from methods never hit or classes never loaded.
+_Avoid_: dead dependency (a collector's verdict, not an observation)
 
 ### Testkit
 
