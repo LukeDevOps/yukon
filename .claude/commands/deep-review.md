@@ -104,7 +104,20 @@ cannot fail. Leave larger refactors as recommendations with a reason.
 
 - The full build (every module, every test suite) passes with the changes.
 - The project's formatter has run over every touched file (for this
-  project that is the `ktlint` CLI, run with `-F`).
+  project that is the `ktlint` CLI, run with `-F`):
+
+      { git diff --name-only --diff-filter=d HEAD
+        git ls-files --others --exclude-standard
+      } | grep '\.kt$' | sort -u | xargs ktlint -F --relative
+
+  Pass the list through `xargs`, never an unquoted shell variable: zsh does not
+  split one, so ktlint gets a single argument, warns "No files matched", and
+  exits 0 having checked nothing. Treat that warning as a failure. Build the
+  list from `git ls-files --others` rather than `git status --short`, which
+  collapses an untracked directory to its own name and would skip every new
+  file in a new package. Re-run without `-F` afterwards and require exit 0,
+  read from ktlint itself: piping its output to `tail` and then reading `$?`
+  gives the pager's status, not ktlint's.
 - Every finding in the report has its test named, and the test is in the
   tree.
 

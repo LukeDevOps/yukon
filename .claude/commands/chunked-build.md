@@ -106,7 +106,20 @@ Run the whole build (every module, every test suite) in this session, not
 by trusting the report. Rerun the touched test classes after the review's
 own edits and read their counts. Run the project's formatter over every
 touched file (for this project, the `ktlint` CLI with
-`-F`).
+`-F`), feeding it the file list through `xargs`:
+
+    { git diff --name-only --diff-filter=d HEAD
+      git ls-files --others --exclude-standard
+    } | grep '\.kt$' | sort -u | xargs ktlint -F --relative
+
+Pass the list through `xargs`, never an unquoted shell variable: zsh does not
+split one, so ktlint gets a single argument, warns "No files matched", and
+exits 0 having checked nothing. Treat that warning as a failure. Build the
+list from `git ls-files --others` rather than `git status --short`, which
+collapses an untracked directory to its own name and would skip every new
+file in a new package. Re-run without `-F` afterwards and require exit 0, read
+from ktlint itself: piping its output to `tail` and then reading `$?` gives the
+pager's status, not ktlint's.
 
 ## 6. Commit
 
