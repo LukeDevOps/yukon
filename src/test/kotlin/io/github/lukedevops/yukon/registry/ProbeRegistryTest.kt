@@ -3,6 +3,7 @@ package io.github.lukedevops.yukon.registry
 import io.github.lukedevops.yukon.export.CallEdge
 import io.github.lukedevops.yukon.export.ProbeKind
 import io.github.lukedevops.yukon.export.ResourceAttributes
+import java.lang.ref.WeakReference
 import java.net.URLClassLoader
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -871,5 +872,169 @@ class ProbeRegistryTest {
         assertEquals(1, registry.purgeAccountedFor(), "the name is accounted for now")
         assertEquals(0, registry.unreportedClassCount())
         assertTrue(registry.manifest("checkout", null, "instance-1").unreportedClasses.isEmpty())
+    }
+
+    /**
+     * A registry whose [weakClassLoaderRef] returns an already-cleared reference, so a test can
+     * drive the collected-loader confirmation rule without registering a throwaway classloader and
+     * waiting on the garbage collector, which cannot be relied on to run within a test's lifetime.
+     */
+    private class ClearedLoaderProbeRegistry(
+        confirmsDefinitions: Boolean,
+    ) : ProbeRegistry(confirmsDefinitions) {
+        override fun weakClassLoaderRef(classLoader: ClassLoader?): WeakReference<ClassLoader>? =
+            classLoader?.let {
+                WeakReference(it).apply { clear() }
+            }
+    }
+
+    @Test
+    fun `with confirmsDefinitions false, a freshly registered all-zero class is published exactly as before`() {
+        val registry = ProbeRegistry(confirmsDefinitions = false)
+        registry.register("com.example.Foo", layoutHash = 1L, probes = methodProbes(1))
+
+        val delta = registry.computeManifestDelta("checkout", null, "instance-1").manifest
+
+        assertEquals(listOf("com.example.Foo"), delta.probes.map { it.className })
+    }
+
+    @Test
+    fun `with confirmsDefinitions true, a freshly registered all-zero class is withheld from the manifest`() {
+        val registry = ProbeRegistry(confirmsDefinitions = true)
+        registry.register("com.example.Foo", layoutHash = 1L, probes = methodProbes(1))
+
+        val delta = registry.computeManifestDelta("checkout", null, "instance-1").manifest
+
+        assertTrue(delta.probes.isEmpty())
+        assertEquals(1, registry.unconfirmedClassCount())
+    }
+
+    @Test
+    fun `a class whose count goes above zero is published with no call to confirmFrom`() {
+        val registry = ProbeRegistry(confirmsDefinitions = true)
+        val probes = registry.register("com.example.Foo", layoutHash = 1L, probes = methodProbes(1))
+        probes[0]++
+
+        val delta = registry.computeManifestDelta("checkout", null, "instance-1").manifest
+
+        assertEquals(listOf("com.example.Foo"), delta.probes.map { it.className })
+        assertEquals(0, registry.unconfirmedClassCount())
+    }
+
+    @Test
+    fun `a class reported in confirmFrom's loaded set is published on the next manifest`() {
+        val registry = ProbeRegistry(confirmsDefinitions = true)
+        registry.register("com.example.Foo", layoutHash = 1L, probes = methodProbes(1))
+
+        val withheld = registry.confirmFrom(setOf("com.example.Foo"))
+
+        assertTrue(withheld.isEmpty())
+        val delta = registry.computeManifestDelta("checkout", null, "instance-1").manifest
+        assertEquals(listOf("com.example.Foo"), delta.probes.map { it.className })
+    }
+
+    @Test
+    fun `a class missing from the loaded set once is still withheld and not reported as withheld for good`() {
+        val registry = ProbeRegistry(confirmsDefinitions = true)
+        registry.register("com.example.Foo", layoutHash = 1L, probes = methodProbes(1))
+
+        val withheld = registry.confirmFrom(emptySet())
+
+        assertTrue(withheld.isEmpty())
+        assertEquals(0, registry.withheldForGoodClassCount())
+        assertTrue(
+            registry
+                .computeManifestDelta("checkout", null, "instance-1")
+                .manifest.probes
+                .isEmpty(),
+        )
+    }
+
+    @Test
+    fun `a class missing from the loaded set twice in a row is reported withheld for good exactly once`() {
+        val registry = ProbeRegistry(confirmsDefinitions = true)
+        registry.register("com.example.Foo", layoutHash = 1L, probes = methodProbes(1))
+
+        registry.confirmFrom(emptySet())
+        val secondMiss = registry.confirmFrom(emptySet())
+        val thirdMiss = registry.confirmFrom(emptySet())
+
+        assertEquals(listOf("com.example.Foo"), secondMiss)
+        assertTrue(thirdMiss.isEmpty(), "a class already withheld for good must not be returned again")
+        assertEquals(1, registry.withheldForGoodClassCount())
+        assertTrue(
+            registry
+                .computeManifestDelta("checkout", null, "instance-1")
+                .manifest.probes
+                .isEmpty(),
+        )
+    }
+
+    @Test
+    fun `a class confirmed after a miss is published`() {
+        val registry = ProbeRegistry(confirmsDefinitions = true)
+        registry.register("com.example.Foo", layoutHash = 1L, probes = methodProbes(1))
+
+        registry.confirmFrom(emptySet())
+        registry.confirmFrom(setOf("com.example.Foo"))
+        val delta = registry.computeManifestDelta("checkout", null, "instance-1").manifest
+        assertEquals(listOf("com.example.Foo"), delta.probes.map { it.className })
+    }
+
+    @Test
+    fun `a class whose classloader has been collected is confirmed and published`() {
+        val registry = ClearedLoaderProbeRegistry(confirmsDefinitions = true)
+        val loader = URLClassLoader(emptyArray())
+        registry.register("com.example.Foo", layoutHash = 1L, probes = methodProbes(1), classLoader = loader)
+
+        val withheld = registry.confirmFrom(emptySet())
+
+        assertTrue(withheld.isEmpty())
+        assertEquals(0, registry.unconfirmedClassCount())
+        val delta = registry.computeManifestDelta("checkout", null, "instance-1").manifest
+        assertEquals(listOf("com.example.Foo"), delta.probes.map { it.className })
+    }
+
+    @Test
+    fun `a class registered with a null classloader is never confirmed by the cleared-reference rule`() {
+        val registry = ClearedLoaderProbeRegistry(confirmsDefinitions = true)
+        registry.register("com.example.Foo", layoutHash = 1L, probes = methodProbes(1), classLoader = null)
+
+        registry.confirmFrom(emptySet())
+        val secondMiss = registry.confirmFrom(emptySet())
+
+        assertEquals(listOf("com.example.Foo"), secondMiss)
+        assertEquals(1, registry.withheldForGoodClassCount())
+    }
+
+    @Test
+    fun `the full manifest listing withholds an unconfirmed class too`() {
+        val registry = ProbeRegistry(confirmsDefinitions = true)
+        registry.register("com.example.Withheld", layoutHash = 1L, probes = methodProbes(1))
+        val published = registry.register("com.example.Published", layoutHash = 1L, probes = methodProbes(1))
+        published[0]++
+
+        val manifest = registry.manifest("checkout", null, "instance-1")
+
+        assertEquals(listOf("com.example.Published"), manifest.probes.map { it.className })
+        assertEquals(1, manifest.classSupertypes.size, "a withheld class must not leave a supertypes record behind")
+    }
+
+    @Test
+    fun `a withheld class contributes neither probe locations nor a supertypes record, and does not count toward chunk weight`() {
+        val registry = ProbeRegistry(confirmsDefinitions = true)
+        registry.register("com.example.Withheld", layoutHash = 1L, probes = methodProbes(1))
+        val published = registry.register("com.example.Published", layoutHash = 1L, probes = methodProbes(1))
+        published[0]++
+
+        val delta = registry.computeManifestDelta("checkout", null, "instance-1").manifest
+
+        val publishedProbe = delta.probes.single()
+        assertEquals("com.example.Published", publishedProbe.className)
+        assertEquals(
+            listOf(publishedProbe.classId),
+            delta.classSupertypes.map { it.classId },
+            "the withheld class's own ClassSupertypes record must not appear either",
+        )
     }
 }

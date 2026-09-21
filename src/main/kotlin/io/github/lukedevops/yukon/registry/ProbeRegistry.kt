@@ -9,6 +9,7 @@ import io.github.lukedevops.yukon.export.ResourceAttributes
 import io.github.lukedevops.yukon.export.SkippedClass
 import io.github.lukedevops.yukon.export.UnreportedClass
 import java.lang.System.Logger.Level
+import java.lang.ref.WeakReference
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -72,8 +73,16 @@ import java.util.concurrent.atomic.AtomicLong
  * cross-restart visibility is the collector's job: it aggregates deltas
  * from every `service.instance.id` a service has ever reported, over time,
  * as described in the design notes for the export payloads.
+ *
+ * @property confirmsDefinitions When true, [computeManifestDeltas] withholds a class's probe
+ * locations and its [ClassSupertypes] record until the class is confirmed defined: a probe count
+ * above zero, or a name [confirmFrom] is told the JVM has loaded. This is internal wiring, not an
+ * adopter-facing option, and defaults to false so every existing path is unaffected until a caller
+ * that also drives [confirmFrom] opts in. See ADR 0028.
  */
-open class ProbeRegistry {
+open class ProbeRegistry(
+    private val confirmsDefinitions: Boolean = false,
+) {
     private val log = System.getLogger(ProbeRegistry::class.java.name)
 
     private data class RegistryKey(
@@ -89,6 +98,7 @@ open class ProbeRegistry {
         val counts: LongArray,
         val superClassName: String?,
         val interfaceNames: List<String>,
+        val classLoaderRef: WeakReference<ClassLoader>?,
     ) {
         /** The last cumulative count successfully delivered to the collector, per probe. */
         var lastSent: LongArray = LongArray(counts.size)
@@ -100,6 +110,21 @@ open class ProbeRegistry {
         /** Tracks which probes have already logged the one-time decrease warning. */
         val decreaseWarned: BooleanArray = BooleanArray(counts.size)
         var manifestIncluded: Boolean = false
+
+        /**
+         * Set once evidence of definition is seen; see [ProbeRegistry.isConfirmed]. Volatile
+         * because [confirmFrom] runs on the flush thread while [computeManifestDeltas] reads this
+         * on a send-pool thread.
+         */
+        @Volatile
+        var confirmed: Boolean = false
+
+        /** [confirmFrom] calls in which this class was neither confirmed nor collected. */
+        var missedConfirmations: Int = 0
+
+        /** Set once [missedConfirmations] reaches the terminal count; never confirmed after this. */
+        @Volatile
+        var withheldForGood: Boolean = false
     }
 
     private class SkippedEntry(
@@ -179,10 +204,21 @@ open class ProbeRegistry {
                     counts = LongArray(probes.size),
                     superClassName = superClassName,
                     interfaceNames = interfaceNames,
+                    classLoaderRef = weakClassLoaderRef(classLoader),
                 )
             }
         return entry.counts
     }
+
+    /**
+     * Wraps [classLoader] for the entry to hold, so a collected loader can later be told apart
+     * from live evidence in [confirmFrom]. Null in, null out: a null classloader means the
+     * bootstrap loader, which is never collected, so there is nothing to weakly reference.
+     *
+     * `open` only so a test can substitute an already-cleared reference, rather than registering
+     * against a throwaway loader and waiting on the garbage collector.
+     */
+    internal open fun weakClassLoaderRef(classLoader: ClassLoader?): WeakReference<ClassLoader>? = classLoader?.let { WeakReference(it) }
 
     /**
      * The array [register] handed out for this exact (className, layoutHash, classLoader), or null
@@ -272,6 +308,61 @@ open class ProbeRegistry {
 
     /** How many classes the sweep has found unreported so far; for tests and logging. */
     fun unreportedClassCount(): Int = unreportedByClassName.size
+
+    /**
+     * Whether [entry] has evidence of having been defined: a probe count above zero, memoised
+     * once seen so later calls do not rescan the array, or an earlier confirmation recorded by
+     * [confirmFrom].
+     */
+    private fun isConfirmed(entry: ClassEntry): Boolean {
+        if (entry.confirmed) return true
+        if (entry.counts.any { it > 0L }) {
+            entry.confirmed = true
+        }
+        return entry.confirmed
+    }
+
+    /**
+     * Reconciles every class not yet confirmed defined against [loadedClassNames], the JVM's own
+     * loaded-class names. A class is confirmed here when its name appears in that set, or when its
+     * classloader has since been collected: a collected loader is the absence of evidence rather
+     * than evidence of absence, since a loader created, used and collected inside one flush
+     * interval is ordinary for a script engine or a per-test loader. A class registered with a
+     * null classloader (the bootstrap loader) has no reference to collect and so is never
+     * confirmed by that rule.
+     *
+     * A class found in neither has one more miss recorded against it. Two misses withhold it for
+     * good: its name is returned, once, the first time that happens, and never returned again on
+     * a later call. Nothing ever un-confirms a class, so a confirmed one leaves this loop at the
+     * guard above and its miss count is never read again.
+     *
+     * A class already confirmed, or already withheld for good, is left alone.
+     *
+     * See ADR 0028.
+     */
+    open fun confirmFrom(loadedClassNames: Set<String>): List<String> {
+        val newlyWithheld = mutableListOf<String>()
+        for (entry in entriesByKey.values) {
+            if (entry.withheldForGood || isConfirmed(entry)) continue
+            val loaderCollected = entry.classLoaderRef != null && entry.classLoaderRef.get() == null
+            if (entry.className in loadedClassNames || loaderCollected) {
+                entry.confirmed = true
+                continue
+            }
+            entry.missedConfirmations++
+            if (entry.missedConfirmations >= 2) {
+                entry.withheldForGood = true
+                newlyWithheld += entry.className
+            }
+        }
+        return newlyWithheld
+    }
+
+    /** How many registered classes are not yet confirmed defined and not withheld for good. */
+    fun unconfirmedClassCount(): Int = entriesByKey.values.count { !it.withheldForGood && !isConfirmed(it) }
+
+    /** How many registered classes were never confirmed defined and are withheld for good. */
+    fun withheldForGoodClassCount(): Int = entriesByKey.values.count { it.withheldForGood }
 
     /**
      * Records a class the agent matched but could not instrument. This makes it visible on the
@@ -444,8 +535,11 @@ open class ProbeRegistry {
         serviceVersion: String?,
         serviceInstanceId: String,
     ): ProbeManifest {
+        // One filtered list feeds both the locations and the supertype records, so a withheld
+        // class cannot appear in one and not the other.
+        val published = entriesByKey.values.filter { !confirmsDefinitions || isConfirmed(it) }
         val locations =
-            entriesByKey.values.flatMap { entry ->
+            published.flatMap { entry ->
                 entry.probes.mapIndexed { index, meta ->
                     ProbeLocation(
                         classId = entry.classId,
@@ -471,7 +565,7 @@ open class ProbeRegistry {
             skippedByClassName.map { (className, entry) ->
                 SkippedClass(className, entry.reason, entry.skippedAt)
             }
-        val supertypes = entriesByKey.values.map { entry -> ClassSupertypes(entry.classId, entry.superClassName, entry.interfaceNames) }
+        val supertypes = published.map { entry -> ClassSupertypes(entry.classId, entry.superClassName, entry.interfaceNames) }
         val unreported =
             unreportedByClassName.map { (className, entry) ->
                 UnreportedClass(className, entry.firstSeenUnreportedAt)
@@ -572,6 +666,7 @@ open class ProbeRegistry {
         }
         for (entry in entriesByKey.values) {
             if (entry.manifestIncluded) continue
+            if (confirmsDefinitions && !isConfirmed(entry)) continue
             // A class's weight is its probe count, plus its total call-edge count, plus one for
             // its own ClassSupertypes record: all three are staged and committed together, so a
             // class with many edges seals a chunk earlier than one without.
