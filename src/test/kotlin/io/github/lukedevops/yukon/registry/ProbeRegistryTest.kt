@@ -874,6 +874,29 @@ class ProbeRegistryTest {
         assertTrue(registry.manifest("checkout", null, "instance-1").unreportedClasses.isEmpty())
     }
 
+    @Test
+    fun `computeManifestDeltas packs unreported classes into chunks up to the cap`() {
+        val registry = ProbeRegistry()
+        for (i in 1..5) registry.recordUnreported("com.example.Deflected$i")
+
+        val chunks = registry.computeManifestDeltas("checkout", null, "instance-1", maxEntriesPerChunk = 2)
+
+        // Each unreported class weighs one, the same weight a skipped class carries, so a cap of
+        // 2 packs exactly two per chunk.
+        assertEquals(3, chunks.size)
+        chunks.forEachIndexed { index, chunk ->
+            assertTrue(
+                chunk.manifest.unreportedClasses.size <= 2,
+                "chunk $index must not exceed the cap: ${chunk.manifest.unreportedClasses}",
+            )
+        }
+        assertEquals(
+            (1..5).map { "com.example.Deflected$it" }.toSet(),
+            chunks.flatMap { it.manifest.unreportedClasses.map { u -> u.className } }.toSet(),
+            "every unreported class must go out exactly once across the chunks",
+        )
+    }
+
     /**
      * A registry whose [weakClassLoaderRef] returns an already-cleared reference, so a test can
      * drive the collected-loader confirmation rule without registering a throwaway classloader and
@@ -1005,6 +1028,24 @@ class ProbeRegistryTest {
 
         assertEquals(listOf("com.example.Foo"), secondMiss)
         assertEquals(1, registry.withheldForGoodClassCount())
+    }
+
+    @Test
+    fun `a registry that does not withhold tracks no confirmation at all`() {
+        val registry = ProbeRegistry(confirmsDefinitions = false)
+        registry.register("com.example.Foo", layoutHash = 1L, probes = methodProbes(1))
+
+        assertTrue(registry.confirmFrom(emptySet()).isEmpty())
+        assertTrue(registry.confirmFrom(emptySet()).isEmpty(), "a second miss must not withhold either")
+        assertEquals(0, registry.unconfirmedClassCount())
+        assertEquals(0, registry.withheldForGoodClassCount())
+        assertEquals(
+            listOf("com.example.Foo"),
+            registry
+                .computeManifestDelta("checkout", null, "instance-1")
+                .manifest.probes
+                .map { it.className },
+        )
     }
 
     @Test

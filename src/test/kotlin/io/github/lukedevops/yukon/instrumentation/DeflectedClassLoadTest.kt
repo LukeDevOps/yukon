@@ -145,7 +145,7 @@ class DeflectedClassLoadTest {
         Class.forName(NOTHING_TO_PROBE, true, loader)
         assertTrue(loader.nested != null, "the nested class never loaded, so this test proved nothing")
 
-        UnreportedClassSweep(instrumentation, registry, config).run()
+        LoadedClassSweep(instrumentation, registry, config).run(runForwardPass = true)
 
         val manifest = registry.manifest("test", null, "instance-1")
         val unreported = manifest.unreportedClasses.map { it.className }
@@ -170,7 +170,7 @@ class DeflectedClassLoadTest {
         val config = AgentConfig.parse(null)
         assertTrue(config.instrumentedPackagePrefixes.isEmpty(), "this test is about the default, so it must be the default")
 
-        UnreportedClassSweep(instrumentation, registry, config).run()
+        LoadedClassSweep(instrumentation, registry, config).run(runForwardPass = true)
 
         val unreported = registry.manifest("test", null, "instance-1").unreportedClasses.map { it.className }
 

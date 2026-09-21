@@ -1,11 +1,14 @@
 package io.github.lukedevops.yukon.export
 
 import io.github.lukedevops.yukon.config.AgentConfig
+import io.github.lukedevops.yukon.instrumentation.LoadedClassSweep
 import io.github.lukedevops.yukon.instrumentation.branch.BranchDropCounts
 import io.github.lukedevops.yukon.instrumentation.branch.BranchDropReason
 import io.github.lukedevops.yukon.registry.EndpointRegistry
 import io.github.lukedevops.yukon.registry.ProbeMeta
 import io.github.lukedevops.yukon.registry.ProbeRegistry
+import net.bytebuddy.agent.ByteBuddyAgent
+import java.lang.instrument.Instrumentation
 import java.time.Duration
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -45,6 +48,31 @@ private class FailingExporter : Exporter {
     override fun exportManifest(manifest: ProbeManifest) = throw RuntimeException("collector unreachable")
 
     override fun exportStaticBaseline(baseline: StaticBaseline) = throw RuntimeException("collector unreachable")
+}
+
+/**
+ * Records every call [ExportScheduler.maybeSweep] makes into the sweep, instead of doing any real
+ * work, so a test can pin the cadence the two directions ADR 0027 and ADR 0028 keep without
+ * driving ten real flush intervals or a real classpath walk.
+ */
+private class RecordingSweep(
+    instrumentation: Instrumentation,
+    registry: ProbeRegistry,
+    config: AgentConfig,
+) : LoadedClassSweep(instrumentation, registry, config) {
+    data class Call(
+        val runForwardPass: Boolean,
+        val final: Boolean,
+    )
+
+    val calls = mutableListOf<Call>()
+
+    override fun run(
+        runForwardPass: Boolean,
+        final: Boolean,
+    ) {
+        calls += Call(runForwardPass, final)
+    }
 }
 
 class ExportSchedulerTest {
@@ -742,5 +770,67 @@ class ExportSchedulerTest {
         val records = captureLogRecords(ExportScheduler::class.java.name) { scheduler.flush() }
 
         assertTrue(records.none { it.message.contains("branch sites") })
+    }
+
+    @Test
+    fun `the confirmation pass runs on every flush while the forward direction runs only on the tenth and the final flush`() {
+        val registry = ProbeRegistry(confirmsDefinitions = true)
+        registry.register("com.example.never.Loaded", layoutHash = 1L, probes = listOf(ProbeMeta(ProbeKind.METHOD, "m", "()V", 1)))
+        val sweep = RecordingSweep(ByteBuddyAgent.install(), registry, config)
+        val scheduler = ExportScheduler(config, registry, EndpointRegistry(), RecordingExporter(), loadedClassSweep = sweep)
+
+        repeat(10) { scheduler.flush() }
+        scheduler.flushOnShutdown(Duration.ofSeconds(5))
+
+        assertEquals(
+            11,
+            sweep.calls.size,
+            "a class awaits confirmation throughout, so every flush plus the final one must reach the sweep",
+        )
+        assertEquals(
+            List(9) { false } + listOf(true, true),
+            sweep.calls.map { it.runForwardPass },
+            "only the tenth flush and the final flush run the forward, unreported-class direction",
+        )
+        assertEquals(List(10) { false } + listOf(true), sweep.calls.map { it.final })
+    }
+
+    @Test
+    fun `the sweep walk is skipped entirely when nothing awaits confirmation and the forward direction is not due`() {
+        val registry = ProbeRegistry(confirmsDefinitions = true)
+        val sweep = RecordingSweep(ByteBuddyAgent.install(), registry, config)
+        val scheduler = ExportScheduler(config, registry, EndpointRegistry(), RecordingExporter(), loadedClassSweep = sweep)
+
+        scheduler.flush()
+
+        assertTrue(sweep.calls.isEmpty(), "nothing awaits confirmation and this is neither the tenth nor the final flush")
+    }
+
+    @Test
+    fun `the sweep walk is not skipped on an off-cadence flush when a class awaits confirmation`() {
+        val registry = ProbeRegistry(confirmsDefinitions = true)
+        registry.register("com.example.never.Loaded", layoutHash = 1L, probes = listOf(ProbeMeta(ProbeKind.METHOD, "m", "()V", 1)))
+        val sweep = RecordingSweep(ByteBuddyAgent.install(), registry, config)
+        val scheduler = ExportScheduler(config, registry, EndpointRegistry(), RecordingExporter(), loadedClassSweep = sweep)
+
+        scheduler.flush()
+
+        assertEquals(1, sweep.calls.size)
+        assertEquals(false, sweep.calls.single().runForwardPass, "not yet the tenth or the final flush")
+    }
+
+    @Test
+    fun `the sweep walk is not skipped on the tenth flush even when nothing awaits confirmation`() {
+        val registry = ProbeRegistry(confirmsDefinitions = true)
+        val sweep = RecordingSweep(ByteBuddyAgent.install(), registry, config)
+        val scheduler = ExportScheduler(config, registry, EndpointRegistry(), RecordingExporter(), loadedClassSweep = sweep)
+
+        repeat(9) { scheduler.flush() }
+        assertTrue(sweep.calls.isEmpty(), "the first nine flushes have nothing to confirm and are not due")
+
+        scheduler.flush()
+
+        assertEquals(1, sweep.calls.size)
+        assertTrue(sweep.calls.single().runForwardPass, "the tenth flush runs the forward direction regardless of confirmation state")
     }
 }

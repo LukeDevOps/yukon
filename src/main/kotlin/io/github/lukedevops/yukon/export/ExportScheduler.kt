@@ -1,7 +1,7 @@
 package io.github.lukedevops.yukon.export
 
 import io.github.lukedevops.yukon.config.AgentConfig
-import io.github.lukedevops.yukon.instrumentation.UnreportedClassSweep
+import io.github.lukedevops.yukon.instrumentation.LoadedClassSweep
 import io.github.lukedevops.yukon.instrumentation.branch.BranchDropCounts
 import io.github.lukedevops.yukon.instrumentation.branch.BranchDropReason
 import io.github.lukedevops.yukon.registry.EndpointRegistry
@@ -39,10 +39,11 @@ class ExportScheduler(
     /** Dropped branch site totals; see [maybeLogBranchDrops] and ADR 0025. */
     private val branchDropCounts: BranchDropCounts = BranchDropCounts(),
     /**
-     * Finds classes that loaded but reached no transformer; see [maybeSweep] and ADR 0027. Null
-     * when nothing supplied one, which is every test that does not exercise the sweep.
+     * Confirms classes the registry withholds and finds classes that loaded but reached no
+     * transformer; see [maybeSweep] and ADRs 0027 and 0028. Null when nothing supplied one, which
+     * is every test that does not exercise the sweep.
      */
-    private val unreportedClassSweep: UnreportedClassSweep? = null,
+    private val loadedClassSweep: LoadedClassSweep? = null,
 ) {
     private val log = System.getLogger(ExportScheduler::class.java.name)
     private var executor: ScheduledExecutorService? = null
@@ -163,24 +164,34 @@ class ExportScheduler(
     }
 
     /**
-     * Runs the unreported-class sweep before this flush's sends, so what it finds goes out on the
-     * same manifest rather than waiting a whole cycle.
+     * Runs the sweep before this flush's sends, so what it finds goes out on the same manifest
+     * rather than waiting a whole cycle.
      *
-     * Not on every flush. A class that loaded unreported stays unreported, so the finding has no
-     * expiry, while the sweep walks every class the JVM holds and allocates an array of them. The
-     * shutdown flush always sweeps, so an instance that ends cleanly always gives a final answer.
+     * The two directions the sweep serves keep different cadences. Confirmation
+     * ([ProbeRegistry.confirmFrom], ADR 0028) runs on every flush a class awaits it, since a class
+     * held back stays held back until it is confirmed, and waiting ten flushes would delay every
+     * class's first manifest by that much. The forward, unreported-class direction (ADR 0027) is
+     * the expensive part, an `isCandidate` filter over every class the JVM holds, and keeps its
+     * existing every-tenth-flush cadence; the shutdown flush always runs it, so an instance that
+     * ends cleanly always gives a final answer.
+     *
+     * The walk is skipped entirely, with no call into the sweep at all, when there is nothing for
+     * either direction to do: no class awaiting confirmation and the forward direction not due.
+     * `getAllLoadedClasses` allocates an array of every class the JVM holds, and on a settled
+     * process there is usually nothing to confirm.
      *
      * Guarded like the sends are: this runs under `scheduleAtFixedRate`, which stops calling a
      * task forever the first time one lets a throwable escape.
      */
     private fun maybeSweep(final: Boolean) {
-        val sweep = unreportedClassSweep ?: return
-        if (!final && --flushesSinceSweep > 0) return
-        flushesSinceSweep = SWEEP_EVERY_N_FLUSHES
+        val sweep = loadedClassSweep ?: return
+        val forwardPassDue = final || --flushesSinceSweep <= 0
+        if (forwardPassDue) flushesSinceSweep = SWEEP_EVERY_N_FLUSHES
+        if (!forwardPassDue && registry.unconfirmedClassCount() == 0) return
         try {
-            sweep.run()
+            sweep.run(runForwardPass = forwardPassDue, final = final)
         } catch (t: Throwable) {
-            log.log(Level.WARNING, "yukon: the unreported-class sweep failed, will retry on a later flush", t)
+            log.log(Level.WARNING, "yukon: the loaded-class sweep failed, will retry on a later flush", t)
         }
     }
 

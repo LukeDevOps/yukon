@@ -74,11 +74,13 @@ import java.util.concurrent.atomic.AtomicLong
  * from every `service.instance.id` a service has ever reported, over time,
  * as described in the design notes for the export payloads.
  *
- * @property confirmsDefinitions When true, [computeManifestDeltas] withholds a class's probe
- * locations and its [ClassSupertypes] record until the class is confirmed defined: a probe count
- * above zero, or a name [confirmFrom] is told the JVM has loaded. This is internal wiring, not an
- * adopter-facing option, and defaults to false so every existing path is unaffected until a caller
- * that also drives [confirmFrom] opts in. See ADR 0028.
+ * @property confirmsDefinitions Switches the whole confirmation mechanism on: [computeManifestDeltas]
+ * and [manifest] withhold a class's probe locations and its [ClassSupertypes] record until the
+ * class is confirmed defined, by a probe count above zero or a name [confirmFrom] is told the JVM
+ * has loaded, and [confirmFrom] itself does the tracking. False leaves all of it inert, so a
+ * caller that wires a sweep to a registry that does not withhold cannot be told a class's probes
+ * were withheld when they were published. Internal wiring, not an adopter-facing option. See
+ * ADR 0028.
  */
 open class ProbeRegistry(
     private val confirmsDefinitions: Boolean = false,
@@ -336,11 +338,14 @@ open class ProbeRegistry(
      * a later call. Nothing ever un-confirms a class, so a confirmed one leaves this loop at the
      * guard above and its miss count is never read again.
      *
-     * A class already confirmed, or already withheld for good, is left alone.
+     * A class already confirmed, or already withheld for good, is left alone. A registry that
+     * does not withhold tracks nothing and returns nothing: the names this returns are logged as
+     * having had their probes withheld, which would not be true.
      *
      * See ADR 0028.
      */
     open fun confirmFrom(loadedClassNames: Set<String>): List<String> {
+        if (!confirmsDefinitions) return emptyList()
         val newlyWithheld = mutableListOf<String>()
         for (entry in entriesByKey.values) {
             if (entry.withheldForGood || isConfirmed(entry)) continue
@@ -358,8 +363,12 @@ open class ProbeRegistry(
         return newlyWithheld
     }
 
-    /** How many registered classes are not yet confirmed defined and not withheld for good. */
-    fun unconfirmedClassCount(): Int = entriesByKey.values.count { !it.withheldForGood && !isConfirmed(it) }
+    /**
+     * How many registered classes are not yet confirmed defined and not withheld for good. Zero
+     * for a registry that does not withhold, which has nothing to confirm.
+     */
+    fun unconfirmedClassCount(): Int =
+        if (!confirmsDefinitions) 0 else entriesByKey.values.count { !it.withheldForGood && !isConfirmed(it) }
 
     /** How many registered classes were never confirmed defined and are withheld for good. */
     fun withheldForGoodClassCount(): Int = entriesByKey.values.count { it.withheldForGood }

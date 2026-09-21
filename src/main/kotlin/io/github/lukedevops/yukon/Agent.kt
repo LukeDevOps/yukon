@@ -6,7 +6,7 @@ import io.github.lukedevops.yukon.export.Exporter
 import io.github.lukedevops.yukon.export.HttpOtlpStyleExporter
 import io.github.lukedevops.yukon.export.ResourceAttributes
 import io.github.lukedevops.yukon.instrumentation.BootstrapInstallException
-import io.github.lukedevops.yukon.instrumentation.UnreportedClassSweep
+import io.github.lukedevops.yukon.instrumentation.LoadedClassSweep
 import io.github.lukedevops.yukon.instrumentation.YukonInstrumentation
 import io.github.lukedevops.yukon.instrumentation.branch.BranchDropCounts
 import io.github.lukedevops.yukon.instrumentation.endpoints.EndpointInstrumentation
@@ -89,7 +89,7 @@ object Agent {
             return null
         }
 
-        val registry = ProbeRegistry()
+        val registry = ProbeRegistry(confirmsDefinitions = true)
         val endpointRegistry = EndpointRegistry()
         val staticBaselineMismatchDetector = StaticBaselineMismatchDetector()
         val branchDropCounts = BranchDropCounts()
@@ -131,7 +131,7 @@ object Agent {
                 endpointRegistry,
                 exporter,
                 branchDropCounts = branchDropCounts,
-                unreportedClassSweep = UnreportedClassSweep(instrumentation, registry, config),
+                loadedClassSweep = LoadedClassSweep(instrumentation, registry, config),
             )
         scheduler.start()
 
