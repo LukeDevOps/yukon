@@ -20,35 +20,64 @@ Two things fall out of it when it happens. The poms need licence metadata,
 which nothing generates today. And a published testkit fixes its own API, so
 the query surface is worth a look before it is frozen rather than after.
 
-### Generated methods are marked, their branches are not
+### A branch inside a generated method is judged as the adopter's own
 
-`GeneratedBy` is set on a METHOD probe and on an omission probe, and never on
-a BRANCH probe: `YukonInstrumentation` builds a branch `ProbeMeta` without it
-while the two lines above it pass `analysis.generatedBy(...)`. So a data
-class's `equals` is marked and left out of the judged set, and the six branch
-probes inside that same `equals` are reported as ordinary never-hit
-conditionals. ADR 0025 is entirely about not reporting branches the adopter
-did not write, and these are as generated as the method holding them.
+`YukonInstrumentation.kt:411` builds a branch `ProbeMeta` with no
+`generatedBy`, while the method and omission probes around it pass
+`analysis.generatedBy(...)`. So a data class's `equals` is marked and left out
+of the judged set, and the conditionals inside that same `equals` are reported
+as never-hit code the adopter wrote. Seen in the demo: one `data class` in
+`demo-spring` printed six such rows, which is why `TaxRate` is a plain class
+rather than the `data class` it would otherwise be.
 
-Found while adding `demo-spring`'s `PricingConfiguration`: a `data class` in
-the demo printed six never-hit rows for a generated `equals`, which is why
-`TaxRate` is a plain class. The fix is to pass the method's own `GeneratedBy`
-through to its branch probes, which touches the wire data the server and the
-testkit both read, so it wants its own chunk rather than a line in this one.
+Not simply an oversight, and not settled either. `yukon.proto` documents the
+behaviour ("A BRANCH probe never carries this; see `GeneratedBy`"), so it was
+known, but neither ADR 0026 nor the `GeneratedBy` comment it points to gives a
+reason, and ADR 0026 never mentions branches at all. Both ADRs in the area
+argue the other way: ADR 0026 calls a never-hit `component3` a false finding
+because the compiler emits it regardless of what the adopter does, and that is
+exactly as true of a jump inside `equals`.
+
+So the first move is to decide between two answers, not to write the line:
+
+- Mark them, passing `analysis.generatedBy(site.methodName,
+  site.methodDescriptor)` into the branch `ProbeMeta`. No schema change
+  (`ProbeLocation.generated_by` is field 16 already) and no consumer change:
+  `StubCollectorMain.kt:405` partitions never-hit on the mark without looking
+  at the probe's kind, and the testkit reads it the same way. The proto comment
+  and ADR 0026 need amending, and `yukon-server` wants a look to confirm its
+  own filter is kind-blind too.
+- Drop them at the analyser, which is what ADR 0025 does for every other branch
+  the adopter did not write, and cheaper at runtime. It costs a slot-layout
+  change and the hit evidence ADR 0026 kept its methods for, and the two ADRs
+  would then disagree about the same class's methods and its jumps.
+
+Either way the proof is the demo: turn `TaxRate` back into a `data class` and
+the report must stay at four never-hit rows.
 
 ### Generators other than Spring are not recognised
 
-ADR 0029 turns away a runtime-generated class by the markers its generator
-puts in the name, and covers only Spring's, which are the only ones confirmed
-against their own source and run end to end here. Hibernate's
-`$HibernateProxy$`, ByteBuddy's own `$ByteBuddy$`, javassist's `_$$_jvst` and
-JDK dynamic proxies (`$Proxy` in a non-public interface's package) produce the
-same shape and are not covered.
+ADR 0029 turns away a runtime-generated class by the markers its generator puts
+in the name, and `TypeMatchPolicy.RUNTIME_GENERATED_NAME_MARKERS` holds only
+Spring's two spellings, the only ones confirmed against their own source and
+run end to end here. Hibernate's `$HibernateProxy$`, ByteBuddy's own
+`$ByteBuddy$`, javassist's `_$$_jvst` and JDK dynamic proxies (`$Proxy` in a
+non-public interface's package) produce the same shape and are not covered.
 
-Each is one marker and one test, gated on confirming the naming against that
-library's own source the way Spring's was. Hibernate is the one worth doing
-first: an entity package full of `$HibernateProxy$` classes is the exact shape
-that took `demo-spring`'s report to 81% dead.
+Each is one entry in that list, one test beside the Spring ones in
+`TypeMatchPolicyTest`, and an edit to ADR 0029's consequence bullet saying only
+Spring is covered. `LoadedClassSweep` needs nothing: it calls
+`TypeMatchPolicy.isRuntimeGenerated`, so it follows the list. What gates the
+work is the project's own rule of confirming a library's naming against that
+library rather than recalling it, and none of these four is a dependency of
+this repo, so each needs its jar fetched and read the way spring-core's
+`SpringNamingPolicy` was.
+
+Hibernate is the one worth doing first: an entity package full of
+`$HibernateProxy$` classes is the exact shape that took `demo-spring`'s report
+to 81% dead. Its name comes from ByteBuddy's `NamingStrategy.SuffixingRandom`,
+which builds `<prefix>$<suffix>$<random>`, so confirming it means finding where
+Hibernate passes that suffix, not just grepping for the string.
 
 ### Follow-ups the branch-probe round left open
 
