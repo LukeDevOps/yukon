@@ -32,12 +32,26 @@ its `group:artifact` pairs (one pair for an ordinary jar), and
 `pom.properties`, the jar manifest or the filename. The proto documents
 `DeltaBatch.dependency_deltas` as one entry per dependency whose
 `loaded_classes_total` changed since the last delivered batch, the probe-delta
-rule; chunk 2 must send them that way. Landing order, one chunk and one commit
+rule; chunk 2 must send them that way.
+
+Chunk 1 (listing, identity, registry, manifest delivery) has landed, with
+three changes to the design the grill wrote down, all in ADR 0030. The listing
+runs on a background thread, not in `premain`: streaming a fat jar's nested
+jars to judge the adopter's-own rule took about 200 ms for `demo-spring`'s 20
+MB. Identity falls back from `pom.properties` straight to the filename:
+`Implementation-Title` is a display name, and three Tomcat jars share
+`Apache Tomcat`. A fat jar's dependencies are every file under `BOOT-INF/lib/`
+(a war's `WEB-INF/lib/` and `lib-provided/`), since a packaged launch never
+reads `classpath.idx`. Against `demo-spring` the listing finds all 36 nested
+jars, 14 identified by `pom.properties` and 22 by filename, every Spring jar
+among the latter with an empty group. Chunk 2 matches loaded classes back
+through `DependencyOrigin` and must count nothing until
+`DependencyRegistry.isListingComplete`. Landing order, one chunk and one commit
 each:
 
 0. Wire and codec: `DependencyLocation`, `DependencyDelta`,
    `referenced_classes`, `ClassReferences`, `ExternalClass`.
-1. The startup listing and identity reading: flat jars, `classpath.idx`,
+1. The startup listing and identity reading: flat jars, Boot's nested jars,
    nested `pom.properties`, the agent-jar rule, the adopter's-own-jar rule.
 2. Sweep counting and `DependencyDelta`.
 3. Analyser references, resolution to a dependency, absent references, in the

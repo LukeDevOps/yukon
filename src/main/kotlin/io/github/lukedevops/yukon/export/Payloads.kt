@@ -362,10 +362,16 @@ enum class DependencyIdentitySource {
     /** `META-INF/maven/<group>/<artifact>/pom.properties` inside the jar. */
     POM_PROPERTIES,
 
-    /** `Implementation-Title` and `Implementation-Version` from the jar manifest; no group. */
+    /**
+     * Never produced: a manifest's `Implementation-Title` is a display name, not an artifact ID,
+     * and several jars can share one. Kept so the wire number is not reused. See ADR 0030.
+     */
     JAR_MANIFEST,
 
-    /** The jar's filename with its version suffix stripped; no group. */
+    /**
+     * The jar's filename with its version suffix stripped; no group. The version comes from the
+     * filename or, when it carries none, from the manifest's `Implementation-Version`.
+     */
     FILENAME,
 }
 

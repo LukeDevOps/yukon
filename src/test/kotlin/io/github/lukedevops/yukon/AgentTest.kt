@@ -1,10 +1,16 @@
 package io.github.lukedevops.yukon
 
 import com.sun.net.httpserver.HttpServer
+import io.github.lukedevops.yukon.dependencies.ListedDependency
+import io.github.lukedevops.yukon.export.DependencyDiscoverySource
+import io.github.lukedevops.yukon.export.DependencyIdentity
+import io.github.lukedevops.yukon.export.DependencyIdentitySource
 import io.github.lukedevops.yukon.export.ProtoPayloadCodec
 import io.github.lukedevops.yukon.export.StaticBaseline
 import io.github.lukedevops.yukon.instrumentation.endpoints.api.AdviceBinder
 import io.github.lukedevops.yukon.instrumentation.endpoints.api.EndpointModule
+import io.github.lukedevops.yukon.registry.DependencyOrigin
+import io.github.lukedevops.yukon.registry.DependencyRegistry
 import net.bytebuddy.agent.ByteBuddyAgent
 import net.bytebuddy.description.type.TypeDescription
 import net.bytebuddy.dynamic.DynamicType
@@ -13,10 +19,12 @@ import net.bytebuddy.matcher.ElementMatchers
 import java.lang.instrument.Instrumentation
 import java.lang.reflect.Proxy
 import java.net.InetSocketAddress
+import java.nio.file.Path
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -151,6 +159,58 @@ class AgentTest {
             running?.stop()
             collector.stop(0)
         }
+    }
+
+    @Test
+    fun `start runs the dependency listing on its own thread and marks it complete`() {
+        val instrumentation = ByteBuddyAgent.install()
+
+        val running =
+            Agent.start(
+                "includePackages=io.github.lukedevops.yukon.neverloaded.fixture,flushIntervalSeconds=3600,endpointsEnabled=false",
+                instrumentation,
+            )
+        try {
+            assertNotNull(running)
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30)
+            while (!running.dependencyRegistry.isListingComplete && System.nanoTime() < deadline) Thread.sleep(20)
+            assertTrue(running.dependencyRegistry.isListingComplete, "the listing thread never finished")
+            // The test classpath carries the Kotlin stdlib as a jar, and nothing in it is under the include rules.
+            assertTrue(running.dependencyRegistry.entries().any { entry -> entry.identities.any { it.artifactId == "kotlin-stdlib" } })
+        } finally {
+            running?.stop()
+        }
+    }
+
+    @Test
+    fun `a listing that throws registers nothing, leaves the listing incomplete, and does not propagate`() {
+        val registry = DependencyRegistry()
+
+        Agent.runDependencyListing({ throw IllegalStateException("simulated listing failure") }, registry)
+
+        assertFalse(registry.isListingComplete)
+        assertTrue(registry.entries().isEmpty())
+    }
+
+    @Test
+    fun `a listing that succeeds registers each dependency as found on the startup classpath`() {
+        val registry = DependencyRegistry()
+        val listed =
+            ListedDependency(
+                listOf(DependencyIdentity("g", "a", "1")),
+                DependencyIdentitySource.POM_PROPERTIES,
+                "/libs/a.jar",
+                classCount = 2,
+                origin = DependencyOrigin.FlatJar(Path.of("/libs/a.jar")),
+            )
+
+        Agent.runDependencyListing({ listOf(listed) }, registry)
+
+        assertTrue(registry.isListingComplete)
+        val entry = registry.entries().single()
+        assertEquals(DependencyDiscoverySource.STARTUP_CLASSPATH, entry.discoverySource)
+        assertEquals(DependencyOrigin.FlatJar(Path.of("/libs/a.jar")), entry.origin)
+        assertEquals(2, entry.classCount)
     }
 
     @Test

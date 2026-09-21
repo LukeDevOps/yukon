@@ -14,11 +14,11 @@ The agent therefore reports three observations per *dependency*, a jar on the cl
 the adopter's own, and the collector derives three statuses from them, checked in order:
 
 1. **Unloaded.** The dependency is on the instance's startup classpath and no class from it has
-   loaded. The agent lists the startup classpath once in `premain` (`java.class.path` entries, and in
-   a Spring Boot fat jar the nested jars `BOOT-INF/classpath.idx` names), reads each jar's identity
-   from `pom.properties`, and counts distinct loaded classes per dependency on every flush from the
-   loaded-class array the sweep already takes, looking up each class's `ProtectionDomain` in an
-   identity cache.
+   loaded. The agent lists the startup classpath once, on a background thread started from
+   `premain` (`java.class.path` entries, and in a Spring Boot fat jar every nested jar under
+   `BOOT-INF/lib`), reads each jar's identity from `pom.properties`, and counts
+   distinct loaded classes per dependency on every flush from the loaded-class array the sweep
+   already takes, looking up each class's `ProtectionDomain` in an identity cache.
 2. **Unreferenced.** At least one class loaded, but nothing in the adopter's code refers to the
    dependency. The branch analyser records every out-of-scope class the adopter's bytecode names, per
    method and per class, and the agent resolves each name to its dependency through the referencing
@@ -30,7 +30,7 @@ No library code is instrumented at any level. Library methods stay out of scope,
 nothing to the hot path.
 
 Identity is `groupId:artifactId` from the jar's single `pom.properties`, falling back to the
-manifest's `Implementation-Title` and then to the filename with its version stripped. The version is
+filename with its version stripped, and an empty group. The version is
 an attribute, so an upgrade does not make a dependency look new and never used. A jar with several
 `pom.properties` is a shaded jar: one dependency carrying every bundled identity, since it cannot be
 half-removed. One identity loaded by two classloaders is one dependency. A class is matched to its
@@ -76,11 +76,19 @@ referenced class that no loader can find is an *absent reference* and is reporte
   unloaded.
 - **Reading a nested jar's identity from its filename only.** Rejected: filenames are not unique
   across group IDs. Boot's Gradle plugin stores every `BOOT-INF/lib` entry uncompressed
-  (`BootJar.resolveZipCompression` in 4.1.1), so streaming a nested jar to its `pom.properties` costs
-  no inflation.
+  (`BootJar.resolveZipCompression` in 4.1.1), so a nested jar can be streamed straight from the
+  outer one with nothing extracted to disk.
 - **Treating a jar as the adopter's own only when all its classes are in scope.** Rejected: a shaded
   single-jar application would read as a dependency of itself, and with `includePackages` unset every
   jar would be the adopter's.
+- **The manifest's `Implementation-Title` as a fallback identity.** Rejected once the listing ran
+  against `demo-spring`: 21 of its 35 nested jars carry no `pom.properties` (every Spring jar is
+  built by Gradle), and the title is a display name, not an artifact ID: `Spring Boot Web MVC`,
+  `io.micrometer#micrometer-commons;1.17.1`, and `Apache Tomcat` on three different Tomcat jars,
+  which merged them into one dependency so that two vanished. The filename was the exact artifact ID
+  in all 21 cases, since Boot and Gradle name a packaged jar `<artifactId>-<version>.jar`. The
+  manifest's `Implementation-Version` still fills in the version when the filename carries none.
+  `DependencyIdentitySource.JAR_MANIFEST` stays on the wire, never produced.
 - **Recognising agent jars from `-javaagent` flags.** Rejected: reading the JVM's input arguments
   means `java.lang.management`, which loads classes in `premain`. The manifest, already read during
   the listing, says the same thing.
@@ -117,6 +125,21 @@ referenced class that no loader can find is an *absent reference* and is reporte
 - The static baseline's blind spot carries over to the startup listing: a jar only another system's
   runtime logic knows about is not on it. Discovery by load covers it once a class from the jar loads;
   a jar that never loads a class stays invisible.
+- The listing runs off `premain`, like the static baseline scan (ADR 0014). Judging whether a jar
+  is the adopter's own reads every entry name, and in a fat jar that means streaming each nested
+  jar: about 200 ms for `demo-spring`'s 36 nested jars (20 MB), so one to two seconds for a large
+  application, which is too much to add to boot. The sweep counts nothing for dependencies until
+  the listing has finished, so no startup jar is ever marked as discovered by load; the cost is one
+  flush of delay on `first_loaded_at`, whose precision is a flush anyway. Reading each nested jar's
+  central directory straight from its stored byte range would have been fast enough for `premain`,
+  but it is hand-written zip parsing for a problem a thread solves.
+- A fat jar's nested dependencies are every file under `BOOT-INF/lib/`, or `WEB-INF/lib/` and
+  `WEB-INF/lib-provided/` for an executable war, at any depth and whatever the extension: exactly
+  what `JarLauncher` and `WarLauncher` select in `isLibraryFileOrClassesDirectory`. The classpath
+  index is not read. `Launcher.getClassPathIndex` returns null unless the archive is exploded, so a
+  packaged launch ignores it, and it can leave out a jar that is on the classpath all the same
+  (`spring-boot-jarmode-tools` in `demo-spring`). Confirmed from the loader bytecode Boot 4.1.1
+  packages.
 - ADR 0014 left nested jars unopened for the scan. This decision opens them for the listing only, one
   entry each; the scan still does not walk their classes.
 - Wire, all additive: `DependencyLocation` send-once on the manifest, `DependencyDelta` on the delta

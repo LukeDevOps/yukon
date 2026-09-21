@@ -4,6 +4,7 @@ import io.github.lukedevops.yukon.config.AgentConfig
 import io.github.lukedevops.yukon.instrumentation.LoadedClassSweep
 import io.github.lukedevops.yukon.instrumentation.branch.BranchDropCounts
 import io.github.lukedevops.yukon.instrumentation.branch.BranchDropReason
+import io.github.lukedevops.yukon.registry.DependencyRegistry
 import io.github.lukedevops.yukon.registry.EndpointRegistry
 import io.github.lukedevops.yukon.registry.ProbeMeta
 import io.github.lukedevops.yukon.registry.ProbeRegistry
@@ -682,6 +683,102 @@ class ExportSchedulerTest {
                 .single()
                 .module,
         )
+    }
+
+    private fun dependencyRegistryWith(vararg artifacts: String): DependencyRegistry =
+        DependencyRegistry().apply {
+            for (artifact in artifacts) {
+                register(
+                    listOf(DependencyIdentity("g", artifact, "1")),
+                    DependencyIdentitySource.POM_PROPERTIES,
+                    "/libs/$artifact.jar",
+                    DependencyDiscoverySource.STARTUP_CLASSPATH,
+                    classCount = 1,
+                )
+            }
+        }
+
+    @Test
+    fun `dependencies ride on the class manifest chunk when there is room, and go out once`() {
+        val registry = ProbeRegistry()
+        registry.register("com.example.Foo", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "bar", "()V", 1)))
+        val exporter = RecordingExporter()
+        val scheduler =
+            ExportScheduler(config, registry, EndpointRegistry(), exporter, dependencyRegistry = dependencyRegistryWith("a", "b"))
+
+        scheduler.flush()
+        scheduler.flush()
+
+        assertEquals(1, exporter.manifests.size, "the second flush has nothing new to send")
+        val manifest = exporter.manifests.single()
+        assertEquals(1, manifest.probes.size)
+        assertEquals(listOf("a", "b"), manifest.dependencies.map { it.identities.single().artifactId })
+    }
+
+    @Test
+    fun `dependencies stand alone when there are no class chunks, and share a standalone endpoint manifest with room`() {
+        val endpointRegistry = EndpointRegistry()
+        endpointRegistry.register(key = Any(), framework = "http-server", verb = "GET", verbatimTemplate = "/health")
+        val exporter = RecordingExporter()
+        val scheduler =
+            ExportScheduler(config, ProbeRegistry(), endpointRegistry, exporter, dependencyRegistry = dependencyRegistryWith("a"))
+
+        scheduler.flush()
+
+        val manifest = exporter.manifests.single()
+        assertTrue(manifest.probes.isEmpty())
+        assertEquals(1, manifest.endpoints.size)
+        assertEquals(1, manifest.dependencies.size)
+        assertEquals("instance-1", manifest.serviceInstanceId)
+    }
+
+    @Test
+    fun `a failed manifest send leaves dependencies undelivered, so the next flush sends them again`() {
+        val dependencyRegistry = dependencyRegistryWith("a")
+        val failing =
+            ExportScheduler(config, ProbeRegistry(), EndpointRegistry(), FailingExporter(), dependencyRegistry = dependencyRegistry)
+        failing.flush()
+
+        val exporter = RecordingExporter()
+        ExportScheduler(config, ProbeRegistry(), EndpointRegistry(), exporter, dependencyRegistry = dependencyRegistry).flush()
+
+        assertEquals(
+            1,
+            exporter.manifests
+                .single()
+                .dependencies.size,
+        )
+    }
+
+    @Test
+    fun `packing dependencies onto a class chunk that is nearly full respects the cap`() {
+        val registry = ProbeRegistry()
+        val probes = (1..4).map { ProbeMeta(ProbeKind.METHOD, "m$it", "()V", 1) }
+        registry.register("com.example.Foo", 1L, probes)
+        val exporter = RecordingExporter()
+        // The class weighs 5 (4 probes + its ClassSupertypes record), one short of the cap of 6.
+        // The three dependencies form one chunk of weight 3, which does not fit beside the class
+        // and so goes out on its own manifest.
+        val scheduler =
+            ExportScheduler(
+                config,
+                registry,
+                EndpointRegistry(),
+                exporter,
+                maxManifestEntriesPerChunk = 6,
+                dependencyRegistry = dependencyRegistryWith("a", "b", "c"),
+            )
+
+        scheduler.flush()
+
+        assertEquals(listOf(0, 3), exporter.manifests.map { it.dependencies.size })
+        for (manifest in exporter.manifests) {
+            val weight =
+                manifest.probes.size + manifest.probes.sumOf { it.calls.size } + manifest.classSupertypes.size +
+                    manifest.skippedClasses.size + manifest.unreportedClasses.size + manifest.endpoints.size +
+                    manifest.disabledEndpointModules.size + manifest.dependencies.size
+            assertTrue(weight <= 6, "a sent manifest must not exceed the cap it was chunked under, got $weight")
+        }
     }
 
     /**

@@ -204,22 +204,6 @@ class StaticBaselineScanner(
                     .replace(File.separatorChar, '.')
             }.toList()
 
-    /**
-     * Whether a path inside a root names a class this scan should classify. A `.class` file under
-     * `META-INF/` is never one: a multi-release jar keeps its per-JDK variants under
-     * `META-INF/versions/N/`, and the JVM loads those under the same name as the base entry, so
-     * classifying the entry by its path would declare a second, phantom class named
-     * `META-INF.versions.9.com.acme.Foo`. A class present only in a versioned directory is
-     * therefore not declared at all, which can only lose a declaration, never invent one.
-     * `module-info` and `package-info` carry no methods and are not types an adopter's code
-     * refers to, so they are left out rather than reported as unprobed.
-     */
-    private fun isClassEntry(path: String): Boolean {
-        if (!path.endsWith(".class") || path.startsWith("META-INF/")) return false
-        val simpleName = path.substringAfterLast('/').removeSuffix(".class")
-        return simpleName != "module-info" && simpleName != "package-info"
-    }
-
     private fun classify(
         className: String,
         pool: TypePool,
@@ -407,6 +391,24 @@ class StaticBaselineScanner(
                 .filter { it.isNotEmpty() }
                 .map { File(it) }
     }
+}
+
+/**
+ * Whether a path inside a classpath root names a class. A `.class` file under `META-INF/` is never
+ * one: a multi-release jar keeps its per-JDK variants under `META-INF/versions/N/`, and the JVM
+ * loads those under the same name as the base entry, so counting the entry by its path would
+ * invent a second, phantom class named `META-INF.versions.9.com.acme.Foo`. A class present only in
+ * a versioned directory is therefore not counted at all, which can only lose a class, never invent
+ * one. `module-info` and `package-info` carry no methods and are not types an adopter's code refers
+ * to, so they are left out too.
+ *
+ * Shared by the static baseline scan and the dependency listing, so both count a jar's classes by
+ * one rule.
+ */
+internal fun isClassEntry(path: String): Boolean {
+    if (!path.endsWith(".class") || path.startsWith("META-INF/")) return false
+    val simpleName = path.substringAfterLast('/').removeSuffix(".class")
+    return simpleName != "module-info" && simpleName != "package-info"
 }
 
 /** Reads a class's bytes from a fixed prefix inside [jarFile], for nested classpath roots such as `BOOT-INF/classes/`. */

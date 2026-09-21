@@ -4,6 +4,7 @@ import io.github.lukedevops.yukon.config.AgentConfig
 import io.github.lukedevops.yukon.instrumentation.LoadedClassSweep
 import io.github.lukedevops.yukon.instrumentation.branch.BranchDropCounts
 import io.github.lukedevops.yukon.instrumentation.branch.BranchDropReason
+import io.github.lukedevops.yukon.registry.DependencyRegistry
 import io.github.lukedevops.yukon.registry.EndpointRegistry
 import io.github.lukedevops.yukon.registry.ProbeRegistry
 import java.lang.System.Logger.Level
@@ -44,6 +45,8 @@ class ExportScheduler(
      * is every test that does not exercise the sweep.
      */
     private val loadedClassSweep: LoadedClassSweep? = null,
+    /** Dependencies found on the startup classpath, delivered on the manifest; see ADR 0030. */
+    private val dependencyRegistry: DependencyRegistry = DependencyRegistry(),
 ) {
     private val log = System.getLogger(ExportScheduler::class.java.name)
     private var executor: ScheduledExecutorService? = null
@@ -294,17 +297,29 @@ class ExportScheduler(
     }
 
     /**
-     * One outgoing [ProbeManifest], together with the probe and endpoint snapshots it carries. A
-     * confirmed send advances exactly these, and nothing else.
+     * One outgoing [ProbeManifest], together with the probe snapshot and the endpoint and
+     * dependency chunks it carries. A confirmed send advances exactly these, and nothing else.
      */
     private class ManifestSend(
         val manifest: ProbeManifest,
         val probeSnapshot: ProbeRegistry.ManifestSnapshot?,
-        val endpointSnapshots: List<EndpointRegistry.ManifestSnapshot>,
+        val riders: List<ManifestRider>,
     )
 
     /**
-     * Sends only the probes and endpoints not yet included in a successfully delivered manifest.
+     * A chunk from a registry other than the probe registry, packed onto a class manifest chunk:
+     * its weight against the cap, how it adds itself to a manifest, and how its registry marks it
+     * delivered once that manifest's send is confirmed.
+     */
+    private class ManifestRider(
+        val size: Int,
+        val attach: (ProbeManifest) -> ProbeManifest,
+        val advance: () -> Unit,
+    )
+
+    /**
+     * Sends only the probes, endpoints and dependencies not yet included in a successfully
+     * delivered manifest.
      *
      * This runs on the first flush, not at agent startup. By the first
      * flush, classes have actually started loading, so there are probes to
@@ -313,7 +328,8 @@ class ExportScheduler(
      * are not permanently left out just because an earlier send already
      * succeeded. The same holds for endpoints: a discovery-source upgrade
      * or a handler join learned after an earlier delivery is picked up the
-     * same way.
+     * same way. Dependencies the listing thread registers after a flush
+     * go out on the next one.
      */
     private fun sendManifestDelta() {
         try {
@@ -324,76 +340,84 @@ class ExportScheduler(
                     config.serviceInstanceId,
                     maxManifestEntriesPerChunk,
                 )
-            val endpointChunks = endpointRegistry.computeManifestEntries(maxManifestEntriesPerChunk)
-            for (send in composeManifestSends(classChunks, endpointChunks)) {
+            val riders =
+                endpointRegistry.computeManifestEntries(maxManifestEntriesPerChunk).map(::endpointRider) +
+                    dependencyRegistry.computeManifestEntries(maxManifestEntriesPerChunk).map(::dependencyRider)
+            for (send in composeManifestSends(classChunks, riders)) {
                 exporter.exportManifest(send.manifest)
                 send.probeSnapshot?.let(registry::advanceManifestBaseline)
-                send.endpointSnapshots.forEach(endpointRegistry::advanceManifest)
+                send.riders.forEach { it.advance() }
             }
         } catch (t: Throwable) {
             log.log(Level.WARNING, "yukon: manifest export failed, will retry next flush", t)
         }
     }
 
+    private fun endpointRider(chunk: EndpointRegistry.ManifestSnapshot): ManifestRider =
+        ManifestRider(
+            size = chunk.endpoints.size + chunk.disabledModules.size,
+            attach = {
+                it.copy(
+                    endpoints = it.endpoints + chunk.endpoints,
+                    disabledEndpointModules = it.disabledEndpointModules + chunk.disabledModules,
+                )
+            },
+            advance = { endpointRegistry.advanceManifest(chunk) },
+        )
+
+    private fun dependencyRider(chunk: DependencyRegistry.ManifestSnapshot): ManifestRider =
+        ManifestRider(
+            size = chunk.dependencies.size,
+            attach = { it.copy(dependencies = it.dependencies + chunk.dependencies) },
+            advance = { dependencyRegistry.advanceManifest(chunk) },
+        )
+
     /**
-     * Packs endpoint manifest chunks onto class manifest chunks. Each endpoint chunk goes on the
-     * first class chunk with room for it, room being [maxManifestEntriesPerChunk] minus probes,
-     * skipped classes, and any endpoint chunk already packed onto that chunk. A chunk that fits
-     * nowhere, including when there are no class chunks at all, becomes its own [ProbeManifest]
-     * with no probes or skipped classes.
+     * Packs endpoint and dependency chunks onto class manifest chunks, in [riders] order. Each
+     * rider goes on the first manifest with room for it, room being [maxManifestEntriesPerChunk]
+     * minus that manifest's weight so far. A rider that fits nowhere, including when there are no
+     * class chunks at all, becomes its own [ProbeManifest] with no probes, which a later rider may
+     * then share.
      */
     private fun composeManifestSends(
         classChunks: List<ProbeRegistry.ManifestSnapshot>,
-        endpointChunks: List<EndpointRegistry.ManifestSnapshot>,
+        riders: List<ManifestRider>,
     ): List<ManifestSend> {
         val builders = classChunks.map { ManifestSendBuilder(it.manifest, it) }.toMutableList()
-        val standalone = mutableListOf<ManifestSendBuilder>()
 
-        for (endpointChunk in endpointChunks) {
-            val chunkSize = endpointChunk.endpoints.size + endpointChunk.disabledModules.size
-            val target = builders.firstOrNull { it.size + chunkSize <= maxManifestEntriesPerChunk }
-            if (target != null) {
-                target.manifest =
-                    target.manifest.copy(
-                        endpoints = target.manifest.endpoints + endpointChunk.endpoints,
-                        disabledEndpointModules = target.manifest.disabledEndpointModules + endpointChunk.disabledModules,
-                    )
-                target.size += chunkSize
-                target.endpointSnapshots += endpointChunk
-            } else {
-                standalone +=
-                    ManifestSendBuilder(standaloneEndpointManifest(endpointChunk), null).apply {
-                        endpointSnapshots += endpointChunk
-                    }
-            }
+        for (rider in riders) {
+            val target =
+                builders.firstOrNull { it.size + rider.size <= maxManifestEntriesPerChunk }
+                    ?: ManifestSendBuilder(emptyManifest(), null).also(builders::add)
+            target.manifest = rider.attach(target.manifest)
+            target.size += rider.size
+            target.riders += rider
         }
-        return (builders + standalone).map { ManifestSend(it.manifest, it.probeSnapshot, it.endpointSnapshots) }
+        return builders.map { ManifestSend(it.manifest, it.probeSnapshot, it.riders) }
     }
 
-    private fun standaloneEndpointManifest(endpointChunk: EndpointRegistry.ManifestSnapshot): ProbeManifest =
+    private fun emptyManifest(): ProbeManifest =
         ProbeManifest(
             serviceName = config.serviceName,
             serviceVersion = config.serviceVersion,
             probes = emptyList(),
             skippedClasses = emptyList(),
             serviceInstanceId = config.serviceInstanceId,
-            endpoints = endpointChunk.endpoints,
-            disabledEndpointModules = endpointChunk.disabledModules,
         )
 
     private class ManifestSendBuilder(
         var manifest: ProbeManifest,
         val probeSnapshot: ProbeRegistry.ManifestSnapshot?,
     ) {
-        // Every list the chunker weighted, call edges included, so packing an endpoint chunk onto
-        // this one cannot overshoot the cap. A bucket missing here reads as weightless and absorbs
-        // a full chunk; the edges nest inside each probe location rather than sitting beside it,
-        // which is why they need summing rather than a list size.
+        // Every list the chunker weighted, call edges included, so packing a rider onto this one
+        // cannot overshoot the cap. A bucket missing here reads as weightless and absorbs a full
+        // chunk; the edges nest inside each probe location rather than sitting beside it, which is
+        // why they need summing rather than a list size.
         var size =
             manifest.probes.size + manifest.probes.sumOf { it.calls.size } + manifest.skippedClasses.size +
                 manifest.endpoints.size + manifest.disabledEndpointModules.size + manifest.classSupertypes.size +
-                manifest.unreportedClasses.size
-        val endpointSnapshots = mutableListOf<EndpointRegistry.ManifestSnapshot>()
+                manifest.unreportedClasses.size + manifest.dependencies.size
+        val riders = mutableListOf<ManifestRider>()
     }
 
     private fun resourceAttributes() =

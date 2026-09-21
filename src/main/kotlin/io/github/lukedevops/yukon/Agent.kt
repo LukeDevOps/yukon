@@ -1,6 +1,9 @@
 package io.github.lukedevops.yukon
 
 import io.github.lukedevops.yukon.config.AgentConfig
+import io.github.lukedevops.yukon.dependencies.ListedDependency
+import io.github.lukedevops.yukon.dependencies.StartupClasspathLister
+import io.github.lukedevops.yukon.export.DependencyDiscoverySource
 import io.github.lukedevops.yukon.export.ExportScheduler
 import io.github.lukedevops.yukon.export.Exporter
 import io.github.lukedevops.yukon.export.HttpOtlpStyleExporter
@@ -15,6 +18,7 @@ import io.github.lukedevops.yukon.instrumentation.endpoints.api.EndpointModule
 import io.github.lukedevops.yukon.instrumentation.staticscan.StaticBaselineMismatchDetector
 import io.github.lukedevops.yukon.instrumentation.staticscan.StaticBaselinePublisher
 import io.github.lukedevops.yukon.instrumentation.staticscan.StaticBaselineScanner
+import io.github.lukedevops.yukon.registry.DependencyRegistry
 import io.github.lukedevops.yukon.registry.EndpointRegistry
 import io.github.lukedevops.yukon.registry.ProbeRegistry
 import net.bytebuddy.agent.builder.ResettableClassFileTransformer
@@ -62,6 +66,7 @@ object Agent {
         private val shutdownHook: Thread,
         private val endpointInstrumentation: EndpointInstrumentation? = null,
         val endpointTransformer: ResettableClassFileTransformer? = null,
+        val dependencyRegistry: DependencyRegistry = DependencyRegistry(),
     ) {
         fun stop() {
             Runtime.getRuntime().removeShutdownHook(shutdownHook)
@@ -91,6 +96,7 @@ object Agent {
 
         val registry = ProbeRegistry(confirmsDefinitions = true)
         val endpointRegistry = EndpointRegistry()
+        val dependencyRegistry = DependencyRegistry()
         val staticBaselineMismatchDetector = StaticBaselineMismatchDetector()
         val branchDropCounts = BranchDropCounts()
 
@@ -132,8 +138,11 @@ object Agent {
                 exporter,
                 branchDropCounts = branchDropCounts,
                 loadedClassSweep = LoadedClassSweep(instrumentation, registry, config),
+                dependencyRegistry = dependencyRegistry,
             )
         scheduler.start()
+
+        startDependencyListing(config, dependencyRegistry)
 
         if (config.staticBaselineEnabled) {
             startStaticBaselineScan(config, exporter, registry, staticBaselineMismatchDetector)
@@ -149,6 +158,7 @@ object Agent {
             shutdownHook,
             endpointInstrumentation,
             endpointTransformer,
+            dependencyRegistry,
         )
     }
 
@@ -188,5 +198,50 @@ object Agent {
         val worker = Thread({ publisher.run(resource) }, "yukon-static-baseline-scan")
         worker.isDaemon = true
         worker.start()
+    }
+
+    /**
+     * Lists the startup classpath's dependencies on its own daemon thread, off `premain`: judging
+     * whether a jar is the adopter's own reads every entry name, and in a fat jar that means
+     * streaming each nested jar. Runs once per process, always. See ADR 0030.
+     */
+    private fun startDependencyListing(
+        config: AgentConfig,
+        registry: DependencyRegistry,
+    ) {
+        val lister = StartupClasspathLister(config.instrumentedPackagePrefixes, config.excludedPackagePrefixes)
+        val worker = Thread({ runDependencyListing(lister::list, registry) }, "yukon-dependency-listing")
+        worker.isDaemon = true
+        worker.start()
+    }
+
+    /**
+     * Runs [list] to completion, then registers everything it found and marks the listing
+     * complete. Nothing escapes: a failure is logged at WARNING and registers nothing, so the
+     * collector sees no dependencies from this instance rather than a partial list it would read
+     * as the whole classpath.
+     *
+     * `internal` so a test can drive a failing listing without a real classpath.
+     */
+    internal fun runDependencyListing(
+        list: () -> List<ListedDependency>,
+        registry: DependencyRegistry,
+    ) {
+        try {
+            val listed = list()
+            for (dependency in listed) {
+                registry.register(
+                    dependency.identities,
+                    dependency.identitySource,
+                    dependency.location,
+                    DependencyDiscoverySource.STARTUP_CLASSPATH,
+                    dependency.classCount,
+                    dependency.origin,
+                )
+            }
+            registry.markListingComplete()
+        } catch (t: Throwable) {
+            log.log(Level.WARNING, "yukon: the startup dependency listing failed; no dependencies will be reported", t)
+        }
     }
 }
