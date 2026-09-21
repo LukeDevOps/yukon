@@ -1,14 +1,21 @@
 package io.github.lukedevops.yukon.export
 
 import io.github.lukedevops.yukon.proto.CallEdge as ProtoCallEdge
+import io.github.lukedevops.yukon.proto.ClassReferences as ProtoClassReferences
 import io.github.lukedevops.yukon.proto.ClassSupertypes as ProtoClassSupertypes
 import io.github.lukedevops.yukon.proto.DeclaredClass as ProtoDeclaredClass
 import io.github.lukedevops.yukon.proto.DeclaredMethod as ProtoDeclaredMethod
 import io.github.lukedevops.yukon.proto.DeltaBatch as ProtoDeltaBatch
+import io.github.lukedevops.yukon.proto.DependencyDelta as ProtoDependencyDelta
+import io.github.lukedevops.yukon.proto.DependencyDiscoverySource as ProtoDependencyDiscoverySource
+import io.github.lukedevops.yukon.proto.DependencyIdentity as ProtoDependencyIdentity
+import io.github.lukedevops.yukon.proto.DependencyIdentitySource as ProtoDependencyIdentitySource
+import io.github.lukedevops.yukon.proto.DependencyLocation as ProtoDependencyLocation
 import io.github.lukedevops.yukon.proto.DisabledEndpointModule as ProtoDisabledEndpointModule
 import io.github.lukedevops.yukon.proto.EndpointDelta as ProtoEndpointDelta
 import io.github.lukedevops.yukon.proto.EndpointDiscoverySource as ProtoEndpointDiscoverySource
 import io.github.lukedevops.yukon.proto.EndpointLocation as ProtoEndpointLocation
+import io.github.lukedevops.yukon.proto.ExternalClass as ProtoExternalClass
 import io.github.lukedevops.yukon.proto.GeneratedBy as ProtoGeneratedBy
 import io.github.lukedevops.yukon.proto.ProbeDelta as ProtoProbeDelta
 import io.github.lukedevops.yukon.proto.ProbeKind as ProtoProbeKind
@@ -47,6 +54,7 @@ object ProtoPayloadCodec {
             .addAllDeltas(batch.deltas.map { toProto(it) })
             .addAllEndpointDeltas(batch.endpointDeltas.map { toProto(it) })
             .setFinalFlush(batch.finalFlush)
+            .addAllDependencyDeltas(batch.dependencyDeltas.map { toProto(it) })
             .build()
 
     private fun fromProto(batch: ProtoDeltaBatch): DeltaBatch =
@@ -55,6 +63,7 @@ object ProtoPayloadCodec {
             deltas = batch.deltasList.map { fromProto(it) },
             endpointDeltas = batch.endpointDeltasList.map { fromProto(it) },
             finalFlush = batch.finalFlush,
+            dependencyDeltas = batch.dependencyDeltasList.map { fromProto(it) },
         )
 
     private fun toProto(resource: ResourceAttributes): ProtoResourceAttributes {
@@ -107,6 +116,9 @@ object ProtoPayloadCodec {
                 .addAllDisabledEndpointModules(manifest.disabledEndpointModules.map { toProto(it) })
                 .addAllClassSupertypes(manifest.classSupertypes.map { toProto(it) })
                 .addAllUnreportedClasses(manifest.unreportedClasses.map { toProto(it) })
+                .addAllDependencies(manifest.dependencies.map { toProto(it) })
+                .addAllClassReferences(manifest.classReferences.map { toProto(it) })
+                .addAllExternalClasses(manifest.externalClasses.map { toProto(it) })
         manifest.serviceVersion?.let { builder.serviceVersion = it }
         return builder.build()
     }
@@ -122,6 +134,9 @@ object ProtoPayloadCodec {
             disabledEndpointModules = manifest.disabledEndpointModulesList.map { fromProto(it) },
             classSupertypes = manifest.classSupertypesList.map { fromProto(it) },
             unreportedClasses = manifest.unreportedClassesList.map { fromProto(it) },
+            dependencies = manifest.dependenciesList.map { fromProto(it) },
+            classReferences = manifest.classReferencesList.map { fromProto(it) },
+            externalClasses = manifest.externalClassesList.map { fromProto(it) },
         )
 
     private fun toProto(unreportedClass: UnreportedClass): ProtoUnreportedClass =
@@ -170,6 +185,7 @@ object ProtoPayloadCodec {
                 .addAllCalls(location.calls.map { toProto(it) })
                 .setInlinedFromClassName(location.inlinedFromClassName ?: "")
                 .setGeneratedBy(toProto(location.generatedBy))
+                .addAllReferencedClasses(location.referencedClasses)
         location.branchIndex?.let { builder.branchIndex = it }
         location.parameterIndex?.let { builder.parameterIndex = it }
         return builder.build()
@@ -196,6 +212,7 @@ object ProtoPayloadCodec {
             calls = location.callsList.map { fromProto(it) },
             inlinedFromClassName = location.inlinedFromClassName.ifEmpty { null },
             generatedBy = fromProto(location.generatedBy),
+            referencedClasses = location.referencedClassesList,
         )
     }
 
@@ -290,6 +307,7 @@ object ProtoPayloadCodec {
             .setScannedAt(baseline.scannedAt)
             .setChunkIndex(baseline.chunkIndex)
             .setChunkCount(baseline.chunkCount)
+            .addAllExternalClasses(baseline.externalClasses.map { toProto(it) })
             .build()
 
     private fun fromProto(baseline: ProtoStaticBaseline): StaticBaseline =
@@ -302,6 +320,7 @@ object ProtoPayloadCodec {
             scannedAt = baseline.scannedAt,
             chunkIndex = baseline.chunkIndex,
             chunkCount = baseline.chunkCount,
+            externalClasses = baseline.externalClassesList.map { fromProto(it) },
         )
 
     private fun toProto(unprobedClass: UnprobedClass): ProtoUnprobedClass =
@@ -324,6 +343,7 @@ object ProtoPayloadCodec {
             .addAllMethods(declaredClass.methods.map { toProto(it) })
             .setSuperClassName(declaredClass.superClassName ?: "")
             .addAllInterfaceNames(declaredClass.interfaceNames)
+            .addAllReferencedClasses(declaredClass.referencedClasses)
             .build()
 
     private fun fromProto(declaredClass: ProtoDeclaredClass): DeclaredClass =
@@ -332,6 +352,7 @@ object ProtoPayloadCodec {
             methods = declaredClass.methodsList.map { fromProto(it) },
             superClassName = declaredClass.superClassName.ifEmpty { null },
             interfaceNames = declaredClass.interfaceNamesList,
+            referencedClasses = declaredClass.referencedClassesList,
         )
 
     private fun toProto(method: DeclaredMethod): ProtoDeclaredMethod =
@@ -342,6 +363,7 @@ object ProtoPayloadCodec {
             .setInline(method.inline)
             .addAllCalls(method.calls.map { toProto(it) })
             .setGeneratedBy(toProto(method.generatedBy))
+            .addAllReferencedClasses(method.referencedClasses)
             .build()
 
     private fun fromProto(method: ProtoDeclaredMethod): DeclaredMethod =
@@ -351,6 +373,7 @@ object ProtoPayloadCodec {
             inline = method.inline,
             calls = method.callsList.map { fromProto(it) },
             generatedBy = fromProto(method.generatedBy),
+            referencedClasses = method.referencedClassesList,
         )
 
     private fun toProto(unsafeClass: StaticallyUnsafeClass): ProtoStaticallyUnsafeClass =
@@ -457,5 +480,135 @@ object ProtoPayloadCodec {
             module = module.module,
             reason = module.reason,
             disabledAt = module.disabledAt,
+        )
+
+    private fun toProto(location: DependencyLocation): ProtoDependencyLocation {
+        val builder =
+            ProtoDependencyLocation
+                .newBuilder()
+                .setDependencyId(location.dependencyId)
+                .addAllIdentities(location.identities.map { toProto(it) })
+                .setIdentitySource(toProto(location.identitySource))
+                .setLocation(location.location)
+                .setDiscoverySource(toProto(location.discoverySource))
+        location.classCount?.let { builder.classCount = it }
+        return builder.build()
+    }
+
+    private fun fromProto(location: ProtoDependencyLocation): DependencyLocation =
+        DependencyLocation(
+            dependencyId = location.dependencyId,
+            identities = location.identitiesList.map { fromProto(it) },
+            identitySource = fromProto(location.identitySource),
+            location = location.location,
+            discoverySource = fromProto(location.discoverySource),
+            classCount = if (location.hasClassCount()) location.classCount else null,
+        )
+
+    private fun toProto(identity: DependencyIdentity): ProtoDependencyIdentity =
+        ProtoDependencyIdentity
+            .newBuilder()
+            .setGroupId(identity.groupId ?: "")
+            .setArtifactId(identity.artifactId)
+            .setVersion(identity.version ?: "")
+            .build()
+
+    private fun fromProto(identity: ProtoDependencyIdentity): DependencyIdentity =
+        DependencyIdentity(
+            groupId = identity.groupId.ifEmpty { null },
+            artifactId = identity.artifactId,
+            version = identity.version.ifEmpty { null },
+        )
+
+    private fun toProto(source: DependencyIdentitySource): ProtoDependencyIdentitySource =
+        when (source) {
+            DependencyIdentitySource.POM_PROPERTIES -> ProtoDependencyIdentitySource.POM_PROPERTIES
+            DependencyIdentitySource.JAR_MANIFEST -> ProtoDependencyIdentitySource.JAR_MANIFEST
+            DependencyIdentitySource.FILENAME -> ProtoDependencyIdentitySource.FILENAME
+        }
+
+    private fun fromProto(source: ProtoDependencyIdentitySource): DependencyIdentitySource =
+        when (source) {
+            ProtoDependencyIdentitySource.POM_PROPERTIES -> {
+                DependencyIdentitySource.POM_PROPERTIES
+            }
+
+            ProtoDependencyIdentitySource.JAR_MANIFEST -> {
+                DependencyIdentitySource.JAR_MANIFEST
+            }
+
+            ProtoDependencyIdentitySource.FILENAME -> {
+                DependencyIdentitySource.FILENAME
+            }
+
+            ProtoDependencyIdentitySource.DEPENDENCY_IDENTITY_SOURCE_UNSPECIFIED, ProtoDependencyIdentitySource.UNRECOGNIZED -> {
+                throw IllegalArgumentException("unrecognized dependency identity source on the wire: $source")
+            }
+        }
+
+    private fun toProto(source: DependencyDiscoverySource): ProtoDependencyDiscoverySource =
+        when (source) {
+            DependencyDiscoverySource.STARTUP_CLASSPATH -> ProtoDependencyDiscoverySource.STARTUP_CLASSPATH
+            DependencyDiscoverySource.LOAD -> ProtoDependencyDiscoverySource.LOAD
+        }
+
+    private fun fromProto(source: ProtoDependencyDiscoverySource): DependencyDiscoverySource =
+        when (source) {
+            ProtoDependencyDiscoverySource.STARTUP_CLASSPATH -> {
+                DependencyDiscoverySource.STARTUP_CLASSPATH
+            }
+
+            ProtoDependencyDiscoverySource.LOAD -> {
+                DependencyDiscoverySource.LOAD
+            }
+
+            ProtoDependencyDiscoverySource.DEPENDENCY_DISCOVERY_SOURCE_UNSPECIFIED, ProtoDependencyDiscoverySource.UNRECOGNIZED -> {
+                throw IllegalArgumentException("unrecognized dependency discovery source on the wire: $source")
+            }
+        }
+
+    private fun toProto(delta: DependencyDelta): ProtoDependencyDelta =
+        ProtoDependencyDelta
+            .newBuilder()
+            .setDependencyId(delta.dependencyId)
+            .setFirstLoadedAt(delta.firstLoadedAt)
+            .setLoadedClassesTotal(delta.loadedClassesTotal)
+            .build()
+
+    private fun fromProto(delta: ProtoDependencyDelta): DependencyDelta =
+        DependencyDelta(
+            dependencyId = delta.dependencyId,
+            firstLoadedAt = delta.firstLoadedAt,
+            loadedClassesTotal = delta.loadedClassesTotal,
+        )
+
+    private fun toProto(references: ClassReferences): ProtoClassReferences =
+        ProtoClassReferences
+            .newBuilder()
+            .setClassId(references.classId)
+            .addAllReferencedClasses(references.referencedClasses)
+            .build()
+
+    private fun fromProto(references: ProtoClassReferences): ClassReferences =
+        ClassReferences(
+            classId = references.classId,
+            referencedClasses = references.referencedClassesList,
+        )
+
+    private fun toProto(externalClass: ExternalClass): ProtoExternalClass {
+        val builder =
+            ProtoExternalClass
+                .newBuilder()
+                .setClassName(externalClass.className)
+                .setAbsent(externalClass.absent)
+        externalClass.dependencyId?.let { builder.dependencyId = it }
+        return builder.build()
+    }
+
+    private fun fromProto(externalClass: ProtoExternalClass): ExternalClass =
+        ExternalClass(
+            className = externalClass.className,
+            dependencyId = if (externalClass.hasDependencyId()) externalClass.dependencyId else null,
+            absent = externalClass.absent,
         )
 }

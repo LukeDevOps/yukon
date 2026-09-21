@@ -57,12 +57,16 @@ data class ProbeDelta(
  * flush. A collector uses it to tell an instance that ended cleanly from one that went silent,
  * and may report how many instances stopped without one, since up to one flush interval of their
  * hits may be missing. See ADR 0010.
+ *
+ * [dependencyDeltas] carries one entry per dependency whose loaded-class total changed since the
+ * last successfully delivered batch. See [DependencyDelta].
  */
 data class DeltaBatch(
     val resource: ResourceAttributes,
     val deltas: List<ProbeDelta>,
     val endpointDeltas: List<EndpointDelta> = emptyList(),
     val finalFlush: Boolean = false,
+    val dependencyDeltas: List<DependencyDelta> = emptyList(),
 )
 
 /**
@@ -95,6 +99,12 @@ data class DeltaBatch(
  *
  * [generatedBy] is set for a [ProbeKind.METHOD] probe, and for a [ProbeKind.OPTIONAL_ARGUMENT]
  * probe as its target's mark; a branch probe never carries it. See [GeneratedBy] and ADR 0026.
+ *
+ * [referencedClasses] is set only for a [ProbeKind.METHOD] probe: the out-of-scope classes this
+ * method's own bytecode references, dotted. A reference is wider than a call edge, since
+ * annotations, casts, descriptor types, catch types and class literals all count. Every name listed
+ * has an [ExternalClass] entry on the same instance; classes the bootstrap or platform loader
+ * provides, and the adopter's own out-of-scope classes, are never listed. See ADR 0030.
  */
 data class ProbeLocation(
     val classId: Int,
@@ -113,6 +123,7 @@ data class ProbeLocation(
     val calls: List<CallEdge> = emptyList(),
     val inlinedFromClassName: String? = null,
     val generatedBy: GeneratedBy = GeneratedBy.NONE,
+    val referencedClasses: List<String> = emptyList(),
 )
 
 /**
@@ -174,6 +185,9 @@ data class ClassSupertypes(
  * instances of the same (service, version). A collector correlating manifests or delta batches
  * across instances needs an instance to key on to avoid attributing one instance's probe
  * metadata, or hit count, to the wrong class from another instance.
+ *
+ * [dependencies], [classReferences] and [externalClasses] are delivered incrementally like the
+ * rest of this payload, each entry sent once per instance. See ADR 0030.
  */
 data class ProbeManifest(
     val serviceName: String,
@@ -185,6 +199,9 @@ data class ProbeManifest(
     val disabledEndpointModules: List<DisabledEndpointModule> = emptyList(),
     val classSupertypes: List<ClassSupertypes> = emptyList(),
     val unreportedClasses: List<UnreportedClass> = emptyList(),
+    val dependencies: List<DependencyLocation> = emptyList(),
+    val classReferences: List<ClassReferences> = emptyList(),
+    val externalClasses: List<ExternalClass> = emptyList(),
 )
 
 /**
@@ -198,6 +215,8 @@ data class ProbeManifest(
  *
  * [generatedBy] is read from the same bytecode shape [ProbeLocation.generatedBy] uses; see
  * [GeneratedBy] and ADR 0026. Always [GeneratedBy.NONE] for the class's own `<clinit>` entry.
+ *
+ * [referencedClasses] follows the same rule as [ProbeLocation.referencedClasses]. See ADR 0030.
  */
 data class DeclaredMethod(
     val methodName: String,
@@ -205,6 +224,7 @@ data class DeclaredMethod(
     val inline: Boolean = false,
     val calls: List<CallEdge> = emptyList(),
     val generatedBy: GeneratedBy = GeneratedBy.NONE,
+    val referencedClasses: List<String> = emptyList(),
 )
 
 /**
@@ -212,12 +232,17 @@ data class DeclaredMethod(
  * loaded class. Both are null and empty, respectively, only when the class's bytes could not be
  * read to analyse them; a class read successfully always has a superclass, since
  * `java.lang.Object` itself is never instrumented. See ADR 0024.
+ *
+ * [referencedClasses] holds class-level references only: annotations on the class, its
+ * supertypes, its field types, and anything else outside a method body. Method-level references
+ * travel on [DeclaredMethod.referencedClasses]. See ADR 0030.
  */
 data class DeclaredClass(
     val className: String,
     val methods: List<DeclaredMethod>,
     val superClassName: String? = null,
     val interfaceNames: List<String> = emptyList(),
+    val referencedClasses: List<String> = emptyList(),
 )
 
 /**
@@ -257,6 +282,10 @@ data class UnprobedClass(
  * One scan may be delivered as several of these. Every chunk of the same scan carries the same
  * [resource] and [scannedAt]; [chunkIndex] (0-based) and [chunkCount] say which part this is and
  * how many to expect. A collector should only diff a scan once it holds every chunk.
+ *
+ * [externalClasses] maps referenced class names to their dependency, or to absent. Each name is
+ * sent once per instance, in this payload or the manifest, so a chunk need not carry an entry for
+ * every name it references. See [ExternalClass].
  */
 data class StaticBaseline(
     val resource: ResourceAttributes,
@@ -267,6 +296,7 @@ data class StaticBaseline(
     val scannedAt: Long,
     val chunkIndex: Int = 0,
     val chunkCount: Int = 1,
+    val externalClasses: List<ExternalClass> = emptyList(),
 )
 
 /** How the agent learned of an endpoint. See CONTEXT.md, "Discovery source". */
@@ -313,3 +343,104 @@ data class DisabledEndpointModule(
     val reason: String,
     val disabledAt: Long,
 )
+
+/** How the agent learned of a dependency. */
+enum class DependencyDiscoverySource {
+    /** Listed from the startup classpath in `premain`: `java.class.path`, or a fat jar's classpath index. */
+    STARTUP_CLASSPATH,
+
+    /**
+     * Seen only when a class from it loaded, such as a jar in a WAR's `WEB-INF/lib` that the app
+     * server opened after `premain`. A dependency found this way can never read as unloaded, since
+     * a class from it has loaded.
+     */
+    LOAD,
+}
+
+/** Where a dependency's identity was read from, most to least reliable. */
+enum class DependencyIdentitySource {
+    /** `META-INF/maven/<group>/<artifact>/pom.properties` inside the jar. */
+    POM_PROPERTIES,
+
+    /** `Implementation-Title` and `Implementation-Version` from the jar manifest; no group. */
+    JAR_MANIFEST,
+
+    /** The jar's filename with its version suffix stripped; no group. */
+    FILENAME,
+}
+
+/**
+ * One library a dependency carries. [groupId] is null when the identity source carries none, and
+ * [version] is null when unknown. The version is an attribute beside the identity, not part of it.
+ */
+data class DependencyIdentity(
+    val groupId: String?,
+    val artifactId: String,
+    val version: String?,
+)
+
+/**
+ * One dependency this instance has seen: a jar that is not the adopter's own code.
+ *
+ * [dependencyId] is per instance, like `classId` and `endpointId`. Cross-instance identity is the
+ * sorted set of `groupId:artifactId` pairs in [identities] (for an ordinary jar, the one pair),
+ * never [dependencyId]; version is an attribute, not identity. A shaded jar that bundles several
+ * libraries carries one identity per library, since it cannot be half-removed. See ADR 0030.
+ *
+ * Sent once, delivered incrementally like classes: a dependency discovered by load arrives on the
+ * flush after it was first seen. [location] is for display only. [classCount] is the jar's total
+ * class count, when the listing knows it.
+ */
+data class DependencyLocation(
+    val dependencyId: Int,
+    val identities: List<DependencyIdentity>,
+    val identitySource: DependencyIdentitySource,
+    val location: String,
+    val discoverySource: DependencyDiscoverySource,
+    val classCount: Int? = null,
+) {
+    init {
+        require(identities.isNotEmpty()) { "dependency $dependencyId at $location has no identities" }
+    }
+}
+
+/**
+ * [loadedClassesTotal] counts distinct class names ever seen loaded from the dependency. It is
+ * cumulative from process start and merged with max(), like [ProbeDelta.hitsTotal].
+ * [firstLoadedAt] has the same "first observed by a flush" precision as [ProbeDelta.firstSeenAt].
+ */
+data class DependencyDelta(
+    val dependencyId: Int,
+    val firstLoadedAt: Long,
+    val loadedClassesTotal: Long,
+)
+
+/**
+ * A loaded class's own references outside any method body: annotations on the class, its
+ * supertypes, its field types, and anything else not held by a method. The same listing rule as
+ * [ProbeLocation.referencedClasses] applies.
+ */
+data class ClassReferences(
+    val classId: Int,
+    val referencedClasses: List<String>,
+)
+
+/**
+ * Where one referenced class name lives, sent once per class name per instance. [dependencyId]
+ * refers to that instance's [DependencyLocation] records, whichever payload carries the mapping.
+ *
+ * Exactly one of two things holds: the class maps to a dependency, so [dependencyId] is set, or no
+ * loader could find it, so [absent] is true. A class with both would claim a dependency for a
+ * class that is not there, and one with neither would be a reference that leads nowhere.
+ */
+data class ExternalClass(
+    val className: String,
+    val dependencyId: Int?,
+    val absent: Boolean = false,
+) {
+    init {
+        require((dependencyId == null) == absent) {
+            "external class $className must be either mapped to a dependency or absent, not both or neither"
+        }
+    }
+}

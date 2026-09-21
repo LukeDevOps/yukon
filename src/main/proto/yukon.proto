@@ -68,6 +68,9 @@ message DeltaBatch {
   // stopped without one, since up to one flush interval of their hits may be missing. Never set
   // on a scheduled flush.
   bool final_flush = 4;
+  // One entry per dependency whose loaded_classes_total changed since the last successfully
+  // delivered batch. See DependencyDelta.
+  repeated DependencyDelta dependency_deltas = 5;
 }
 
 message ProbeLocation {
@@ -116,6 +119,12 @@ message ProbeLocation {
   // class's copy) the way it abstains on an inline one. GENERATED_BY_NONE (the default) for an
   // ordinary method the adopter wrote. A BRANCH probe never carries this; see GeneratedBy.
   GeneratedBy generated_by = 16;
+  // Set only for a METHOD probe: the out-of-scope classes this method's own bytecode references,
+  // dotted. A reference is wider than a call edge: annotations, casts and type tests, types in a
+  // descriptor, catch types and class literals all count; see CONTEXT.md, "Reference". Every name
+  // listed has an ExternalClass entry on the same instance. Classes the bootstrap or platform
+  // loader provides, and the adopter's own out-of-scope classes, are never listed. See ADR 0030.
+  repeated string referenced_classes = 17;
 }
 
 // One caller method's static reference to one callee method, read from the caller's bytecode at
@@ -198,6 +207,15 @@ message ProbeManifest {
   // Found by the sweep, not by a transform. Delivered incrementally like the
   // rest of this message. See ADR 0027.
   repeated UnreportedClass unreported_classes = 9;
+  // The dependencies this instance has seen, each sent once and delivered incrementally like
+  // classes. See DependencyLocation.
+  repeated DependencyLocation dependencies = 10;
+  // Class-level references for a loaded class, sent once alongside its probes. See
+  // ClassReferences.
+  repeated ClassReferences class_references = 11;
+  // The mapping from each referenced class name to its dependency, or to absent. See
+  // ExternalClass.
+  repeated ExternalClass external_classes = 12;
 }
 
 // No line field, unlike ProbeLocation. A method's first source line is
@@ -219,6 +237,9 @@ message DeclaredMethod {
   // Read from the same class shape the METHOD probe rule uses; see ProbeLocation.generated_by
   // and GeneratedBy. GENERATED_BY_NONE for the class's own <clinit> entry.
   GeneratedBy generated_by = 5;
+  // The out-of-scope classes this method's own bytecode references, the same rule
+  // ProbeLocation.referenced_classes uses. See ADR 0030.
+  repeated string referenced_classes = 6;
 }
 
 message DeclaredClass {
@@ -232,6 +253,11 @@ message DeclaredClass {
   // See ADR 0024.
   string super_class_name = 3;
   repeated string interface_names = 4;
+  // The out-of-scope classes this class references outside any method body: annotations on the
+  // class, its supertypes, its field types, and anything else not held by a method. Method-level
+  // references travel on DeclaredMethod.referenced_classes. The same listing rule as
+  // ProbeLocation.referenced_classes applies. See ADR 0030.
+  repeated string referenced_classes = 5;
 }
 
 // A class the static scanner found on the classpath but judged unsafe to
@@ -284,6 +310,10 @@ message StaticBaseline {
   repeated UnprobedClass unprobed_classes = 6;
   int32 chunk_index = 7;
   int32 chunk_count = 8;
+  // Maps class names the declared classes' referenced_classes list to their dependency, or to
+  // absent. Each name is sent once per instance, in this payload or the manifest, so a chunk need
+  // not carry an entry for every name it references. See ExternalClass.
+  repeated ExternalClass external_classes = 9;
 }
 
 // How the agent learned of an endpoint.
@@ -338,4 +368,86 @@ message DisabledEndpointModule {
   string module = 1;
   string reason = 2;
   int64 disabled_at = 3;
+}
+
+// How the agent learned of a dependency.
+enum DependencyDiscoverySource {
+  DEPENDENCY_DISCOVERY_SOURCE_UNSPECIFIED = 0;
+  // Listed from the startup classpath in premain: java.class.path, or a fat jar's classpath index.
+  STARTUP_CLASSPATH = 1;
+  // Seen only when a class from it loaded, such as a jar in a WAR's WEB-INF/lib that the app
+  // server opened after premain. A dependency found this way can never read as unloaded, since a
+  // class from it has loaded.
+  LOAD = 2;
+}
+
+// Where a dependency's identity was read from, most to least reliable.
+enum DependencyIdentitySource {
+  DEPENDENCY_IDENTITY_SOURCE_UNSPECIFIED = 0;
+  // META-INF/maven/<group>/<artifact>/pom.properties inside the jar.
+  POM_PROPERTIES = 1;
+  // Implementation-Title and Implementation-Version from the jar manifest. group_id is empty.
+  JAR_MANIFEST = 2;
+  // The jar's filename with its version suffix stripped. group_id is empty.
+  FILENAME = 3;
+}
+
+// One library a dependency carries. The version is an attribute beside the identity, not part of
+// it.
+message DependencyIdentity {
+  // Empty when the identity source carries no group.
+  string group_id = 1;
+  string artifact_id = 2;
+  // Empty when unknown.
+  string version = 3;
+}
+
+// One dependency this instance has seen: a jar that is not the adopter's own code.
+//
+// dependency_id is per instance, like class_id and endpoint_id. A dependency's cross-instance
+// identity is the sorted set of group_id:artifact_id pairs in identities (for an ordinary jar, the
+// one pair), never dependency_id. Version is an attribute, not identity. See ADR 0030.
+//
+// Send-once, delivered incrementally like classes: a dependency discovered by load arrives on the
+// flush after it was first seen.
+message DependencyLocation {
+  int32 dependency_id = 1;
+  // At least one. A shaded jar that bundles several libraries carries one per library, since it
+  // cannot be half-removed.
+  repeated DependencyIdentity identities = 2;
+  DependencyIdentitySource identity_source = 3;
+  // For display only, such as the jar path or BOOT-INF/lib/x.jar.
+  string location = 4;
+  DependencyDiscoverySource discovery_source = 5;
+  // Total classes in the jar, set when the listing knows it.
+  optional int32 class_count = 6;
+}
+
+// loaded_classes_total counts distinct class names ever seen loaded from the dependency. It is
+// cumulative from process start and merged with max(), like ProbeDelta.hits_total. first_loaded_at
+// has the same "first observed by a flush" precision as ProbeDelta.first_seen_at.
+message DependencyDelta {
+  int32 dependency_id = 1;
+  int64 first_loaded_at = 2;
+  int64 loaded_classes_total = 3;
+}
+
+// A loaded class's own references outside any method body: annotations on the class, its
+// supertypes, its field types, and anything else not held by a method. The same listing rule as
+// ProbeLocation.referenced_classes applies, and every name listed has an ExternalClass entry on the
+// same instance.
+message ClassReferences {
+  int32 class_id = 1;
+  repeated string referenced_classes = 2;
+}
+
+// Where one referenced class name lives. Send-once per class name per instance. dependency_id
+// refers to that instance's DependencyLocation records, whichever payload, manifest or baseline,
+// carries the mapping.
+message ExternalClass {
+  string class_name = 1;
+  // Set exactly when absent is false.
+  optional int32 dependency_id = 2;
+  // No loader could find the class, such as code guarded by a check for an optional library.
+  bool absent = 3;
 }

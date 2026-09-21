@@ -20,12 +20,20 @@ Two things fall out of it when it happens. The poms need licence metadata,
 which nothing generates today. And a published testkit fixes its own API, so
 the query surface is worth a look before it is frozen rather than after.
 
-### Dependency usage: designed, not started
+### Dependency usage: in progress
 
 Grilled and settled on 2026-09-21; ADR 0030 holds the decision and
 `CONTEXT.md` the terms (dependency, reference, absent reference, live
-reference, and the unloaded, unreferenced and unreached statuses). Nothing is
-built. Landing order, one Sonnet chunk and one commit each:
+reference, and the unloaded, unreferenced and unreached statuses). Chunk 0
+(wire and codec) has landed. Two wire choices the grill left open were
+settled in it: a dependency's cross-instance identity is the sorted set of
+its `group:artifact` pairs (one pair for an ordinary jar), and
+`DependencyLocation.identity_source` says whether that came from
+`pom.properties`, the jar manifest or the filename. The proto documents
+`DeltaBatch.dependency_deltas` as one entry per dependency whose
+`loaded_classes_total` changed since the last delivered batch, the probe-delta
+rule; chunk 2 must send them that way. Landing order, one chunk and one commit
+each:
 
 0. Wire and codec: `DependencyLocation`, `DependencyDelta`,
    `referenced_classes`, `ClassReferences`, `ExternalClass`.

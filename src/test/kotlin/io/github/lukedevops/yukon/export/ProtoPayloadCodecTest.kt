@@ -6,12 +6,18 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import io.github.lukedevops.yukon.proto.DeltaBatch as ProtoDeltaBatch
+import io.github.lukedevops.yukon.proto.DependencyDiscoverySource as ProtoDependencyDiscoverySource
+import io.github.lukedevops.yukon.proto.DependencyIdentity as ProtoDependencyIdentity
+import io.github.lukedevops.yukon.proto.DependencyIdentitySource as ProtoDependencyIdentitySource
+import io.github.lukedevops.yukon.proto.DependencyLocation as ProtoDependencyLocation
 import io.github.lukedevops.yukon.proto.EndpointDiscoverySource as ProtoEndpointDiscoverySource
 import io.github.lukedevops.yukon.proto.EndpointLocation as ProtoEndpointLocation
+import io.github.lukedevops.yukon.proto.ExternalClass as ProtoExternalClass
 import io.github.lukedevops.yukon.proto.ProbeDelta as ProtoProbeDelta
 import io.github.lukedevops.yukon.proto.ProbeKind as ProtoProbeKind
 import io.github.lukedevops.yukon.proto.ProbeLocation as ProtoProbeLocation
 import io.github.lukedevops.yukon.proto.ProbeManifest as ProtoProbeManifest
+import io.github.lukedevops.yukon.proto.StaticBaseline as ProtoStaticBaseline
 
 class ProtoPayloadCodecTest {
     @Test
@@ -1094,5 +1100,408 @@ class ProtoPayloadCodecTest {
                 .build()
                 .toByteArray()
         assertFailsWith<IllegalArgumentException> { ProtoPayloadCodec.decodeProbeManifest(discoverySource) }
+    }
+
+    @Test
+    fun `a delta batch's dependency deltas round-trip through the wire, both ways`() {
+        val batch =
+            DeltaBatch(
+                resource = ResourceAttributes("checkout", "1.0.0", "instance-1", "prod"),
+                deltas = emptyList(),
+                dependencyDeltas =
+                    listOf(
+                        DependencyDelta(dependencyId = 0, firstLoadedAt = 1000L, loadedClassesTotal = 12L),
+                        DependencyDelta(dependencyId = 3, firstLoadedAt = 2000L, loadedClassesTotal = 1L),
+                    ),
+            )
+
+        val bytes = ProtoPayloadCodec.encode(batch)
+        val wire = ProtoDeltaBatch.parseFrom(bytes)
+
+        assertEquals(2, wire.dependencyDeltasList.size)
+        assertEquals(0, wire.dependencyDeltasList[0].dependencyId)
+        assertEquals(1000L, wire.dependencyDeltasList[0].firstLoadedAt)
+        assertEquals(12L, wire.dependencyDeltasList[0].loadedClassesTotal)
+        assertEquals(3, wire.dependencyDeltasList[1].dependencyId)
+        assertEquals(batch, ProtoPayloadCodec.decodeDeltaBatch(bytes))
+    }
+
+    @Test
+    fun `a delta batch with no dependency deltas decodes to an empty list, matching an old payload`() {
+        val batch =
+            DeltaBatch(
+                resource = ResourceAttributes("checkout", "1.0.0", "instance-1", "prod"),
+                deltas = emptyList(),
+            )
+
+        val decoded = ProtoPayloadCodec.decodeDeltaBatch(ProtoPayloadCodec.encode(batch))
+
+        assertTrue(decoded.dependencyDeltas.isEmpty())
+        assertEquals(batch, decoded)
+    }
+
+    @Test
+    fun `a manifest's dependencies round-trip through the wire, with empty group and version as null`() {
+        val ordinary =
+            DependencyLocation(
+                dependencyId = 0,
+                identities = listOf(DependencyIdentity("com.squareup.okhttp3", "okhttp", "4.12.0")),
+                identitySource = DependencyIdentitySource.POM_PROPERTIES,
+                location = "/app/lib/okhttp-4.12.0.jar",
+                discoverySource = DependencyDiscoverySource.STARTUP_CLASSPATH,
+                classCount = 420,
+            )
+        val shaded =
+            DependencyLocation(
+                dependencyId = 1,
+                identities =
+                    listOf(
+                        DependencyIdentity("com.example", "bundle", "2.0"),
+                        DependencyIdentity("com.google.guava", "guava", "33.0.0-jre"),
+                    ),
+                identitySource = DependencyIdentitySource.POM_PROPERTIES,
+                location = "BOOT-INF/lib/bundle-2.0.jar",
+                discoverySource = DependencyDiscoverySource.STARTUP_CLASSPATH,
+                classCount = 9000,
+            )
+        val filenameOnly =
+            DependencyLocation(
+                dependencyId = 2,
+                identities = listOf(DependencyIdentity(groupId = null, artifactId = "legacy-utils", version = null)),
+                identitySource = DependencyIdentitySource.FILENAME,
+                location = "WEB-INF/lib/legacy-utils.jar",
+                discoverySource = DependencyDiscoverySource.LOAD,
+            )
+        val manifest =
+            ProbeManifest(
+                serviceName = "checkout",
+                serviceVersion = "1.0.0",
+                probes = emptyList(),
+                serviceInstanceId = "instance-1",
+                dependencies = listOf(ordinary, shaded, filenameOnly),
+            )
+
+        val bytes = ProtoPayloadCodec.encode(manifest)
+        val wire = ProtoProbeManifest.parseFrom(bytes)
+
+        assertEquals(3, wire.dependenciesList.size)
+        assertEquals(ProtoDependencyIdentitySource.POM_PROPERTIES, wire.dependenciesList[0].identitySource)
+        assertEquals(ProtoDependencyDiscoverySource.STARTUP_CLASSPATH, wire.dependenciesList[0].discoverySource)
+        assertTrue(wire.dependenciesList[0].hasClassCount())
+        assertEquals(420, wire.dependenciesList[0].classCount)
+        assertEquals(0, wire.dependenciesList[0].dependencyId)
+        assertEquals("/app/lib/okhttp-4.12.0.jar", wire.dependenciesList[0].location)
+        val wireOrdinaryIdentity = wire.dependenciesList[0].identitiesList.single()
+        assertEquals("com.squareup.okhttp3", wireOrdinaryIdentity.groupId)
+        assertEquals("okhttp", wireOrdinaryIdentity.artifactId)
+        assertEquals("4.12.0", wireOrdinaryIdentity.version)
+        assertEquals(2, wire.dependenciesList[1].identitiesCount)
+        val wireFilenameOnly = wire.dependenciesList[2]
+        assertEquals(ProtoDependencyIdentitySource.FILENAME, wireFilenameOnly.identitySource)
+        assertEquals(ProtoDependencyDiscoverySource.LOAD, wireFilenameOnly.discoverySource)
+        assertFalse(wireFilenameOnly.hasClassCount())
+        assertEquals("", wireFilenameOnly.identitiesList.single().groupId)
+        assertEquals("legacy-utils", wireFilenameOnly.identitiesList.single().artifactId)
+        assertEquals("", wireFilenameOnly.identitiesList.single().version)
+        assertEquals(manifest, ProtoPayloadCodec.decodeProbeManifest(bytes))
+    }
+
+    @Test
+    fun `a class count of zero is present on the wire and decodes as zero, not null`() {
+        val manifest =
+            ProbeManifest(
+                serviceName = "checkout",
+                serviceVersion = "1.0.0",
+                probes = emptyList(),
+                serviceInstanceId = "instance-1",
+                dependencies =
+                    listOf(
+                        DependencyLocation(
+                            dependencyId = 0,
+                            identities = listOf(DependencyIdentity("org.webjars", "bootstrap", "5.3.3")),
+                            identitySource = DependencyIdentitySource.POM_PROPERTIES,
+                            location = "/app/lib/bootstrap-5.3.3.jar",
+                            discoverySource = DependencyDiscoverySource.STARTUP_CLASSPATH,
+                            classCount = 0,
+                        ),
+                    ),
+            )
+
+        val bytes = ProtoPayloadCodec.encode(manifest)
+
+        assertTrue(
+            ProtoProbeManifest
+                .parseFrom(bytes)
+                .dependenciesList
+                .single()
+                .hasClassCount(),
+        )
+        assertEquals(
+            0,
+            ProtoPayloadCodec
+                .decodeProbeManifest(bytes)
+                .dependencies
+                .single()
+                .classCount,
+        )
+    }
+
+    @Test
+    fun `a manifest's class references, external classes and a METHOD probe's referenced classes round-trip`() {
+        val manifest =
+            ProbeManifest(
+                serviceName = "checkout",
+                serviceVersion = "1.0.0",
+                probes =
+                    listOf(
+                        ProbeLocation(
+                            classId = 0,
+                            probeIndex = 0,
+                            kind = ProbeKind.METHOD,
+                            className = "com.example.Checkout",
+                            methodName = "pay",
+                            methodDescriptor = "()V",
+                            line = 10,
+                            branchIndex = null,
+                            referencedClasses = listOf("okhttp3.OkHttpClient", "com.optional.Missing"),
+                        ),
+                    ),
+                serviceInstanceId = "instance-1",
+                classReferences =
+                    listOf(ClassReferences(classId = 0, referencedClasses = listOf("org.springframework.stereotype.Service"))),
+                externalClasses =
+                    listOf(
+                        ExternalClass("okhttp3.OkHttpClient", dependencyId = 0),
+                        ExternalClass("org.springframework.stereotype.Service", dependencyId = 1),
+                        ExternalClass("com.optional.Missing", dependencyId = null, absent = true),
+                    ),
+            )
+
+        val bytes = ProtoPayloadCodec.encode(manifest)
+        val wire = ProtoProbeManifest.parseFrom(bytes)
+
+        assertEquals(listOf("okhttp3.OkHttpClient", "com.optional.Missing"), wire.probesList.single().referencedClassesList)
+        assertEquals(0, wire.classReferencesList.single().classId)
+        assertEquals(listOf("org.springframework.stereotype.Service"), wire.classReferencesList.single().referencedClassesList)
+        assertEquals(3, wire.externalClassesList.size)
+        assertEquals("okhttp3.OkHttpClient", wire.externalClassesList[0].className)
+        assertTrue(wire.externalClassesList[0].hasDependencyId())
+        assertEquals(0, wire.externalClassesList[0].dependencyId)
+        assertEquals(1, wire.externalClassesList[1].dependencyId)
+        assertFalse(wire.externalClassesList[0].absent)
+        assertFalse(wire.externalClassesList[2].hasDependencyId())
+        assertTrue(wire.externalClassesList[2].absent)
+        assertEquals(manifest, ProtoPayloadCodec.decodeProbeManifest(bytes))
+    }
+
+    @Test
+    fun `a declared method's and class's referenced classes and a baseline's external classes round-trip`() {
+        val baseline =
+            StaticBaseline(
+                resource = ResourceAttributes("checkout", "1.0.0", "instance-1", "prod"),
+                declaredClasses =
+                    listOf(
+                        DeclaredClass(
+                            className = "com.example.Foo",
+                            methods =
+                                listOf(
+                                    DeclaredMethod(
+                                        methodName = "bar",
+                                        methodDescriptor = "()V",
+                                        referencedClasses = listOf("okhttp3.Request"),
+                                    ),
+                                ),
+                            superClassName = "java.lang.Object",
+                            referencedClasses = listOf("jakarta.inject.Singleton"),
+                        ),
+                    ),
+                scannedAt = 1000L,
+                externalClasses =
+                    listOf(
+                        ExternalClass("okhttp3.Request", dependencyId = 0),
+                        ExternalClass("jakarta.inject.Singleton", dependencyId = null, absent = true),
+                    ),
+            )
+
+        val bytes = ProtoPayloadCodec.encode(baseline)
+        val wire = ProtoStaticBaseline.parseFrom(bytes)
+        val decoded = ProtoPayloadCodec.decodeStaticBaseline(bytes)
+
+        val wireClass = wire.declaredClassesList.single()
+        assertEquals(listOf("jakarta.inject.Singleton"), wireClass.referencedClassesList)
+        assertEquals(listOf("okhttp3.Request"), wireClass.methodsList.single().referencedClassesList)
+        assertEquals(listOf("okhttp3.Request", "jakarta.inject.Singleton"), wire.externalClassesList.map { it.className })
+        assertEquals(0, wire.externalClassesList[0].dependencyId)
+        assertTrue(wire.externalClassesList[1].absent)
+        assertEquals(baseline, decoded)
+        assertEquals(
+            listOf("okhttp3.Request"),
+            decoded.declaredClasses
+                .single()
+                .methods
+                .single()
+                .referencedClasses,
+        )
+        assertEquals(listOf("jakarta.inject.Singleton"), decoded.declaredClasses.single().referencedClasses)
+        assertEquals(2, decoded.externalClasses.size)
+    }
+
+    @Test
+    fun `a manifest and a baseline with no dependency fields decode to empty lists, matching an old payload`() {
+        val manifest =
+            ProbeManifest(
+                serviceName = "checkout",
+                serviceVersion = null,
+                probes =
+                    listOf(
+                        ProbeLocation(
+                            classId = 0,
+                            probeIndex = 0,
+                            kind = ProbeKind.METHOD,
+                            className = "com.example.Checkout",
+                            methodName = "pay",
+                            methodDescriptor = "()V",
+                            line = 10,
+                            branchIndex = null,
+                        ),
+                    ),
+            )
+        val baseline =
+            StaticBaseline(
+                resource = ResourceAttributes("checkout", null, "instance-1", null),
+                declaredClasses =
+                    listOf(DeclaredClass("com.example.Foo", listOf(DeclaredMethod("bar", "()V")), superClassName = "java.lang.Object")),
+                scannedAt = 1000L,
+            )
+
+        val decodedManifest = ProtoPayloadCodec.decodeProbeManifest(ProtoPayloadCodec.encode(manifest))
+        val decodedBaseline = ProtoPayloadCodec.decodeStaticBaseline(ProtoPayloadCodec.encode(baseline))
+
+        assertTrue(decodedManifest.dependencies.isEmpty())
+        assertTrue(decodedManifest.classReferences.isEmpty())
+        assertTrue(decodedManifest.externalClasses.isEmpty())
+        assertTrue(
+            decodedManifest.probes
+                .single()
+                .referencedClasses
+                .isEmpty(),
+        )
+        assertEquals(manifest, decodedManifest)
+        assertTrue(decodedBaseline.externalClasses.isEmpty())
+        assertTrue(
+            decodedBaseline.declaredClasses
+                .single()
+                .referencedClasses
+                .isEmpty(),
+        )
+        assertTrue(
+            decodedBaseline.declaredClasses
+                .single()
+                .methods
+                .single()
+                .referencedClasses
+                .isEmpty(),
+        )
+        assertEquals(baseline, decodedBaseline)
+    }
+
+    @Test
+    fun `a dependency with an unspecified or unknown identity or discovery source fails to decode`() {
+        fun manifestWith(dependency: ProtoDependencyLocation.Builder): ByteArray =
+            ProtoProbeManifest
+                .newBuilder()
+                .addDependencies(dependency)
+                .build()
+                .toByteArray()
+
+        fun validDependency(): ProtoDependencyLocation.Builder =
+            ProtoDependencyLocation
+                .newBuilder()
+                .setDependencyId(0)
+                .addIdentities(ProtoDependencyIdentity.newBuilder().setArtifactId("okhttp"))
+                .setIdentitySource(ProtoDependencyIdentitySource.POM_PROPERTIES)
+                .setLocation("okhttp.jar")
+                .setDiscoverySource(ProtoDependencyDiscoverySource.STARTUP_CLASSPATH)
+
+        ProtoPayloadCodec.decodeProbeManifest(manifestWith(validDependency()))
+
+        val invalid =
+            listOf(
+                validDependency().setIdentitySource(ProtoDependencyIdentitySource.DEPENDENCY_IDENTITY_SOURCE_UNSPECIFIED),
+                validDependency().setIdentitySourceValue(99),
+                validDependency().setDiscoverySource(ProtoDependencyDiscoverySource.DEPENDENCY_DISCOVERY_SOURCE_UNSPECIFIED),
+                validDependency().setDiscoverySourceValue(99),
+            )
+        for (dependency in invalid) {
+            assertFailsWith<IllegalArgumentException> { ProtoPayloadCodec.decodeProbeManifest(manifestWith(dependency)) }
+        }
+    }
+
+    @Test
+    fun `a dependency with no identities fails to decode`() {
+        val manifest =
+            ProtoProbeManifest
+                .newBuilder()
+                .addDependencies(
+                    ProtoDependencyLocation
+                        .newBuilder()
+                        .setDependencyId(0)
+                        .setIdentitySource(ProtoDependencyIdentitySource.FILENAME)
+                        .setLocation("mystery.jar")
+                        .setDiscoverySource(ProtoDependencyDiscoverySource.LOAD),
+                ).build()
+                .toByteArray()
+
+        assertFailsWith<IllegalArgumentException> { ProtoPayloadCodec.decodeProbeManifest(manifest) }
+    }
+
+    @Test
+    fun `an external class that is both mapped and absent, or neither, fails to decode and names the class`() {
+        val both =
+            ProtoExternalClass
+                .newBuilder()
+                .setClassName("com.example.Both")
+                .setDependencyId(0)
+                .setAbsent(true)
+        val neither = ProtoExternalClass.newBuilder().setClassName("com.example.Neither")
+
+        for (externalClass in listOf(both, neither)) {
+            val manifest =
+                ProtoProbeManifest
+                    .newBuilder()
+                    .addExternalClasses(externalClass)
+                    .build()
+                    .toByteArray()
+            val baseline =
+                ProtoStaticBaseline
+                    .newBuilder()
+                    .addExternalClasses(externalClass)
+                    .build()
+                    .toByteArray()
+
+            val manifestError = assertFailsWith<IllegalArgumentException> { ProtoPayloadCodec.decodeProbeManifest(manifest) }
+            val baselineError = assertFailsWith<IllegalArgumentException> { ProtoPayloadCodec.decodeStaticBaseline(baseline) }
+            assertTrue(manifestError.message!!.contains(externalClass.className), manifestError.message)
+            assertTrue(baselineError.message!!.contains(externalClass.className), baselineError.message)
+        }
+    }
+
+    @Test
+    fun `an external class must be exactly one of mapped to a dependency or absent`() {
+        assertFailsWith<IllegalArgumentException> { ExternalClass("x", 1, absent = true) }
+        assertFailsWith<IllegalArgumentException> { ExternalClass("x", null) }
+    }
+
+    @Test
+    fun `a dependency location must carry at least one identity`() {
+        assertFailsWith<IllegalArgumentException> {
+            DependencyLocation(
+                dependencyId = 0,
+                identities = emptyList(),
+                identitySource = DependencyIdentitySource.FILENAME,
+                location = "mystery.jar",
+                discoverySource = DependencyDiscoverySource.LOAD,
+            )
+        }
     }
 }
