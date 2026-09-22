@@ -502,6 +502,46 @@ class ProtoPayloadCodecTest {
     }
 
     @Test
+    fun `a probe location's branch key round-trips through the wire, set and unset`() {
+        val manifest =
+            ProbeManifest(
+                serviceName = "checkout",
+                serviceVersion = "1.0.0",
+                probes =
+                    listOf(
+                        ProbeLocation(
+                            classId = 0,
+                            probeIndex = 0,
+                            kind = ProbeKind.BRANCH,
+                            className = "com.example.target.InlinedCopyTargetKt",
+                            methodName = "callTakingTrueBranch",
+                            methodDescriptor = "(I)I",
+                            line = 16,
+                            branchIndex = 0,
+                            branchKey = "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+                        ),
+                        ProbeLocation(
+                            classId = 0,
+                            probeIndex = 1,
+                            kind = ProbeKind.BRANCH,
+                            className = "com.example.target.InlinedCopyTargetKt",
+                            methodName = "callTakingTrueBranch",
+                            methodDescriptor = "(I)I",
+                            line = 16,
+                            branchIndex = 1,
+                            branchKey = null,
+                        ),
+                    ),
+            )
+
+        val decoded = ProtoPayloadCodec.decodeProbeManifest(ProtoPayloadCodec.encode(manifest))
+
+        assertEquals(manifest, decoded)
+        assertEquals("a1b2c3d4e5f60718293a4b5c6d7e8f90", decoded.probes[0].branchKey)
+        assertEquals(null, decoded.probes[1].branchKey)
+    }
+
+    @Test
     fun `encodes and decodes a static baseline with declared classes and methods`() {
         val baseline =
             StaticBaseline(

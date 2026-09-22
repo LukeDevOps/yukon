@@ -293,6 +293,13 @@ Progress:
   branches (ternary, elvis, the earlier `&&` operand) empties the stack
   partway, so its window starts late and an edit before that point keeps
   the key; ADR 0031's consequences say so.
+- Step 3 landed: `BranchKeys` applies the collision rule and derives each
+  kept outcome's key (SHA-256 of a `v1`-tagged text, first 16 bytes as
+  hex), `ProbeMeta` and the manifest carry it, and `ProbeLocation` has
+  `optional string branch_key = 18`. The layout hash is pinned by a test
+  and unchanged. The testkit's `ProbeRef` exposes `branchKey`. `buf` was
+  not available locally; the change is a new field only, and CI runs
+  `buf breaking`.
 
 The server side (service rows for keyed branch outcomes, and revisiting
 `known_for_days` on the keyless ones) is tracked in `yukon-server`'s

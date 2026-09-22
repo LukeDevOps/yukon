@@ -78,6 +78,7 @@ class YukonTestCollector private constructor(
         val inlinedFromClassName: String? = null,
         val generatedBy: GeneratedBy = GeneratedBy.NONE,
         val referencedClasses: List<String> = emptyList(),
+        val branchKey: String? = null,
     )
 
     /** A class's superclass and direct interfaces, resolved to a class name. See ADR 0024. */
@@ -581,6 +582,7 @@ class YukonTestCollector private constructor(
                     inline = probe.inline,
                     inlinedFromClassName = probe.inlinedFromClassName,
                     generatedBy = probe.generatedBy,
+                    branchKey = probe.branchKey,
                 )
             }.sortedWith(compareBy({ it.className }, { it.methodName }, { it.line }, { it.branchIndex ?: -1 }))
 
@@ -1273,6 +1275,7 @@ class YukonTestCollector private constructor(
                     location.inlinedFromClassName,
                     location.generatedBy,
                     location.referencedClasses,
+                    location.branchKey,
                 )
             nameIndex.computeIfAbsent(location.className) { ConcurrentHashMap.newKeySet() }.add(key)
             if (location.kind == ProbeKind.OPTIONAL_ARGUMENT) {
@@ -1470,6 +1473,9 @@ class YukonTestCollector private constructor(
  * See ADR 0024. [inlinedFromClassName] is set only for a [ProbeKind.BRANCH] probe that is a kept
  * inlined copy, dotted; see ADR 0025. [generatedBy] is set when [kind] is [ProbeKind.METHOD],
  * and for an [ProbeKind.OPTIONAL_ARGUMENT] probe as its target's mark; see ADR 0026.
+ * [branchKey] is set only for a [ProbeKind.BRANCH] probe: an opaque lowercase hex token naming
+ * this outcome across builds and instances, null when the agent could not name it safely. See
+ * ADR 0031.
  */
 data class ProbeRef(
     val serviceInstanceId: String,
@@ -1487,6 +1493,7 @@ data class ProbeRef(
     val neverLoaded: Boolean = false,
     val inlinedFromClassName: String? = null,
     val generatedBy: GeneratedBy = GeneratedBy.NONE,
+    val branchKey: String? = null,
 )
 
 /**

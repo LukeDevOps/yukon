@@ -362,6 +362,39 @@ class YukonTestCollectorTest {
     }
 
     @Test
+    fun `neverHit reads a branch probe's branch key from a collected manifest, set or unset`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+        exporter.exportManifest(
+            ProbeManifest(
+                "svc",
+                null,
+                listOf(
+                    ProbeLocation(
+                        1,
+                        0,
+                        ProbeKind.BRANCH,
+                        "com.acme.Foo",
+                        "b",
+                        "()V",
+                        3,
+                        branchIndex = 0,
+                        branchKey = "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+                    ),
+                    ProbeLocation(1, 1, ProbeKind.BRANCH, "com.acme.Foo", "b", "()V", 3, branchIndex = 1, branchKey = null),
+                ),
+                serviceInstanceId = "i-1",
+            ),
+        )
+
+        val neverHit = target.neverHit()
+
+        assertEquals(2, neverHit.size)
+        assertEquals("a1b2c3d4e5f60718293a4b5c6d7e8f90", neverHit[0].branchKey)
+        assertEquals(null, neverHit[1].branchKey)
+    }
+
+    @Test
     fun `neverHit excludes an inline probe even though it was never hit`() {
         val target = startCollector()
         val exporter = exporterFor(target)

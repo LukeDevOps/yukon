@@ -109,6 +109,10 @@ data class DeltaBatch(
  * since it is resolved only once the startup listing has finished; a name that never gets one
  * belongs to no dependency (a jar of the adopter's own, an agent jar) and a collector ignores it.
  * See ADR 0030.
+ *
+ * [branchKey] is set only for a [ProbeKind.BRANCH] probe: an opaque lowercase hex token naming
+ * this outcome across builds and instances, compared only for equality. Null when the agent
+ * cannot name the outcome safely. See ADR 0031.
  */
 data class ProbeLocation(
     val classId: Int,
@@ -128,6 +132,7 @@ data class ProbeLocation(
     val inlinedFromClassName: String? = null,
     val generatedBy: GeneratedBy = GeneratedBy.NONE,
     val referencedClasses: List<String> = emptyList(),
+    val branchKey: String? = null,
 )
 
 /**

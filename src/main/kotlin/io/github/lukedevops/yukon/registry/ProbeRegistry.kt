@@ -577,6 +577,7 @@ open class ProbeRegistry(
                         inlinedFromClassName = meta.inlinedFromClassName,
                         generatedBy = meta.generatedBy,
                         referencedClasses = meta.referencedClasses,
+                        branchKey = meta.branchKey,
                     )
                 }
             }
@@ -725,6 +726,7 @@ open class ProbeRegistry(
                         inlinedFromClassName = meta.inlinedFromClassName,
                         generatedBy = meta.generatedBy,
                         referencedClasses = meta.referencedClasses,
+                        branchKey = meta.branchKey,
                     )
             }
             supertypes += ClassSupertypes(entry.classId, entry.superClassName, entry.interfaceNames)

@@ -34,6 +34,10 @@ import io.github.lukedevops.yukon.export.ProbeKind
  * [referencedClasses] is populated only for a [ProbeKind.METHOD] probe: the out-of-scope classes
  * that method's bytecode references, dotted, with JDK classes and classes read from a classpath
  * directory already dropped. See ADR 0030.
+ *
+ * [branchKey] is set only for a [ProbeKind.BRANCH] probe: an opaque lowercase hex token naming
+ * this outcome across builds and instances, compared only for equality. Null when the agent
+ * cannot name the outcome safely. See ADR 0031.
  */
 data class ProbeMeta(
     val kind: ProbeKind,
@@ -50,4 +54,5 @@ data class ProbeMeta(
     val inlinedFromClassName: String? = null,
     val generatedBy: GeneratedBy = GeneratedBy.NONE,
     val referencedClasses: List<String> = emptyList(),
+    val branchKey: String? = null,
 )

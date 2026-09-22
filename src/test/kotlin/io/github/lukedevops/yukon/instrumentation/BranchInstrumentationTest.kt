@@ -3,9 +3,12 @@ package io.github.lukedevops.yukon.instrumentation
 import io.github.lukedevops.yukon.config.AgentConfig
 import io.github.lukedevops.yukon.export.ProbeKind
 import io.github.lukedevops.yukon.export.ResourceAttributes
+import io.github.lukedevops.yukon.instrumentation.branch.BranchSiteAnalyzer
 import io.github.lukedevops.yukon.registry.ProbeRegistry
 import net.bytebuddy.agent.ByteBuddyAgent
 import net.bytebuddy.agent.builder.ResettableClassFileTransformer
+import net.bytebuddy.dynamic.ClassFileLocator
+import net.bytebuddy.pool.TypePool
 import java.io.File
 import kotlin.test.AfterTest
 import kotlin.test.Test
@@ -235,5 +238,71 @@ class BranchInstrumentationTest {
 
         assertTrue(methodProbeIndex in byIndex)
         assertEquals(1L, byIndex.getValue(methodProbeIndex).hitsTotal)
+    }
+
+    @Test
+    fun `every kept BRANCH probe carries a branch key or null, unique within the class, and a METHOD probe carries none`() {
+        val registry = ProbeRegistry()
+        val config = AgentConfig.parse("includePackages=com.example.target")
+
+        install(registry, config)
+
+        val manifest = registry.manifest("test", null, "instance-1")
+        val classProbes = manifest.probes.filter { it.className == "com.example.target.BranchTarget" }
+        val branchProbes = classProbes.filter { it.kind == ProbeKind.BRANCH }
+        val methodProbes = classProbes.filter { it.kind == ProbeKind.METHOD }
+
+        assertTrue(branchProbes.isNotEmpty())
+        for (probe in branchProbes) {
+            probe.branchKey?.let { key ->
+                assertEquals(32, key.length, "$key should be 32 hex characters")
+                assertTrue(key.all { it in "0123456789abcdef" }, "$key should be lowercase hex")
+            }
+        }
+        val presentKeys = branchProbes.mapNotNull { it.branchKey }
+        assertEquals(presentKeys.size, presentKeys.toSet().size, "every branch key present should be unique within the class")
+
+        assertTrue(methodProbes.isNotEmpty())
+        assertTrue(methodProbes.all { it.branchKey == null })
+    }
+
+    @Test
+    fun `the layout hash of an existing fixture is unchanged by adding branch keys`() {
+        // Recomputes ProbeLayoutHash.of() with the same inputs YukonInstrumentation feeds it for
+        // BranchTarget, from a fresh read of its bytecode, and pins the result: adding branch_key
+        // must not perturb branch_index, probe_index or slot allocation.
+        val bytes = File("build/classes/java/test/com/example/target/BranchTarget.class").readBytes()
+        val pool =
+            TypePool.Default.of(
+                ClassFileLocator.Compound(
+                    ClassFileLocator.ForFolder(File("build/classes/java/test")),
+                    ClassFileLocator.ForClassLoader.ofSystemLoader(),
+                ),
+            )
+        val typeDescription = pool.describe("com.example.target.BranchTarget").resolve()
+        val methods = typeDescription.declaredMethods.filter(TypeMatchPolicy.methodMatcher(isScalaClass = false))
+        val analysis =
+            BranchSiteAnalyzer.analyze(bytes) { name, descriptor ->
+                methods.any { it.internalName == name && it.descriptor == descriptor }
+            }
+
+        val layoutHash =
+            ProbeLayoutHash.of(
+                methods.map { it.internalName + it.descriptor } +
+                    analysis.sites
+                        .filter { it.dropReason == null }
+                        .map { "${it.methodName}${it.methodDescriptor}#branch${it.siteIndex}x${it.outcomeCount}" },
+            )
+
+        assertEquals(-6840610906673495688L, layoutHash)
+
+        val registry = ProbeRegistry()
+        val config = AgentConfig.parse("includePackages=com.example.target")
+        val target = install(registry, config)
+        assertEquals(
+            methods.size + analysis.sites.filter { it.dropReason == null }.sumOf { it.outcomeCount },
+            registry.lookup("com.example.target.BranchTarget", layoutHash, target.javaClass.classLoader)?.size,
+            "the pinned hash must be the exact one the real transform registers BranchTarget's probe array under",
+        )
     }
 }

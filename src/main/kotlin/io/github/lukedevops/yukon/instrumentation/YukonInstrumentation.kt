@@ -11,6 +11,7 @@ import io.github.lukedevops.yukon.config.AgentConfig
 import io.github.lukedevops.yukon.export.ProbeKind
 import io.github.lukedevops.yukon.instrumentation.branch.BranchDropCounts
 import io.github.lukedevops.yukon.instrumentation.branch.BranchDropReason
+import io.github.lukedevops.yukon.instrumentation.branch.BranchKeys
 import io.github.lukedevops.yukon.instrumentation.branch.BranchProbeAsmVisitorWrapper
 import io.github.lukedevops.yukon.instrumentation.branch.BranchSite
 import io.github.lukedevops.yukon.instrumentation.branch.BranchSiteAnalyzer
@@ -415,6 +416,7 @@ class YukonInstrumentation(
         // as the method probe itself, so it inherits the same flag.
         var branchOrdinal = 0
         val branchProbes = mutableListOf<ProbeMeta>()
+        val branchKeys = BranchKeys.compute(branchSites, typeDescription.name)
         for (site in branchSites) {
             if (site.dropReason == null) {
                 for (offset in 0 until site.outcomeCount) {
@@ -427,6 +429,7 @@ class YukonInstrumentation(
                             branchIndex = branchOrdinal + offset,
                             inline = analysis.isInline(site.methodName, site.methodDescriptor),
                             inlinedFromClassName = site.inlinedFromClassName,
+                            branchKey = branchKeys[site.siteIndex to offset],
                         )
                 }
             }

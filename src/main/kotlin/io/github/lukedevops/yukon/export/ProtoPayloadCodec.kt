@@ -190,6 +190,7 @@ object ProtoPayloadCodec {
                 .addAllReferencedClasses(location.referencedClasses)
         location.branchIndex?.let { builder.branchIndex = it }
         location.parameterIndex?.let { builder.parameterIndex = it }
+        location.branchKey?.let { builder.branchKey = it }
         return builder.build()
     }
 
@@ -215,6 +216,7 @@ object ProtoPayloadCodec {
             inlinedFromClassName = location.inlinedFromClassName.ifEmpty { null },
             generatedBy = fromProto(location.generatedBy),
             referencedClasses = location.referencedClassesList,
+            branchKey = if (location.hasBranchKey()) location.branchKey else null,
         )
     }
 
