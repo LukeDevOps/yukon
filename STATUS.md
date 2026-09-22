@@ -247,7 +247,7 @@ to 81% dead. Its name comes from ByteBuddy's `NamingStrategy.SuffixingRandom`,
 which builds `<prefix>$<suffix>$<random>`, so confirming it means finding where
 Hibernate passes that suffix, not just grepping for the string.
 
-### Stable branch identity
+### Stable branch identity: landed on the agent side
 
 `branch_index` is a class-wide ordinal. Sites are numbered in bytecode order
 across every method of the class (`YukonInstrumentation.kt`, `BranchSite.kt`),
@@ -309,11 +309,18 @@ Progress:
   inside the condition: an edit to its true arm keeps the outer key and
   an edit to its false arm changes it, as the Consequences say.
 
-The agent side is done. What is left is the server side below.
+Open, all on the server side and tracked in `yukon-server`'s STATUS.md
+under "Service-wide dates": bump its Go bindings to the BSR commit that
+carries field 18, give keyed branch outcomes service rows, and revisit
+`known_for_days` for the keyless ones. The deletion manifest's branch level
+waits on that server work, not on anything here.
 
-The server side (service rows for keyed branch outcomes, and revisiting
-`known_for_days` on the keyless ones) is tracked in `yukon-server`'s
-STATUS.md. The deletion manifest's branch level waits on this too.
+Two things a fresh cloud session needs for this repo's build. Maven Central
+has answered 429 through the sandbox proxy, and a session-local Gradle init
+script pointing at Google's mirror of it
+(`maven-central.storage-download.googleapis.com/maven2`) worked once the
+user approved it. And the `ktlint` CLI the chunked-build command runs is not
+preinstalled; the 1.5.0 release binary from GitHub works.
 
 ### Follow-ups the branch-probe round left open
 
@@ -450,15 +457,13 @@ travel together, because either alone misleads: how long the finding has been
 dead, and how long Yukon has been watching. "Dead for 90 days" says nothing
 until the reader knows whether the window is 90 days or three years.
 
-One real gap, filed as a bug in `yukon-server`'s STATUS.md rather than held
-here. `probes.first_seen_at` dates one instance's knowledge of a location, so
-the age a read reports is capped by the query's scope and by the retention
-prune, never reaching past the oldest surviving in-scope instance: a
-version-scoped read gives the version's age rather than the code's, and a
-fleet replaced faster than the retention window cannot report an age older
-than that window. It reads as recently introduced exactly where the code is
-oldest. The manifest's whole contract is the age, so it waits on the
-service-level location row that bug describes.
+The age gap this once waited on is closed. `yukon-server` keeps location
+dates once per service (its "Service-wide dates" entry), so a method's age no
+longer stops at the oldest in-scope instance or the retention window, and
+every reply carries `watched_since`. Branch-level ages are still capped
+there until the server keys branch rows on ADR 0031's branch key, so a first
+cut of the manifest is method level, which the JaCoCo join below already
+assumes.
 
 Phase two, JaCoCo for the vacuous test case. Needed only for the surviving
 case above, and only once the manifest stands on its own. JaCoCo's runtime
@@ -478,7 +483,8 @@ the per-test dump cost and lines the two sets up by construction.
 
 Open before any of this is built:
 
-- The instance-keyed age gap above, which is the one schema change.
+- Branch-level ages, which wait on the server keying branch rows on the
+  branch key.
 - What the manifest says about a finding whose observation window has holes,
   an instance absent for a month.
 - Whether the manifest carries the exclusions the server already tracks
