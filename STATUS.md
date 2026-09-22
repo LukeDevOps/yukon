@@ -20,7 +20,7 @@ Two things fall out of it when it happens. The poms need licence metadata,
 which nothing generates today. And a published testkit fixes its own API, so
 the query surface is worth a look before it is frozen rather than after.
 
-### Run id on every payload: landed on the agent side
+### Run id on every payload: landed in all three repos
 
 ADR 0032. The agent makes a random run id once per process and stamps it on
 `ResourceAttributes.run_id` (field 5), and every delta batch, manifest chunk
@@ -45,20 +45,15 @@ second run id under a known instance id, and lists both in
 public query and wait throw `IllegalStateException` listing the reasons, so a
 test fails even if it never checks `rejectedPayloads()`.
 
-Open, in the other two repos:
-
-- `yukon-collector`: bump its Go bindings, read the manifest's identity from
-  `resource` (`ingest/handler.go` checks `manifest.GetServiceName()` and
-  `GetServiceInstanceId()`, `ingest/logsink.go` logs the first), and reject
-  any payload whose `run_id` is empty. The forwarding shard key,
-  `instanceKey` in `internal/forward/forward.go`, stays service plus
-  instance, so a restart does not move an instance to another shard.
-- `yukon-server`: keep each run as its own row under its instance, with
-  every per-run table hanging off the run, and merge with `max()` within a
-  run. That replaces its reset-aware `hits_total` merge and its wipe on a
-  version change, both of which existed only for the restart under a
-  pinned id that the run id now names. Tracked in `yukon-server`'s
-  STATUS.md.
+The other two repos followed on 2026-09-22. `yukon-collector` (`b40113a`)
+bumped its bindings, reads the manifest's identity from `resource`, and
+rejects any payload with an empty run id; its shard key stays service plus
+instance, so a restart does not move an instance to another shard.
+`yukon-server` (`704a8ff`, its ADR 0024) keeps each run as its own row
+under its instance, with every per-run table hanging off the run, and
+merges with `max()` within a run. That replaced its reset-aware merge and
+its wipe on a version change. `runDemoStack` passes against the rebuilt
+stack.
 
 ### Dependency usage: landed, with follow-ups
 
@@ -304,6 +299,10 @@ an old date onto a new branch and call it dead for years. So branch probes
 keep per-instance dates there, capped by scope and marked `dates_capped`,
 and `known_for_days` still drops the ones whose capped date is too recent.
 See the service-wide dates entry in `yukon-server`'s STATUS.md.
+
+The server side landed on 2026-09-22 (`yukon-server` `4ee1026`, its ADR
+0025): a keyed branch outcome gets a service-wide date row and groups by
+its key across builds, and only keyless outcomes stay capped.
 
 A grilling session settled the design in ADR 0031: each kept branch outcome
 gets a branch key, a digest of its class, method, descriptor, condition
