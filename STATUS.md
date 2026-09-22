@@ -247,6 +247,37 @@ to 81% dead. Its name comes from ByteBuddy's `NamingStrategy.SuffixingRandom`,
 which builds `<prefix>$<suffix>$<random>`, so confirming it means finding where
 Hibernate passes that suffix, not just grepping for the string.
 
+### Stable branch identity
+
+`branch_index` is a class-wide ordinal. Sites are numbered in bytecode order
+across every method of the class (`YukonInstrumentation.kt`, `BranchSite.kt`),
+and dropped sites keep their place. The number holds still when the scope or
+a drop rule changes. It does not hold still when the code changes: one new
+conditional in an early method shifts every later branch in the class,
+including branches in other methods. Nothing on the wire ties branch 14 in
+one release to branch 12 in the one before.
+
+`yukon-server` needs that tie to date a branch across releases. Its fix for
+the capped location dates keeps one row per location for the whole service,
+but it cannot key a branch that way: a row keyed on `branch_index` would move
+an old date onto a new branch and call it dead for years. So branch probes
+keep per-instance dates there, capped by scope and marked `dates_capped`,
+and `known_for_days` still drops the ones whose capped date is too recent.
+See the capped location dates entry in `yukon-server`'s STATUS.md.
+
+What the agent needs to send is an identity for a branch that survives
+edits elsewhere in the class and, as far as possible, edits elsewhere in the
+same method. Numbering sites within their method removes the first kind of
+drift, and the server could key on method plus that index. It leaves the
+second: a new conditional early in a method still renumbers the later ones.
+A content key, such as a hash of the condition's own instructions and its
+place in the method's control flow, would survive more edits, at the cost of
+two identical conditions in one method needing a tiebreak. This wants an ADR
+before any code, and a proto field, since `branch_index` also keys the
+per-instance rows and should not change meaning.
+
+The deletion manifest's branch level waits on this too.
+
 ### Follow-ups the branch-probe round left open
 
 Each is recorded rather than started. The first needs evidence before it can
