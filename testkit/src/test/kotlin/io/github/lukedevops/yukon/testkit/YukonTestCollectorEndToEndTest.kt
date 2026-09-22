@@ -63,7 +63,7 @@ class YukonTestCollectorEndToEndTest {
         fixtureClass.getMethod("exercised").invoke(fixture)
 
         val exporter = HttpOtlpStyleExporter(target.endpoint)
-        val exportScheduler = ExportScheduler(config, registry, EndpointRegistry(), exporter)
+        val exportScheduler = ExportScheduler(config, TestResources.forConfig(config), registry, EndpointRegistry(), exporter)
         scheduler = exportScheduler
         exportScheduler.start()
 
@@ -99,7 +99,7 @@ class YukonTestCollectorEndToEndTest {
         fixtureClass.getMethod("exercised").invoke(fixture)
 
         val exporter = HttpOtlpStyleExporter(target.endpoint)
-        val exportScheduler = ExportScheduler(config, registry, EndpointRegistry(), exporter)
+        val exportScheduler = ExportScheduler(config, TestResources.forConfig(config), registry, EndpointRegistry(), exporter)
         scheduler = exportScheduler
         exportScheduler.start()
 

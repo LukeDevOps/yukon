@@ -20,6 +20,46 @@ Two things fall out of it when it happens. The poms need licence metadata,
 which nothing generates today. And a published testkit fixes its own API, so
 the query surface is worth a look before it is frozen rather than after.
 
+### Run id on every payload: landed on the agent side
+
+ADR 0032. The agent makes a random run id once per process and stamps it on
+`ResourceAttributes.run_id` (field 5), and every delta batch, manifest chunk
+and baseline chunk from one process carries the same value. `ProbeManifest`
+carries `ResourceAttributes resource = 14` in place of its own
+`service_name`, `service_version` and `service_instance_id`, which are
+reserved by number and name, so the manifest also gains `environment`.
+`ResourceAttributes.forNewRun` is the one place the id is made; `Agent.start`
+calls it once and hands the result to the scheduler and the baseline scan.
+The change is breaking on purpose, since nothing is released. `buf lint`
+passes. `buf breaking` flags the three removed manifest fields, and CI runs it
+only on pull requests, so a push to `master` publishes to BSR.
+
+`ExportScheduler` takes the resource as a required parameter, so a caller
+cannot get a second run id by leaving it out; tests build theirs with
+`TestResources.forConfig`. The demo's stub collector keys every class,
+endpoint and dependency map on (instance, run) and answers 400 to an empty
+run id. The testkit collector keys on instance alone, which holds for the one
+agent in its own JVM (ADR 0018). It answers 400 to an empty run id and to a
+second run id under a known instance id, and lists both in
+`rejectedPayloads()`. After any rejection, `awaitSettled` and every other
+public query and wait throw `IllegalStateException` listing the reasons, so a
+test fails even if it never checks `rejectedPayloads()`.
+
+Open, in the other two repos:
+
+- `yukon-collector`: bump its Go bindings, read the manifest's identity from
+  `resource` (`ingest/handler.go` checks `manifest.GetServiceName()` and
+  `GetServiceInstanceId()`, `ingest/logsink.go` logs the first), and reject
+  any payload whose `run_id` is empty. The forwarding shard key,
+  `instanceKey` in `internal/forward/forward.go`, stays service plus
+  instance, so a restart does not move an instance to another shard.
+- `yukon-server`: keep each run as its own row under its instance, with
+  every per-run table hanging off the run, and merge with `max()` within a
+  run. That replaces its reset-aware `hits_total` merge and its wipe on a
+  version change, both of which existed only for the restart under a
+  pinned id that the run id now names. Tracked in `yukon-server`'s
+  STATUS.md.
+
 ### Dependency usage: landed, with follow-ups
 
 Grilled and settled on 2026-09-21; ADR 0030 holds the decision and

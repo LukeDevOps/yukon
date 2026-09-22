@@ -82,10 +82,8 @@ class DependencyQueryTest {
     ) {
         exporter.exportManifest(
             ProbeManifest(
-                serviceName = "svc",
-                serviceVersion = null,
+                resource = ResourceAttributes("svc", null, instanceId, null, "run-1"),
                 probes = probes,
-                serviceInstanceId = instanceId,
                 dependencies = dependencies,
                 classReferences = classReferences,
                 externalClasses = externalClasses,
@@ -102,7 +100,7 @@ class DependencyQueryTest {
         instanceId: String = "i-1",
     ) {
         exporter.exportDeltaBatch(
-            DeltaBatch(ResourceAttributes("svc", null, instanceId, null), probeDeltas, dependencyDeltas = dependencyDeltas),
+            DeltaBatch(ResourceAttributes("svc", null, instanceId, null, "run-1"), probeDeltas, dependencyDeltas = dependencyDeltas),
         )
     }
 
@@ -120,7 +118,7 @@ class DependencyQueryTest {
     ) {
         exporter.exportStaticBaseline(
             StaticBaseline(
-                resource = ResourceAttributes("svc", null, instanceId, null),
+                resource = ResourceAttributes("svc", null, instanceId, null, "run-1"),
                 declaredClasses = declaredClasses,
                 scannedAt = 1000L,
                 chunkIndex = 0,
@@ -258,7 +256,13 @@ class DependencyQueryTest {
         assertFailsWith<IllegalStateException> { collector.unreachedDependencies() }
 
         exporter.exportStaticBaseline(
-            StaticBaseline(ResourceAttributes("svc", null, "i-1", null), emptyList(), scannedAt = 1000L, chunkIndex = 1, chunkCount = 2),
+            StaticBaseline(
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
+                emptyList(),
+                scannedAt = 1000L,
+                chunkIndex = 1,
+                chunkCount = 2,
+            ),
         )
         assertEquals(listOf("com.acme:lib"), collector.unreferencedDependencies().map { it.identityKey })
         assertEquals(emptyList(), collector.unreachedDependencies())

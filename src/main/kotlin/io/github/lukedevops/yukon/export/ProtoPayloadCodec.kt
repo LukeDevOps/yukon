@@ -72,6 +72,7 @@ object ProtoPayloadCodec {
                 .newBuilder()
                 .setServiceName(resource.serviceName)
                 .setServiceInstanceId(resource.serviceInstanceId)
+                .setRunId(resource.runId)
         resource.serviceVersion?.let { builder.serviceVersion = it }
         resource.environment?.let { builder.environment = it }
         return builder.build()
@@ -83,6 +84,7 @@ object ProtoPayloadCodec {
             serviceVersion = if (resource.hasServiceVersion()) resource.serviceVersion else null,
             serviceInstanceId = resource.serviceInstanceId,
             environment = if (resource.hasEnvironment()) resource.environment else null,
+            runId = resource.runId,
         )
 
     private fun toProto(delta: ProbeDelta): ProtoProbeDelta =
@@ -104,33 +106,27 @@ object ProtoPayloadCodec {
             hitsTotal = delta.hitsTotal,
         )
 
-    private fun toProto(manifest: ProbeManifest): ProtoProbeManifest {
-        val builder =
-            ProtoProbeManifest
-                .newBuilder()
-                .setServiceName(manifest.serviceName)
-                .addAllProbes(manifest.probes.map { toProto(it) })
-                .addAllSkippedClasses(manifest.skippedClasses.map { toProto(it) })
-                .setServiceInstanceId(manifest.serviceInstanceId)
-                .addAllEndpoints(manifest.endpoints.map { toProto(it) })
-                .addAllDisabledEndpointModules(manifest.disabledEndpointModules.map { toProto(it) })
-                .addAllClassSupertypes(manifest.classSupertypes.map { toProto(it) })
-                .addAllUnreportedClasses(manifest.unreportedClasses.map { toProto(it) })
-                .addAllDependencies(manifest.dependencies.map { toProto(it) })
-                .addAllClassReferences(manifest.classReferences.map { toProto(it) })
-                .addAllExternalClasses(manifest.externalClasses.map { toProto(it) })
-                .setReferencesRecorded(manifest.referencesRecorded)
-        manifest.serviceVersion?.let { builder.serviceVersion = it }
-        return builder.build()
-    }
+    private fun toProto(manifest: ProbeManifest): ProtoProbeManifest =
+        ProtoProbeManifest
+            .newBuilder()
+            .setResource(toProto(manifest.resource))
+            .addAllProbes(manifest.probes.map { toProto(it) })
+            .addAllSkippedClasses(manifest.skippedClasses.map { toProto(it) })
+            .addAllEndpoints(manifest.endpoints.map { toProto(it) })
+            .addAllDisabledEndpointModules(manifest.disabledEndpointModules.map { toProto(it) })
+            .addAllClassSupertypes(manifest.classSupertypes.map { toProto(it) })
+            .addAllUnreportedClasses(manifest.unreportedClasses.map { toProto(it) })
+            .addAllDependencies(manifest.dependencies.map { toProto(it) })
+            .addAllClassReferences(manifest.classReferences.map { toProto(it) })
+            .addAllExternalClasses(manifest.externalClasses.map { toProto(it) })
+            .setReferencesRecorded(manifest.referencesRecorded)
+            .build()
 
     private fun fromProto(manifest: ProtoProbeManifest): ProbeManifest =
         ProbeManifest(
-            serviceName = manifest.serviceName,
-            serviceVersion = if (manifest.hasServiceVersion()) manifest.serviceVersion else null,
+            resource = fromProto(manifest.resource),
             probes = manifest.probesList.map { fromProto(it) },
             skippedClasses = manifest.skippedClassesList.map { fromProto(it) },
-            serviceInstanceId = manifest.serviceInstanceId,
             endpoints = manifest.endpointsList.map { fromProto(it) },
             disabledEndpointModules = manifest.disabledEndpointModulesList.map { fromProto(it) },
             classSupertypes = manifest.classSupertypesList.map { fromProto(it) },

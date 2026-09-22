@@ -1,5 +1,8 @@
 package io.github.lukedevops.yukon.export
 
+import io.github.lukedevops.yukon.config.AgentConfig
+import java.util.UUID
+
 /**
  * The two payload shapes the agent pushes to the collector.
  *
@@ -28,12 +31,34 @@ enum class ProbeKind { METHOD, BRANCH, OPTIONAL_ARGUMENT }
  */
 enum class GeneratedBy { NONE, ENUM, DATA_CLASS, DEFAULT_IMPLS, RECORD }
 
+/**
+ * Who sent a payload. [DeltaBatch], [ProbeManifest] and [StaticBaseline] each carry one, and one
+ * process stamps the same value on all three.
+ *
+ * [runId] is a random id the agent makes once per process at startup, in [forNewRun]. It names one
+ * run of one instance. A new process always gets a new one, even when [serviceInstanceId] is pinned
+ * to a name that survives a restart, so a consumer can keep each run's class ids and totals apart.
+ * See ADR 0032.
+ */
 data class ResourceAttributes(
     val serviceName: String,
     val serviceVersion: String?,
     val serviceInstanceId: String,
     val environment: String?,
-)
+    val runId: String,
+) {
+    companion object {
+        /** [config]'s identity with a new random [runId]. The agent calls this once per process. */
+        fun forNewRun(config: AgentConfig): ResourceAttributes =
+            ResourceAttributes(
+                serviceName = config.serviceName,
+                serviceVersion = config.serviceVersion,
+                serviceInstanceId = config.serviceInstanceId,
+                environment = config.environment,
+                runId = UUID.randomUUID().toString(),
+            )
+    }
+}
 
 /**
  * [hitsTotal] is a cumulative count from process start, not the count since
@@ -188,12 +213,11 @@ data class ClassSupertypes(
 )
 
 /**
- * [serviceInstanceId] is required, unlike the rest of this payload's (service, version) scoping.
- * `class_id` is assigned independently by each instance's own registry, in whatever order that
- * process's own classes happen to load, so the same `class_id` can mean a different class in two
- * instances of the same (service, version). A collector correlating manifests or delta batches
- * across instances needs an instance to key on to avoid attributing one instance's probe
- * metadata, or hit count, to the wrong class from another instance.
+ * [resource] is the same one the process stamps on its delta batches and static baseline.
+ * `class_id` is assigned by each process's own registry, in whatever order that process's classes
+ * happen to load, so the same `class_id` can mean a different class in two instances of the same
+ * (service, version), or in two runs of one pinned instance. A collector keys every `class_id` on
+ * the resource's instance and run, the same way it keys a delta batch's. See ADRs 0011 and 0032.
  *
  * [dependencies], [classReferences] and [externalClasses] are delivered incrementally like the
  * rest of this payload, each entry sent once per instance. See ADR 0030.
@@ -204,11 +228,9 @@ data class ClassSupertypes(
  * unreferenced or unreached only for an instance that sent it true. See ADR 0030.
  */
 data class ProbeManifest(
-    val serviceName: String,
-    val serviceVersion: String?,
+    val resource: ResourceAttributes,
     val probes: List<ProbeLocation>,
     val skippedClasses: List<SkippedClass> = emptyList(),
-    val serviceInstanceId: String = "",
     val endpoints: List<EndpointLocation> = emptyList(),
     val disabledEndpointModules: List<DisabledEndpointModule> = emptyList(),
     val classSupertypes: List<ClassSupertypes> = emptyList(),
@@ -324,7 +346,7 @@ enum class EndpointDiscoverySource { REGISTRATION, DISPATCH }
  * identity is ([verb], [routeTemplate]), never [endpointId].
  *
  * A record may be re-sent when [handlerClass]/[handlerMethod]/[handlerDescriptor] are learned or
- * change after the endpoint was first reported; a collector upserts by (service instance,
+ * change after the endpoint was first reported; a collector upserts by (service instance, run,
  * [endpointId]). [handlerClass] alone is set when only the handler object's class is known; all
  * three are set when the framework hands over a method.
  */

@@ -90,7 +90,7 @@ class EndpointEndToEndTest {
                     "serviceInstanceId=e2e-endpoint-1",
             )
         val exporter = HttpOtlpStyleExporter(target.endpoint)
-        val exportScheduler = ExportScheduler(config, ProbeRegistry(), registry, exporter)
+        val exportScheduler = ExportScheduler(config, TestResources.forConfig(config), ProbeRegistry(), registry, exporter)
         scheduler = exportScheduler
         exportScheduler.start()
 

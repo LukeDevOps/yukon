@@ -71,13 +71,13 @@ class BranchBytesCaptureTest {
         assertEquals("large", classify.invoke(target, 500), "the swapped-in bytes are the ones that loaded")
         repeat(3) { classify.invoke(target, 5) }
 
-        val manifest = registry.manifest("test", null, "instance-1")
+        val manifest = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
         val classifyBranches = manifest.probes.filter { it.methodName == "classify" && it.kind == ProbeKind.BRANCH }
         assertEquals(4, classifyBranches.size, "two conditionals, two outcomes each, as in the rewritten bytes")
 
         val byIndex =
             registry
-                .computeDeltaBatch(ResourceAttributes("test", null, "i-1", null))
+                .computeDeltaBatch(ResourceAttributes("test", null, "i-1", null, "run-1"))
                 .batch.deltas
                 .associateBy { it.probeIndex }
         val hits = classifyBranches.map { byIndex[it.probeIndex]?.hitsTotal ?: 0L }.sorted()

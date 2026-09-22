@@ -8,6 +8,7 @@ import io.github.lukedevops.yukon.dependencies.StartupClasspathLister
 import io.github.lukedevops.yukon.dependencies.TestJars
 import io.github.lukedevops.yukon.export.ExternalClass
 import io.github.lukedevops.yukon.export.ProbeKind
+import io.github.lukedevops.yukon.export.ResourceAttributes
 import io.github.lukedevops.yukon.registry.DependencyRegistry
 import io.github.lukedevops.yukon.registry.ExternalClassRegistry
 import io.github.lukedevops.yukon.registry.ProbeRegistry
@@ -86,7 +87,7 @@ class ReferenceInstrumentationTest {
         val type = Class.forName("com.example.target.WidgetUser", true, loader)
         type.getMethod("make").invoke(type.getDeclaredConstructor().newInstance())
 
-        val manifest = registry.manifest("test", null, "instance-1")
+        val manifest = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
         val make = manifest.probes.single { it.methodName == "make" && it.kind == ProbeKind.METHOD }
         assertEquals(listOf("com.example.library.Lib\$Widget"), make.referencedClasses, "java.lang.Object, a JDK class, is dropped")
         val missing = manifest.probes.single { it.methodName == "missing" && it.kind == ProbeKind.METHOD }

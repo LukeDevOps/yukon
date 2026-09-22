@@ -542,17 +542,12 @@ open class ProbeRegistry(
     /**
      * Sent once per (service, version) so the collector can resolve probe IDs to source.
      *
-     * [serviceInstanceId] is carried on every manifest even though this method is otherwise
-     * scoped to (service, version): `class_id` is assigned independently by each instance's own
-     * registry, so a collector needs an instance to key on to avoid conflating two instances'
-     * unrelated classes that happen to share a `class_id`. See the class-level doc on
-     * [io.github.lukedevops.yukon.export.ProbeManifest].
+     * [resource] names the instance and run the manifest's `class_id` values belong to: this
+     * registry assigns them in its own load order, so a collector must key on both to avoid
+     * conflating two processes' unrelated classes that share a `class_id`. See the class-level doc
+     * on [io.github.lukedevops.yukon.export.ProbeManifest].
      */
-    fun manifest(
-        serviceName: String,
-        serviceVersion: String?,
-        serviceInstanceId: String,
-    ): ProbeManifest {
+    fun manifest(resource: ResourceAttributes): ProbeManifest {
         // One filtered list feeds both the locations and the supertype records, so a withheld
         // class cannot appear in one and not the other.
         val published = entriesByKey.values.filter { !confirmsDefinitions || isConfirmed(it) }
@@ -592,11 +587,9 @@ open class ProbeRegistry(
                 UnreportedClass(className, entry.firstSeenUnreportedAt)
             }
         return ProbeManifest(
-            serviceName,
-            serviceVersion,
+            resource,
             locations,
             skipped,
-            serviceInstanceId,
             classSupertypes = supertypes,
             unreportedClasses = unreported,
             classReferences = classReferences,
@@ -619,14 +612,10 @@ open class ProbeRegistry(
      * This is the single-chunk form of [computeManifestDeltas], with no size cap. Unlike that
      * method it always returns a snapshot, possibly with nothing in it.
      */
-    open fun computeManifestDelta(
-        serviceName: String,
-        serviceVersion: String?,
-        serviceInstanceId: String,
-    ): ManifestSnapshot =
-        computeManifestDeltas(serviceName, serviceVersion, serviceInstanceId, Int.MAX_VALUE).singleOrNull()
+    open fun computeManifestDelta(resource: ResourceAttributes): ManifestSnapshot =
+        computeManifestDeltas(resource, Int.MAX_VALUE).singleOrNull()
             ?: ManifestSnapshot(
-                ProbeManifest(serviceName, serviceVersion, emptyList(), emptyList(), serviceInstanceId),
+                ProbeManifest(resource, emptyList()),
                 emptyList(),
                 emptyList(),
                 emptyList(),
@@ -645,9 +634,7 @@ open class ProbeRegistry(
      * gets a chunk of its own. Returns an empty list when there is nothing to send.
      */
     open fun computeManifestDeltas(
-        serviceName: String,
-        serviceVersion: String?,
-        serviceInstanceId: String,
+        resource: ResourceAttributes,
         maxEntriesPerChunk: Int,
     ): List<ManifestSnapshot> {
         val chunks = mutableListOf<ManifestSnapshot>()
@@ -671,11 +658,9 @@ open class ProbeRegistry(
             chunks +=
                 ManifestSnapshot(
                     ProbeManifest(
-                        serviceName,
-                        serviceVersion,
+                        resource,
                         locations,
                         skipped,
-                        serviceInstanceId,
                         classSupertypes = supertypes,
                         unreportedClasses = unreported,
                         classReferences = classReferences,

@@ -24,10 +24,12 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -162,6 +164,65 @@ class AgentTest {
             running?.stop()
             collector.stop(0)
         }
+    }
+
+    @Test
+    fun `every payload kind from one agent start carries the same non-empty run id`() {
+        val runIds = ConcurrentHashMap<String, MutableSet<String>>()
+        val baselineReceived = CompletableFuture<Unit>()
+        val collector = HttpServer.create(InetSocketAddress("localhost", 0), 0)
+        for (path in listOf("deltas", "manifest", "static-baseline")) {
+            collector.createContext("/v1/yukon/$path") { exchange ->
+                val bytes = exchange.requestBody.readBytes()
+                val runId =
+                    when (path) {
+                        "deltas" -> ProtoPayloadCodec.decodeDeltaBatch(bytes).resource.runId
+                        "manifest" -> ProtoPayloadCodec.decodeProbeManifest(bytes).resource.runId
+                        else -> ProtoPayloadCodec.decodeStaticBaseline(bytes).resource.runId
+                    }
+                runIds.computeIfAbsent(path) { ConcurrentHashMap.newKeySet() } += runId
+                if (path == "static-baseline") baselineReceived.complete(Unit)
+                exchange.sendResponseHeaders(200, -1)
+                exchange.close()
+            }
+        }
+        collector.start()
+        val instrumentation = ByteBuddyAgent.install()
+
+        val running =
+            Agent.start(
+                "includePackages=com.example.target,flushIntervalSeconds=3600,endpointsEnabled=false," +
+                    "staticBaselineEnabled=true,endpoint=http://localhost:${collector.address.port}",
+                instrumentation,
+            )
+        try {
+            assertNotNull(running)
+            baselineReceived.get(30, TimeUnit.SECONDS)
+            running.scheduler.flush()
+
+            val expected = running.resource.runId
+            assertTrue(expected.isNotEmpty())
+            assertEquals(setOf("deltas", "manifest", "static-baseline"), runIds.keys)
+            assertTrue(runIds.values.all { it == setOf(expected) }, "every payload must carry run id $expected: $runIds")
+        } finally {
+            running?.stop()
+            collector.stop(0)
+        }
+    }
+
+    @Test
+    fun `two agent starts get different run ids`() {
+        val instrumentation = ByteBuddyAgent.install()
+        val args = "includePackages=io.github.lukedevops.yukon.neverloaded.fixture,flushIntervalSeconds=3600,serviceInstanceId=pinned"
+
+        val first = assertNotNull(Agent.start(args, instrumentation))
+        first.stop()
+        val second = assertNotNull(Agent.start(args, instrumentation))
+        second.stop()
+
+        assertEquals("pinned", first.resource.serviceInstanceId)
+        assertEquals(first.resource.serviceInstanceId, second.resource.serviceInstanceId)
+        assertNotEquals(first.resource.runId, second.resource.runId, "a pinned instance id must still get a new run id per start")
     }
 
     @Test

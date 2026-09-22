@@ -52,14 +52,14 @@ class LambdaInstrumentationTest {
         val classifyViaLambda = targetClass.getMethod("classifyViaLambda", Int::class.java)
         repeat(5) { classifyViaLambda.invoke(target, 5) }
 
-        val manifest = registry.manifest("test", null, "instance-1")
+        val manifest = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
         val lambdaMethodProbe =
             manifest.probes.single { it.methodName == "lambda\$classifyViaLambda\$0" && it.kind == ProbeKind.METHOD }
         val lambdaBranchIndices =
             manifest.probes.filter { it.methodName == "lambda\$classifyViaLambda\$0" && it.kind == ProbeKind.BRANCH }.map { it.probeIndex }
         assertEquals(2, lambdaBranchIndices.size, "the lambda body's own if/else is a two-outcome conditional")
 
-        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null)).batch.deltas
+        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null, "run-1")).batch.deltas
         val byIndex = deltas.associateBy { it.probeIndex }
 
         assertEquals(5L, byIndex.getValue(lambdaMethodProbe.probeIndex).hitsTotal, "called once per classifyViaLambda invocation")
@@ -79,10 +79,10 @@ class LambdaInstrumentationTest {
         val target = targetClass.getDeclaredConstructor().newInstance()
         repeat(4) { targetClass.getMethod("shipViaMethodReference").invoke(target) }
 
-        val manifest = registry.manifest("test", null, "instance-1")
+        val manifest = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
         val shipProbe = manifest.probes.single { it.methodName == "ship" && it.kind == ProbeKind.METHOD }
 
-        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null)).batch.deltas
+        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null, "run-1")).batch.deltas
         assertEquals(4L, deltas.single { it.probeIndex == shipProbe.probeIndex }.hitsTotal)
     }
 
@@ -99,7 +99,7 @@ class LambdaInstrumentationTest {
         classify.invoke(module, 7)
         classify.invoke(module, 8)
 
-        val manifest = registry.manifest("test", null, "instance-1")
+        val manifest = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
         val anonfunMethodProbes = manifest.probes.filter { it.methodName == "\$anonfun\$classify\$1" && it.kind == ProbeKind.METHOD }
         assertTrue(anonfunMethodProbes.isNotEmpty(), "the scalac lambda body must be probed inside a Scala class")
 
@@ -108,7 +108,7 @@ class LambdaInstrumentationTest {
             "Scala 2's boxing forwarder beside the body is excluded, so a lambda yields one method probe",
         )
 
-        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null)).batch.deltas
+        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null, "run-1")).batch.deltas
         val byIndex = deltas.associateBy { it.probeIndex }
         assertEquals(2L, byIndex.getValue(anonfunMethodProbes.single().probeIndex).hitsTotal)
     }
@@ -127,7 +127,7 @@ class LambdaInstrumentationTest {
         classify.invoke(module, -1)
         classify.invoke(module, 3)
 
-        val manifest = registry.manifest("test", null, "instance-1")
+        val manifest = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
         val bodyProbe = manifest.probes.single { it.methodName == "\$anonfun\$1" && it.kind == ProbeKind.METHOD }
         assertTrue(manifest.probes.none { it.methodName.startsWith("\$anonfun\$adapted") }, "the bridge adapter is not a node")
         val branchIndices = manifest.probes.filter { it.methodName == "\$anonfun\$1" && it.kind == ProbeKind.BRANCH }.map { it.probeIndex }
@@ -135,7 +135,7 @@ class LambdaInstrumentationTest {
 
         val byIndex =
             registry
-                .computeDeltaBatch(ResourceAttributes("test", null, "i-1", null))
+                .computeDeltaBatch(ResourceAttributes("test", null, "i-1", null, "run-1"))
                 .batch.deltas
                 .associateBy { it.probeIndex }
         assertEquals(3L, byIndex.getValue(bodyProbe.probeIndex).hitsTotal)

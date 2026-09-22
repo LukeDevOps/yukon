@@ -59,7 +59,7 @@ class GeneratedMethodMarkingTest {
 
         val probes =
             registry
-                .manifest("test", null, "instance-1")
+                .manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
                 .probes
                 .filter { it.className == "com.example.target.GeneratedPoint" && it.kind == ProbeKind.METHOD }
 
@@ -87,10 +87,10 @@ class GeneratedMethodMarkingTest {
 
         val copyProbe =
             registry
-                .manifest("test", null, "instance-1")
+                .manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
                 .probes
                 .single { it.className == "com.example.target.GeneratedPoint" && it.methodName == "copy" && it.kind == ProbeKind.METHOD }
-        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null)).batch.deltas
+        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null, "run-1")).batch.deltas
         assertEquals(1L, deltas.single { it.probeIndex == copyProbe.probeIndex }.hitsTotal)
     }
 
@@ -104,7 +104,7 @@ class GeneratedMethodMarkingTest {
 
         val probes =
             registry
-                .manifest("test", null, "instance-1")
+                .manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
                 .probes
                 .filter { it.className == "com.example.target.GeneratedColour" && it.kind == ProbeKind.METHOD }
         assertEquals(GeneratedBy.ENUM, probes.single { it.methodName == "values" }.generatedBy)
@@ -122,7 +122,7 @@ class GeneratedMethodMarkingTest {
 
         val probes =
             registry
-                .manifest("test", null, "instance-1")
+                .manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
                 .probes
                 .filter { it.className == "com.example.target.GeneratedInterface\$DefaultImpls" && it.kind == ProbeKind.METHOD }
         assertEquals(GeneratedBy.DEFAULT_IMPLS, probes.single { it.methodName == "withBody" }.generatedBy)
@@ -138,7 +138,7 @@ class GeneratedMethodMarkingTest {
 
         val probes =
             registry
-                .manifest("test", null, "instance-1")
+                .manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
                 .probes
                 .filter { it.className == "com.example.target.RecordTarget" && it.kind == ProbeKind.METHOD }
         assertEquals(GeneratedBy.RECORD, probes.single { it.methodName == "equals" }.generatedBy)
@@ -159,7 +159,7 @@ class GeneratedMethodMarkingTest {
 
         val branchProbes =
             registry
-                .manifest("test", null, "instance-1")
+                .manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
                 .probes
                 .filter { it.className == "com.example.target.GeneratedPoint" && it.methodName == "equals" && it.kind == ProbeKind.BRANCH }
         assert(branchProbes.isNotEmpty()) { "equals is expected to compile to at least one conditional jump" }
@@ -176,7 +176,7 @@ class GeneratedMethodMarkingTest {
 
         val omissionProbes =
             registry
-                .manifest("test", null, "instance-1")
+                .manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
                 .probes
                 .filter {
                     it.className == "com.example.target.GeneratedPointWithDefault" &&

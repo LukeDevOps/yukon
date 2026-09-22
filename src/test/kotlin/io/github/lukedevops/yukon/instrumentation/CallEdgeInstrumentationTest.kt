@@ -3,6 +3,7 @@ package io.github.lukedevops.yukon.instrumentation
 import io.github.lukedevops.yukon.config.AgentConfig
 import io.github.lukedevops.yukon.export.CallEdge
 import io.github.lukedevops.yukon.export.ProbeKind
+import io.github.lukedevops.yukon.export.ResourceAttributes
 import io.github.lukedevops.yukon.registry.ProbeRegistry
 import net.bytebuddy.agent.ByteBuddyAgent
 import net.bytebuddy.agent.builder.ResettableClassFileTransformer
@@ -50,7 +51,7 @@ class CallEdgeInstrumentationTest {
         targetClass.getMethod("callsPrivateMethod").invoke(target)
         targetClass.getMethod("callsSelfRecursively", Int::class.java).invoke(target, 1)
 
-        val manifest = registry.manifest("test", null, "instance-1")
+        val manifest = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
         val classEntry = manifest.probes.filter { it.className == "com.example.target.CallEdgeTarget" }
 
         val callsPrivateMethodProbe = classEntry.single { it.methodName == "callsPrivateMethod" && it.kind == ProbeKind.METHOD }
@@ -78,9 +79,10 @@ class CallEdgeInstrumentationTest {
         Class.forName("com.example.target.TemplateTarget", true, loader)
 
         val runProbe =
-            registry.manifest("test", null, "instance-1").probes.single {
-                it.className == "com.example.target.TemplateTarget" && it.methodName == "run" && it.kind == ProbeKind.METHOD
-            }
+            registry
+                .manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
+                .probes
+                .single { it.className == "com.example.target.TemplateTarget" && it.methodName == "run" && it.kind == ProbeKind.METHOD }
         assertEquals(listOf(CallEdge("com.example.target.TemplateTarget", "step", "()I", virtual = true)), runProbe.calls)
     }
 
@@ -96,9 +98,13 @@ class CallEdgeInstrumentationTest {
         targetClass.getMethod("readEnumConstant").invoke(target)
 
         val readEnumConstantProbe =
-            registry.manifest("test", null, "instance-1").probes.single {
-                it.className == "com.example.target.StaticUseTarget" && it.methodName == "readEnumConstant" && it.kind == ProbeKind.METHOD
-            }
+            registry
+                .manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
+                .probes
+                .single {
+                    it.className == "com.example.target.StaticUseTarget" && it.methodName == "readEnumConstant" &&
+                        it.kind == ProbeKind.METHOD
+                }
         assertEquals(listOf(CallEdge("com.example.target.Suit", "<clinit>", "()V", virtual = false)), readEnumConstantProbe.calls)
     }
 
@@ -114,11 +120,13 @@ class CallEdgeInstrumentationTest {
         targetClass.getMethod("viaReference").invoke(target)
 
         val viaReferenceProbe =
-            registry.manifest("test", null, "instance-1").probes.single {
-                it.className == "com.example.target.FunctionReferenceTarget" &&
-                    it.methodName == "viaReference" &&
-                    it.kind == ProbeKind.METHOD
-            }
+            registry
+                .manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
+                .probes
+                .single {
+                    it.className == "com.example.target.FunctionReferenceTarget" && it.methodName == "viaReference" &&
+                        it.kind == ProbeKind.METHOD
+                }
         assertEquals(
             listOf(
                 CallEdge(

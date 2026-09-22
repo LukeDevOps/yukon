@@ -4,6 +4,7 @@ import io.github.lukedevops.yukon.config.AgentConfig
 import io.github.lukedevops.yukon.export.CallEdge
 import io.github.lukedevops.yukon.export.GeneratedBy
 import io.github.lukedevops.yukon.export.ProbeKind
+import io.github.lukedevops.yukon.export.ResourceAttributes
 import io.github.lukedevops.yukon.instrumentation.FixtureClassLoader
 import io.github.lukedevops.yukon.instrumentation.YukonInstrumentation
 import io.github.lukedevops.yukon.registry.ProbeRegistry
@@ -538,7 +539,7 @@ class StaticBaselineScannerTest {
             val loader = FixtureClassLoader(arrayOf(File("build/classes/kotlin/test").toURI().toURL()), javaClass.classLoader)
             Class.forName("com.example.target.CallEdgeTarget", true, loader)
 
-            val manifest = registry.manifest("test", null, "instance-1")
+            val manifest = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
             val methodProbes =
                 manifest.probes.filter { it.className == "com.example.target.CallEdgeTarget" && it.kind == ProbeKind.METHOD }
             assertTrue(methodProbes.isNotEmpty())
@@ -580,7 +581,7 @@ class StaticBaselineScannerTest {
             val loader = FixtureClassLoader(arrayOf(File("build/classes/kotlin/test").toURI().toURL()), javaClass.classLoader)
             Class.forName("com.example.target.StaticUseTarget", true, loader)
 
-            val manifest = registry.manifest("test", null, "instance-1")
+            val manifest = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
             val methodProbes =
                 manifest.probes.filter { it.className == "com.example.target.StaticUseTarget" && it.kind == ProbeKind.METHOD }
             assertTrue(methodProbes.isNotEmpty())
@@ -620,7 +621,7 @@ class StaticBaselineScannerTest {
             val target = targetClass.getDeclaredConstructor().newInstance()
             targetClass.getMethod("viaReference").invoke(target)
 
-            val manifest = registry.manifest("test", null, "instance-1")
+            val manifest = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
             val viaReferenceProbe =
                 manifest.probes.single {
                     it.className == "com.example.target.FunctionReferenceTarget" &&

@@ -67,11 +67,11 @@ class YukonInstrumentationTest {
         val target = install(registry, config)
         target.javaClass.getMethod("ping").invoke(target)
 
-        val manifest = registry.manifest("test", null, "instance-1")
+        val manifest = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
         val neverCalledProbeIndex = manifest.probes.single { it.methodName == "neverCalled" }.probeIndex
         val pingProbeIndex = manifest.probes.single { it.methodName == "ping" }.probeIndex
 
-        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null)).batch.deltas
+        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null, "run-1")).batch.deltas
         val byIndex = deltas.associateBy { it.probeIndex }
 
         assertEquals(1L, byIndex.getValue(pingProbeIndex).hitsTotal)
@@ -87,11 +87,11 @@ class YukonInstrumentationTest {
         repeat(3) { target.javaClass.getMethod("ping").invoke(target) }
         repeat(2) { target.javaClass.getMethod("neverCalled").invoke(target) }
 
-        val manifest = registry.manifest("test", null, "instance-1")
+        val manifest = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
         val neverCalledProbeIndex = manifest.probes.single { it.methodName == "neverCalled" }.probeIndex
         val pingProbeIndex = manifest.probes.single { it.methodName == "ping" }.probeIndex
 
-        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null)).batch.deltas
+        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null, "run-1")).batch.deltas
         val byIndex = deltas.associateBy { it.probeIndex }
 
         assertEquals(3L, byIndex.getValue(pingProbeIndex).hitsTotal)
@@ -126,7 +126,7 @@ class YukonInstrumentationTest {
             }
 
         assertTrue("com.example.target.WeirdName" !in registry.registeredClassNames(), "it is never registered, so it has no probes")
-        val skipped = registry.manifest("test", null, "instance-1").skippedClasses.single()
+        val skipped = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1")).skippedClasses.single()
         assertEquals("com.example.target.WeirdName", skipped.className)
         // The exact reason, not just "JvmName": letting the class through to ByteBuddy would fail
         // it inside make() instead, and that failure's own message also names the annotation. Only
@@ -157,7 +157,7 @@ class YukonInstrumentationTest {
         repeat(2) { iface.getMethod("defaultThing").invoke(instance) }
         iface.getMethod("staticThing").invoke(null)
 
-        val manifest = registry.manifest("test", null, "instance-1")
+        val manifest = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
         val ifaceProbes = manifest.probes.filter { it.className == "com.example.target.DefaultMethodTarget" }
         assertEquals(setOf("defaultThing", "staticThing"), ifaceProbes.map { it.methodName }.toSet())
         assertTrue(manifest.skippedClasses.none { it.className == "com.example.target.DefaultMethodTarget" })
@@ -166,7 +166,7 @@ class YukonInstrumentationTest {
         val ifaceClassId = ifaceProbes.first().classId
         val byIndex =
             registry
-                .computeDeltaBatch(ResourceAttributes("test", null, "i-1", null))
+                .computeDeltaBatch(ResourceAttributes("test", null, "i-1", null, "run-1"))
                 .batch.deltas
                 .filter { it.classId == ifaceClassId }
                 .associateBy { it.probeIndex }
@@ -183,7 +183,11 @@ class YukonInstrumentationTest {
         val target = Class.forName("com.example.target.NativeTarget", true, fixtureLoader())
         target.getMethod("normalThing").invoke(target.getDeclaredConstructor().newInstance())
 
-        val probes = registry.manifest("test", null, "instance-1").probes.filter { it.className == "com.example.target.NativeTarget" }
+        val probes =
+            registry
+                .manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
+                .probes
+                .filter { it.className == "com.example.target.NativeTarget" }
         assertEquals(setOf("<init>", "normalThing"), probes.map { it.methodName }.toSet())
     }
 
@@ -193,7 +197,7 @@ class YukonInstrumentationTest {
         val config = AgentConfig.parse("includePackages=com.example.target")
         install(registry, config)
 
-        val probes = registry.manifest("test", null, "instance-1").probes
+        val probes = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1")).probes
         val ping = probes.single { it.methodName == "ping" }
         val neverCalled = probes.single { it.methodName == "neverCalled" }
         assertTrue(ping.line > 0, "expected a real line, got ${ping.line}")
@@ -209,14 +213,14 @@ class YukonInstrumentationTest {
         val target = Class.forName("com.example.target.StaticInitTarget", true, fixtureLoader())
         assertEquals(7, target.getField("TOUCHED").get(null))
 
-        val manifest = registry.manifest("test", null, "instance-1")
+        val manifest = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
         val pokeIndex =
             manifest.probes
                 .single { it.className == "com.example.target.StaticInitTarget" && it.methodName == "poke" }
                 .probeIndex
         val byIndex =
             registry
-                .computeDeltaBatch(ResourceAttributes("test", null, "i-1", null))
+                .computeDeltaBatch(ResourceAttributes("test", null, "i-1", null, "run-1"))
                 .batch.deltas
                 .associateBy { it.probeIndex }
         assertEquals(1L, byIndex.getValue(pokeIndex).hitsTotal, "the call from <clinit> must be counted, not lost or crash")
@@ -235,7 +239,7 @@ class YukonInstrumentationTest {
         val counts = field.get(null) as LongArray
         val pingIndex =
             registry
-                .manifest("test", null, "instance-1")
+                .manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
                 .probes
                 .single { it.methodName == "ping" }
                 .probeIndex
@@ -243,7 +247,7 @@ class YukonInstrumentationTest {
         // A miss in the bootstrap holder would hand the class a fresh array and leave the
         // registry's own at zero; both views agreeing proves they are the same array.
         val reported =
-            registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null)).batch.deltas.single {
+            registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null, "run-1")).batch.deltas.single {
                 it.probeIndex ==
                     pingIndex
             }
@@ -262,7 +266,7 @@ class YukonInstrumentationTest {
         // run <clinit> again. This pins that the woven prelude's own increment is not doubled.
         Class.forName("com.example.target.StaticInitTarget", true, loader)
 
-        val manifest = registry.manifest("test", null, "instance-1")
+        val manifest = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
         val clinitProbe =
             manifest.probes.single { it.className == "com.example.target.StaticInitTarget" && it.methodName == "<clinit>" }
         assertEquals(ProbeKind.METHOD, clinitProbe.kind)
@@ -272,7 +276,7 @@ class YukonInstrumentationTest {
 
         val byIndex =
             registry
-                .computeDeltaBatch(ResourceAttributes("test", null, "i-1", null))
+                .computeDeltaBatch(ResourceAttributes("test", null, "i-1", null, "run-1"))
                 .batch.deltas
                 .associateBy { it.probeIndex }
         assertEquals(1L, byIndex.getValue(clinitProbe.probeIndex).hitsTotal)
@@ -286,10 +290,10 @@ class YukonInstrumentationTest {
 
         Class.forName("com.example.target.StaticInitTarget", false, fixtureLoader())
 
-        val manifest = registry.manifest("test", null, "instance-1")
+        val manifest = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
         val clinitProbe =
             manifest.probes.single { it.className == "com.example.target.StaticInitTarget" && it.methodName == "<clinit>" }
-        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null)).batch.deltas
+        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null, "run-1")).batch.deltas
         assertTrue(
             deltas.none { it.probeIndex == clinitProbe.probeIndex },
             "the class was defined, so its row exists, but <clinit> never ran, so nothing was counted",
@@ -304,7 +308,7 @@ class YukonInstrumentationTest {
 
         Class.forName("com.example.target.SampleTarget", true, fixtureLoader())
 
-        val manifest = registry.manifest("test", null, "instance-1")
+        val manifest = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
         assertTrue(
             manifest.probes.none { it.className == "com.example.target.SampleTarget" && it.methodName == "<clinit>" },
             "SampleTarget declares no static initializer of its own",
@@ -334,7 +338,7 @@ class YukonInstrumentationTest {
         impl.getDeclaredConstructor().newInstance()
         iface.getMethod("staticThing").invoke(null)
 
-        val manifest = registry.manifest("test", null, "instance-1")
+        val manifest = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
         assertTrue(
             manifest.probes.none { it.className == "com.example.target.DefaultMethodTarget" && it.methodName == "<clinit>" },
         )
@@ -513,7 +517,7 @@ class YukonInstrumentationTest {
         // about: without it, nothing anywhere says the mark is missing rather than false.
         val inlineProbes =
             registry
-                .manifest("test", null, "instance-1")
+                .manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
                 .probes
                 .filter { it.className == "com.example.target.InlineTarget" && it.inline }
         assertTrue(inlineProbes.isEmpty(), "with no bytes to read, no probe can carry the inline mark")

@@ -1,6 +1,7 @@
 package io.github.lukedevops.yukon.instrumentation
 
 import io.github.lukedevops.yukon.config.AgentConfig
+import io.github.lukedevops.yukon.export.ResourceAttributes
 import io.github.lukedevops.yukon.registry.ProbeRegistry
 import net.bytebuddy.agent.ByteBuddyAgent
 import net.bytebuddy.agent.builder.ResettableClassFileTransformer
@@ -185,7 +186,10 @@ class ProbesWithheldForUndefinedClassTest {
             "the transform must have committed this class's probes before the definition failed",
         )
         assertTrue(
-            registry.manifest("test", null, "instance-1").skippedClasses.none { it.className == VANISHING_SUB },
+            registry
+                .manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
+                .skippedClasses
+                .none { it.className == VANISHING_SUB },
             "a class ByteBuddy actually transformed is not a class it skipped",
         )
     }
@@ -224,7 +228,7 @@ class ProbesWithheldForUndefinedClassTest {
         assertEquals(1, registry.withheldForGoodClassCount())
         assertEquals(0, registry.unconfirmedClassCount(), "withheld for good is a terminal state, not an open one")
 
-        val manifest = registry.manifest("test", null, "instance-1")
+        val manifest = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
         assertTrue(manifest.probes.none { it.className == VANISHING_SUB }, "withheld for good means never published")
         assertTrue(manifest.skippedClasses.none { it.className == VANISHING_SUB }, "it was registered, not skipped")
         assertTrue(manifest.unreportedClasses.none { it.className == VANISHING_SUB }, "it was registered, not unreported")
@@ -253,7 +257,7 @@ class ProbesWithheldForUndefinedClassTest {
         assertEquals(0, registry.unconfirmedClassCount(), "one sweep is enough once the JVM has actually defined the class")
         assertEquals(0, registry.withheldForGoodClassCount())
 
-        val manifest = registry.manifest("test", null, "instance-1")
+        val manifest = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
         assertTrue(
             manifest.probes.any { it.className == STEADY_SUB },
             "without this control, withholding the other class would prove nothing: this harness must publish something",

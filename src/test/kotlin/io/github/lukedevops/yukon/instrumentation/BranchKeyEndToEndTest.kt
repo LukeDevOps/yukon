@@ -4,6 +4,7 @@ import com.example.target.keypairs.kotlinFixtureBytes
 import com.example.target.keypairs.renamedTo
 import io.github.lukedevops.yukon.config.AgentConfig
 import io.github.lukedevops.yukon.export.ProbeKind
+import io.github.lukedevops.yukon.export.ResourceAttributes
 import io.github.lukedevops.yukon.registry.ProbeRegistry
 import net.bytebuddy.agent.ByteBuddyAgent
 import net.bytebuddy.agent.builder.ResettableClassFileTransformer
@@ -71,7 +72,7 @@ class BranchKeyEndToEndTest {
         v2Class.getMethod("second", Int::class.java).invoke(v2Instance, 5)
         v2Class.getMethod("first", Int::class.java).invoke(v2Instance, 5)
 
-        val manifest = registry.manifest("test", null, "instance-1")
+        val manifest = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
         val commonProbes = manifest.probes.filter { it.className == commonName }
         val classIds = commonProbes.map { it.classId }.distinct()
         assertEquals(2, classIds.size, "v1 and v2 must register as two distinct classes despite sharing a name")

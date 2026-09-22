@@ -15,7 +15,7 @@ A probe's slot in its class's count array, fixed when the class is woven.
 _Avoid_: probe ID
 
 **Class ID**:
-A small integer the registry assigns to a class the first time it registers. Unique within one service instance only.
+A small integer the registry assigns to a class the first time it registers. Unique within one run only.
 
 **Layout hash**:
 A hash of a class's method and branch signatures in slot order. Two loads of a class with the same name and hash share a count array; a different hash gets a fresh one.
@@ -78,8 +78,16 @@ The payload mapping each (class ID, probe index) to its class, method, descripto
 _Avoid_: metadata, symbol table
 
 **Service instance**:
-One running JVM, identified by `service.instance.id`, a fresh UUID per process by default. Class IDs and hit totals only mean something within one.
+A JVM as the collector sees it, identified by `service.instance.id`, a fresh UUID per process by default. An adopter can pin the ID to a name that survives a restart. One instance then spans several runs.
 _Avoid_: node, pod, host
+
+**Run**:
+One process's lifetime under one instance ID, from agent startup to exit. Class IDs, endpoint IDs and hit totals only mean something within one.
+_Avoid_: session, boot, incarnation
+
+**Run ID**:
+A random ID the agent makes once per process at startup and stamps on every payload that process sends. A new process always gets a new one, even under a pinned instance ID, so a collector can keep each run's data apart.
+_Avoid_: process ID (the operating system's PID), boot ID
 
 **Collector**:
 Whatever receives the payloads and merges them across instances. `yukon-collector` is the production one; the demo's stub and the testkit's `YukonTestCollector` play the role in this repo.
@@ -100,7 +108,7 @@ The counter for one endpoint, incremented when the framework matches a request t
 _Avoid_: route probe, request counter
 
 **Endpoint ID**:
-A small integer the registry assigns to an endpoint the first time it is seen. Unique within one service instance only, like a class ID.
+A small integer the registry assigns to an endpoint the first time it is seen. Unique within one run only, like a class ID.
 
 **Handler**:
 The method or object the framework invokes for an endpoint. Recorded on the endpoint as a label naming a manifest method where the framework exposes one, or a class name where only the object is known.

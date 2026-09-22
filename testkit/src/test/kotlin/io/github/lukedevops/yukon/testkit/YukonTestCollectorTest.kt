@@ -15,6 +15,7 @@ import io.github.lukedevops.yukon.export.ProbeDelta
 import io.github.lukedevops.yukon.export.ProbeKind
 import io.github.lukedevops.yukon.export.ProbeLocation
 import io.github.lukedevops.yukon.export.ProbeManifest
+import io.github.lukedevops.yukon.export.ProtoPayloadCodec
 import io.github.lukedevops.yukon.export.ResourceAttributes
 import io.github.lukedevops.yukon.export.SkippedClass
 import io.github.lukedevops.yukon.export.StaticBaseline
@@ -112,10 +113,8 @@ class YukonTestCollectorTest {
         val exporter = exporterFor(target)
         val manifest =
             ProbeManifest(
-                serviceName = "svc",
-                serviceVersion = "1.0",
+                resource = ResourceAttributes("svc", "1.0", "i-1", null, "run-1"),
                 probes = listOf(methodProbe(1, 0, "com.acme.Foo", "bar", "()V", 10)),
-                serviceInstanceId = "i-1",
             )
 
         exporter.exportManifest(manifest)
@@ -123,7 +122,7 @@ class YukonTestCollectorTest {
 
         exporter.exportDeltaBatch(
             DeltaBatch(
-                ResourceAttributes("svc", "1.0", "i-1", null),
+                ResourceAttributes("svc", "1.0", "i-1", null, "run-1"),
                 listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 1L)),
             ),
         )
@@ -136,19 +135,17 @@ class YukonTestCollectorTest {
         val exporter = exporterFor(target)
         val manifest =
             ProbeManifest(
-                serviceName = "svc",
-                serviceVersion = null,
+                resource = ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 probes =
                     listOf(
                         methodProbe(1, 0, "com.acme.Foo", "bar", "()V", 1),
                         methodProbe(1, 1, "com.acme.Foo", "bar", "(I)V", 2),
                     ),
-                serviceInstanceId = "i-1",
             )
         exporter.exportManifest(manifest)
         val batch =
             DeltaBatch(
-                ResourceAttributes("svc", null, "i-1", null),
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 listOf(
                     ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 3L),
                     ProbeDelta(1, 1, ProbeKind.METHOD, 1L, 4L),
@@ -170,14 +167,14 @@ class YukonTestCollectorTest {
         val target = startCollector()
         val exporter = exporterFor(target)
         exporter.exportManifest(
-            ProbeManifest("svc", null, listOf(methodProbe(1, 0, "com.acme.A", "m", "()V", 1)), serviceInstanceId = "i-1"),
+            ProbeManifest(ResourceAttributes("svc", null, "i-1", null, "run-1"), listOf(methodProbe(1, 0, "com.acme.A", "m", "()V", 1))),
         )
         exporter.exportManifest(
-            ProbeManifest("svc", null, listOf(methodProbe(1, 0, "com.acme.B", "m", "()V", 1)), serviceInstanceId = "i-2"),
+            ProbeManifest(ResourceAttributes("svc", null, "i-2", null, "run-1"), listOf(methodProbe(1, 0, "com.acme.B", "m", "()V", 1))),
         )
 
         exporter.exportDeltaBatch(
-            DeltaBatch(ResourceAttributes("svc", null, "i-1", null), listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 5L))),
+            DeltaBatch(ResourceAttributes("svc", null, "i-1", null, "run-1"), listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 5L))),
         )
 
         assertTrue(target.wasHit("com.acme.A", "m"))
@@ -192,10 +189,10 @@ class YukonTestCollectorTest {
         assertFalse(target.endedCleanly("i-1"))
         assertTrue(target.instancesEndedCleanly().isEmpty())
 
-        exporter.exportDeltaBatch(DeltaBatch(ResourceAttributes("svc", null, "i-2", null), emptyList()))
+        exporter.exportDeltaBatch(DeltaBatch(ResourceAttributes("svc", null, "i-2", null, "run-1"), emptyList()))
         assertFalse(target.endedCleanly("i-1"), "a different instance's batch must not mark this one")
 
-        exporter.exportDeltaBatch(DeltaBatch(ResourceAttributes("svc", null, "i-1", null), emptyList(), finalFlush = true))
+        exporter.exportDeltaBatch(DeltaBatch(ResourceAttributes("svc", null, "i-1", null, "run-1"), emptyList(), finalFlush = true))
 
         assertTrue(target.endedCleanly("i-1"))
         assertEquals(setOf("i-1"), target.instancesEndedCleanly())
@@ -209,7 +206,7 @@ class YukonTestCollectorTest {
 
         thread(isDaemon = true) {
             Thread.sleep(50)
-            exporter.exportDeltaBatch(DeltaBatch(ResourceAttributes("svc", null, "i-1", null), emptyList()))
+            exporter.exportDeltaBatch(DeltaBatch(ResourceAttributes("svc", null, "i-1", null, "run-1"), emptyList()))
         }
         target.awaitNextFlush(Duration.ofSeconds(2))
 
@@ -225,15 +222,15 @@ class YukonTestCollectorTest {
 
         thread(isDaemon = true) {
             Thread.sleep(50)
-            exporter.exportDeltaBatch(DeltaBatch(ResourceAttributes("svc", null, "i-1", null), emptyList()))
+            exporter.exportDeltaBatch(DeltaBatch(ResourceAttributes("svc", null, "i-1", null, "run-1"), emptyList()))
             Thread.sleep(50)
-            exporter.exportDeltaBatch(DeltaBatch(ResourceAttributes("svc", null, "i-1", null), emptyList()))
+            exporter.exportDeltaBatch(DeltaBatch(ResourceAttributes("svc", null, "i-1", null, "run-1"), emptyList()))
         }
         target.awaitSettled(Duration.ofSeconds(2))
 
         thread(isDaemon = true) {
             Thread.sleep(50)
-            exporter.exportDeltaBatch(DeltaBatch(ResourceAttributes("svc", null, "i-1", null), emptyList()))
+            exporter.exportDeltaBatch(DeltaBatch(ResourceAttributes("svc", null, "i-1", null, "run-1"), emptyList()))
         }
         assertFailsWith<TimeoutException> {
             target.awaitSettled(Duration.ofMillis(150))
@@ -258,7 +255,10 @@ class YukonTestCollectorTest {
         thread(isDaemon = true) {
             Thread.sleep(50)
             exporter.exportManifest(
-                ProbeManifest("svc", null, listOf(methodProbe(1, 0, "com.acme.Foo", "bar", "()V", 1)), serviceInstanceId = "i-1"),
+                ProbeManifest(
+                    ResourceAttributes("svc", null, "i-1", null, "run-1"),
+                    listOf(methodProbe(1, 0, "com.acme.Foo", "bar", "()V", 1)),
+                ),
             )
         }
         target.awaitProbe("com.acme.Foo", "bar", Duration.ofSeconds(2))
@@ -274,11 +274,9 @@ class YukonTestCollectorTest {
         val exporter = exporterFor(target)
         exporter.exportManifest(
             ProbeManifest(
-                "svc",
-                null,
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 emptyList(),
                 skippedClasses = listOf(SkippedClass("com.acme.Skipped", "cannot add @JvmName on class", 1L)),
-                serviceInstanceId = "i-1",
             ),
         )
 
@@ -292,7 +290,7 @@ class YukonTestCollectorTest {
         val exporter = exporterFor(target)
         exporter.exportStaticBaseline(
             StaticBaseline(
-                resource = ResourceAttributes("svc", null, "i-1", null),
+                resource = ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 declaredClasses = listOf(DeclaredClass("com.acme.Dead", listOf(DeclaredMethod("m", "()V")))),
                 scannedAt = 1000L,
                 chunkIndex = 0,
@@ -309,7 +307,10 @@ class YukonTestCollectorTest {
         val target = startCollector()
         val exporter = exporterFor(target)
         exporter.exportManifest(
-            ProbeManifest("svc", null, listOf(methodProbe(1, 0, "com.acme.Has", "real", "()V", 1)), serviceInstanceId = "i-1"),
+            ProbeManifest(
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
+                listOf(methodProbe(1, 0, "com.acme.Has", "real", "()V", 1)),
+            ),
         )
 
         val failure = assertFailsWith<UnknownProbeException> { target.wasHit("com.acme.Has", "missing") }
@@ -330,20 +331,18 @@ class YukonTestCollectorTest {
         val exporter = exporterFor(target)
         exporter.exportManifest(
             ProbeManifest(
-                "svc",
-                null,
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 listOf(
                     methodProbe(1, 0, "com.acme.Foo", "a", "()V", 1),
                     methodProbe(1, 1, "com.acme.Foo", "b", "()V", 2),
                     ProbeLocation(1, 2, ProbeKind.BRANCH, "com.acme.Foo", "b", "()V", 3, 0),
                     ProbeLocation(1, 3, ProbeKind.BRANCH, "com.acme.Foo", "b", "()V", 3, 1),
                 ),
-                serviceInstanceId = "i-1",
             ),
         )
         exporter.exportDeltaBatch(
             DeltaBatch(
-                ResourceAttributes("svc", null, "i-1", null),
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 listOf(
                     ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 2L),
                     ProbeDelta(1, 2, ProbeKind.BRANCH, 1L, 1L),
@@ -367,8 +366,7 @@ class YukonTestCollectorTest {
         val exporter = exporterFor(target)
         exporter.exportManifest(
             ProbeManifest(
-                "svc",
-                null,
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 listOf(
                     ProbeLocation(
                         1,
@@ -383,7 +381,6 @@ class YukonTestCollectorTest {
                     ),
                     ProbeLocation(1, 1, ProbeKind.BRANCH, "com.acme.Foo", "b", "()V", 3, branchIndex = 1, branchKey = null),
                 ),
-                serviceInstanceId = "i-1",
             ),
         )
 
@@ -400,13 +397,11 @@ class YukonTestCollectorTest {
         val exporter = exporterFor(target)
         exporter.exportManifest(
             ProbeManifest(
-                "svc",
-                null,
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 listOf(
                     methodProbe(1, 0, "com.acme.Foo", "a", "()V", 1),
                     ProbeLocation(1, 1, ProbeKind.METHOD, "com.acme.Foo", "inl", "()V", 2, null, inline = true),
                 ),
-                serviceInstanceId = "i-1",
             ),
         )
 
@@ -422,13 +417,11 @@ class YukonTestCollectorTest {
         val exporter = exporterFor(target)
         exporter.exportManifest(
             ProbeManifest(
-                "svc",
-                null,
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 listOf(
                     methodProbe(1, 0, "com.acme.Foo", "f", "(I)V", 1),
                     omissionProbe(1, 1, "com.acme.Foo", "f", "(I)V", 1, parameterIndex = 0, parameterName = "count"),
                 ),
-                serviceInstanceId = "i-1",
             ),
         )
 
@@ -444,8 +437,7 @@ class YukonTestCollectorTest {
         val exporter = exporterFor(target)
         exporter.exportManifest(
             ProbeManifest(
-                "svc",
-                null,
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 listOf(
                     methodProbe(1, 0, "com.acme.Point", "getX", "()I", 1),
                     ProbeLocation(
@@ -460,7 +452,6 @@ class YukonTestCollectorTest {
                         generatedBy = GeneratedBy.DATA_CLASS,
                     ),
                 ),
-                serviceInstanceId = "i-1",
             ),
         )
 
@@ -476,29 +467,25 @@ class YukonTestCollectorTest {
         val exporter = exporterFor(target)
         exporter.exportManifest(
             ProbeManifest(
-                "svc",
-                null,
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 listOf(omissionProbe(1, 0, "com.acme.Foo", "f", "(II)V", 1, parameterIndex = 0, parameterName = "count")),
-                serviceInstanceId = "i-1",
             ),
         )
         exporter.exportManifest(
             ProbeManifest(
-                "svc",
-                null,
+                ResourceAttributes("svc", null, "i-2", null, "run-1"),
                 listOf(omissionProbe(1, 0, "com.acme.Foo", "f", "(II)V", 1, parameterIndex = 0, parameterName = "count")),
-                serviceInstanceId = "i-2",
             ),
         )
         exporter.exportDeltaBatch(
             DeltaBatch(
-                ResourceAttributes("svc", null, "i-1", null),
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 listOf(ProbeDelta(1, 0, ProbeKind.OPTIONAL_ARGUMENT, 1L, 3L)),
             ),
         )
         exporter.exportDeltaBatch(
             DeltaBatch(
-                ResourceAttributes("svc", null, "i-2", null),
+                ResourceAttributes("svc", null, "i-2", null, "run-1"),
                 listOf(ProbeDelta(1, 0, ProbeKind.OPTIONAL_ARGUMENT, 1L, 2L)),
             ),
         )
@@ -514,10 +501,8 @@ class YukonTestCollectorTest {
         val exporter = exporterFor(target)
         exporter.exportManifest(
             ProbeManifest(
-                "svc",
-                null,
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 listOf(omissionProbe(1, 0, "com.acme.Foo", "f", "(II)V", 1, parameterIndex = 0, parameterName = "count")),
-                serviceInstanceId = "i-1",
             ),
         )
 
@@ -531,18 +516,16 @@ class YukonTestCollectorTest {
         val exporter = exporterFor(target)
         exporter.exportManifest(
             ProbeManifest(
-                "svc",
-                null,
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 listOf(
                     methodProbe(1, 0, "com.acme.Foo", "f", "(I)V", 10),
                     omissionProbe(1, 1, "com.acme.Foo", "f", "(I)V", 10, parameterIndex = 0, parameterName = "count"),
                 ),
-                serviceInstanceId = "i-1",
             ),
         )
         exporter.exportDeltaBatch(
             DeltaBatch(
-                ResourceAttributes("svc", null, "i-1", null),
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 listOf(
                     ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 4L),
                     ProbeDelta(1, 1, ProbeKind.OPTIONAL_ARGUMENT, 1L, 4L),
@@ -565,8 +548,7 @@ class YukonTestCollectorTest {
         val exporter = exporterFor(target)
         exporter.exportManifest(
             ProbeManifest(
-                "svc",
-                null,
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 listOf(
                     methodProbe(1, 0, "com.acme.Base", "greet", "(Ljava/lang/String;)V", 10),
                     omissionProbe(
@@ -581,12 +563,11 @@ class YukonTestCollectorTest {
                         overridable = true,
                     ),
                 ),
-                serviceInstanceId = "i-1",
             ),
         )
         exporter.exportDeltaBatch(
             DeltaBatch(
-                ResourceAttributes("svc", null, "i-1", null),
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 listOf(
                     ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 3L),
                     ProbeDelta(1, 1, ProbeKind.OPTIONAL_ARGUMENT, 1L, 3L),
@@ -603,18 +584,16 @@ class YukonTestCollectorTest {
         val exporter = exporterFor(target)
         exporter.exportManifest(
             ProbeManifest(
-                "svc",
-                null,
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 listOf(
                     methodProbe(1, 0, "com.acme.Foo", "f", "(I)V", 10),
                     omissionProbe(1, 1, "com.acme.Foo", "f", "(I)V", 10, parameterIndex = 0, parameterName = "count"),
                 ),
-                serviceInstanceId = "i-1",
             ),
         )
         exporter.exportDeltaBatch(
             DeltaBatch(
-                ResourceAttributes("svc", null, "i-1", null),
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 4L)),
             ),
         )
@@ -632,19 +611,17 @@ class YukonTestCollectorTest {
         val exporter = exporterFor(target)
         exporter.exportManifest(
             ProbeManifest(
-                "svc",
-                null,
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 listOf(
                     methodProbe(1, 0, "com.acme.Point", "copy", "(II)Lcom/acme/Point;", 10).copy(generatedBy = GeneratedBy.DATA_CLASS),
                     omissionProbe(1, 1, "com.acme.Point", "copy", "(II)Lcom/acme/Point;", 10, parameterIndex = 1, parameterName = "y")
                         .copy(generatedBy = GeneratedBy.DATA_CLASS),
                 ),
-                serviceInstanceId = "i-1",
             ),
         )
         exporter.exportDeltaBatch(
             DeltaBatch(
-                ResourceAttributes("svc", null, "i-1", null),
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 listOf(
                     ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 4L),
                     ProbeDelta(1, 1, ProbeKind.OPTIONAL_ARGUMENT, 1L, 4L),
@@ -662,8 +639,7 @@ class YukonTestCollectorTest {
         val exporter = exporterFor(target)
         exporter.exportManifest(
             ProbeManifest(
-                "svc",
-                null,
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 listOf(
                     omissionProbe(
                         1,
@@ -677,12 +653,11 @@ class YukonTestCollectorTest {
                         overridable = true,
                     ),
                 ),
-                serviceInstanceId = "i-1",
             ),
         )
         exporter.exportDeltaBatch(
             DeltaBatch(
-                ResourceAttributes("svc", null, "i-1", null),
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 listOf(ProbeDelta(1, 0, ProbeKind.OPTIONAL_ARGUMENT, 1L, 0L)),
             ),
         )
@@ -697,8 +672,7 @@ class YukonTestCollectorTest {
         val exporter = exporterFor(target)
         exporter.exportManifest(
             ProbeManifest(
-                "svc",
-                null,
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 listOf(
                     methodProbe(1, 0, "com.acme.FooKt", "f", "(I)V", 10),
                     ProbeLocation(
@@ -715,12 +689,11 @@ class YukonTestCollectorTest {
                         parameterName = "count",
                     ),
                 ),
-                serviceInstanceId = "i-1",
             ),
         )
         exporter.exportDeltaBatch(
             DeltaBatch(
-                ResourceAttributes("svc", null, "i-1", null),
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 4L)),
             ),
         )
@@ -740,8 +713,7 @@ class YukonTestCollectorTest {
         val exporter = exporterFor(target)
         exporter.exportManifest(
             ProbeManifest(
-                "svc",
-                null,
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 listOf(
                     methodProbe(2, 0, "com.example.scalatarget.Cc", "<init>", "(II)V", 71),
                     omissionProbe(
@@ -756,12 +728,11 @@ class YukonTestCollectorTest {
                         targetClassName = "com.example.scalatarget.Cc",
                     ),
                 ),
-                serviceInstanceId = "i-1",
             ),
         )
         exporter.exportDeltaBatch(
             DeltaBatch(
-                ResourceAttributes("svc", null, "i-1", null),
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 listOf(
                     ProbeDelta(2, 0, ProbeKind.METHOD, 1L, 4L),
                     ProbeDelta(1, 0, ProbeKind.OPTIONAL_ARGUMENT, 1L, 4L),
@@ -794,8 +765,7 @@ class YukonTestCollectorTest {
         val exporter = exporterFor(target)
         exporter.exportManifest(
             ProbeManifest(
-                "svc",
-                null,
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 listOf(
                     methodProbe(3, 0, "com.example.scalatarget.Cc", "<init>", "(II)V", 71),
                     omissionProbe(
@@ -820,12 +790,11 @@ class YukonTestCollectorTest {
                         parameterName = "a",
                     ),
                 ),
-                serviceInstanceId = "i-1",
             ),
         )
         exporter.exportDeltaBatch(
             DeltaBatch(
-                ResourceAttributes("svc", null, "i-1", null),
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 listOf(
                     ProbeDelta(3, 0, ProbeKind.METHOD, 1L, 4L),
                     ProbeDelta(1, 0, ProbeKind.OPTIONAL_ARGUMENT, 1L, 4L),
@@ -853,10 +822,8 @@ class YukonTestCollectorTest {
         val exporter = exporterFor(target)
         exporter.exportManifest(
             ProbeManifest(
-                "svc",
-                null,
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 listOf(methodProbe(2, 0, "com.example.scalatarget.Cc", "<init>", "(II)V", 71)),
-                serviceInstanceId = "i-1",
             ),
         )
 
@@ -873,20 +840,16 @@ class YukonTestCollectorTest {
         val exporter = exporterFor(target)
         exporter.exportManifest(
             ProbeManifest(
-                "svc",
-                null,
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 emptyList(),
                 skippedClasses = listOf(SkippedClass("com.acme.B", "r2", 2L)),
-                serviceInstanceId = "i-1",
             ),
         )
         exporter.exportManifest(
             ProbeManifest(
-                "svc",
-                null,
+                ResourceAttributes("svc", null, "i-2", null, "run-1"),
                 emptyList(),
                 skippedClasses = listOf(SkippedClass("com.acme.A", "r1", 1L), SkippedClass("com.acme.B", "r2-dup", 3L)),
-                serviceInstanceId = "i-2",
             ),
         )
 
@@ -906,7 +869,7 @@ class YukonTestCollectorTest {
         val exporter = exporterFor(target)
         exporter.exportStaticBaseline(
             StaticBaseline(
-                resource = ResourceAttributes("svc", null, "i-1", null),
+                resource = ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 declaredClasses = listOf(DeclaredClass("com.acme.Foo", listOf(DeclaredMethod("m", "()V")))),
                 scannedAt = 1000L,
                 chunkIndex = 0,
@@ -923,7 +886,7 @@ class YukonTestCollectorTest {
         val exporter = exporterFor(target)
         exporter.exportStaticBaseline(
             StaticBaseline(
-                resource = ResourceAttributes("svc", null, "i-1", null),
+                resource = ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 declaredClasses =
                     listOf(
                         DeclaredClass("com.acme.Loaded", listOf(DeclaredMethod("m", "()V"))),
@@ -938,7 +901,10 @@ class YukonTestCollectorTest {
             ),
         )
         exporter.exportManifest(
-            ProbeManifest("svc", null, listOf(methodProbe(1, 0, "com.acme.Loaded", "m", "()V", 1)), serviceInstanceId = "i-1"),
+            ProbeManifest(
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
+                listOf(methodProbe(1, 0, "com.acme.Loaded", "m", "()V", 1)),
+            ),
         )
 
         assertEquals(listOf("com.acme.Dead"), target.neverLoaded())
@@ -950,7 +916,7 @@ class YukonTestCollectorTest {
         val exporter = exporterFor(target)
         exporter.exportStaticBaseline(
             StaticBaseline(
-                resource = ResourceAttributes("svc", null, "i-1", null),
+                resource = ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 declaredClasses =
                     listOf(
                         DeclaredClass("com.acme.Dead", listOf(DeclaredMethod("m", "()V"))),
@@ -971,7 +937,7 @@ class YukonTestCollectorTest {
         val exporter = exporterFor(target)
         exporter.exportStaticBaseline(
             StaticBaseline(
-                resource = ResourceAttributes("svc", null, "i-1", null),
+                resource = ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 declaredClasses =
                     listOf(
                         DeclaredClass(
@@ -1017,22 +983,117 @@ class YukonTestCollectorTest {
         assertFailsWith<TimeoutException> { target.awaitNextFlush(Duration.ofMillis(150)) }
     }
 
+    private fun postStatus(
+        target: YukonTestCollector,
+        path: String,
+        body: ByteArray,
+    ): Int =
+        HttpClient
+            .newHttpClient()
+            .send(
+                HttpRequest
+                    .newBuilder(URI.create("${target.endpoint}/v1/yukon/$path"))
+                    .header("Content-Type", "application/x-protobuf")
+                    .POST(HttpRequest.BodyPublishers.ofByteArray(body))
+                    .build(),
+                HttpResponse.BodyHandlers.discarding(),
+            ).statusCode()
+
+    @Test
+    fun `a payload with an empty run id is answered 400 on every endpoint, recorded, and fails every later query`() {
+        val target = startCollector()
+        val noRun = ResourceAttributes("svc", null, "i-1", null, "")
+
+        val statuses =
+            listOf(
+                postStatus(
+                    target,
+                    "deltas",
+                    ProtoPayloadCodec.encode(DeltaBatch(noRun, listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 1L)))),
+                ),
+                postStatus(
+                    target,
+                    "manifest",
+                    ProtoPayloadCodec.encode(ProbeManifest(noRun, listOf(methodProbe(1, 0, "com.acme.Foo", "bar", "()V", 1)))),
+                ),
+                postStatus(target, "static-baseline", ProtoPayloadCodec.encode(StaticBaseline(noRun, emptyList(), scannedAt = 1L))),
+            )
+
+        assertEquals(listOf(400, 400, 400), statuses)
+        assertEquals(3, target.rejectedPayloads().size)
+        assertTrue(target.rejectedPayloads().all { "empty run id" in it }, "${target.rejectedPayloads()}")
+        val failure = assertFailsWith<IllegalStateException> { target.wasHit("com.acme.Foo", "bar") }
+        assertTrue(target.rejectedPayloads().all { it in failure.message.orEmpty() }, "${failure.message}")
+        assertFailsWith<IllegalStateException> { target.awaitSettled(Duration.ofMillis(150)) }
+    }
+
+    @Test
+    fun `a second run id under an instance id already heard from is answered 400, recorded, and fails every later query`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+        exporter.exportManifest(
+            ProbeManifest(ResourceAttributes("svc", null, "i-1", null, "run-1"), listOf(methodProbe(1, 0, "com.acme.A", "m", "()V", 1))),
+        )
+        val restarted = ResourceAttributes("svc", null, "i-1", null, "run-2")
+
+        val statuses =
+            listOf(
+                postStatus(
+                    target,
+                    "deltas",
+                    ProtoPayloadCodec.encode(DeltaBatch(restarted, listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 5L)))),
+                ),
+                postStatus(
+                    target,
+                    "manifest",
+                    ProtoPayloadCodec.encode(ProbeManifest(restarted, listOf(methodProbe(1, 0, "com.acme.B", "m", "()V", 1)))),
+                ),
+                postStatus(target, "static-baseline", ProtoPayloadCodec.encode(StaticBaseline(restarted, emptyList(), scannedAt = 1L))),
+            )
+
+        assertEquals(listOf(400, 400, 400), statuses)
+        assertEquals(3, target.rejectedPayloads().size)
+        assertTrue(target.rejectedPayloads().all { "run id run-2" in it && "run-1" in it }, "${target.rejectedPayloads()}")
+        val failure = assertFailsWith<IllegalStateException> { target.wasHit("com.acme.A", "m") }
+        assertTrue(target.rejectedPayloads().all { it in failure.message.orEmpty() }, "${failure.message}")
+        assertFailsWith<IllegalStateException> { target.neverHit() }
+        assertFailsWith<IllegalStateException> { target.awaitSettled(Duration.ofMillis(150)) }
+
+        exporter.exportDeltaBatch(DeltaBatch(ResourceAttributes("svc", null, "i-2", null, "run-2"), emptyList()))
+        assertEquals(3, target.rejectedPayloads().size, "another instance's own first run is accepted")
+    }
+
+    @Test
+    fun `a rejection that arrives during a wait fails the wait at once, not at its timeout`() {
+        val target = startCollector()
+        val started = System.nanoTime()
+        thread {
+            Thread.sleep(100)
+            postStatus(
+                target,
+                "deltas",
+                ProtoPayloadCodec.encode(DeltaBatch(ResourceAttributes("svc", null, "i-1", null, ""), emptyList())),
+            )
+        }
+
+        assertFailsWith<IllegalStateException> { target.awaitSettled(Duration.ofSeconds(30)) }
+        assertTrue(System.nanoTime() - started < Duration.ofSeconds(10).toNanos(), "the wait ran on towards its timeout")
+    }
+
     @Test
     fun `wasCalled and callCount reflect a hit-bearing delta, neverCalled lists exactly the other endpoint`() {
         val target = startCollector()
         val exporter = exporterFor(target)
         exporter.exportManifest(
             ProbeManifest(
-                "svc",
-                null,
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 emptyList(),
-                serviceInstanceId = "i-1",
                 endpoints = listOf(endpoint(0, "GET", "/checkout"), endpoint(1, "GET", "/promo")),
             ),
         )
         exporter.exportDeltaBatch(
             DeltaBatch(
-                ResourceAttributes("svc", null, "i-1", null),
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 emptyList(),
                 endpointDeltas = listOf(EndpointDelta(0, 1L, 3L)),
             ),
@@ -1051,16 +1112,32 @@ class YukonTestCollectorTest {
         val target = startCollector()
         val exporter = exporterFor(target)
         exporter.exportManifest(
-            ProbeManifest("svc", null, emptyList(), serviceInstanceId = "i-1", endpoints = listOf(endpoint(0, "GET", "/checkout"))),
+            ProbeManifest(
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
+                emptyList(),
+                endpoints = listOf(endpoint(0, "GET", "/checkout")),
+            ),
         )
         exporter.exportManifest(
-            ProbeManifest("svc", null, emptyList(), serviceInstanceId = "i-2", endpoints = listOf(endpoint(0, "GET", "/checkout"))),
+            ProbeManifest(
+                ResourceAttributes("svc", null, "i-2", null, "run-1"),
+                emptyList(),
+                endpoints = listOf(endpoint(0, "GET", "/checkout")),
+            ),
         )
         exporter.exportDeltaBatch(
-            DeltaBatch(ResourceAttributes("svc", null, "i-1", null), emptyList(), endpointDeltas = listOf(EndpointDelta(0, 1L, 2L))),
+            DeltaBatch(
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
+                emptyList(),
+                endpointDeltas = listOf(EndpointDelta(0, 1L, 2L)),
+            ),
         )
         exporter.exportDeltaBatch(
-            DeltaBatch(ResourceAttributes("svc", null, "i-2", null), emptyList(), endpointDeltas = listOf(EndpointDelta(0, 1L, 5L))),
+            DeltaBatch(
+                ResourceAttributes("svc", null, "i-2", null, "run-1"),
+                emptyList(),
+                endpointDeltas = listOf(EndpointDelta(0, 1L, 5L)),
+            ),
         )
 
         assertEquals(7L, target.callCount("GET", "/checkout"))
@@ -1072,16 +1149,18 @@ class YukonTestCollectorTest {
         val target = startCollector()
         val exporter = exporterFor(target)
         exporter.exportManifest(
-            ProbeManifest("svc", null, emptyList(), serviceInstanceId = "i-1", endpoints = listOf(endpoint(0, "GET", "/checkout"))),
+            ProbeManifest(
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
+                emptyList(),
+                endpoints = listOf(endpoint(0, "GET", "/checkout")),
+            ),
         )
         assertEquals(null, target.endpoints().single().handlerClass)
 
         exporter.exportManifest(
             ProbeManifest(
-                "svc",
-                null,
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 emptyList(),
-                serviceInstanceId = "i-1",
                 endpoints = listOf(endpoint(0, "GET", "/checkout", handlerClass = "com.acme.Checkout", handlerMethod = "handle")),
             ),
         )
@@ -1096,13 +1175,25 @@ class YukonTestCollectorTest {
         val target = startCollector()
         val exporter = exporterFor(target)
         exporter.exportManifest(
-            ProbeManifest("svc", null, emptyList(), serviceInstanceId = "i-1", endpoints = listOf(endpoint(0, "GET", "/checkout"))),
+            ProbeManifest(
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
+                emptyList(),
+                endpoints = listOf(endpoint(0, "GET", "/checkout")),
+            ),
         )
         exporter.exportDeltaBatch(
-            DeltaBatch(ResourceAttributes("svc", null, "i-1", null), emptyList(), endpointDeltas = listOf(EndpointDelta(0, 1L, 5L))),
+            DeltaBatch(
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
+                emptyList(),
+                endpointDeltas = listOf(EndpointDelta(0, 1L, 5L)),
+            ),
         )
         exporter.exportDeltaBatch(
-            DeltaBatch(ResourceAttributes("svc", null, "i-1", null), emptyList(), endpointDeltas = listOf(EndpointDelta(0, 1L, 2L))),
+            DeltaBatch(
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
+                emptyList(),
+                endpointDeltas = listOf(EndpointDelta(0, 1L, 2L)),
+            ),
         )
 
         assertEquals(5L, target.callCount("GET", "/checkout"))
@@ -1113,10 +1204,18 @@ class YukonTestCollectorTest {
         val target = startCollector()
         val exporter = exporterFor(target)
         exporter.exportManifest(
-            ProbeManifest("svc", null, emptyList(), serviceInstanceId = "i-1", endpoints = listOf(endpoint(0, "GET", "/checkout"))),
+            ProbeManifest(
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
+                emptyList(),
+                endpoints = listOf(endpoint(0, "GET", "/checkout")),
+            ),
         )
         exporter.exportDeltaBatch(
-            DeltaBatch(ResourceAttributes("svc", null, "i-1", null), emptyList(), endpointDeltas = listOf(EndpointDelta(0, 1L, 1L))),
+            DeltaBatch(
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
+                emptyList(),
+                endpointDeltas = listOf(EndpointDelta(0, 1L, 1L)),
+            ),
         )
 
         assertTrue(target.wasCalled("get", "/checkout/"))
@@ -1137,10 +1236,8 @@ class YukonTestCollectorTest {
         val exporter = exporterFor(target)
         exporter.exportManifest(
             ProbeManifest(
-                "svc",
-                null,
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 emptyList(),
-                serviceInstanceId = "i-1",
                 disabledEndpointModules = listOf(DisabledEndpointModule("spring-mvc", "linkage error against Spring 7", 1L)),
             ),
         )
@@ -1158,7 +1255,11 @@ class YukonTestCollectorTest {
         thread(isDaemon = true) {
             Thread.sleep(50)
             exporter.exportManifest(
-                ProbeManifest("svc", null, emptyList(), serviceInstanceId = "i-1", endpoints = listOf(endpoint(0, "GET", "/checkout"))),
+                ProbeManifest(
+                    ResourceAttributes("svc", null, "i-1", null, "run-1"),
+                    emptyList(),
+                    endpoints = listOf(endpoint(0, "GET", "/checkout")),
+                ),
             )
         }
         target.awaitEndpoint("GET", "/checkout", Duration.ofSeconds(2))
@@ -1174,10 +1275,8 @@ class YukonTestCollectorTest {
         val exporter = exporterFor(target)
         exporter.exportManifest(
             ProbeManifest(
-                "svc",
-                null,
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 emptyList(),
-                serviceInstanceId = "i-1",
                 disabledEndpointModules =
                     listOf(
                         DisabledEndpointModule("ktor", "r1", 1L),
@@ -1187,10 +1286,8 @@ class YukonTestCollectorTest {
         )
         exporter.exportManifest(
             ProbeManifest(
-                "svc",
-                null,
+                ResourceAttributes("svc", null, "i-2", null, "run-1"),
                 emptyList(),
-                serviceInstanceId = "i-2",
                 disabledEndpointModules = listOf(DisabledEndpointModule("ktor", "r1-dup", 3L)),
             ),
         )
@@ -1204,8 +1301,7 @@ class YukonTestCollectorTest {
         val exporter = exporterFor(target)
         exporter.exportManifest(
             ProbeManifest(
-                "svc",
-                null,
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 probes =
                     listOf(
                         methodProbe(
@@ -1218,7 +1314,6 @@ class YukonTestCollectorTest {
                             calls = listOf(CallEdge("com.acme.Bar", "step", "()V", virtual = false)),
                         ),
                     ),
-                serviceInstanceId = "i-1",
             ),
         )
 
@@ -1232,19 +1327,17 @@ class YukonTestCollectorTest {
         val exporter = exporterFor(target)
         exporter.exportManifest(
             ProbeManifest(
-                "svc",
-                null,
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 probes =
                     listOf(
                         methodProbe(1, 0, "com.acme.A", "run", "()V", 1, calls = listOf(CallEdge("com.acme.B", "step", "()V", false))),
                         methodProbe(1, 1, "com.acme.B", "step", "()V", 2, calls = listOf(CallEdge("com.acme.C", "leaf", "()V", false))),
                         methodProbe(1, 2, "com.acme.C", "leaf", "()V", 3),
                     ),
-                serviceInstanceId = "i-1",
             ),
         )
         exporter.exportDeltaBatch(
-            DeltaBatch(ResourceAttributes("svc", null, "i-1", null), listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 5L))),
+            DeltaBatch(ResourceAttributes("svc", null, "i-1", null, "run-1"), listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 5L))),
         )
 
         val clusters = target.unreachedClusters()
@@ -1264,7 +1357,10 @@ class YukonTestCollectorTest {
         val target = startCollector()
         val exporter = exporterFor(target)
         exporter.exportManifest(
-            ProbeManifest("svc", null, probes = listOf(methodProbe(1, 0, "com.acme.D", "job", "()V", 1)), serviceInstanceId = "i-1"),
+            ProbeManifest(
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
+                probes = listOf(methodProbe(1, 0, "com.acme.D", "job", "()V", 1)),
+            ),
         )
 
         val clusters = target.unreachedClusters()
@@ -1281,8 +1377,7 @@ class YukonTestCollectorTest {
         val exporter = exporterFor(target)
         exporter.exportManifest(
             ProbeManifest(
-                "svc",
-                null,
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 probes =
                     listOf(
                         methodProbe(
@@ -1309,12 +1404,11 @@ class YukonTestCollectorTest {
                         ),
                         methodProbe(1, 1, "com.acme.A", "secret", "()I", 2),
                     ),
-                serviceInstanceId = "i-1",
             ),
         )
         exporter.exportDeltaBatch(
             DeltaBatch(
-                ResourceAttributes("svc", null, "i-1", null),
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 listOf(
                     ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 5L),
                     ProbeDelta(2, 0, ProbeKind.METHOD, 1L, 5L),
@@ -1339,8 +1433,7 @@ class YukonTestCollectorTest {
     fun `a virtual edge widens through classSupertypes to a never-hit override, a non-virtual edge does not`() {
         fun manifestWith(virtual: Boolean) =
             ProbeManifest(
-                "svc",
-                null,
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 probes =
                     listOf(
                         methodProbe(
@@ -1357,7 +1450,6 @@ class YukonTestCollectorTest {
                         methodProbe(3, 0, "com.acme.StripeSvc", "charge", "()V", 20),
                     ),
                 classSupertypes = listOf(ClassSupertypes(3, "java.lang.Object", listOf("com.acme.Svc"))),
-                serviceInstanceId = "i-1",
             )
 
         run {
@@ -1365,7 +1457,7 @@ class YukonTestCollectorTest {
             val exporter = exporterFor(target)
             exporter.exportManifest(manifestWith(virtual = true))
             exporter.exportDeltaBatch(
-                DeltaBatch(ResourceAttributes("svc", null, "i-1", null), listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 4L))),
+                DeltaBatch(ResourceAttributes("svc", null, "i-1", null, "run-1"), listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 4L))),
             )
 
             val stripeCluster = target.unreachedClusters().single { it.root.className == "com.acme.StripeSvc" }
@@ -1378,7 +1470,7 @@ class YukonTestCollectorTest {
             val exporter = exporterFor(target)
             exporter.exportManifest(manifestWith(virtual = false))
             exporter.exportDeltaBatch(
-                DeltaBatch(ResourceAttributes("svc", null, "i-1", null), listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 4L))),
+                DeltaBatch(ResourceAttributes("svc", null, "i-1", null, "run-1"), listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 4L))),
             )
 
             // Without widening, StripeSvc.charge has no resolved caller at all: it can still surface
@@ -1394,8 +1486,7 @@ class YukonTestCollectorTest {
         val exporter = exporterFor(target)
         exporter.exportManifest(
             ProbeManifest(
-                "svc",
-                null,
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 probes =
                     listOf(
                         methodProbe(
@@ -1418,11 +1509,10 @@ class YukonTestCollectorTest {
                         ClassSupertypes(4, "com.acme.Base", emptyList()),
                         ClassSupertypes(5, "com.acme.Left", emptyList()),
                     ),
-                serviceInstanceId = "i-1",
             ),
         )
         exporter.exportDeltaBatch(
-            DeltaBatch(ResourceAttributes("svc", null, "i-1", null), listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 4L))),
+            DeltaBatch(ResourceAttributes("svc", null, "i-1", null, "run-1"), listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 4L))),
         )
 
         val byRoot = target.unreachedClusters().associateBy { it.root.className }
@@ -1439,8 +1529,7 @@ class YukonTestCollectorTest {
         val exporter = exporterFor(target)
         exporter.exportManifest(
             ProbeManifest(
-                "svc",
-                null,
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 probes =
                     listOf(
                         methodProbe(
@@ -1473,11 +1562,10 @@ class YukonTestCollectorTest {
                         ),
                         methodProbe(3, 2, "com.acme.Repo", "<init>", "()V", 1),
                     ),
-                serviceInstanceId = "i-1",
             ),
         )
         exporter.exportDeltaBatch(
-            DeltaBatch(ResourceAttributes("svc", null, "i-1", null), listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 4L))),
+            DeltaBatch(ResourceAttributes("svc", null, "i-1", null, "run-1"), listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 4L))),
         )
 
         val cluster = target.unreachedClusters().single()
@@ -1495,8 +1583,7 @@ class YukonTestCollectorTest {
         val exporter = exporterFor(target)
         exporter.exportManifest(
             ProbeManifest(
-                "svc",
-                null,
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 probes =
                     listOf(
                         methodProbe(
@@ -1512,11 +1599,10 @@ class YukonTestCollectorTest {
                         methodProbe(3, 0, "com.acme.Sub", "<init>", "()V", 15),
                     ),
                 classSupertypes = listOf(ClassSupertypes(3, "com.acme.Base", emptyList())),
-                serviceInstanceId = "i-1",
             ),
         )
         exporter.exportDeltaBatch(
-            DeltaBatch(ResourceAttributes("svc", null, "i-1", null), listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 1L))),
+            DeltaBatch(ResourceAttributes("svc", null, "i-1", null, "run-1"), listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 1L))),
         )
 
         val cluster = target.unreachedClusters().single { it.root.className == "com.acme.Base" }
@@ -1530,8 +1616,7 @@ class YukonTestCollectorTest {
         val exporter = exporterFor(target)
         exporter.exportManifest(
             ProbeManifest(
-                "svc",
-                null,
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 probes =
                     listOf(
                         methodProbe(
@@ -1551,11 +1636,10 @@ class YukonTestCollectorTest {
                         methodProbe(1, 2, "com.acme.R2", "step", "()V", 3, calls = listOf(CallEdge("com.acme.S", "shared", "()V", false))),
                         methodProbe(1, 3, "com.acme.S", "shared", "()V", 4),
                     ),
-                serviceInstanceId = "i-1",
             ),
         )
         exporter.exportDeltaBatch(
-            DeltaBatch(ResourceAttributes("svc", null, "i-1", null), listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 1L))),
+            DeltaBatch(ResourceAttributes("svc", null, "i-1", null, "run-1"), listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 1L))),
         )
 
         val clusters = target.unreachedClusters()
@@ -1572,14 +1656,12 @@ class YukonTestCollectorTest {
         val exporter = exporterFor(target)
         exporter.exportManifest(
             ProbeManifest(
-                "svc",
-                null,
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 probes =
                     listOf(
                         methodProbe(1, 0, "com.acme.P", "loop", "()V", 1, calls = listOf(CallEdge("com.acme.Q", "loop", "()V", false))),
                         methodProbe(1, 1, "com.acme.Q", "loop", "()V", 2, calls = listOf(CallEdge("com.acme.P", "loop", "()V", false))),
                     ),
-                serviceInstanceId = "i-1",
             ),
         )
 
@@ -1592,21 +1674,19 @@ class YukonTestCollectorTest {
         val exporter = exporterFor(target)
         exporter.exportManifest(
             ProbeManifest(
-                "svc",
-                null,
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 probes =
                     listOf(
                         methodProbe(1, 0, "com.acme.A", "run", "()V", 1, calls = listOf(CallEdge("com.acme.B", "helper", "()V", false))),
                     ),
-                serviceInstanceId = "i-1",
             ),
         )
         exporter.exportDeltaBatch(
-            DeltaBatch(ResourceAttributes("svc", null, "i-1", null), listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 2L))),
+            DeltaBatch(ResourceAttributes("svc", null, "i-1", null, "run-1"), listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 2L))),
         )
         exporter.exportStaticBaseline(
             StaticBaseline(
-                resource = ResourceAttributes("svc", null, "i-1", null),
+                resource = ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 declaredClasses =
                     listOf(
                         DeclaredClass(
@@ -1638,21 +1718,19 @@ class YukonTestCollectorTest {
         val exporter = exporterFor(target)
         exporter.exportManifest(
             ProbeManifest(
-                "svc",
-                null,
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 probes =
                     listOf(
                         methodProbe(1, 0, "com.acme.A", "run", "()V", 1, calls = listOf(CallEdge("com.acme.B", "helper", "()V", false))),
                     ),
-                serviceInstanceId = "i-1",
             ),
         )
         exporter.exportDeltaBatch(
-            DeltaBatch(ResourceAttributes("svc", null, "i-1", null), listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 2L))),
+            DeltaBatch(ResourceAttributes("svc", null, "i-1", null, "run-1"), listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 2L))),
         )
         exporter.exportStaticBaseline(
             StaticBaseline(
-                resource = ResourceAttributes("svc", null, "i-1", null),
+                resource = ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 declaredClasses = listOf(DeclaredClass("com.acme.B", listOf(DeclaredMethod("helper", "()V")))),
                 scannedAt = 1000L,
                 chunkIndex = 0,
@@ -1669,18 +1747,16 @@ class YukonTestCollectorTest {
         val exporter = exporterFor(target)
         exporter.exportManifest(
             ProbeManifest(
-                "svc",
-                null,
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 probes =
                     listOf(
                         methodProbe(1, 0, "com.acme.A", "run", "()V", 1, calls = listOf(CallEdge("com.acme.B", "helper", "()V", false))),
                         ProbeLocation(2, 0, ProbeKind.METHOD, "com.acme.B", "helper", "()V", 9, null, inline = true),
                     ),
-                serviceInstanceId = "i-1",
             ),
         )
         exporter.exportDeltaBatch(
-            DeltaBatch(ResourceAttributes("svc", null, "i-1", null), listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 2L))),
+            DeltaBatch(ResourceAttributes("svc", null, "i-1", null, "run-1"), listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 2L))),
         )
 
         assertTrue(target.unreachedClusters().none { c -> c.members.any { it.className == "com.acme.B" } })
@@ -1692,8 +1768,7 @@ class YukonTestCollectorTest {
         val exporter = exporterFor(target)
         exporter.exportManifest(
             ProbeManifest(
-                "svc",
-                null,
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 probes =
                     listOf(
                         ProbeLocation(1, 0, ProbeKind.METHOD, "com.acme.Point", "<init>", "(ILjava/lang/String;)V", 1, null),
@@ -1710,14 +1785,13 @@ class YukonTestCollectorTest {
                             calls = listOf(CallEdge("com.acme.Point", "<init>", "(ILjava/lang/String;)V", false)),
                         ),
                     ),
-                serviceInstanceId = "i-1",
             ),
         )
         // Point is constructed, but never copied: the constructor is hit and copy is not, yet
         // copy's own generatedBy excludes it from the graph, so it can neither root nor join a
         // cluster despite calling <init> itself.
         exporter.exportDeltaBatch(
-            DeltaBatch(ResourceAttributes("svc", null, "i-1", null), listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 1L))),
+            DeltaBatch(ResourceAttributes("svc", null, "i-1", null, "run-1"), listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 1L))),
         )
 
         assertTrue(target.unreachedClusters().isEmpty())
@@ -1729,7 +1803,7 @@ class YukonTestCollectorTest {
         val exporter = exporterFor(target)
         exporter.exportStaticBaseline(
             StaticBaseline(
-                resource = ResourceAttributes("svc", null, "i-1", null),
+                resource = ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 declaredClasses =
                     listOf(
                         DeclaredClass("com.acme.Deflected", listOf(DeclaredMethod("m", "()V"))),
@@ -1740,10 +1814,8 @@ class YukonTestCollectorTest {
         )
         exporter.exportManifest(
             ProbeManifest(
-                "svc",
-                null,
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 emptyList(),
-                serviceInstanceId = "i-1",
                 unreportedClasses = listOf(UnreportedClass("com.acme.Deflected", 5L)),
             ),
         )
@@ -1775,7 +1847,7 @@ class YukonTestCollectorTest {
         val edge = CallEdge("com.acme.B", "n", "()V", virtual = false)
         exporter.exportStaticBaseline(
             StaticBaseline(
-                resource = ResourceAttributes("svc", null, "i-1", null),
+                resource = ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 declaredClasses = listOf(DeclaredClass("com.acme.A", listOf(DeclaredMethod("m", "()V", calls = listOf(edge))))),
                 scannedAt = 1000L,
             ),
@@ -1784,14 +1856,12 @@ class YukonTestCollectorTest {
         // not read at transform time would; the baseline's declaration is the only source.
         exporter.exportManifest(
             ProbeManifest(
-                "svc",
-                null,
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 listOf(methodProbe(1, 0, "com.acme.A", "m", "()V", 1), methodProbe(2, 0, "com.acme.B", "n", "()V", 1)),
-                serviceInstanceId = "i-1",
             ),
         )
         exporter.exportDeltaBatch(
-            DeltaBatch(ResourceAttributes("svc", null, "i-1", null), listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 1L))),
+            DeltaBatch(ResourceAttributes("svc", null, "i-1", null, "run-1"), listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 1L))),
         )
 
         assertEquals(listOf(edge), target.callEdges("com.acme.A", "m"))

@@ -58,7 +58,7 @@ class CoroutineMachineryInstrumentationTest {
         methodName: String,
     ): List<ProbeLocation> =
         registry
-            .manifest("test", null, "instance-1")
+            .manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
             .probes
             .filter { it.className == className && it.kind == ProbeKind.BRANCH && it.methodName == methodName }
             .sortedBy { it.probeIndex }
@@ -76,7 +76,7 @@ class CoroutineMachineryInstrumentationTest {
         assertEquals(2, probes.size, "one adopter site, two outcomes")
         assertTrue(probes.all { it.line == lineOf("twoPoints-if") })
 
-        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null)).batch.deltas
+        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null, "run-1")).batch.deltas
         val hitsByIndex = deltas.associate { it.probeIndex to it.hitsTotal }
         val hits = probes.map { hitsByIndex[it.probeIndex] ?: 0L }.sorted()
         assertEquals(listOf(0L, 1L), hits, "called once, so exactly one outcome fired")
@@ -95,7 +95,7 @@ class CoroutineMachineryInstrumentationTest {
 
         // The adopter's conditional sits between the two pauseLater() suspension points, so it has
         // not run yet: the first pauseLater() call suspended before reaching it.
-        val beforeResume = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null)).batch.deltas
+        val beforeResume = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null, "run-1")).batch.deltas
         val beforeHitsByIndex = beforeResume.associate { it.probeIndex to it.hitsTotal }
         assertEquals(
             listOf(0L, 0L),
@@ -105,7 +105,7 @@ class CoroutineMachineryInstrumentationTest {
 
         target.getMethod("resumePauseLater", Int::class.java).invoke(null, 7)
 
-        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null)).batch.deltas
+        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null, "run-1")).batch.deltas
         val hitsByIndex = deltas.associate { it.probeIndex to it.hitsTotal }
         val hits = probes.map { hitsByIndex[it.probeIndex] ?: 0L }.sorted()
         assertEquals(listOf(0L, 1L), hits, "resuming ran the adopter's if exactly once")
@@ -120,7 +120,7 @@ class CoroutineMachineryInstrumentationTest {
 
         target.getMethod("runTwoPoints", Int::class.java).invoke(null, 5)
 
-        val manifest = registry.manifest("test", null, "instance-1")
+        val manifest = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
         val continuationName = "com.example.target.CoroutineTargetKt\$twoPoints\$1"
         assertTrue(manifest.probes.none { it.className == continuationName }, "no probes for the continuation class")
         assertTrue(manifest.skippedClasses.none { it.className == continuationName }, "not reported as skipped either")
@@ -135,7 +135,7 @@ class CoroutineMachineryInstrumentationTest {
 
         target.getMethod("runMember", Int::class.java).invoke(null, 5)
 
-        val manifest = registry.manifest("test", null, "instance-1")
+        val manifest = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
         val continuationName = "com.example.target.Holder\$member\$1"
         assertTrue(manifest.probes.none { it.className == continuationName })
         assertTrue(manifest.skippedClasses.none { it.className == continuationName })
@@ -150,7 +150,7 @@ class CoroutineMachineryInstrumentationTest {
 
         target.getMethod("runLambda", Int::class.java).invoke(null, 5)
 
-        val manifest = registry.manifest("test", null, "instance-1")
+        val manifest = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
         val lambdaClassName = "com.example.target.CoroutineTargetKt\$runLambda\$1"
         val methodProbe =
             manifest.probes.single { it.className == lambdaClassName && it.kind == ProbeKind.METHOD && it.methodName == "invokeSuspend" }

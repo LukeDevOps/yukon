@@ -17,7 +17,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class StaticBaselinePublisherTest {
-    private val resource = ResourceAttributes("checkout", "1.0.0", "instance-1", "test")
+    private val resource = ResourceAttributes("checkout", "1.0.0", "instance-1", "test", "run-1")
 
     private class RecordingExporter(
         private val failOnChunk: Int? = null,

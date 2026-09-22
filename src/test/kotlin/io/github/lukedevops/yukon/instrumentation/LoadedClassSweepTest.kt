@@ -2,6 +2,7 @@ package io.github.lukedevops.yukon.instrumentation
 
 import io.github.lukedevops.yukon.config.AgentConfig
 import io.github.lukedevops.yukon.export.ProbeKind
+import io.github.lukedevops.yukon.export.ResourceAttributes
 import io.github.lukedevops.yukon.registry.ProbeMeta
 import io.github.lukedevops.yukon.registry.ProbeRegistry
 import net.bytebuddy.ByteBuddy
@@ -163,7 +164,12 @@ class LoadedClassSweepTest {
 
         LoadedClassSweep(instrumentation, registry, config).run(runForwardPass = true)
 
-        val unreported = registry.manifest("test", null, "instance-1").unreportedClasses.map { it.className }
+        val unreported =
+            registry
+                .manifest(
+                    ResourceAttributes("test", null, "instance-1", null, "run-1"),
+                ).unreportedClasses
+                .map { it.className }
         assertTrue(generated.name !in unreported, "a proxy the agent leaves alone on purpose is not a blind spot: $unreported")
     }
 }

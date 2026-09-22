@@ -1,6 +1,7 @@
 package io.github.lukedevops.yukon.instrumentation
 
 import io.github.lukedevops.yukon.config.AgentConfig
+import io.github.lukedevops.yukon.export.ResourceAttributes
 import io.github.lukedevops.yukon.registry.ProbeRegistry
 import net.bytebuddy.agent.ByteBuddyAgent
 import net.bytebuddy.agent.builder.ResettableClassFileTransformer
@@ -124,7 +125,7 @@ class DeflectedClassLoadTest {
         assertEquals(loader, nested.classLoader, "the nested class has to be this loader's own copy")
         assertEquals(listOf("com/example/target/BranchTarget"), synchronized(seen) { seen.toList() })
 
-        val manifest = registry.manifest("test", null, "instance-1")
+        val manifest = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
         assertTrue(manifest.probes.none { it.className == NESTED }, "a class no transformer saw cannot have probes")
         assertTrue(manifest.skippedClasses.none { it.className == NESTED }, "and cannot be recorded as skipped either")
     }
@@ -147,7 +148,7 @@ class DeflectedClassLoadTest {
 
         LoadedClassSweep(instrumentation, registry, config).run(runForwardPass = true)
 
-        val manifest = registry.manifest("test", null, "instance-1")
+        val manifest = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
         val unreported = manifest.unreportedClasses.map { it.className }
         assertTrue(NESTED in unreported, "the deflected class is what the sweep exists to find")
         assertTrue(
@@ -172,7 +173,12 @@ class DeflectedClassLoadTest {
 
         LoadedClassSweep(instrumentation, registry, config).run(runForwardPass = true)
 
-        val unreported = registry.manifest("test", null, "instance-1").unreportedClasses.map { it.className }
+        val unreported =
+            registry
+                .manifest(
+                    ResourceAttributes("test", null, "instance-1", null, "run-1"),
+                ).unreportedClasses
+                .map { it.className }
 
         // Only what ByteBuddy's ignore matcher turns away, which is what the sweep has to
         // replicate. Anything on the application's own loader is fair game here: this JVM is

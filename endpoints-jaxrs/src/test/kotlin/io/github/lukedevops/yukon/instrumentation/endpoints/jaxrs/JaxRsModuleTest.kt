@@ -102,10 +102,10 @@ class JaxRsModuleTest {
 
             assertTrue(endpointRegistry.disabledModules().isEmpty())
 
-            val manifest = probeRegistry.manifest("jaxrs-test", null, "instance-1")
+            val manifest = probeRegistry.manifest(ResourceAttributes("jaxrs-test", null, "instance-1", null, "run-1"))
             val getOrderProbe = manifest.probes.single { it.className.endsWith("OrdersResource") && it.methodName == "getOrder" }
             val methodDeltas =
-                probeRegistry.computeDeltaBatch(ResourceAttributes("jaxrs-test", null, "instance-1", null)).batch.deltas
+                probeRegistry.computeDeltaBatch(ResourceAttributes("jaxrs-test", null, "instance-1", null, "run-1")).batch.deltas
             assertEquals(
                 2L,
                 methodDeltas.single { it.classId == getOrderProbe.classId && it.probeIndex == getOrderProbe.probeIndex }.hitsTotal,

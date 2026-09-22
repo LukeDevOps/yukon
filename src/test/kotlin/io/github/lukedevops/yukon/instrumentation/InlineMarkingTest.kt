@@ -56,7 +56,7 @@ class InlineMarkingTest {
         // unambiguous.
         val probes =
             registry
-                .manifest("test", null, "instance-1")
+                .manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
                 .probes
                 .filter { it.className == "com.example.target.InlineTarget" && it.kind == ProbeKind.METHOD }
 
@@ -77,7 +77,11 @@ class InlineMarkingTest {
 
         Class.forName("com.example.target.InlineTargetKt", true, fixtureLoader())
 
-        val probes = registry.manifest("test", null, "instance-1").probes.filter { it.className == "com.example.target.InlineTargetKt" }
+        val probes =
+            registry
+                .manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
+                .probes
+                .filter { it.className == "com.example.target.InlineTargetKt" }
         assertTrue(probes.single { it.methodName == "topLevelInline" }.inline)
         assertFalse(probes.single { it.methodName == "topLevelPlain" }.inline)
     }
@@ -97,10 +101,10 @@ class InlineMarkingTest {
 
         val memberProbe =
             registry
-                .manifest("test", null, "instance-1")
+                .manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
                 .probes
                 .single { it.className == "com.example.target.InlineTarget" && it.methodName == "member" && it.kind == ProbeKind.METHOD }
-        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null)).batch.deltas
+        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null, "run-1")).batch.deltas
         assertEquals(1L, deltas.single { it.probeIndex == memberProbe.probeIndex }.hitsTotal)
     }
 }

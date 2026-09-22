@@ -9,12 +9,14 @@ import io.github.lukedevops.yukon.export.GeneratedBy
 import io.github.lukedevops.yukon.export.ProbeKind
 import io.github.lukedevops.yukon.export.ProbeManifest
 import io.github.lukedevops.yukon.export.ProtoPayloadCodec
+import io.github.lukedevops.yukon.export.ResourceAttributes
 import io.github.lukedevops.yukon.export.SkippedClass
 import io.github.lukedevops.yukon.export.UnreportedClass
 import io.github.lukedevops.yukon.registry.RouteTemplateNormalizer
 import java.net.InetSocketAddress
 import java.time.Duration
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeoutException
@@ -49,6 +51,15 @@ import kotlin.concurrent.withLock
  * and follow the same rule again: a dependency no manifest has listed throws
  * [UnknownDependencyException], and a question the data cannot answer yet, or at all without a
  * complete static baseline, throws [IllegalStateException] instead of returning an empty list.
+ *
+ * Every probe, endpoint and dependency is keyed on its instance id alone, not on the run id ADR
+ * 0032 adds. That is the same as keying on the run only while each instance id names one run, which
+ * holds when this collector hears from the one agent in its own test JVM (ADR 0018). A payload with
+ * an empty run id, or with a second run id under an instance id this collector has already heard
+ * from, would break that assumption. Such a payload is answered 400, nothing from it is kept, and
+ * the reason is recorded in [rejectedPayloads]. From then on [awaitSettled] and every other query
+ * and wait throw [IllegalStateException] listing the recorded reasons, so a test fails even if it
+ * never calls [rejectedPayloads].
  *
  * Close this with [close], typically from a `.use { }` block, once a test is done with it.
  */
@@ -273,6 +284,10 @@ class YukonTestCollector private constructor(
     /** Per instance, every class a manifest named as probed, skipped or unreported: every class that loaded there. */
     private val loadedClassNamesByInstance = ConcurrentHashMap<String, MutableSet<String>>()
 
+    /** The one run id accepted per instance id; see the class doc and [rejectionFor]. */
+    private val runIdByInstance = ConcurrentHashMap<String, String>()
+    private val rejections = CopyOnWriteArrayList<String>()
+
     /** Base URL to pass as an agent's `endpoint=` option, for example `http://localhost:54321`. */
     val endpoint: String = "http://localhost:${server.address.port}"
 
@@ -282,6 +297,7 @@ class YukonTestCollector private constructor(
      * a liveness heartbeat. Throws [TimeoutException] if [timeout] elapses first.
      */
     fun awaitNextFlush(timeout: Duration) {
+        checkNoRejections()
         val start = deltaBatchSeq.get()
         awaitUntil(timeout, "no delta batch arrived within $timeout") { deltaBatchSeq.get() > start }
     }
@@ -300,6 +316,7 @@ class YukonTestCollector private constructor(
      * Throws [TimeoutException] if [timeout] elapses before two batches arrive.
      */
     fun awaitSettled(timeout: Duration) {
+        checkNoRejections()
         val start = deltaBatchSeq.get()
         awaitUntil(timeout, "fewer than two delta batches arrived within $timeout") { deltaBatchSeq.get() >= start + 2 }
     }
@@ -316,6 +333,7 @@ class YukonTestCollector private constructor(
         methodName: String,
         timeout: Duration,
     ) {
+        checkNoRejections()
         awaitUntil(timeout, "no manifest ever mentioned $className#$methodName within $timeout") {
             nameIndex[className]?.any { probesByKey[it]?.methodName == methodName } == true
         }
@@ -329,6 +347,8 @@ class YukonTestCollector private constructor(
         val deadlineNanos = System.nanoTime() + timeout.toNanos()
         lock.withLock {
             while (!predicate()) {
+                // A rejection wakes this wait, so it fails at once rather than at the timeout.
+                checkNoRejections()
                 val remaining = deadlineNanos - System.nanoTime()
                 if (remaining <= 0) throw TimeoutException(timeoutMessage)
                 condition.awaitNanos(remaining)
@@ -347,7 +367,7 @@ class YukonTestCollector private constructor(
         className: String,
         methodName: String,
         methodDescriptor: String? = null,
-    ): Boolean = findMethodProbes(className, methodName, methodDescriptor).any { (hitsByKey[it] ?: 0L) > 0L }
+    ): Boolean = checked { findMethodProbes(className, methodName, methodDescriptor).any { (hitsByKey[it] ?: 0L) > 0L } }
 
     /**
      * Sums, over every matching METHOD-kind probe, its latest known `hits_total` merged across
@@ -360,7 +380,7 @@ class YukonTestCollector private constructor(
         className: String,
         methodName: String,
         methodDescriptor: String? = null,
-    ): Long = findMethodProbes(className, methodName, methodDescriptor).sumOf { hitsByKey[it] ?: 0L }
+    ): Long = checked { findMethodProbes(className, methodName, methodDescriptor).sumOf { hitsByKey[it] ?: 0L } }
 
     /**
      * Sums, over the optional parameter at [parameterIndex] of [methodName], every omission any
@@ -376,8 +396,10 @@ class YukonTestCollector private constructor(
         parameterIndex: Int,
         methodDescriptor: String? = null,
     ): Long =
-        findOmissionProbes(className, methodName, methodDescriptor, "index $parameterIndex") { it.parameterIndex == parameterIndex }
-            .sumOf { hitsByKey[it] ?: 0L }
+        checked {
+            findOmissionProbes(className, methodName, methodDescriptor, "index $parameterIndex") { it.parameterIndex == parameterIndex }
+                .sumOf { hitsByKey[it] ?: 0L }
+        }
 
     /** Like [omissionCount], but selects the optional parameter by [parameterName] instead of index. */
     fun omissionCount(
@@ -386,8 +408,10 @@ class YukonTestCollector private constructor(
         parameterName: String,
         methodDescriptor: String? = null,
     ): Long =
-        findOmissionProbes(className, methodName, methodDescriptor, "name \"$parameterName\"") { it.parameterName == parameterName }
-            .sumOf { hitsByKey[it] ?: 0L }
+        checked {
+            findOmissionProbes(className, methodName, methodDescriptor, "name \"$parameterName\"") { it.parameterName == parameterName }
+                .sumOf { hitsByKey[it] ?: 0L }
+        }
 
     private fun findOmissionProbes(
         className: String,
@@ -448,7 +472,9 @@ class YukonTestCollector private constructor(
      * inline target, the same reason [neverHit] excludes one.
      */
     fun neverSupplied(): List<OptionalParameterRef> =
-        optionalParameterFindings { omitted, targetHits, overridable -> !overridable && omitted == targetHits }
+        checked {
+            optionalParameterFindings { omitted, targetHits, overridable -> !overridable && omitted == targetHits }
+        }
 
     /**
      * Every optional parameter whose combined omission total stayed at zero while its target was
@@ -456,7 +482,7 @@ class YukonTestCollector private constructor(
      * for why "combined" matters. Claimed for any target, overridable or not. A target with no
      * method probe at all, or an inline target, is skipped, the same as [neverSupplied].
      */
-    fun alwaysSupplied(): List<OptionalParameterRef> = optionalParameterFindings { omitted, _, _ -> omitted == 0L }
+    fun alwaysSupplied(): List<OptionalParameterRef> = checked { optionalParameterFindings { omitted, _, _ -> omitted == 0L } }
 
     /**
      * Groups every `OPTIONAL_ARGUMENT` probe whose target is neither inline nor generated by the
@@ -564,30 +590,32 @@ class YukonTestCollector private constructor(
      * See ADR 0021.
      */
     fun neverHit(): List<ProbeRef> =
-        probesByKey.entries
-            .filter { (key, probe) ->
-                !probe.inline &&
-                    probe.generatedBy == GeneratedBy.NONE &&
-                    probe.kind != ProbeKind.OPTIONAL_ARGUMENT &&
-                    (hitsByKey[key] ?: 0L) <= 0L
-            }.map { (key, probe) ->
-                ProbeRef(
-                    serviceInstanceId = key.serviceInstanceId,
-                    className = probe.className,
-                    methodName = probe.methodName,
-                    methodDescriptor = probe.methodDescriptor,
-                    line = probe.line,
-                    kind = probe.kind,
-                    branchIndex = probe.branchIndex,
-                    inline = probe.inline,
-                    inlinedFromClassName = probe.inlinedFromClassName,
-                    generatedBy = probe.generatedBy,
-                    branchKey = probe.branchKey,
-                )
-            }.sortedWith(compareBy({ it.className }, { it.methodName }, { it.line }, { it.branchIndex ?: -1 }))
+        checked {
+            probesByKey.entries
+                .filter { (key, probe) ->
+                    !probe.inline &&
+                        probe.generatedBy == GeneratedBy.NONE &&
+                        probe.kind != ProbeKind.OPTIONAL_ARGUMENT &&
+                        (hitsByKey[key] ?: 0L) <= 0L
+                }.map { (key, probe) ->
+                    ProbeRef(
+                        serviceInstanceId = key.serviceInstanceId,
+                        className = probe.className,
+                        methodName = probe.methodName,
+                        methodDescriptor = probe.methodDescriptor,
+                        line = probe.line,
+                        kind = probe.kind,
+                        branchIndex = probe.branchIndex,
+                        inline = probe.inline,
+                        inlinedFromClassName = probe.inlinedFromClassName,
+                        generatedBy = probe.generatedBy,
+                        branchKey = probe.branchKey,
+                    )
+                }.sortedWith(compareBy({ it.className }, { it.methodName }, { it.line }, { it.branchIndex ?: -1 }))
+        }
 
     /** Every class reported as matched but not instrumented by any manifest, distinct by class name, sorted by name. */
-    fun skippedClasses(): List<SkippedClass> = skippedByClassName.values.sortedBy { it.className }
+    fun skippedClasses(): List<SkippedClass> = checked { skippedByClassName.values.sortedBy { it.className } }
 
     /**
      * Whether [serviceInstanceId] has sent a delta batch with `final_flush` set, meaning its
@@ -595,10 +623,10 @@ class YukonTestCollector private constructor(
      * all: this collector cannot tell the two apart, since an instance the agent never contacted
      * leaves no other trace either. See ADR 0010.
      */
-    fun endedCleanly(serviceInstanceId: String): Boolean = serviceInstanceId in instancesThatEndedCleanly
+    fun endedCleanly(serviceInstanceId: String): Boolean = checked { serviceInstanceId in instancesThatEndedCleanly }
 
     /** Every instance id that has sent a delta batch with `final_flush` set. See [endedCleanly]. */
-    fun instancesEndedCleanly(): Set<String> = instancesThatEndedCleanly.toSet()
+    fun instancesEndedCleanly(): Set<String> = checked { instancesThatEndedCleanly.toSet() }
 
     /**
      * Class names a sweep reported as loaded but unreported, sorted. Empty until a manifest
@@ -608,7 +636,7 @@ class YukonTestCollector private constructor(
      * [neverLoaded] already leaves them out; this exposes them so a test can assert the blind
      * spot itself rather than only its absence from a claim. See ADR 0027.
      */
-    fun unreportedClasses(): List<String> = unreportedByClassName.keys.sorted()
+    fun unreportedClasses(): List<String> = checked { unreportedByClassName.keys.sorted() }
 
     /**
      * Class names declared by a complete static baseline scan that no manifest, from any
@@ -623,6 +651,7 @@ class YukonTestCollector private constructor(
      * such a class never loading at all is not evidence it is dead. See ADR 0022 and ADR 0026.
      */
     fun neverLoaded(): List<String> {
+        checkNoRejections()
         check(completedScans.isNotEmpty()) { "no complete static baseline scan has been received yet" }
         return consultedDeclaredNames.filter { it !in dynamicallyKnownClassNames && it !in consultedAllInlineOrGeneratedNames }.sorted()
     }
@@ -641,6 +670,7 @@ class YukonTestCollector private constructor(
         className: String,
         methodName: String,
     ): List<CallEdge> {
+        checkNoRejections()
         val fromManifest =
             nameIndex[className].orEmpty().mapNotNull { key ->
                 probesByKey[key]?.takeIf { it.kind == ProbeKind.METHOD && it.methodName == methodName }
@@ -671,6 +701,7 @@ class YukonTestCollector private constructor(
      * known transitive subtype with one, `<init>` and `<clinit>` excepted. See [computeCallGraph].
      */
     fun unreachedClusters(): List<UnreachedCluster> {
+        checkNoRejections()
         val graph = computeCallGraph()
 
         fun isHit(key: NodeKey) = (graph.nodes[key]?.hits ?: 0L) > 0L
@@ -911,7 +942,7 @@ class YukonTestCollector private constructor(
     fun wasCalled(
         verb: String,
         routeTemplate: String,
-    ): Boolean = callCount(verb, routeTemplate) > 0L
+    ): Boolean = checked { callCount(verb, routeTemplate) > 0L }
 
     /**
      * The endpoint's call count, summed across every instance that reported it: each instance's
@@ -926,6 +957,7 @@ class YukonTestCollector private constructor(
         verb: String,
         routeTemplate: String,
     ): Long {
+        checkNoRejections()
         val identity = normalizeEndpointIdentity(verb, routeTemplate)
         val keys = endpointKeysByIdentity[identity] ?: throw unknownEndpoint(identity)
         return keys.sumOf { endpointHitsByKey[it] ?: 0L }
@@ -937,16 +969,18 @@ class YukonTestCollector private constructor(
      * dispatch is by construction called at least once, so it can never appear here.
      */
     fun neverCalled(): List<EndpointRef> =
-        endpointRefsByIdentity
-            .filterKeys { identity -> (endpointKeysByIdentity[identity]?.sumOf { endpointHitsByKey[it] ?: 0L } ?: 0L) <= 0L }
-            .values
-            .sortedWith(compareBy({ it.routeTemplate }, { it.verb }))
+        checked {
+            endpointRefsByIdentity
+                .filterKeys { identity -> (endpointKeysByIdentity[identity]?.sumOf { endpointHitsByKey[it] ?: 0L } ?: 0L) <= 0L }
+                .values
+                .sortedWith(compareBy({ it.routeTemplate }, { it.verb }))
+        }
 
     /** Every endpoint any instance ever reported, sorted by route template then verb. */
-    fun endpoints(): List<EndpointRef> = endpointRefsByIdentity.values.sortedWith(compareBy({ it.routeTemplate }, { it.verb }))
+    fun endpoints(): List<EndpointRef> = checked { endpointRefsByIdentity.values.sortedWith(compareBy({ it.routeTemplate }, { it.verb })) }
 
     /** Every endpoint module reported as disabled by any instance, distinct by module name, sorted by module name. */
-    fun disabledEndpointModules(): List<DisabledEndpointModule> = disabledEndpointModulesByName.values.sortedBy { it.module }
+    fun disabledEndpointModules(): List<DisabledEndpointModule> = checked { disabledEndpointModulesByName.values.sortedBy { it.module } }
 
     /**
      * Blocks until some manifest, from any instance, has mentioned the endpoint identified by
@@ -958,6 +992,7 @@ class YukonTestCollector private constructor(
         routeTemplate: String,
         timeout: Duration,
     ) {
+        checkNoRejections()
         val identity = normalizeEndpointIdentity(verb, routeTemplate)
         awaitUntil(timeout, "no manifest ever mentioned endpoint $verb $routeTemplate within $timeout") {
             endpointRefsByIdentity.containsKey(identity)
@@ -1003,6 +1038,7 @@ class YukonTestCollector private constructor(
         groupId: String?,
         artifactId: String,
     ): DependencyStatus {
+        checkNoRejections()
         val wanted = groupId.orEmpty() to artifactId
         val finding =
             computeDependencyReport(dependencyViews()).findings.firstOrNull { wanted in it.identities }
@@ -1022,6 +1058,7 @@ class YukonTestCollector private constructor(
         artifactId: String,
         timeout: Duration,
     ) {
+        checkNoRejections()
         val wanted = groupId.orEmpty() to artifactId
         awaitUntil(timeout, "no manifest listed dependency ${wanted.first}:${wanted.second}, settled, within $timeout") {
             val listings =
@@ -1038,7 +1075,7 @@ class YukonTestCollector private constructor(
      *
      * Throws [IllegalStateException] while any listed dependency is not yet settled; see [dependency].
      */
-    fun unloadedDependencies(): List<DependencyStatus> = dependenciesWithStatus(DependencyUsage.UNLOADED, needsSplit = false)
+    fun unloadedDependencies(): List<DependencyStatus> = checked { dependenciesWithStatus(DependencyUsage.UNLOADED, needsSplit = false) }
 
     /**
      * Every loaded dependency nothing in the adopter's code references, sorted by
@@ -1051,7 +1088,8 @@ class YukonTestCollector private constructor(
      * every instance that lists it. An empty list without them would read as "none" when the
      * real answer is "unknown". Throws the same way while a dependency is not yet settled.
      */
-    fun unreferencedDependencies(): List<DependencyStatus> = dependenciesWithStatus(DependencyUsage.UNREFERENCED, needsSplit = true)
+    fun unreferencedDependencies(): List<DependencyStatus> =
+        checked { dependenciesWithStatus(DependencyUsage.UNREFERENCED, needsSplit = true) }
 
     /**
      * Every dependency the adopter's code references only from methods never hit or classes never
@@ -1059,7 +1097,7 @@ class YukonTestCollector private constructor(
      * [DependencyStatus.sites]. Throws [IllegalStateException] under the same conditions as
      * [unreferencedDependencies].
      */
-    fun unreachedDependencies(): List<DependencyStatus> = dependenciesWithStatus(DependencyUsage.UNREACHED, needsSplit = true)
+    fun unreachedDependencies(): List<DependencyStatus> = checked { dependenciesWithStatus(DependencyUsage.UNREACHED, needsSplit = true) }
 
     /**
      * Every referenced class no loader could find, sorted by class name, with the sites that
@@ -1068,6 +1106,7 @@ class YukonTestCollector private constructor(
      * only with `includePackages` set, since an empty list would then say nothing.
      */
     fun absentReferences(): List<AbsentReference> {
+        checkNoRejections()
         val report = computeDependencyReport(dependencyViews())
         check(!report.referencesUnavailable) {
             "no instance sent references_recorded, so absent references are unknown: run the agent with includePackages set"
@@ -1208,6 +1247,14 @@ class YukonTestCollector private constructor(
             )
         }
 
+    /**
+     * Why each payload this collector answered 400 on a run id was rejected, oldest first: an empty
+     * run id, or a second run id under an instance id already heard from. Empty when nothing was
+     * rejected. Once it is not empty, every other query and wait throws [IllegalStateException];
+     * this is the one method a test that expects a rejection can still call. See the class doc.
+     */
+    fun rejectedPayloads(): List<String> = rejections.toList()
+
     override fun close() {
         server.stop(0)
         executor.shutdown()
@@ -1222,6 +1269,7 @@ class YukonTestCollector private constructor(
                 respond(exchange, 400)
                 return
             }
+        rejectionFor("delta batch", batch.resource)?.let { return reject(exchange, it) }
         val instanceId = batch.resource.serviceInstanceId
         for (delta in batch.deltas) {
             val key = ProbeKey(instanceId, delta.classId, delta.probeIndex)
@@ -1251,7 +1299,8 @@ class YukonTestCollector private constructor(
                 respond(exchange, 400)
                 return
             }
-        val instanceId = manifest.serviceInstanceId
+        rejectionFor("manifest", manifest.resource)?.let { return reject(exchange, it) }
+        val instanceId = manifest.resource.serviceInstanceId
         // A class's own ClassSupertypes record is always staged and committed together with its
         // probe locations (see ProbeRegistry.computeManifestDeltas), so every classId this manifest
         // mentions in classSupertypes also has a matching probe location earlier in this same call.
@@ -1328,7 +1377,7 @@ class YukonTestCollector private constructor(
 
     /** Stores what ADR 0030's rules read from one manifest, keyed by its instance. */
     private fun storeDependencyData(manifest: ProbeManifest) {
-        val instanceId = manifest.serviceInstanceId
+        val instanceId = manifest.resource.serviceInstanceId
         instanceIds += instanceId
         if (manifest.referencesRecorded) instancesRecordingReferences += instanceId
         val loaded = loadedClassNamesByInstance.computeIfAbsent(instanceId) { ConcurrentHashMap.newKeySet() }
@@ -1371,6 +1420,7 @@ class YukonTestCollector private constructor(
                 respond(exchange, 400)
                 return
             }
+        rejectionFor("static baseline", baseline.resource)?.let { return reject(exchange, it) }
         val instanceId = baseline.resource.serviceInstanceId
         val scanKey = ScanKey(instanceId, baseline.scannedAt)
         val progress = scans.computeIfAbsent(scanKey) { ScanProgress(baseline.chunkCount) }
@@ -1413,6 +1463,51 @@ class YukonTestCollector private constructor(
             completedScans += scanKey
         }
         respond(exchange, 200)
+        signalAll()
+    }
+
+    /**
+     * Throws [IllegalStateException] listing every reason in [rejectedPayloads] once there is one.
+     * Every public query and wait calls this first, so a test fails on a rejected payload even
+     * when it never looks at [rejectedPayloads]: a query answered without that payload's data
+     * could read as confirmed when it is not.
+     */
+    private fun checkNoRejections() {
+        val reasons = rejections.toList()
+        check(reasons.isEmpty()) {
+            "this collector rejected ${reasons.size} payload(s), so its answers are incomplete:\n" + reasons.joinToString("\n") { "  $it" }
+        }
+    }
+
+    /** Runs [query] after [checkNoRejections]. */
+    private inline fun <T> checked(query: () -> T): T {
+        checkNoRejections()
+        return query()
+    }
+
+    /**
+     * Null when a payload from [resource] may be kept, otherwise why not. The first run id heard
+     * under an instance id is the only one this collector accepts for it; see the class doc.
+     */
+    private fun rejectionFor(
+        payload: String,
+        resource: ResourceAttributes,
+    ): String? {
+        val instanceId = resource.serviceInstanceId
+        if (resource.runId.isEmpty()) return "$payload from instance $instanceId has an empty run id"
+        val accepted = runIdByInstance.putIfAbsent(instanceId, resource.runId) ?: return null
+        if (accepted == resource.runId) return null
+        return "$payload from instance $instanceId has run id ${resource.runId}, but this collector already " +
+            "accepted run id $accepted for that instance and keys on the instance alone"
+    }
+
+    /** Records [reason] in [rejectedPayloads], answers 400, and keeps nothing from the payload. */
+    private fun reject(
+        exchange: HttpExchange,
+        reason: String,
+    ) {
+        rejections += reason
+        respond(exchange, 400)
         signalAll()
     }
 

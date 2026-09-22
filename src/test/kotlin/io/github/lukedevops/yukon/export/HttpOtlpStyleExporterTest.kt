@@ -54,7 +54,7 @@ class HttpOtlpStyleExporterTest {
     fun `posts a delta batch to the deltas endpoint`() {
         val endpoint = startServer { 200 }
         val exporter = exporterFor(endpoint)
-        val batch = DeltaBatch(ResourceAttributes("checkout", "1.0.0", "i-1", "test"), emptyList())
+        val batch = DeltaBatch(ResourceAttributes("checkout", "1.0.0", "i-1", "test", "run-1"), emptyList())
 
         exporter.exportDeltaBatch(batch)
 
@@ -66,7 +66,7 @@ class HttpOtlpStyleExporterTest {
     fun `posts a manifest to the manifest endpoint`() {
         val endpoint = startServer { 200 }
         val exporter = exporterFor(endpoint)
-        val manifest = ProbeManifest("checkout", "1.0.0", emptyList())
+        val manifest = ProbeManifest(ResourceAttributes("checkout", "1.0.0", "", null, "run-1"), emptyList())
 
         exporter.exportManifest(manifest)
 
@@ -79,7 +79,7 @@ class HttpOtlpStyleExporterTest {
         val exporter = exporterFor(endpoint)
         val baseline =
             StaticBaseline(
-                resource = ResourceAttributes("checkout", "1.0.0", "i-1", "test"),
+                resource = ResourceAttributes("checkout", "1.0.0", "i-1", "test", "run-1"),
                 declaredClasses = emptyList(),
                 scannedAt = 1000L,
             )
@@ -94,7 +94,7 @@ class HttpOtlpStyleExporterTest {
         val endpoint = startServer { requestNumber -> if (requestNumber < 3) 503 else 200 }
         val exporter = exporterFor(endpoint)
 
-        exporter.exportDeltaBatch(DeltaBatch(ResourceAttributes("checkout", null, "i-1", null), emptyList()))
+        exporter.exportDeltaBatch(DeltaBatch(ResourceAttributes("checkout", null, "i-1", null, "run-1"), emptyList()))
 
         assertEquals(3, requestCount.get())
     }
@@ -105,7 +105,7 @@ class HttpOtlpStyleExporterTest {
         val exporter = exporterFor(endpoint)
 
         assertFailsWith<Exception> {
-            exporter.exportDeltaBatch(DeltaBatch(ResourceAttributes("checkout", null, "i-1", null), emptyList()))
+            exporter.exportDeltaBatch(DeltaBatch(ResourceAttributes("checkout", null, "i-1", null, "run-1"), emptyList()))
         }
         assertEquals(5, requestCount.get())
     }
@@ -139,7 +139,7 @@ class HttpOtlpStyleExporterTest {
         val elapsed =
             measureTimeMillis {
                 assertFailsWith<Exception> {
-                    exporter.exportDeltaBatch(DeltaBatch(ResourceAttributes("checkout", null, "i-1", null), emptyList()))
+                    exporter.exportDeltaBatch(DeltaBatch(ResourceAttributes("checkout", null, "i-1", null, "run-1"), emptyList()))
                 }
             }
 
@@ -153,7 +153,7 @@ class HttpOtlpStyleExporterTest {
 
         val failure =
             assertFailsWith<ExportFailedException> {
-                exporter.exportDeltaBatch(DeltaBatch(ResourceAttributes("checkout", null, "i-1", null), emptyList()))
+                exporter.exportDeltaBatch(DeltaBatch(ResourceAttributes("checkout", null, "i-1", null, "run-1"), emptyList()))
             }
 
         assertEquals(1, requestCount.get())
@@ -168,7 +168,7 @@ class HttpOtlpStyleExporterTest {
             val exporter = exporterFor(endpoint)
 
             assertFailsWith<ExportFailedException> {
-                exporter.exportDeltaBatch(DeltaBatch(ResourceAttributes("checkout", null, "i-1", null), emptyList()))
+                exporter.exportDeltaBatch(DeltaBatch(ResourceAttributes("checkout", null, "i-1", null, "run-1"), emptyList()))
             }
 
             assertEquals(1, requestCount.get(), "status $status should fail fast")
@@ -183,7 +183,7 @@ class HttpOtlpStyleExporterTest {
             val endpoint = startServer { requestNumber -> if (requestNumber < 3) status else 200 }
             val exporter = exporterFor(endpoint)
 
-            exporter.exportDeltaBatch(DeltaBatch(ResourceAttributes("checkout", null, "i-1", null), emptyList()))
+            exporter.exportDeltaBatch(DeltaBatch(ResourceAttributes("checkout", null, "i-1", null, "run-1"), emptyList()))
 
             assertEquals(3, requestCount.get(), "status $status should be retried")
             server?.stop(0)
@@ -202,11 +202,11 @@ class HttpOtlpStyleExporterTest {
                 maxBackoff = Duration.ofMillis(10),
             )
 
-        exporter.exportDeltaBatch(DeltaBatch(ResourceAttributes("checkout", "1.0.0", "i-1", "test"), emptyList()))
-        exporter.exportManifest(ProbeManifest("checkout", "1.0.0", emptyList()))
+        exporter.exportDeltaBatch(DeltaBatch(ResourceAttributes("checkout", "1.0.0", "i-1", "test", "run-1"), emptyList()))
+        exporter.exportManifest(ProbeManifest(ResourceAttributes("checkout", "1.0.0", "", null, "run-1"), emptyList()))
         exporter.exportStaticBaseline(
             StaticBaseline(
-                resource = ResourceAttributes("checkout", "1.0.0", "i-1", "test"),
+                resource = ResourceAttributes("checkout", "1.0.0", "i-1", "test", "run-1"),
                 declaredClasses = emptyList(),
                 scannedAt = 1000L,
             ),
@@ -220,7 +220,7 @@ class HttpOtlpStyleExporterTest {
         val endpoint = startServer { 200 }
         val exporter = exporterFor(endpoint)
 
-        exporter.exportDeltaBatch(DeltaBatch(ResourceAttributes("checkout", null, "i-1", null), emptyList()))
+        exporter.exportDeltaBatch(DeltaBatch(ResourceAttributes("checkout", null, "i-1", null, "run-1"), emptyList()))
 
         assertEquals(listOf<String?>(null), requestedAuthHeaders)
     }
@@ -232,7 +232,7 @@ class HttpOtlpStyleExporterTest {
 
         val failure =
             assertFailsWith<ExportFailedException> {
-                exporter.exportDeltaBatch(DeltaBatch(ResourceAttributes("checkout", null, "i-1", null), emptyList()))
+                exporter.exportDeltaBatch(DeltaBatch(ResourceAttributes("checkout", null, "i-1", null, "run-1"), emptyList()))
             }
 
         assertEquals(1, requestCount.get())

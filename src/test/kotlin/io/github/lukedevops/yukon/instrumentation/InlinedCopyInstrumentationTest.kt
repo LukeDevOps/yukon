@@ -55,7 +55,7 @@ class InlinedCopyInstrumentationTest {
         methodName: String,
     ): List<ProbeLocation> =
         registry
-            .manifest("test", null, "instance-1")
+            .manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
             .probes
             .filter {
                 it.className == "com.example.target.InlinedCopyTargetKt" && it.kind == ProbeKind.BRANCH && it.methodName == methodName
@@ -70,7 +70,11 @@ class InlinedCopyInstrumentationTest {
         target.getMethod("callTakingTrueBranch", Int::class.java).invoke(null, 1)
         target.getMethod("callTakingFalseBranch", Int::class.java).invoke(null, 1)
         target.getMethod("useLibraryInline", Int::class.java).invoke(null, 5)
-        val probes = registry.manifest("test", null, "instance-1").probes.filter { it.kind == ProbeKind.BRANCH }
+        val probes =
+            registry
+                .manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
+                .probes
+                .filter { it.kind == ProbeKind.BRANCH }
         uninstall()
         return probes
     }
@@ -86,7 +90,11 @@ class InlinedCopyInstrumentationTest {
         target.getMethod("callTakingFalseBranch", Int::class.java).invoke(null, 1)
         target.getMethod("useLibraryInline", Int::class.java).invoke(null, 5)
 
-        val allBranchProbes = registry.manifest("test", null, "instance-1").probes.filter { it.kind == ProbeKind.BRANCH }
+        val allBranchProbes =
+            registry
+                .manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
+                .probes
+                .filter { it.kind == ProbeKind.BRANCH }
         assertTrue(allBranchProbes.none { it.line > fixtureLineCount }, "no probe's line should exceed the fixture file's own line count")
 
         val useCollectionsPredicate = branchProbesOf(registry, "useCollections")
@@ -113,7 +121,7 @@ class InlinedCopyInstrumentationTest {
         // n <= 0, so flag=false inside sameFileInline: takes the taken edge.
         target.getMethod("callTakingFalseBranch", Int::class.java).invoke(null, 1)
 
-        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null)).batch.deltas
+        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null, "run-1")).batch.deltas
         val hitsByIndex = deltas.associate { it.probeIndex to it.hitsTotal }
 
         val trueBranchCopy = branchProbesOf(registry, "callTakingTrueBranch").filter { it.inlinedFromClassName != null }

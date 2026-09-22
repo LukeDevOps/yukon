@@ -1,6 +1,7 @@
 package io.github.lukedevops.yukon.instrumentation
 
 import io.github.lukedevops.yukon.config.AgentConfig
+import io.github.lukedevops.yukon.export.ResourceAttributes
 import io.github.lukedevops.yukon.registry.ProbeMeta
 import io.github.lukedevops.yukon.registry.ProbeRegistry
 import net.bytebuddy.agent.ByteBuddyAgent
@@ -100,7 +101,7 @@ class BranchSiteCountMismatchTest {
         )
         assertTrue("com.example.target.BranchTarget" !in registry.registeredClassNames())
         assertFalse(yukon.hasPendingRegistration(), "a failed transform leaves nothing staged behind on this thread")
-        val manifest = registry.manifest("test", null, "instance-1")
+        val manifest = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
         assertTrue(manifest.probes.none { it.className == "com.example.target.BranchTarget" }, "no probe exists for the skipped class")
         val skipped = manifest.skippedClasses.filter { it.className == "com.example.target.BranchTarget" }
         assertEquals(1, skipped.size, "the class appears once in skippedClasses")

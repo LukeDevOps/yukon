@@ -6,9 +6,9 @@ option java_package = "io.github.lukedevops.yukon.proto";
 option java_multiple_files = true;
 
 // A probe is addressed on the wire as (class_id, probe_index) rather than a
-// flat global ID: class_id is assigned once per (service, version) and
-// carried in ProbeManifest, so delta batches don't repeat fully-qualified
-// class names on every flush.
+// flat global ID: class_id is assigned once per run and carried in
+// ProbeManifest, so delta batches don't repeat fully-qualified class names
+// on every flush.
 enum ProbeKind {
   PROBE_KIND_UNSPECIFIED = 0;
   METHOD = 1;
@@ -32,11 +32,19 @@ enum GeneratedBy {
   RECORD = 4;
 }
 
+// Who sent a payload. DeltaBatch, ProbeManifest and StaticBaseline each carry one, and one process
+// stamps the same values on all three.
 message ResourceAttributes {
   string service_name = 1;
   optional string service_version = 2;
   string service_instance_id = 3;
   optional string environment = 4;
+  // A random id the agent makes once per process at startup. It names one run of one instance:
+  // every payload from that process carries the same value, and a new process always gets a new
+  // one, even under a pinned service_instance_id. class_id, endpoint_id and every cumulative total
+  // mean something only within one run, so a consumer keeps each run's data apart and merges with
+  // max() only within a run. Empty means missing, and a consumer rejects the payload. See ADR 0032.
+  string run_id = 5;
 }
 
 // hits_total is a cumulative count from process start, not the count since
@@ -192,21 +200,19 @@ message SkippedClass {
 // endpoint whose handler join changed since it was sent, go out on a
 // given flush.
 //
-// service_instance_id is required, unlike the rest of this message's
-// (service, version) scoping. class_id is assigned independently by each
-// instance's own registry, in whatever order that process's own classes
-// happen to load, so the same class_id can mean a different class in two
-// instances of the same (service, version). Without an instance to key on,
-// a collector correlating manifests or delta batches from more than one
-// instance of the same service and version risks attributing one instance's
-// probe metadata, or hit count, to the wrong class from another instance.
-// endpoint_id shares the same per-instance scoping as class_id.
+// class_id is assigned by each process's own registry, in whatever order
+// that process's classes happen to load, so the same class_id can mean a
+// different class in two instances of the same (service, version), or in
+// two runs of one pinned instance. A collector keys every class_id and
+// endpoint_id on the resource's service_instance_id and run_id, the same
+// way it keys a delta batch's. See ADRs 0011 and 0032.
 message ProbeManifest {
-  string service_name = 1;
-  optional string service_version = 2;
+  reserved 1, 2, 5;
+  reserved "service_name", "service_version", "service_instance_id";
+  // The same resource this process stamps on its delta batches and static baseline.
+  ResourceAttributes resource = 14;
   repeated ProbeLocation probes = 3;
   repeated SkippedClass skipped_classes = 4;
-  string service_instance_id = 5;
   repeated EndpointLocation endpoints = 6;
   repeated DisabledEndpointModule disabled_endpoint_modules = 7;
   // Sent once per class alongside its probes, staged and committed the same way. See ADR 0024.
@@ -311,7 +317,7 @@ message UnprobedClass {
 //
 // One scan may arrive as several messages. Every chunk of the same scan
 // carries the same resource and scanned_at, so (service_instance_id,
-// scanned_at) identifies the scan; chunk_index (0-based) and chunk_count
+// run_id, scanned_at) identifies the scan; chunk_index (0-based) and chunk_count
 // say which part this is and how many to expect. A collector should only
 // diff a scan once it holds every chunk; a partial scan can only say
 // "declared" for the classes it has, never "never loaded" for the rest.
@@ -345,7 +351,7 @@ enum EndpointDiscoverySource {
 // endpoint_id.
 //
 // A record may be re-sent when a field learned later (the handler join)
-// changes; a collector upserts by (service_instance_id, endpoint_id).
+// changes; a collector upserts by (service_instance_id, run_id, endpoint_id).
 message EndpointLocation {
   int32 endpoint_id = 1;
   // Uppercase HTTP method, or "*" when the framework leaves it unconstrained.

@@ -34,7 +34,7 @@ class BaselineReferenceFilterTest {
     @TempDir
     lateinit var dir: Path
 
-    private val resource = ResourceAttributes("checkout", "1.0.0", "instance-1", "test")
+    private val resource = ResourceAttributes("checkout", "1.0.0", "instance-1", "test", "run-1")
 
     private class RecordingExporter : Exporter {
         val baselines = CopyOnWriteArrayList<StaticBaseline>()

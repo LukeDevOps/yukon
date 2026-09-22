@@ -17,6 +17,7 @@ import io.github.lukedevops.yukon.proto.ProbeDelta as ProtoProbeDelta
 import io.github.lukedevops.yukon.proto.ProbeKind as ProtoProbeKind
 import io.github.lukedevops.yukon.proto.ProbeLocation as ProtoProbeLocation
 import io.github.lukedevops.yukon.proto.ProbeManifest as ProtoProbeManifest
+import io.github.lukedevops.yukon.proto.ResourceAttributes as ProtoResourceAttributes
 import io.github.lukedevops.yukon.proto.StaticBaseline as ProtoStaticBaseline
 
 class ProtoPayloadCodecTest {
@@ -24,7 +25,7 @@ class ProtoPayloadCodecTest {
     fun `encodes a delta batch that round-trips through the generated protobuf schema`() {
         val batch =
             DeltaBatch(
-                resource = ResourceAttributes("checkout", "1.0.0", "instance-1", "prod"),
+                resource = ResourceAttributes("checkout", "1.0.0", "instance-1", "prod", "run-1"),
                 deltas =
                     listOf(
                         ProbeDelta(classId = 0, probeIndex = 1, kind = ProbeKind.METHOD, firstSeenAt = 1000L, hitsTotal = 5L),
@@ -51,7 +52,14 @@ class ProtoPayloadCodecTest {
     fun `omits optional resource fields when null`() {
         val batch =
             DeltaBatch(
-                resource = ResourceAttributes("checkout", serviceVersion = null, serviceInstanceId = "i-1", environment = null),
+                resource =
+                    ResourceAttributes(
+                        "checkout",
+                        serviceVersion = null,
+                        serviceInstanceId = "i-1",
+                        environment = null,
+                        runId = "run-1",
+                    ),
                 deltas = emptyList(),
             )
 
@@ -66,8 +74,7 @@ class ProtoPayloadCodecTest {
     fun `encodes a probe manifest that round-trips through the generated protobuf schema`() {
         val manifest =
             ProbeManifest(
-                serviceName = "checkout",
-                serviceVersion = "1.0.0",
+                resource = ResourceAttributes("checkout", "1.0.0", "", null, "run-1"),
                 probes =
                     listOf(
                         ProbeLocation(
@@ -95,9 +102,10 @@ class ProtoPayloadCodecTest {
 
         val decoded = ProtoProbeManifest.parseFrom(ProtoPayloadCodec.encode(manifest))
 
-        assertEquals("checkout", decoded.serviceName)
-        assertTrue(decoded.hasServiceVersion())
-        assertEquals("1.0.0", decoded.serviceVersion)
+        assertEquals("checkout", decoded.resource.serviceName)
+        assertTrue(decoded.resource.hasServiceVersion())
+        assertEquals("1.0.0", decoded.resource.serviceVersion)
+        assertEquals("run-1", decoded.resource.runId)
         assertEquals(2, decoded.probesList.size)
         assertFalse(decoded.probesList[0].hasBranchIndex())
         assertTrue(decoded.probesList[1].hasBranchIndex())
@@ -109,21 +117,20 @@ class ProtoPayloadCodecTest {
     fun `omits optional manifest service version and probe branch index when null`() {
         val manifest =
             ProbeManifest(
-                serviceName = "checkout",
-                serviceVersion = null,
+                resource = ResourceAttributes("checkout", null, "", null, "run-1"),
                 probes = emptyList(),
             )
 
         val decoded = ProtoProbeManifest.parseFrom(ProtoPayloadCodec.encode(manifest))
 
-        assertFalse(decoded.hasServiceVersion())
+        assertFalse(decoded.resource.hasServiceVersion())
     }
 
     @Test
     fun `decodes a delta batch back into the same values it was encoded from`() {
         val batch =
             DeltaBatch(
-                resource = ResourceAttributes("checkout", "1.0.0", "instance-1", "prod"),
+                resource = ResourceAttributes("checkout", "1.0.0", "instance-1", "prod", "run-1"),
                 deltas =
                     listOf(
                         ProbeDelta(classId = 0, probeIndex = 1, kind = ProbeKind.METHOD, firstSeenAt = 1000L, hitsTotal = 5L),
@@ -140,7 +147,14 @@ class ProtoPayloadCodecTest {
     fun `decodes a delta batch with null optional resource fields`() {
         val batch =
             DeltaBatch(
-                resource = ResourceAttributes("checkout", serviceVersion = null, serviceInstanceId = "i-1", environment = null),
+                resource =
+                    ResourceAttributes(
+                        "checkout",
+                        serviceVersion = null,
+                        serviceInstanceId = "i-1",
+                        environment = null,
+                        runId = "run-1",
+                    ),
                 deltas = emptyList(),
             )
 
@@ -152,7 +166,11 @@ class ProtoPayloadCodecTest {
     @Test
     fun `a delta batch's final flush flag round-trips through the wire, both ways`() {
         val finalBatch =
-            DeltaBatch(resource = ResourceAttributes("checkout", "1.0.0", "instance-1", "prod"), deltas = emptyList(), finalFlush = true)
+            DeltaBatch(
+                resource = ResourceAttributes("checkout", "1.0.0", "instance-1", "prod", "run-1"),
+                deltas = emptyList(),
+                finalFlush = true,
+            )
         val scheduledBatch = finalBatch.copy(finalFlush = false)
 
         assertTrue(ProtoDeltaBatch.parseFrom(ProtoPayloadCodec.encode(finalBatch)).finalFlush)
@@ -174,8 +192,7 @@ class ProtoPayloadCodecTest {
     fun `decodes a probe manifest back into the same values it was encoded from, including skipped classes`() {
         val manifest =
             ProbeManifest(
-                serviceName = "checkout",
-                serviceVersion = "1.0.0",
+                resource = ResourceAttributes("checkout", "1.0.0", "", null, "run-1"),
                 probes =
                     listOf(
                         ProbeLocation(
@@ -216,7 +233,7 @@ class ProtoPayloadCodecTest {
 
     @Test
     fun `decodes a probe manifest with a null service version`() {
-        val manifest = ProbeManifest(serviceName = "checkout", serviceVersion = null, probes = emptyList())
+        val manifest = ProbeManifest(resource = ResourceAttributes("checkout", null, "", null, "run-1"), probes = emptyList())
 
         val decoded = ProtoPayloadCodec.decodeProbeManifest(ProtoPayloadCodec.encode(manifest))
 
@@ -224,27 +241,32 @@ class ProtoPayloadCodecTest {
     }
 
     @Test
-    fun `a probe manifest's service instance id round-trips through the wire`() {
+    fun `a probe manifest's resource round-trips through the wire, run id included`() {
         val manifest =
             ProbeManifest(
-                serviceName = "checkout",
-                serviceVersion = "1.0.0",
+                resource = ResourceAttributes("checkout", "1.0.0", "instance-1", "prod", "run-1"),
                 probes = emptyList(),
-                serviceInstanceId = "instance-1",
             )
 
         val decoded = ProtoPayloadCodec.decodeProbeManifest(ProtoPayloadCodec.encode(manifest))
 
-        assertEquals("instance-1", decoded.serviceInstanceId)
+        assertEquals(ResourceAttributes("checkout", "1.0.0", "instance-1", "prod", "run-1"), decoded.resource)
         assertEquals(manifest, decoded)
+    }
+
+    @Test
+    fun `a delta batch's run id round-trips through the wire`() {
+        val batch = DeltaBatch(ResourceAttributes("checkout", null, "instance-1", null, "run-1"), emptyList())
+
+        assertEquals("run-1", ProtoDeltaBatch.parseFrom(ProtoPayloadCodec.encode(batch)).resource.runId)
+        assertEquals("run-1", ProtoPayloadCodec.decodeDeltaBatch(ProtoPayloadCodec.encode(batch)).resource.runId)
     }
 
     @Test
     fun `a probe location's inline flag round-trips through the wire`() {
         val manifest =
             ProbeManifest(
-                serviceName = "checkout",
-                serviceVersion = "1.0.0",
+                resource = ResourceAttributes("checkout", "1.0.0", "", null, "run-1"),
                 probes =
                     listOf(
                         ProbeLocation(
@@ -297,8 +319,7 @@ class ProtoPayloadCodecTest {
 
         val manifest =
             ProbeManifest(
-                serviceName = "checkout",
-                serviceVersion = "1.0.0",
+                resource = ResourceAttributes("checkout", "1.0.0", "", null, "run-1"),
                 probes =
                     listOf(
                         probeNamed("none", GeneratedBy.NONE),
@@ -323,8 +344,7 @@ class ProtoPayloadCodecTest {
     fun `a probe location with no generatedBy set decodes as NONE, matching an old payload`() {
         val manifest =
             ProbeManifest(
-                serviceName = "checkout",
-                serviceVersion = "1.0.0",
+                resource = ResourceAttributes("checkout", "1.0.0", "", null, "run-1"),
                 probes =
                     listOf(
                         ProbeLocation(
@@ -349,8 +369,7 @@ class ProtoPayloadCodecTest {
     fun `an optional argument probe's parameter fields round-trip through the wire`() {
         val manifest =
             ProbeManifest(
-                serviceName = "checkout",
-                serviceVersion = "1.0.0",
+                resource = ResourceAttributes("checkout", "1.0.0", "", null, "run-1"),
                 probes =
                     listOf(
                         ProbeLocation(
@@ -396,8 +415,7 @@ class ProtoPayloadCodecTest {
     fun `an optional argument probe with no LocalVariableTable name round-trips as an empty string, not null`() {
         val manifest =
             ProbeManifest(
-                serviceName = "checkout",
-                serviceVersion = "1.0.0",
+                resource = ResourceAttributes("checkout", "1.0.0", "", null, "run-1"),
                 probes =
                     listOf(
                         ProbeLocation(
@@ -424,8 +442,7 @@ class ProtoPayloadCodecTest {
     fun `a probe location's target class name round-trips through the wire, empty as null`() {
         val manifest =
             ProbeManifest(
-                serviceName = "checkout",
-                serviceVersion = "1.0.0",
+                resource = ResourceAttributes("checkout", "1.0.0", "", null, "run-1"),
                 probes =
                     listOf(
                         ProbeLocation(
@@ -466,8 +483,7 @@ class ProtoPayloadCodecTest {
     fun `a probe location's inlined-from class name round-trips through the wire, empty as null`() {
         val manifest =
             ProbeManifest(
-                serviceName = "checkout",
-                serviceVersion = "1.0.0",
+                resource = ResourceAttributes("checkout", "1.0.0", "", null, "run-1"),
                 probes =
                     listOf(
                         ProbeLocation(
@@ -505,8 +521,7 @@ class ProtoPayloadCodecTest {
     fun `a probe location's branch key round-trips through the wire, set and unset`() {
         val manifest =
             ProbeManifest(
-                serviceName = "checkout",
-                serviceVersion = "1.0.0",
+                resource = ResourceAttributes("checkout", "1.0.0", "", null, "run-1"),
                 probes =
                     listOf(
                         ProbeLocation(
@@ -545,7 +560,7 @@ class ProtoPayloadCodecTest {
     fun `encodes and decodes a static baseline with declared classes and methods`() {
         val baseline =
             StaticBaseline(
-                resource = ResourceAttributes("checkout", "1.0.0", "instance-1", "prod"),
+                resource = ResourceAttributes("checkout", "1.0.0", "instance-1", "prod", "run-1"),
                 declaredClasses =
                     listOf(
                         DeclaredClass(
@@ -569,7 +584,7 @@ class ProtoPayloadCodecTest {
     fun `a declared method's inline flag round-trips through the wire`() {
         val baseline =
             StaticBaseline(
-                resource = ResourceAttributes("checkout", "1.0.0", "instance-1", "prod"),
+                resource = ResourceAttributes("checkout", "1.0.0", "instance-1", "prod", "run-1"),
                 declaredClasses =
                     listOf(
                         DeclaredClass(
@@ -596,7 +611,7 @@ class ProtoPayloadCodecTest {
     fun `a declared method's generatedBy round-trips through the wire, every value`() {
         val baseline =
             StaticBaseline(
-                resource = ResourceAttributes("checkout", "1.0.0", "instance-1", "prod"),
+                resource = ResourceAttributes("checkout", "1.0.0", "instance-1", "prod", "run-1"),
                 declaredClasses =
                     listOf(
                         DeclaredClass(
@@ -633,7 +648,7 @@ class ProtoPayloadCodecTest {
     fun `a declared method's call edges and a declared class's supertypes round-trip through the wire`() {
         val baseline =
             StaticBaseline(
-                resource = ResourceAttributes("checkout", "1.0.0", "instance-1", "prod"),
+                resource = ResourceAttributes("checkout", "1.0.0", "instance-1", "prod", "run-1"),
                 declaredClasses =
                     listOf(
                         DeclaredClass(
@@ -676,7 +691,7 @@ class ProtoPayloadCodecTest {
     fun `a declared class with no superclass round-trips super class name as null, not empty string`() {
         val baseline =
             StaticBaseline(
-                resource = ResourceAttributes("checkout", null, "instance-1", null),
+                resource = ResourceAttributes("checkout", null, "instance-1", null, "run-1"),
                 declaredClasses =
                     listOf(DeclaredClass(className = "com.example.Foo", methods = listOf(DeclaredMethod("bar", "()V")))),
                 scannedAt = 1000L,
@@ -701,7 +716,7 @@ class ProtoPayloadCodecTest {
     fun `encodes and decodes a static baseline's statically-unsafe and unreadable classes`() {
         val baseline =
             StaticBaseline(
-                resource = ResourceAttributes("checkout", null, "instance-1", null),
+                resource = ResourceAttributes("checkout", null, "instance-1", null, "run-1"),
                 declaredClasses = emptyList(),
                 staticallyUnsafeClasses =
                     listOf(StaticallyUnsafeClass("com.example.Unsafe", "@kotlin.jvm.JvmName is not legal on TYPE")),
@@ -719,7 +734,7 @@ class ProtoPayloadCodecTest {
     fun `encodes and decodes a static baseline's unprobed classes and chunk position`() {
         val baseline =
             StaticBaseline(
-                resource = ResourceAttributes("checkout", null, "instance-1", null),
+                resource = ResourceAttributes("checkout", null, "instance-1", null, "run-1"),
                 declaredClasses = emptyList(),
                 unprobedClasses = listOf(UnprobedClass("com.example.Marker", "no concrete methods to probe")),
                 scannedAt = 4000L,
@@ -736,7 +751,7 @@ class ProtoPayloadCodecTest {
     fun `encodes an empty static baseline`() {
         val baseline =
             StaticBaseline(
-                resource = ResourceAttributes("checkout", null, "instance-1", null),
+                resource = ResourceAttributes("checkout", null, "instance-1", null, "run-1"),
                 declaredClasses = emptyList(),
                 scannedAt = 3000L,
             )
@@ -750,8 +765,7 @@ class ProtoPayloadCodecTest {
     fun `encodes skipped classes on the manifest`() {
         val manifest =
             ProbeManifest(
-                serviceName = "checkout",
-                serviceVersion = null,
+                resource = ResourceAttributes("checkout", null, "", null, "run-1"),
                 probes = emptyList(),
                 skippedClasses =
                     listOf(
@@ -775,7 +789,7 @@ class ProtoPayloadCodecTest {
     fun `encodes a delta batch's endpoint deltas that round-trip through the generated protobuf schema`() {
         val batch =
             DeltaBatch(
-                resource = ResourceAttributes("checkout", "1.0.0", "instance-1", "prod"),
+                resource = ResourceAttributes("checkout", "1.0.0", "instance-1", "prod", "run-1"),
                 deltas = emptyList(),
                 endpointDeltas =
                     listOf(
@@ -797,7 +811,7 @@ class ProtoPayloadCodecTest {
     fun `decodes a delta batch's endpoint deltas back into the same values it was encoded from`() {
         val batch =
             DeltaBatch(
-                resource = ResourceAttributes("checkout", "1.0.0", "instance-1", "prod"),
+                resource = ResourceAttributes("checkout", "1.0.0", "instance-1", "prod", "run-1"),
                 deltas = emptyList(),
                 endpointDeltas = listOf(EndpointDelta(endpointId = 0, firstSeenAt = 1000L, hitsTotal = 7L)),
             )
@@ -811,7 +825,7 @@ class ProtoPayloadCodecTest {
     fun `a delta batch with no endpoint deltas decodes to an empty list, matching an old payload`() {
         val batch =
             DeltaBatch(
-                resource = ResourceAttributes("checkout", "1.0.0", "instance-1", "prod"),
+                resource = ResourceAttributes("checkout", "1.0.0", "instance-1", "prod", "run-1"),
                 deltas = emptyList(),
             )
 
@@ -825,8 +839,7 @@ class ProtoPayloadCodecTest {
     fun `encodes and decodes a manifest endpoint with a full handler join`() {
         val manifest =
             ProbeManifest(
-                serviceName = "checkout",
-                serviceVersion = "1.0.0",
+                resource = ResourceAttributes("checkout", "1.0.0", "", null, "run-1"),
                 probes = emptyList(),
                 endpoints =
                     listOf(
@@ -853,8 +866,7 @@ class ProtoPayloadCodecTest {
     fun `encodes and decodes a manifest endpoint with only the handler class known`() {
         val manifest =
             ProbeManifest(
-                serviceName = "checkout",
-                serviceVersion = "1.0.0",
+                resource = ResourceAttributes("checkout", "1.0.0", "", null, "run-1"),
                 probes = emptyList(),
                 endpoints =
                     listOf(
@@ -879,8 +891,7 @@ class ProtoPayloadCodecTest {
     fun `encodes and decodes a manifest endpoint with no handler join at all`() {
         val manifest =
             ProbeManifest(
-                serviceName = "checkout",
-                serviceVersion = "1.0.0",
+                resource = ResourceAttributes("checkout", "1.0.0", "", null, "run-1"),
                 probes = emptyList(),
                 endpoints =
                     listOf(
@@ -904,8 +915,7 @@ class ProtoPayloadCodecTest {
     fun `optional handler fields are absent on the wire when null`() {
         val manifest =
             ProbeManifest(
-                serviceName = "checkout",
-                serviceVersion = null,
+                resource = ResourceAttributes("checkout", null, "", null, "run-1"),
                 probes = emptyList(),
                 endpoints =
                     listOf(
@@ -932,8 +942,7 @@ class ProtoPayloadCodecTest {
     fun `encodes and decodes a manifest's disabled endpoint modules`() {
         val manifest =
             ProbeManifest(
-                serviceName = "checkout",
-                serviceVersion = null,
+                resource = ResourceAttributes("checkout", null, "", null, "run-1"),
                 probes = emptyList(),
                 disabledEndpointModules =
                     listOf(
@@ -960,8 +969,7 @@ class ProtoPayloadCodecTest {
     fun `a manifest with no endpoint fields decodes to empty lists, matching an old payload`() {
         val manifest =
             ProbeManifest(
-                serviceName = "checkout",
-                serviceVersion = null,
+                resource = ResourceAttributes("checkout", null, "", null, "run-1"),
                 probes = emptyList(),
             )
 
@@ -977,7 +985,7 @@ class ProtoPayloadCodecTest {
         val wireManifest =
             ProtoProbeManifest
                 .newBuilder()
-                .setServiceName("checkout")
+                .setResource(ProtoResourceAttributes.newBuilder().setServiceName("checkout"))
                 .addEndpoints(
                     ProtoEndpointLocation
                         .newBuilder()
@@ -999,8 +1007,7 @@ class ProtoPayloadCodecTest {
     fun `a METHOD probe's call edges and a class's supertypes round-trip through the wire`() {
         val manifest =
             ProbeManifest(
-                serviceName = "checkout",
-                serviceVersion = "1.0.0",
+                resource = ResourceAttributes("checkout", "1.0.0", "", null, "run-1"),
                 probes =
                     listOf(
                         ProbeLocation(
@@ -1041,8 +1048,7 @@ class ProtoPayloadCodecTest {
     fun `a class supertypes record with no superclass round-trips super class name as null, not empty string`() {
         val manifest =
             ProbeManifest(
-                serviceName = "checkout",
-                serviceVersion = null,
+                resource = ResourceAttributes("checkout", null, "", null, "run-1"),
                 probes = emptyList(),
                 classSupertypes = listOf(ClassSupertypes(classId = 0, superClassName = null, interfaceNames = emptyList())),
             )
@@ -1057,8 +1063,7 @@ class ProtoPayloadCodecTest {
     fun `a manifest with no calls or supertypes decodes to empty lists, matching an old payload`() {
         val manifest =
             ProbeManifest(
-                serviceName = "checkout",
-                serviceVersion = null,
+                resource = ResourceAttributes("checkout", null, "", null, "run-1"),
                 probes =
                     listOf(
                         ProbeLocation(
@@ -1090,10 +1095,8 @@ class ProtoPayloadCodecTest {
     fun `a manifest's unreported classes survive a round trip`() {
         val manifest =
             ProbeManifest(
-                serviceName = "checkout",
-                serviceVersion = null,
+                resource = ResourceAttributes("checkout", null, "instance-1", null, "run-1"),
                 probes = emptyList(),
-                serviceInstanceId = "instance-1",
                 unreportedClasses = listOf(UnreportedClass("com.example.Deflected", 1_700_000_000_000L)),
             )
 
@@ -1146,7 +1149,7 @@ class ProtoPayloadCodecTest {
     fun `a delta batch's dependency deltas round-trip through the wire, both ways`() {
         val batch =
             DeltaBatch(
-                resource = ResourceAttributes("checkout", "1.0.0", "instance-1", "prod"),
+                resource = ResourceAttributes("checkout", "1.0.0", "instance-1", "prod", "run-1"),
                 deltas = emptyList(),
                 dependencyDeltas =
                     listOf(
@@ -1170,7 +1173,7 @@ class ProtoPayloadCodecTest {
     fun `a delta batch with no dependency deltas decodes to an empty list, matching an old payload`() {
         val batch =
             DeltaBatch(
-                resource = ResourceAttributes("checkout", "1.0.0", "instance-1", "prod"),
+                resource = ResourceAttributes("checkout", "1.0.0", "instance-1", "prod", "run-1"),
                 deltas = emptyList(),
             )
 
@@ -1214,10 +1217,8 @@ class ProtoPayloadCodecTest {
             )
         val manifest =
             ProbeManifest(
-                serviceName = "checkout",
-                serviceVersion = "1.0.0",
+                resource = ResourceAttributes("checkout", "1.0.0", "instance-1", null, "run-1"),
                 probes = emptyList(),
-                serviceInstanceId = "instance-1",
                 dependencies = listOf(ordinary, shaded, filenameOnly),
             )
 
@@ -1250,10 +1251,8 @@ class ProtoPayloadCodecTest {
     fun `a class count of zero is present on the wire and decodes as zero, not null`() {
         val manifest =
             ProbeManifest(
-                serviceName = "checkout",
-                serviceVersion = "1.0.0",
+                resource = ResourceAttributes("checkout", "1.0.0", "instance-1", null, "run-1"),
                 probes = emptyList(),
-                serviceInstanceId = "instance-1",
                 dependencies =
                     listOf(
                         DependencyLocation(
@@ -1290,8 +1289,7 @@ class ProtoPayloadCodecTest {
     fun `a manifest's class references, external classes and a METHOD probe's referenced classes round-trip`() {
         val manifest =
             ProbeManifest(
-                serviceName = "checkout",
-                serviceVersion = "1.0.0",
+                resource = ResourceAttributes("checkout", "1.0.0", "instance-1", null, "run-1"),
                 probes =
                     listOf(
                         ProbeLocation(
@@ -1306,7 +1304,6 @@ class ProtoPayloadCodecTest {
                             referencedClasses = listOf("okhttp3.OkHttpClient", "com.optional.Missing"),
                         ),
                     ),
-                serviceInstanceId = "instance-1",
                 classReferences =
                     listOf(ClassReferences(classId = 0, referencedClasses = listOf("org.springframework.stereotype.Service"))),
                 externalClasses =
@@ -1338,7 +1335,7 @@ class ProtoPayloadCodecTest {
     fun `a declared method's and class's referenced classes and a baseline's external classes round-trip`() {
         val baseline =
             StaticBaseline(
-                resource = ResourceAttributes("checkout", "1.0.0", "instance-1", "prod"),
+                resource = ResourceAttributes("checkout", "1.0.0", "instance-1", "prod", "run-1"),
                 declaredClasses =
                     listOf(
                         DeclaredClass(
@@ -1390,8 +1387,7 @@ class ProtoPayloadCodecTest {
     fun `a manifest and a baseline with no dependency fields decode to empty lists, matching an old payload`() {
         val manifest =
             ProbeManifest(
-                serviceName = "checkout",
-                serviceVersion = null,
+                resource = ResourceAttributes("checkout", null, "", null, "run-1"),
                 probes =
                     listOf(
                         ProbeLocation(
@@ -1408,7 +1404,7 @@ class ProtoPayloadCodecTest {
             )
         val baseline =
             StaticBaseline(
-                resource = ResourceAttributes("checkout", null, "instance-1", null),
+                resource = ResourceAttributes("checkout", null, "instance-1", null, "run-1"),
                 declaredClasses =
                     listOf(DeclaredClass("com.example.Foo", listOf(DeclaredMethod("bar", "()V")), superClassName = "java.lang.Object")),
                 scannedAt = 1000L,
@@ -1447,7 +1443,8 @@ class ProtoPayloadCodecTest {
 
     @Test
     fun `a manifest's references recorded flag round-trips through the wire, both ways`() {
-        val recording = ProbeManifest("checkout", "1.0.0", emptyList(), serviceInstanceId = "instance-1", referencesRecorded = true)
+        val recording =
+            ProbeManifest(ResourceAttributes("checkout", "1.0.0", "instance-1", null, "run-1"), emptyList(), referencesRecorded = true)
         val notRecording = recording.copy(referencesRecorded = false)
 
         assertTrue(ProtoProbeManifest.parseFrom(ProtoPayloadCodec.encode(recording)).referencesRecorded)
@@ -1461,7 +1458,7 @@ class ProtoPayloadCodecTest {
         val wireBytes =
             ProtoProbeManifest
                 .newBuilder()
-                .setServiceName("checkout")
+                .setResource(ProtoResourceAttributes.newBuilder().setServiceName("checkout"))
                 .build()
                 .toByteArray()
 

@@ -8,51 +8,61 @@ import io.github.lukedevops.yukon.proto.EndpointDiscoverySource
 import io.github.lukedevops.yukon.proto.GeneratedBy
 import io.github.lukedevops.yukon.proto.ProbeKind
 import io.github.lukedevops.yukon.proto.ProbeManifest
+import io.github.lukedevops.yukon.proto.ResourceAttributes
 import io.github.lukedevops.yukon.proto.StaticBaseline
 import java.net.InetSocketAddress
 import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * [classId] is assigned independently by each agent instance's own registry, in that process's
- * own class-loading order, so the same [classId] can mean a different class in two different
- * instances. Every probe key used by this stub collector is scoped to [serviceInstanceId] for
- * that reason: `ProbeManifest` carries its own `service_instance_id`, the same as
- * `DeltaBatch`'s resource, so there is always an instance to key on.
+ * One run of one instance: the pair every payload's resource names. Class ids, endpoint ids and
+ * dependency ids are assigned by each process in its own order, and a restart under a pinned
+ * instance id starts a new process, so every key below is scoped to a run, not to an instance
+ * alone. Report lines still show [serviceInstanceId], the name a person knows. See ADR 0032.
+ */
+private data class Run(
+    val serviceInstanceId: String,
+    val runId: String,
+)
+
+/**
+ * [classId] is assigned independently by each process's own registry, in that process's own
+ * class-loading order, so the same [classId] can mean a different class in two different runs.
+ * Every probe key used by this stub collector is scoped to a [Run] for that reason.
  */
 private data class InstanceProbeKey(
-    val serviceInstanceId: String,
+    val run: Run,
     val classId: Int,
     val probeIndex: Int,
 )
 
-/** Scopes a skipped class's name to the instance that reported it, for the same reason as [InstanceProbeKey]. */
+/** Scopes a skipped class's name to the run that reported it, for the same reason as [InstanceProbeKey]. */
 private data class InstanceClassKey(
-    val serviceInstanceId: String,
+    val run: Run,
     val className: String,
 )
 
-/** Scopes an endpoint id to the instance that reported it, for the same reason as [InstanceProbeKey]. */
+/** Scopes an endpoint id to the run that reported it, for the same reason as [InstanceProbeKey]. */
 private data class InstanceEndpointKey(
-    val serviceInstanceId: String,
+    val run: Run,
     val endpointId: Int,
 )
 
-/** Scopes a disabled endpoint module's name to the instance that reported it. */
+/** Scopes a disabled endpoint module's name to the run that reported it. */
 private data class InstanceModuleKey(
-    val serviceInstanceId: String,
+    val run: Run,
     val module: String,
 )
 
 /**
- * Groups every omission probe naming one optional parameter, within one instance: the target
+ * Groups every omission probe naming one optional parameter, within one run: the target
  * class (`targetClassName ?: className`), method, descriptor, and parameter index. A group can
  * hold more than one probe: a Scala constructor default gets both a module getter, resolved
  * across the class boundary, and that class's own static forwarder for the same getter name,
  * resolved in class, both landing on the same target. See ADR 0023.
  */
 private data class OmissionTargetKey(
-    val serviceInstanceId: String,
+    val run: Run,
     val targetClassName: String,
     val methodName: String,
     val methodDescriptor: String,
@@ -89,9 +99,9 @@ private data class SupertypesInfo(
     val interfaceNames: List<String>,
 )
 
-/** Scopes a class_id's supertypes record to the instance that reported it, for the same reason as [InstanceProbeKey]. */
+/** Scopes a class_id's supertypes record to the run that reported it, for the same reason as [InstanceProbeKey]. */
 private data class InstanceClassIdKey(
-    val serviceInstanceId: String,
+    val run: Run,
     val classId: Int,
 )
 
@@ -109,9 +119,9 @@ private data class DeclaredMethodInfo(
     val referencedClasses: List<String> = emptyList(),
 )
 
-/** Scopes a dependency id to the instance that reported it, for the same reason as [InstanceProbeKey]. */
+/** Scopes a dependency id to the run that reported it, for the same reason as [InstanceProbeKey]. */
 private data class InstanceDependencyKey(
-    val serviceInstanceId: String,
+    val run: Run,
     val dependencyId: Int,
 )
 
@@ -164,11 +174,11 @@ private val latestEndpointHitsTotal = ConcurrentHashMap<InstanceEndpointKey, Lon
 // baseline's declared-classes set is for.
 private val dynamicallyKnownClassNames = Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
 
-/** Every instance id any delta batch has ever arrived from, heartbeat included. See ADR 0010. */
-private val allInstanceIds = Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
+/** Every run any delta batch has ever arrived from, heartbeat included. See ADR 0010. */
+private val allRuns = Collections.newSetFromMap(ConcurrentHashMap<Run, Boolean>())
 
-/** Instance ids whose shutdown hook has sent a delta batch with `final_flush` set. See ADR 0010. */
-private val instancesThatEndedCleanly = Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
+/** Runs whose shutdown hook has sent a delta batch with `final_flush` set. See ADR 0010. */
+private val runsThatEndedCleanly = Collections.newSetFromMap(ConcurrentHashMap<Run, Boolean>())
 private val staticallyDeclaredClasses = ConcurrentHashMap<String, List<DeclaredMethodInfo>>()
 
 // A declared class's superclass and interfaces, read the same way as a loaded class's
@@ -178,9 +188,9 @@ private val staticallyUnsafeClasses = ConcurrentHashMap<String, String>()
 private val staticallyUnreadableClasses = ConcurrentHashMap<String, String>()
 private val staticallyUnprobedClasses = ConcurrentHashMap<String, String>()
 
-/** One static scan, identified by (instance, scanned_at), arrives as chunk_count chunks; only a complete scan may be diffed. */
+/** One static scan, identified by (run, scanned_at), arrives as chunk_count chunks; only a complete scan may be diffed. */
 private data class ScanKey(
-    val serviceInstanceId: String,
+    val run: Run,
     val scannedAt: Long,
 )
 
@@ -193,8 +203,8 @@ private data class ScanProgress(
 
 private val scans = ConcurrentHashMap<ScanKey, ScanProgress>()
 
-// Dependency usage (ADR 0030), all per instance: dependency_id and class_id are assigned by each
-// instance's own registry.
+// Dependency usage (ADR 0030), all per run: dependency_id and class_id are assigned by each
+// process's own registry.
 private val dependencyLocations = ConcurrentHashMap<InstanceDependencyKey, DependencyView>()
 
 // Cumulative distinct class names, max()-merged like latestHitsTotal.
@@ -205,9 +215,9 @@ private val probeReferencedClasses = ConcurrentHashMap<InstanceProbeKey, List<St
 private val classLevelReferences = ConcurrentHashMap<InstanceClassIdKey, List<String>>()
 private val baselineReferences = ConcurrentHashMap<InstanceClassKey, BaselineReferences>()
 
-/** Instance ids any manifest arrived from with `references_recorded` set. See ADR 0030. */
-private val instancesRecordingReferences = Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
-private val manifestInstanceIds = Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
+/** Runs any manifest arrived from with `references_recorded` set. See ADR 0030. */
+private val runsRecordingReferences = Collections.newSetFromMap(ConcurrentHashMap<Run, Boolean>())
+private val manifestRuns = Collections.newSetFromMap(ConcurrentHashMap<Run, Boolean>())
 
 /** One node of the call graph [computeUnreachedClusters] resolves: a probed method, by identity alone. See ADR 0024. */
 private data class NodeKey(
@@ -271,12 +281,7 @@ private data class UnreachedClusterInfo(
  */
 fun main(args: Array<String>) {
     val requestedPort = args.firstOrNull()?.toIntOrNull() ?: DemoPorts.COLLECTOR_PORT
-    val server = HttpServer.create(InetSocketAddress(requestedPort), 0)
-    server.createContext("/v1/yukon/deltas", ::handleDeltaBatch)
-    server.createContext("/v1/yukon/manifest", ::handleManifest)
-    server.createContext("/v1/yukon/static-baseline", ::handleStaticBaseline)
-    server.createContext("/__shutdown", ::handleShutdown)
-    server.start()
+    val server = startStubCollector(requestedPort)
     println("yukon stub collector listening on ${server.address.port}")
 
     Runtime.getRuntime().addShutdownHook(
@@ -291,6 +296,27 @@ fun main(args: Array<String>) {
     )
 }
 
+/**
+ * Binds [port] and serves the three payload routes and `/__shutdown`. `internal` so a test can
+ * post payloads to it without the shutdown-hook reports [main] adds.
+ */
+internal fun startStubCollector(port: Int): HttpServer {
+    val server = HttpServer.create(InetSocketAddress(port), 0)
+    server.createContext("/v1/yukon/deltas", ::handleDeltaBatch)
+    server.createContext("/v1/yukon/manifest", ::handleManifest)
+    server.createContext("/v1/yukon/static-baseline", ::handleStaticBaseline)
+    server.createContext("/__shutdown", ::handleShutdown)
+    server.start()
+    return server
+}
+
+/**
+ * The [Run] [resource] names, or null when its run id is empty. ADR 0032 has a consumer reject
+ * such a payload, since nothing it carries can be kept apart from another run's data.
+ */
+private fun runOf(resource: ResourceAttributes): Run? =
+    resource.runId.takeIf { it.isNotEmpty() }?.let { Run(resource.serviceInstanceId, it) }
+
 /** Exits in-process, instead of relying on SIGTERM. SIGTERM can drop the shutdown-hook report mid-write. */
 private fun handleShutdown(exchange: HttpExchange) {
     respondOk(exchange)
@@ -299,23 +325,23 @@ private fun handleShutdown(exchange: HttpExchange) {
 
 private fun handleDeltaBatch(exchange: HttpExchange) {
     val batch = DeltaBatch.parseFrom(exchange.requestBody.readBytes())
-    val instanceId = batch.resource.serviceInstanceId
-    allInstanceIds += instanceId
+    val run = runOf(batch.resource) ?: return respondBadRequest(exchange, "delta batch")
+    allRuns += run
     for (delta in batch.deltasList) {
-        val key = InstanceProbeKey(instanceId, delta.classId, delta.probeIndex)
+        val key = InstanceProbeKey(run, delta.classId, delta.probeIndex)
         everHit += key
         latestHitsTotal.merge(key, delta.hitsTotal, ::maxOf)
     }
     for (delta in batch.endpointDeltasList) {
-        val key = InstanceEndpointKey(instanceId, delta.endpointId)
+        val key = InstanceEndpointKey(run, delta.endpointId)
         latestEndpointHitsTotal.merge(key, delta.hitsTotal, ::maxOf)
     }
     for (delta in batch.dependencyDeltasList) {
-        val key = InstanceDependencyKey(instanceId, delta.dependencyId)
+        val key = InstanceDependencyKey(run, delta.dependencyId)
         latestLoadedClassesTotal.merge(key, delta.loadedClassesTotal, ::maxOf)
         if (delta.firstLoadedAt > 0L) firstLoadedAt.merge(key, delta.firstLoadedAt, ::minOf)
     }
-    if (batch.finalFlush) instancesThatEndedCleanly += instanceId
+    if (batch.finalFlush) runsThatEndedCleanly += run
     val totalHits = latestHitsTotal.values.sum()
     val totalEndpointHits = latestEndpointHitsTotal.values.sum()
     val finalFlushSuffix = if (batch.finalFlush) " final=true" else ""
@@ -329,9 +355,9 @@ private fun handleDeltaBatch(exchange: HttpExchange) {
 
 private fun handleManifest(exchange: HttpExchange) {
     val manifest = ProbeManifest.parseFrom(exchange.requestBody.readBytes())
-    val instanceId = manifest.serviceInstanceId
+    val run = runOf(manifest.resource) ?: return respondBadRequest(exchange, "manifest")
     for (location in manifest.probesList) {
-        manifestProbes[InstanceProbeKey(instanceId, location.classId, location.probeIndex)] =
+        manifestProbes[InstanceProbeKey(run, location.classId, location.probeIndex)] =
             ProbeInfo(
                 className = location.className,
                 methodName = location.methodName,
@@ -349,18 +375,18 @@ private fun handleManifest(exchange: HttpExchange) {
             )
         dynamicallyKnownClassNames += location.className
         if (location.callsList.isNotEmpty()) {
-            manifestCallEdges[InstanceProbeKey(instanceId, location.classId, location.probeIndex)] =
+            manifestCallEdges[InstanceProbeKey(run, location.classId, location.probeIndex)] =
                 location.callsList.map { CallEdgeInfo(it.className, it.methodName, it.methodDescriptor, it.virtual) }
         }
         if (location.referencedClassesList.isNotEmpty()) {
-            probeReferencedClasses[InstanceProbeKey(instanceId, location.classId, location.probeIndex)] =
+            probeReferencedClasses[InstanceProbeKey(run, location.classId, location.probeIndex)] =
                 location.referencedClassesList.toList()
         }
     }
-    manifestInstanceIds += instanceId
-    if (manifest.referencesRecorded) instancesRecordingReferences += instanceId
+    manifestRuns += run
+    if (manifest.referencesRecorded) runsRecordingReferences += run
     for (dependency in manifest.dependenciesList) {
-        dependencyLocations[InstanceDependencyKey(instanceId, dependency.dependencyId)] =
+        dependencyLocations[InstanceDependencyKey(run, dependency.dependencyId)] =
             DependencyView(
                 dependencyId = dependency.dependencyId,
                 identities = dependency.identitiesList.map { DependencyIdentityView(it.groupId, it.artifactId, it.version) },
@@ -370,22 +396,22 @@ private fun handleManifest(exchange: HttpExchange) {
             )
     }
     for (references in manifest.classReferencesList) {
-        classLevelReferences[InstanceClassIdKey(instanceId, references.classId)] = references.referencedClassesList.toList()
+        classLevelReferences[InstanceClassIdKey(run, references.classId)] = references.referencedClassesList.toList()
     }
     for (external in manifest.externalClassesList) {
-        externalClasses[InstanceClassKey(instanceId, external.className)] =
+        externalClasses[InstanceClassKey(run, external.className)] =
             ExternalClassView(if (external.hasDependencyId()) external.dependencyId else null, external.absent)
     }
     for (skipped in manifest.skippedClassesList) {
-        skippedClasses[InstanceClassKey(instanceId, skipped.className)] = SkippedInfo(skipped.reason, skipped.skippedAt)
+        skippedClasses[InstanceClassKey(run, skipped.className)] = SkippedInfo(skipped.reason, skipped.skippedAt)
         dynamicallyKnownClassNames += skipped.className
     }
     for (supertypes in manifest.classSupertypesList) {
-        classSupertypes[InstanceClassIdKey(instanceId, supertypes.classId)] =
+        classSupertypes[InstanceClassIdKey(run, supertypes.classId)] =
             SupertypesInfo(supertypes.superClassName.ifEmpty { null }, supertypes.interfaceNamesList)
     }
     for (endpoint in manifest.endpointsList) {
-        manifestEndpoints[InstanceEndpointKey(instanceId, endpoint.endpointId)] =
+        manifestEndpoints[InstanceEndpointKey(run, endpoint.endpointId)] =
             EndpointInfo(
                 verb = endpoint.verb,
                 routeTemplate = endpoint.routeTemplate,
@@ -398,11 +424,11 @@ private fun handleManifest(exchange: HttpExchange) {
             )
     }
     for (disabled in manifest.disabledEndpointModulesList) {
-        disabledEndpointModules[InstanceModuleKey(instanceId, disabled.module)] = disabled.reason
+        disabledEndpointModules[InstanceModuleKey(run, disabled.module)] = disabled.reason
     }
     val callEdgeCount = manifest.probesList.sumOf { it.callsList.size }
     println(
-        "[manifest] instance=$instanceId received ${manifest.probesList.size} probe locations " +
+        "[manifest] instance=${run.serviceInstanceId} received ${manifest.probesList.size} probe locations " +
             "(known total: ${manifestProbes.size}) and ${manifest.skippedClassesList.size} skipped classes " +
             "(known total: ${skippedClasses.size}), ${manifest.endpointsList.size} endpoints " +
             "(known total: ${manifestEndpoints.size}) and ${manifest.disabledEndpointModulesList.size} disabled endpoint modules, " +
@@ -416,6 +442,7 @@ private fun handleManifest(exchange: HttpExchange) {
 
 private fun handleStaticBaseline(exchange: HttpExchange) {
     val baseline = StaticBaseline.parseFrom(exchange.requestBody.readBytes())
+    val run = runOf(baseline.resource) ?: return respondBadRequest(exchange, "static baseline")
     for (declaredClass in baseline.declaredClassesList) {
         staticallyDeclaredClasses[declaredClass.className] =
             declaredClass.methodsList.map {
@@ -428,13 +455,13 @@ private fun handleStaticBaseline(exchange: HttpExchange) {
                     it.referencedClassesList.toList(),
                 )
             }
-        baselineReferences[InstanceClassKey(baseline.resource.serviceInstanceId, declaredClass.className)] =
+        baselineReferences[InstanceClassKey(run, declaredClass.className)] =
             BaselineReferences(declaredClass.referencedClassesList.toList(), staticallyDeclaredClasses.getValue(declaredClass.className))
         staticallyDeclaredSupertypes[declaredClass.className] =
             SupertypesInfo(declaredClass.superClassName.ifEmpty { null }, declaredClass.interfaceNamesList)
     }
     for (external in baseline.externalClassesList) {
-        externalClasses[InstanceClassKey(baseline.resource.serviceInstanceId, external.className)] =
+        externalClasses[InstanceClassKey(run, external.className)] =
             ExternalClassView(if (external.hasDependencyId()) external.dependencyId else null, external.absent)
     }
     for (unsafe in baseline.staticallyUnsafeClassesList) {
@@ -447,7 +474,7 @@ private fun handleStaticBaseline(exchange: HttpExchange) {
         staticallyUnprobedClasses[unprobed.className] = unprobed.reason
     }
     val progress =
-        scans.computeIfAbsent(ScanKey(baseline.resource.serviceInstanceId, baseline.scannedAt)) { ScanProgress(baseline.chunkCount) }
+        scans.computeIfAbsent(ScanKey(run, baseline.scannedAt)) { ScanProgress(baseline.chunkCount) }
     progress.received += baseline.chunkIndex
     val callEdgeCount = baseline.declaredClassesList.sumOf { c -> c.methodsList.sumOf { it.callsList.size } }
     println(
@@ -462,6 +489,18 @@ private fun handleStaticBaseline(exchange: HttpExchange) {
 private fun respondOk(exchange: HttpExchange) {
     exchange.sendResponseHeaders(200, -1)
     exchange.close()
+}
+
+/** Answers 400 to a [payload] whose resource has no run id, and keeps nothing from it. See ADR 0032. */
+private fun respondBadRequest(
+    exchange: HttpExchange,
+    payload: String,
+) {
+    val message = "rejected $payload: resource.run_id is empty"
+    println("[rejected] $message")
+    val body = message.toByteArray()
+    exchange.sendResponseHeaders(400, body.size.toLong())
+    exchange.responseBody.use { it.write(body) }
 }
 
 private fun printNeverHitReport() {
@@ -483,7 +522,7 @@ private fun printNeverHitReport() {
         }
     println()
     println("=== yukon demo: dead code report ===")
-    println("instances that sent a final flush: ${instancesThatEndedCleanly.size} of ${allInstanceIds.size}")
+    println("runs that sent a final flush: ${runsThatEndedCleanly.size} of ${allRuns.size}")
     println("known probes: ${manifestProbes.size}, ever hit: ${everHit.size}, never hit: ${judgeable.size}")
     if (judgeableTotal > 0) {
         println("dead: %.1f%%".format(100.0 * judgeable.size / judgeableTotal))
@@ -496,7 +535,7 @@ private fun printNeverHitReport() {
             val inlinedFromSuffix = info.inlinedFromClassName?.let { " (inlined from $it)" } ?: ""
             println(
                 "  NEVER HIT: ${info.className}#${info.methodName}:${info.line} " +
-                    "[${info.kind}$branchSuffix]$inlinedFromSuffix (instance ${key.serviceInstanceId}, class ${key.classId}, probe ${key.probeIndex})",
+                    "[${info.kind}$branchSuffix]$inlinedFromSuffix (instance ${key.run.serviceInstanceId}, class ${key.classId}, probe ${key.probeIndex})",
             )
         }
     // Kotlin inline functions copy their body into the caller, so their own probe reads near
@@ -506,8 +545,8 @@ private fun printNeverHitReport() {
     if (skippedClasses.isNotEmpty()) {
         println("skipped (matched but could not be instrumented): ${skippedClasses.size}")
         skippedClasses.entries
-            .sortedWith(compareBy({ it.key.serviceInstanceId }, { it.key.className }))
-            .forEach { (key, info) -> println("  SKIPPED: ${key.className} (instance ${key.serviceInstanceId}) - ${info.reason}") }
+            .sortedWith(compareBy({ it.key.run.serviceInstanceId }, { it.key.className }))
+            .forEach { (key, info) -> println("  SKIPPED: ${key.className} (instance ${key.run.serviceInstanceId}) - ${info.reason}") }
     }
     println("=====================================")
 }
@@ -533,7 +572,7 @@ private fun printOmissionReport() {
                 info.kind == ProbeKind.OPTIONAL_ARGUMENT && !info.inline && info.generatedBy == GeneratedBy.GENERATED_BY_NONE
             }.groupBy { (key, info) ->
                 OmissionTargetKey(
-                    key.serviceInstanceId,
+                    key.run,
                     info.targetClassName ?: info.className,
                     info.methodName,
                     info.methodDescriptor,
@@ -546,7 +585,7 @@ private fun printOmissionReport() {
         val targetHits =
             manifestProbes.entries
                 .filter { (targetKey, targetInfo) ->
-                    targetKey.serviceInstanceId == groupKey.serviceInstanceId &&
+                    targetKey.run == groupKey.run &&
                         targetInfo.kind == ProbeKind.METHOD &&
                         targetInfo.className == groupKey.targetClassName &&
                         targetInfo.methodName == groupKey.methodName &&
@@ -564,7 +603,7 @@ private fun printOmissionReport() {
         .forEach { (groupKey, info) ->
             println(
                 "  NEVER SUPPLIED: ${groupKey.targetClassName}#${groupKey.methodName}(${info.parameterName}) " +
-                    "(instance ${groupKey.serviceInstanceId})",
+                    "(instance ${groupKey.run.serviceInstanceId})",
             )
         }
     alwaysSupplied
@@ -572,7 +611,7 @@ private fun printOmissionReport() {
         .forEach { (groupKey, info) ->
             println(
                 "  ALWAYS SUPPLIED: ${groupKey.targetClassName}#${groupKey.methodName}(${info.parameterName}) " +
-                    "(instance ${groupKey.serviceInstanceId})",
+                    "(instance ${groupKey.run.serviceInstanceId})",
             )
         }
     println("==============================================")
@@ -605,8 +644,8 @@ private fun printEndpointReport() {
     if (disabledEndpointModules.isNotEmpty()) {
         println("disabled endpoint modules: ${disabledEndpointModules.size}")
         disabledEndpointModules.entries
-            .sortedWith(compareBy({ it.key.serviceInstanceId }, { it.key.module }))
-            .forEach { (key, reason) -> println("  DISABLED: ${key.module} (instance ${key.serviceInstanceId}) - $reason") }
+            .sortedWith(compareBy({ it.key.run.serviceInstanceId }, { it.key.module }))
+            .forEach { (key, reason) -> println("  DISABLED: ${key.module} (instance ${key.run.serviceInstanceId}) - $reason") }
     }
     println("====================================")
 }
@@ -627,7 +666,7 @@ private fun printNeverLoadedReport() {
     if (incomplete.isNotEmpty()) {
         incomplete.forEach { (key, progress) ->
             println(
-                "  INCOMPLETE SCAN: instance ${key.serviceInstanceId} scanned_at ${key.scannedAt} received " +
+                "  INCOMPLETE SCAN: instance ${key.run.serviceInstanceId} scanned_at ${key.scannedAt} received " +
                     "${progress.received.size} of ${progress.chunkCount} chunks; not diffing",
             )
         }
@@ -877,7 +916,7 @@ private fun buildClusterNodes(declaredClasses: Map<String, List<DeclaredMethodIn
 private fun buildSupertypesByClassName(declaredSupertypes: Map<String, SupertypesInfo>): Map<String, SupertypesInfo> {
     val result = mutableMapOf<String, SupertypesInfo>()
     for ((key, info) in manifestProbes) {
-        val supertypes = classSupertypes[InstanceClassIdKey(key.serviceInstanceId, key.classId)] ?: continue
+        val supertypes = classSupertypes[InstanceClassIdKey(key.run, key.classId)] ?: continue
         result.putIfAbsent(info.className, supertypes)
     }
     for ((className, supertypes) in declaredSupertypes) {
@@ -954,11 +993,14 @@ private fun printDependencyReport() {
     formatDependencyReport(computeDependencyReport(dependencyViews())).forEach(::println)
 }
 
-/** One [InstanceDependencyView] per instance heard from, built from the maps the handlers fill. */
+/**
+ * One [InstanceDependencyView] per run heard from, built from the maps the handlers fill. A run is
+ * judged on its own, since its dependency ids and class ids mean nothing in another run.
+ */
 private fun dependencyViews(): List<InstanceDependencyView> {
-    val instanceIds = allInstanceIds + manifestInstanceIds + dependencyLocations.keys.map { it.serviceInstanceId }
-    return instanceIds.sorted().map { instanceId ->
-        val probes = manifestProbes.filterKeys { it.serviceInstanceId == instanceId }
+    val runs = allRuns + manifestRuns + dependencyLocations.keys.map { it.run }
+    return runs.sortedWith(compareBy({ it.serviceInstanceId }, { it.runId })).map { run ->
+        val probes = manifestProbes.filterKeys { it.run == run }
         val classNamesById = probes.entries.associate { (key, info) -> key.classId to info.className }
         val methodReferences =
             probes
@@ -976,14 +1018,14 @@ private fun dependencyViews(): List<InstanceDependencyView> {
                 }
         val classReferences =
             classLevelReferences
-                .filterKeys { it.serviceInstanceId == instanceId }
+                .filterKeys { it.run == run }
                 .map { (key, referenced) ->
                     val className = classNamesById[key.classId] ?: "class_id ${key.classId}"
                     HeldReferences(className, null, null, ReferenceOrigin.MANIFEST_CLASS, referenced)
                 }
         val declaredReferences =
             baselineReferences
-                .filterKeys { it.serviceInstanceId == instanceId }
+                .filterKeys { it.run == run }
                 .flatMap { (key, declared) ->
                     listOf(HeldReferences(key.className, null, null, ReferenceOrigin.BASELINE, declared.classReferences)) +
                         declared.methods.map {
@@ -997,19 +1039,19 @@ private fun dependencyViews(): List<InstanceDependencyView> {
                             )
                         }
                 }
-        val instanceScans = scans.filterKeys { it.serviceInstanceId == instanceId }.values
+        val runScans = scans.filterKeys { it.run == run }.values
         InstanceDependencyView(
-            instanceId = instanceId,
-            referencesRecorded = instanceId in instancesRecordingReferences,
-            baselineComplete = instanceScans.isNotEmpty() && instanceScans.all { it.complete },
-            dependencies = dependencyLocations.filterKeys { it.serviceInstanceId == instanceId }.values.toList(),
+            instanceId = run.serviceInstanceId,
+            referencesRecorded = run in runsRecordingReferences,
+            baselineComplete = runScans.isNotEmpty() && runScans.all { it.complete },
+            dependencies = dependencyLocations.filterKeys { it.run == run }.values.toList(),
             loadedClassesTotal =
-                latestLoadedClassesTotal.filterKeys { it.serviceInstanceId == instanceId }.mapKeys { it.key.dependencyId },
-            externalClasses = externalClasses.filterKeys { it.serviceInstanceId == instanceId }.mapKeys { it.key.className },
+                latestLoadedClassesTotal.filterKeys { it.run == run }.mapKeys { it.key.dependencyId },
+            externalClasses = externalClasses.filterKeys { it.run == run }.mapKeys { it.key.className },
             references = methodReferences + classReferences + declaredReferences,
             loadedClassNames =
                 probes.values.map { it.className }.toSet() +
-                    skippedClasses.keys.filter { it.serviceInstanceId == instanceId }.map { it.className },
+                    skippedClasses.keys.filter { it.run == run }.map { it.className },
         )
     }
 }

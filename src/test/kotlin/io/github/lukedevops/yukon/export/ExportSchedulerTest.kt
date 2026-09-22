@@ -22,6 +22,7 @@ import kotlin.random.Random
 import kotlin.system.measureTimeMillis
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 import java.util.logging.Level as JulLevel
 import java.util.logging.Logger as JulLogger
@@ -78,15 +79,15 @@ private class RecordingSweep(
 }
 
 class ExportSchedulerTest {
-    private val resource = ResourceAttributes("checkout", "1.0.0", "instance-1", "test")
     private val config = AgentConfig.parse("serviceName=checkout,serviceVersion=1.0.0,serviceInstanceId=instance-1,environment=test")
+    private val resource = TestResources.forConfig(config)
 
     @Test
     fun `flush sends the delta batch even when there is nothing new to report, as a liveness heartbeat`() {
         val registry = ProbeRegistry()
         registry.register("com.example.Foo", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "bar", "()V", 1)))
         val exporter = RecordingExporter()
-        val scheduler = ExportScheduler(config, registry, EndpointRegistry(), exporter)
+        val scheduler = ExportScheduler(config, resource, registry, EndpointRegistry(), exporter)
 
         scheduler.flush()
 
@@ -105,7 +106,7 @@ class ExportSchedulerTest {
         val probes = registry.register("com.example.Foo", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "bar", "()V", 1)))
         probes[0] += 4
         val exporter = RecordingExporter()
-        val scheduler = ExportScheduler(config, registry, EndpointRegistry(), exporter)
+        val scheduler = ExportScheduler(config, resource, registry, EndpointRegistry(), exporter)
 
         scheduler.flush()
 
@@ -131,7 +132,7 @@ class ExportSchedulerTest {
         val registry = ProbeRegistry()
         val probes = registry.register("com.example.Foo", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "bar", "()V", 1)))
         probes[0] += 4
-        val scheduler = ExportScheduler(config, registry, EndpointRegistry(), FailingExporter())
+        val scheduler = ExportScheduler(config, resource, registry, EndpointRegistry(), FailingExporter())
 
         scheduler.flush()
 
@@ -151,7 +152,7 @@ class ExportSchedulerTest {
         val registry = ProbeRegistry()
         registry.register("com.example.Foo", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "bar", "()V", 1)))
         val exporter = RecordingExporter()
-        val scheduler = ExportScheduler(config, registry, EndpointRegistry(), exporter)
+        val scheduler = ExportScheduler(config, resource, registry, EndpointRegistry(), exporter)
 
         scheduler.flush()
 
@@ -166,7 +167,9 @@ class ExportSchedulerTest {
         )
         assertEquals(
             "instance-1",
-            exporter.manifests.single().serviceInstanceId,
+            exporter.manifests
+                .single()
+                .resource.serviceInstanceId,
             "the manifest must carry an instance to key on, since class_id is assigned " +
                 "independently per instance and can mean a different class in another one",
         )
@@ -177,7 +180,7 @@ class ExportSchedulerTest {
         val registry = ProbeRegistry()
         registry.register("com.example.Foo", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "bar", "()V", 1)))
         val exporter = RecordingExporter()
-        val scheduler = ExportScheduler(config, registry, EndpointRegistry(), exporter)
+        val scheduler = ExportScheduler(config, resource, registry, EndpointRegistry(), exporter)
 
         scheduler.flush()
         scheduler.flush()
@@ -191,7 +194,7 @@ class ExportSchedulerTest {
         val registry = ProbeRegistry()
         registry.register("com.example.Foo", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "bar", "()V", 1)))
         val exporter = RecordingExporter()
-        val scheduler = ExportScheduler(config, registry, EndpointRegistry(), exporter)
+        val scheduler = ExportScheduler(config, resource, registry, EndpointRegistry(), exporter)
 
         scheduler.flush()
         registry.register("com.example.Bar", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "baz", "()V", 1)))
@@ -212,7 +215,7 @@ class ExportSchedulerTest {
         val registry = ProbeRegistry()
         registry.recordSkipped("com.example.Foo", reason = "annotation not supported on TYPE")
         val exporter = RecordingExporter()
-        val scheduler = ExportScheduler(config, registry, EndpointRegistry(), exporter)
+        val scheduler = ExportScheduler(config, resource, registry, EndpointRegistry(), exporter)
 
         scheduler.flush()
 
@@ -237,7 +240,7 @@ class ExportSchedulerTest {
                 ): List<ProbeRegistry.DeltaSnapshot> = throw RuntimeException("boom")
             }
         val exporter = RecordingExporter()
-        val scheduler = ExportScheduler(config, registry, EndpointRegistry(), exporter)
+        val scheduler = ExportScheduler(config, resource, registry, EndpointRegistry(), exporter)
 
         // A ScheduledExecutorService running scheduleAtFixedRate stops calling a task forever,
         // the first time it lets an exception escape, with nothing logged. So flush() must never
@@ -252,14 +255,12 @@ class ExportSchedulerTest {
         val registry =
             object : ProbeRegistry() {
                 override fun computeManifestDeltas(
-                    serviceName: String,
-                    serviceVersion: String?,
-                    serviceInstanceId: String,
+                    resource: ResourceAttributes,
                     maxEntriesPerChunk: Int,
                 ): List<ProbeRegistry.ManifestSnapshot> = throw RuntimeException("boom")
             }
         val exporter = RecordingExporter()
-        val scheduler = ExportScheduler(config, registry, EndpointRegistry(), exporter)
+        val scheduler = ExportScheduler(config, resource, registry, EndpointRegistry(), exporter)
 
         scheduler.flush()
         scheduler.flush()
@@ -289,7 +290,7 @@ class ExportSchedulerTest {
 
                 override fun exportStaticBaseline(baseline: StaticBaseline) {}
             }
-        val scheduler = ExportScheduler(config, registry, EndpointRegistry(), exporter)
+        val scheduler = ExportScheduler(config, resource, registry, EndpointRegistry(), exporter)
 
         scheduler.flush()
         assertEquals(1, exporter.manifestSends)
@@ -314,7 +315,7 @@ class ExportSchedulerTest {
         // ClassSupertypes record, ADR 0024), so the cap is 4, not 2, to keep two classes per
         // chunk: 2 + 2 = 4 fits, and a third class's own 2 would push it past the cap.
         val scheduler =
-            ExportScheduler(config, registry, EndpointRegistry(), exporter, maxDeltasPerBatch = 2, maxManifestEntriesPerChunk = 4)
+            ExportScheduler(config, resource, registry, EndpointRegistry(), exporter, maxDeltasPerBatch = 2, maxManifestEntriesPerChunk = 4)
 
         scheduler.flush()
 
@@ -328,10 +329,40 @@ class ExportSchedulerTest {
         )
         assertTrue(
             registry
-                .computeManifestDelta("checkout", null, "instance-1")
+                .computeManifestDelta(ResourceAttributes("checkout", null, "instance-1", null, "run-1"))
                 .manifest.probes
                 .isEmpty(),
         )
+    }
+
+    @Test
+    fun `every delta batch and manifest chunk from one scheduler carries the resource it was given`() {
+        val registry = ProbeRegistry()
+        for (name in listOf("Foo", "Bar", "Baz")) {
+            val probes = registry.register("com.example.$name", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "m", "()V", 1)))
+            probes[0] = 1
+        }
+        val exporter = RecordingExporter()
+        val scheduler =
+            ExportScheduler(config, resource, registry, EndpointRegistry(), exporter, maxDeltasPerBatch = 1, maxManifestEntriesPerChunk = 1)
+
+        scheduler.flush()
+        scheduler.flush(final = true)
+
+        val runIds = exporter.deltaBatches.map { it.resource.runId } + exporter.manifests.map { it.resource.runId }
+        assertTrue(exporter.deltaBatches.size > 1 && exporter.manifests.size > 1, "the caps must split both payloads")
+        assertEquals(setOf(TestResources.RUN_ID), runIds.toSet(), "one scheduler must stamp one run id: $runIds")
+        assertEquals(setOf(resource), (exporter.deltaBatches.map { it.resource } + exporter.manifests.map { it.resource }).toSet())
+    }
+
+    @Test
+    fun `a new run gets a new run id under the same configured instance id`() {
+        val first = ResourceAttributes.forNewRun(config)
+        val second = ResourceAttributes.forNewRun(config)
+
+        assertEquals(first.serviceInstanceId, second.serviceInstanceId)
+        assertTrue(first.runId.isNotEmpty() && second.runId.isNotEmpty())
+        assertNotEquals(first.runId, second.runId, "two runs must never share a run id")
     }
 
     @Test
@@ -357,7 +388,7 @@ class ExportSchedulerTest {
                 override fun exportStaticBaseline(baseline: StaticBaseline) {}
             }
         val scheduler =
-            ExportScheduler(config, registry, EndpointRegistry(), exporter, maxDeltasPerBatch = 1, maxManifestEntriesPerChunk = 1)
+            ExportScheduler(config, resource, registry, EndpointRegistry(), exporter, maxDeltasPerBatch = 1, maxManifestEntriesPerChunk = 1)
 
         scheduler.flush()
 
@@ -372,7 +403,7 @@ class ExportSchedulerTest {
         assertEquals(
             2,
             registry
-                .computeManifestDelta("checkout", null, "instance-1")
+                .computeManifestDelta(ResourceAttributes("checkout", null, "instance-1", null, "run-1"))
                 .manifest.probes.size,
         )
     }
@@ -405,7 +436,7 @@ class ExportSchedulerTest {
         val registry = ProbeRegistry()
         registry.register("com.example.Foo", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "bar", "()V", 1)))
         val exporter = GatedExporter()
-        val scheduler = ExportScheduler(config, registry, EndpointRegistry(), exporter, noJitter)
+        val scheduler = ExportScheduler(config, resource, registry, EndpointRegistry(), exporter, noJitter)
         scheduler.start()
         assertTrue(exporter.inFlight.await(5, TimeUnit.SECONDS), "the first scheduled flush should start immediately")
 
@@ -424,7 +455,7 @@ class ExportSchedulerTest {
         val registry = ProbeRegistry()
         registry.register("com.example.Foo", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "bar", "()V", 1)))
         val exporter = GatedExporter()
-        val scheduler = ExportScheduler(config, registry, EndpointRegistry(), exporter, noJitter)
+        val scheduler = ExportScheduler(config, resource, registry, EndpointRegistry(), exporter, noJitter)
         scheduler.start()
         assertTrue(exporter.inFlight.await(5, TimeUnit.SECONDS))
 
@@ -439,7 +470,7 @@ class ExportSchedulerTest {
     fun `flushOnShutdown with no scheduler started still runs one final flush`() {
         val registry = ProbeRegistry()
         val exporter = RecordingExporter()
-        val scheduler = ExportScheduler(config, registry, EndpointRegistry(), exporter)
+        val scheduler = ExportScheduler(config, resource, registry, EndpointRegistry(), exporter)
 
         scheduler.flushOnShutdown(Duration.ofSeconds(5))
 
@@ -451,7 +482,7 @@ class ExportSchedulerTest {
         val registry = ProbeRegistry()
         registry.register("com.example.Foo", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "bar", "()V", 1)))
         val exporter = GatedExporter()
-        val scheduler = ExportScheduler(config, registry, EndpointRegistry(), exporter)
+        val scheduler = ExportScheduler(config, resource, registry, EndpointRegistry(), exporter)
 
         // A zero budget is what the hook is left with when an in-flight flush finishes with less
         // than a millisecond to spare: the remaining time truncates to 0, and Thread.join(0)
@@ -471,7 +502,7 @@ class ExportSchedulerTest {
         val probes = registry.register("com.example.Foo", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "bar", "()V", 1)))
         probes[0] += 4
         val exporter = RecordingExporter()
-        val scheduler = ExportScheduler(config, registry, EndpointRegistry(), exporter)
+        val scheduler = ExportScheduler(config, resource, registry, EndpointRegistry(), exporter)
 
         scheduler.flush()
 
@@ -482,7 +513,7 @@ class ExportSchedulerTest {
     fun `flushOnShutdown marks the empty heartbeat batch as the final flush`() {
         val registry = ProbeRegistry()
         val exporter = RecordingExporter()
-        val scheduler = ExportScheduler(config, registry, EndpointRegistry(), exporter)
+        val scheduler = ExportScheduler(config, resource, registry, EndpointRegistry(), exporter)
 
         scheduler.flushOnShutdown(Duration.ofSeconds(5))
 
@@ -499,7 +530,7 @@ class ExportSchedulerTest {
         val endpointRegistry = EndpointRegistry()
         endpointRegistry.register(key = Any(), framework = "http-server", verb = "GET", verbatimTemplate = "/health").hit()
         val exporter = RecordingExporter()
-        val scheduler = ExportScheduler(config, registry, endpointRegistry, exporter, maxDeltasPerBatch = 1)
+        val scheduler = ExportScheduler(config, resource, registry, endpointRegistry, exporter, maxDeltasPerBatch = 1)
 
         scheduler.flushOnShutdown(Duration.ofSeconds(5))
 
@@ -511,7 +542,7 @@ class ExportSchedulerTest {
     fun `a second plain flush call still sends finalFlush false`() {
         val registry = ProbeRegistry()
         val exporter = RecordingExporter()
-        val scheduler = ExportScheduler(config, registry, EndpointRegistry(), exporter)
+        val scheduler = ExportScheduler(config, resource, registry, EndpointRegistry(), exporter)
 
         scheduler.flush()
         scheduler.flush()
@@ -549,7 +580,7 @@ class ExportSchedulerTest {
             }
         val exporter = LatchExporter()
         val oneSecond = AgentConfig.parse("serviceName=checkout,flushIntervalSeconds=1")
-        val scheduler = ExportScheduler(oneSecond, registry, EndpointRegistry(), exporter, noJitter)
+        val scheduler = ExportScheduler(oneSecond, TestResources.forConfig(oneSecond), registry, EndpointRegistry(), exporter, noJitter)
 
         scheduler.start()
         try {
@@ -570,7 +601,7 @@ class ExportSchedulerTest {
         val endpointRegistry = EndpointRegistry()
         endpointRegistry.register(key = Any(), framework = "http-server", verb = "GET", verbatimTemplate = "/health").hit()
         val exporter = RecordingExporter()
-        val scheduler = ExportScheduler(config, registry, endpointRegistry, exporter)
+        val scheduler = ExportScheduler(config, resource, registry, endpointRegistry, exporter)
 
         scheduler.flush()
 
@@ -588,7 +619,7 @@ class ExportSchedulerTest {
         val endpointRegistry = EndpointRegistry()
         endpointRegistry.register(key = Any(), framework = "http-server", verb = "GET", verbatimTemplate = "/health").hit()
         val exporter = RecordingExporter()
-        val scheduler = ExportScheduler(config, registry, endpointRegistry, exporter, maxDeltasPerBatch = 1)
+        val scheduler = ExportScheduler(config, resource, registry, endpointRegistry, exporter, maxDeltasPerBatch = 1)
 
         scheduler.flush()
 
@@ -603,7 +634,7 @@ class ExportSchedulerTest {
         val endpointRegistry = EndpointRegistry()
         endpointRegistry.register(key = Any(), framework = "http-server", verb = "GET", verbatimTemplate = "/health").hit()
         val exporter = RecordingExporter()
-        val scheduler = ExportScheduler(config, registry, endpointRegistry, exporter)
+        val scheduler = ExportScheduler(config, resource, registry, endpointRegistry, exporter)
 
         scheduler.flush()
 
@@ -618,7 +649,7 @@ class ExportSchedulerTest {
         val registry = ProbeRegistry()
         val endpointRegistry = EndpointRegistry()
         endpointRegistry.register(key = Any(), framework = "http-server", verb = "GET", verbatimTemplate = "/health").hit()
-        val scheduler = ExportScheduler(config, registry, endpointRegistry, FailingExporter())
+        val scheduler = ExportScheduler(config, resource, registry, endpointRegistry, FailingExporter())
 
         scheduler.flush()
 
@@ -639,7 +670,7 @@ class ExportSchedulerTest {
         val endpointRegistry = EndpointRegistry()
         endpointRegistry.register(key = Any(), framework = "http-server", verb = "GET", verbatimTemplate = "/health")
         val exporter = RecordingExporter()
-        val scheduler = ExportScheduler(config, registry, endpointRegistry, exporter)
+        val scheduler = ExportScheduler(config, resource, registry, endpointRegistry, exporter)
 
         scheduler.flush()
 
@@ -655,7 +686,7 @@ class ExportSchedulerTest {
         val endpointRegistry = EndpointRegistry()
         endpointRegistry.register(key = Any(), framework = "http-server", verb = "GET", verbatimTemplate = "/health")
         val exporter = RecordingExporter()
-        val scheduler = ExportScheduler(config, registry, endpointRegistry, exporter)
+        val scheduler = ExportScheduler(config, resource, registry, endpointRegistry, exporter)
 
         scheduler.flush()
 
@@ -663,7 +694,7 @@ class ExportSchedulerTest {
         val manifest = exporter.manifests.single()
         assertTrue(manifest.probes.isEmpty())
         assertEquals(1, manifest.endpoints.size)
-        assertEquals("instance-1", manifest.serviceInstanceId)
+        assertEquals("instance-1", manifest.resource.serviceInstanceId)
     }
 
     @Test
@@ -672,7 +703,7 @@ class ExportSchedulerTest {
         val endpointRegistry = EndpointRegistry()
         endpointRegistry.recordDisabledModule("spring-mvc", reason = "linkage error against an unexpected framework version")
         val exporter = RecordingExporter()
-        val scheduler = ExportScheduler(config, registry, endpointRegistry, exporter)
+        val scheduler = ExportScheduler(config, resource, registry, endpointRegistry, exporter)
 
         scheduler.flush()
 
@@ -705,7 +736,7 @@ class ExportSchedulerTest {
         registry.register("com.example.Foo", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "bar", "()V", 1)))
         val exporter = RecordingExporter()
         val scheduler =
-            ExportScheduler(config, registry, EndpointRegistry(), exporter, dependencyRegistry = dependencyRegistryWith("a", "b"))
+            ExportScheduler(config, resource, registry, EndpointRegistry(), exporter, dependencyRegistry = dependencyRegistryWith("a", "b"))
 
         scheduler.flush()
         scheduler.flush()
@@ -722,7 +753,7 @@ class ExportSchedulerTest {
         endpointRegistry.register(key = Any(), framework = "http-server", verb = "GET", verbatimTemplate = "/health")
         val exporter = RecordingExporter()
         val scheduler =
-            ExportScheduler(config, ProbeRegistry(), endpointRegistry, exporter, dependencyRegistry = dependencyRegistryWith("a"))
+            ExportScheduler(config, resource, ProbeRegistry(), endpointRegistry, exporter, dependencyRegistry = dependencyRegistryWith("a"))
 
         scheduler.flush()
 
@@ -730,18 +761,25 @@ class ExportSchedulerTest {
         assertTrue(manifest.probes.isEmpty())
         assertEquals(1, manifest.endpoints.size)
         assertEquals(1, manifest.dependencies.size)
-        assertEquals("instance-1", manifest.serviceInstanceId)
+        assertEquals("instance-1", manifest.resource.serviceInstanceId)
     }
 
     @Test
     fun `a failed manifest send leaves dependencies undelivered, so the next flush sends them again`() {
         val dependencyRegistry = dependencyRegistryWith("a")
         val failing =
-            ExportScheduler(config, ProbeRegistry(), EndpointRegistry(), FailingExporter(), dependencyRegistry = dependencyRegistry)
+            ExportScheduler(
+                config,
+                resource,
+                ProbeRegistry(),
+                EndpointRegistry(),
+                FailingExporter(),
+                dependencyRegistry = dependencyRegistry,
+            )
         failing.flush()
 
         val exporter = RecordingExporter()
-        ExportScheduler(config, ProbeRegistry(), EndpointRegistry(), exporter, dependencyRegistry = dependencyRegistry).flush()
+        ExportScheduler(config, resource, ProbeRegistry(), EndpointRegistry(), exporter, dependencyRegistry = dependencyRegistry).flush()
 
         assertEquals(
             1,
@@ -763,6 +801,7 @@ class ExportSchedulerTest {
         val scheduler =
             ExportScheduler(
                 config,
+                resource,
                 registry,
                 EndpointRegistry(),
                 exporter,
@@ -794,6 +833,7 @@ class ExportSchedulerTest {
         val scheduler =
             ExportScheduler(
                 agentConfig,
+                TestResources.forConfig(agentConfig),
                 registry,
                 EndpointRegistry(),
                 exporter,
@@ -844,7 +884,14 @@ class ExportSchedulerTest {
         )
         val exporter = RecordingExporter()
         val scheduler =
-            ExportScheduler(config, registry, EndpointRegistry(), exporter, externalClassRegistry = externalClassRegistryWith("org.lib.A"))
+            ExportScheduler(
+                config,
+                resource,
+                registry,
+                EndpointRegistry(),
+                exporter,
+                externalClassRegistry = externalClassRegistryWith("org.lib.A"),
+            )
 
         scheduler.flush()
         scheduler.flush()
@@ -858,6 +905,7 @@ class ExportSchedulerTest {
         val externalClassRegistry = externalClassRegistryWith("org.lib.A")
         ExportScheduler(
             config,
+            resource,
             ProbeRegistry(),
             EndpointRegistry(),
             FailingExporter(),
@@ -865,7 +913,14 @@ class ExportSchedulerTest {
         ).flush()
 
         val exporter = RecordingExporter()
-        ExportScheduler(config, ProbeRegistry(), EndpointRegistry(), exporter, externalClassRegistry = externalClassRegistry).flush()
+        ExportScheduler(
+            config,
+            resource,
+            ProbeRegistry(),
+            EndpointRegistry(),
+            exporter,
+            externalClassRegistry = externalClassRegistry,
+        ).flush()
 
         assertEquals(
             1,
@@ -890,6 +945,7 @@ class ExportSchedulerTest {
         val scheduler =
             ExportScheduler(
                 config,
+                resource,
                 registry,
                 EndpointRegistry(),
                 exporter,
@@ -947,7 +1003,7 @@ class ExportSchedulerTest {
         val branchDropCounts = BranchDropCounts()
         branchDropCounts.record(mapOf(BranchDropReason.INLINED_OUT_OF_SCOPE to 3))
         val scheduler =
-            ExportScheduler(config, ProbeRegistry(), EndpointRegistry(), RecordingExporter(), branchDropCounts = branchDropCounts)
+            ExportScheduler(config, resource, ProbeRegistry(), EndpointRegistry(), RecordingExporter(), branchDropCounts = branchDropCounts)
 
         val records = captureLogRecords(ExportScheduler::class.java.name) { scheduler.flush() }
 
@@ -963,7 +1019,7 @@ class ExportSchedulerTest {
         val branchDropCounts = BranchDropCounts()
         branchDropCounts.record(mapOf(BranchDropReason.INLINED_OUT_OF_SCOPE to 3, BranchDropReason.COROUTINE_MACHINERY to 7))
         val scheduler =
-            ExportScheduler(config, ProbeRegistry(), EndpointRegistry(), RecordingExporter(), branchDropCounts = branchDropCounts)
+            ExportScheduler(config, resource, ProbeRegistry(), EndpointRegistry(), RecordingExporter(), branchDropCounts = branchDropCounts)
 
         val records = captureLogRecords(ExportScheduler::class.java.name) { scheduler.flush() }
 
@@ -977,7 +1033,7 @@ class ExportSchedulerTest {
         val branchDropCounts = BranchDropCounts()
         branchDropCounts.record(mapOf(BranchDropReason.INLINED_OUT_OF_SCOPE to 1))
         val scheduler =
-            ExportScheduler(config, ProbeRegistry(), EndpointRegistry(), RecordingExporter(), branchDropCounts = branchDropCounts)
+            ExportScheduler(config, resource, ProbeRegistry(), EndpointRegistry(), RecordingExporter(), branchDropCounts = branchDropCounts)
 
         val records =
             captureLogRecords(ExportScheduler::class.java.name) {
@@ -990,7 +1046,7 @@ class ExportSchedulerTest {
 
     @Test
     fun `nothing is logged when no branch sites were dropped`() {
-        val scheduler = ExportScheduler(config, ProbeRegistry(), EndpointRegistry(), RecordingExporter())
+        val scheduler = ExportScheduler(config, resource, ProbeRegistry(), EndpointRegistry(), RecordingExporter())
 
         val records = captureLogRecords(ExportScheduler::class.java.name) { scheduler.flush() }
 
@@ -1002,7 +1058,7 @@ class ExportSchedulerTest {
         val registry = ProbeRegistry(confirmsDefinitions = true)
         registry.register("com.example.never.Loaded", layoutHash = 1L, probes = listOf(ProbeMeta(ProbeKind.METHOD, "m", "()V", 1)))
         val sweep = RecordingSweep(ByteBuddyAgent.install(), registry, config)
-        val scheduler = ExportScheduler(config, registry, EndpointRegistry(), RecordingExporter(), loadedClassSweep = sweep)
+        val scheduler = ExportScheduler(config, resource, registry, EndpointRegistry(), RecordingExporter(), loadedClassSweep = sweep)
 
         repeat(10) { scheduler.flush() }
         scheduler.flushOnShutdown(Duration.ofSeconds(5))
@@ -1024,7 +1080,7 @@ class ExportSchedulerTest {
     fun `the sweep walk is skipped entirely when nothing awaits confirmation and the forward direction is not due`() {
         val registry = ProbeRegistry(confirmsDefinitions = true)
         val sweep = RecordingSweep(ByteBuddyAgent.install(), registry, config)
-        val scheduler = ExportScheduler(config, registry, EndpointRegistry(), RecordingExporter(), loadedClassSweep = sweep)
+        val scheduler = ExportScheduler(config, resource, registry, EndpointRegistry(), RecordingExporter(), loadedClassSweep = sweep)
 
         scheduler.flush()
 
@@ -1036,7 +1092,7 @@ class ExportSchedulerTest {
         val registry = ProbeRegistry(confirmsDefinitions = true)
         registry.register("com.example.never.Loaded", layoutHash = 1L, probes = listOf(ProbeMeta(ProbeKind.METHOD, "m", "()V", 1)))
         val sweep = RecordingSweep(ByteBuddyAgent.install(), registry, config)
-        val scheduler = ExportScheduler(config, registry, EndpointRegistry(), RecordingExporter(), loadedClassSweep = sweep)
+        val scheduler = ExportScheduler(config, resource, registry, EndpointRegistry(), RecordingExporter(), loadedClassSweep = sweep)
 
         scheduler.flush()
 
@@ -1048,7 +1104,7 @@ class ExportSchedulerTest {
     fun `the sweep walk is not skipped on the tenth flush even when nothing awaits confirmation`() {
         val registry = ProbeRegistry(confirmsDefinitions = true)
         val sweep = RecordingSweep(ByteBuddyAgent.install(), registry, config)
-        val scheduler = ExportScheduler(config, registry, EndpointRegistry(), RecordingExporter(), loadedClassSweep = sweep)
+        val scheduler = ExportScheduler(config, resource, registry, EndpointRegistry(), RecordingExporter(), loadedClassSweep = sweep)
 
         repeat(9) { scheduler.flush() }
         assertTrue(sweep.calls.isEmpty(), "the first nine flushes have nothing to confirm and are not due")
@@ -1067,6 +1123,7 @@ class ExportSchedulerTest {
         val scheduler =
             ExportScheduler(
                 config,
+                resource,
                 registry,
                 EndpointRegistry(),
                 RecordingExporter(),
@@ -1095,7 +1152,14 @@ class ExportSchedulerTest {
         probes[0] += 1
         val exporter = RecordingExporter()
         val scheduler =
-            ExportScheduler(config, registry, EndpointRegistry(), exporter, dependencyRegistry = dependencyRegistryWithLoads("a", "b"))
+            ExportScheduler(
+                config,
+                resource,
+                registry,
+                EndpointRegistry(),
+                exporter,
+                dependencyRegistry = dependencyRegistryWithLoads("a", "b"),
+            )
 
         scheduler.flush()
         scheduler.flush()
@@ -1119,6 +1183,7 @@ class ExportSchedulerTest {
         val scheduler =
             ExportScheduler(
                 config,
+                resource,
                 registry,
                 endpointRegistry,
                 exporter,
@@ -1137,10 +1202,17 @@ class ExportSchedulerTest {
     @Test
     fun `a failed delta send leaves dependency totals undelivered, so the next flush sends them again`() {
         val dependencyRegistry = dependencyRegistryWithLoads("a")
-        ExportScheduler(config, ProbeRegistry(), EndpointRegistry(), FailingExporter(), dependencyRegistry = dependencyRegistry).flush()
+        ExportScheduler(
+            config,
+            resource,
+            ProbeRegistry(),
+            EndpointRegistry(),
+            FailingExporter(),
+            dependencyRegistry = dependencyRegistry,
+        ).flush()
 
         val exporter = RecordingExporter()
-        ExportScheduler(config, ProbeRegistry(), EndpointRegistry(), exporter, dependencyRegistry = dependencyRegistry).flush()
+        ExportScheduler(config, resource, ProbeRegistry(), EndpointRegistry(), exporter, dependencyRegistry = dependencyRegistry).flush()
 
         assertEquals(
             1,
@@ -1160,7 +1232,7 @@ class ExportSchedulerTest {
         val exporter = RecordingExporter()
         // The class alone weighs 5 (1 probe + 3 edges + 1 for its own ClassSupertypes record),
         // exactly the cap, so the endpoint cannot share its chunk without overshooting.
-        val scheduler = ExportScheduler(config, registry, endpointRegistry, exporter, maxManifestEntriesPerChunk = 5)
+        val scheduler = ExportScheduler(config, resource, registry, endpointRegistry, exporter, maxManifestEntriesPerChunk = 5)
 
         scheduler.flush()
 
@@ -1185,7 +1257,7 @@ class ExportSchedulerTest {
                     final: Boolean,
                 ): Unit = throw IllegalStateException("the walk failed")
             }
-        val scheduler = ExportScheduler(config, registry, EndpointRegistry(), exporter, loadedClassSweep = sweep)
+        val scheduler = ExportScheduler(config, resource, registry, EndpointRegistry(), exporter, loadedClassSweep = sweep)
 
         scheduler.flush(final = true)
         scheduler.flush(final = true)

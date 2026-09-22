@@ -59,7 +59,11 @@ class ScalaOptionalArgumentInstrumentationTest {
 
         callDriver(loader, "callSimpleAllOmitted")
 
-        val probes = registry.manifest("test", null, "instance-1").probes.filter { it.className == "com.example.scalatarget.Simple" }
+        val probes =
+            registry
+                .manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
+                .probes
+                .filter { it.className == "com.example.scalatarget.Simple" }
         val optionalProbes = probes.filter { it.kind == ProbeKind.OPTIONAL_ARGUMENT }
 
         assertEquals(2, optionalProbes.size, "b and c are optional; a is required")
@@ -97,8 +101,12 @@ class ScalaOptionalArgumentInstrumentationTest {
         callDriver(loader, "callSimpleAllOmitted", times = 3)
         callDriver(loader, "callSimpleNoneOmitted", times = 2)
 
-        val probes = registry.manifest("test", null, "instance-1").probes.filter { it.className == "com.example.scalatarget.Simple" }
-        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null)).batch.deltas
+        val probes =
+            registry
+                .manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
+                .probes
+                .filter { it.className == "com.example.scalatarget.Simple" }
+        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null, "run-1")).batch.deltas
 
         fun hitsFor(
             classId: Int,
@@ -139,7 +147,7 @@ class ScalaOptionalArgumentInstrumentationTest {
 
         val probe =
             registry
-                .manifest("test", null, "instance-1")
+                .manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
                 .probes
                 .single { it.className == "com.example.scalatarget.Plain" && it.kind == ProbeKind.OPTIONAL_ARGUMENT }
         assertEquals("f", probe.methodName)
@@ -147,16 +155,17 @@ class ScalaOptionalArgumentInstrumentationTest {
 
         val hits =
             registry
-                .computeDeltaBatch(ResourceAttributes("test", null, "i-1", null))
+                .computeDeltaBatch(ResourceAttributes("test", null, "i-1", null, "run-1"))
                 .batch.deltas
                 .single { it.classId == probe.classId && it.probeIndex == probe.probeIndex }
                 .hitsTotal
         assertEquals(1L, hits)
 
         assertTrue(
-            registry.manifest("test", null, "instance-1").probes.none {
-                it.className == "com.example.scalatarget.PlainOverridesOnly" && it.kind == ProbeKind.OPTIONAL_ARGUMENT
-            },
+            registry
+                .manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
+                .probes
+                .none { it.className == "com.example.scalatarget.PlainOverridesOnly" && it.kind == ProbeKind.OPTIONAL_ARGUMENT },
             "PlainOverridesOnly declares no default of its own, so it has no omission probe to hit",
         )
     }
@@ -186,7 +195,11 @@ class ScalaOptionalArgumentInstrumentationTest {
         // Cc$ also carries the constructor default getters $lessinit$greater$default$1/2 (ADR
         // 0023), which resolve separately, cross-class, against Cc's own <init>; isolating by
         // methodName keeps this test to apply's own same-class getters.
-        val probes = registry.manifest("test", null, "instance-1").probes.filter { it.className == "com.example.scalatarget.Cc\$" }
+        val probes =
+            registry
+                .manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
+                .probes
+                .filter { it.className == "com.example.scalatarget.Cc\$" }
         val optionalProbes = probes.filter { it.kind == ProbeKind.OPTIONAL_ARGUMENT && it.methodName == "apply" }
         assertEquals(2, optionalProbes.size)
         for (probe in optionalProbes) {
@@ -195,7 +208,7 @@ class ScalaOptionalArgumentInstrumentationTest {
             assertFalse(probe.overridable, "Cc\$ is a module; its class is final")
         }
 
-        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null)).batch.deltas
+        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null, "run-1")).batch.deltas
 
         fun hitsFor(parameterIndex: Int): Long {
             val probe = optionalProbes.single { it.parameterIndex == parameterIndex }
@@ -225,7 +238,7 @@ class ScalaOptionalArgumentInstrumentationTest {
         // Scala 2's Cc$ also carries apply$default$1/2, its own same-class getters for apply; this
         // isolates the constructor getters by target name so both fixture modules assert the same
         // count regardless of that difference.
-        val probes = registry.manifest("test", null, "instance-1").probes
+        val probes = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1")).probes
         val optionalProbes =
             probes.filter {
                 it.kind == ProbeKind.OPTIONAL_ARGUMENT && it.className == "com.example.scalatarget.Cc\$" && it.methodName == "<init>"
@@ -238,7 +251,7 @@ class ScalaOptionalArgumentInstrumentationTest {
             assertFalse(probe.overridable, "a constructor is never overridable")
         }
 
-        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null)).batch.deltas
+        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null, "run-1")).batch.deltas
 
         fun hitsFor(parameterIndex: Int): Long {
             val probe = optionalProbes.single { it.parameterIndex == parameterIndex }
@@ -279,7 +292,7 @@ class ScalaOptionalArgumentInstrumentationTest {
 
         callDriver(loader, "callCaseClassConstructor") // new Cc(9): supplies a, omits b
 
-        val probes = registry.manifest("test", null, "instance-1").probes
+        val probes = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1")).probes
         val parameterZeroProbes =
             probes.filter {
                 it.kind == ProbeKind.OPTIONAL_ARGUMENT &&
@@ -324,7 +337,7 @@ class ScalaOptionalArgumentInstrumentationTest {
 
         val bProbe =
             registry
-                .manifest("test", null, "instance-1")
+                .manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
                 .probes
                 .single {
                     it.kind == ProbeKind.OPTIONAL_ARGUMENT && it.className == "com.example.scalatarget.Cc\$" && it.parameterIndex == 1
@@ -334,7 +347,7 @@ class ScalaOptionalArgumentInstrumentationTest {
 
         val hits =
             registry
-                .computeDeltaBatch(ResourceAttributes("test", null, "i-1", null))
+                .computeDeltaBatch(ResourceAttributes("test", null, "i-1", null, "run-1"))
                 .batch.deltas
                 .single { it.classId == bProbe.classId && it.probeIndex == bProbe.probeIndex }
                 .hitsTotal

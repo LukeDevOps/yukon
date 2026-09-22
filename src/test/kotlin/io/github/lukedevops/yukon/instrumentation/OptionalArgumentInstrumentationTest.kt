@@ -50,7 +50,7 @@ class OptionalArgumentInstrumentationTest {
 
         Class.forName("com.example.target.DefaultArgumentTarget", true, fixtureLoader())
 
-        val manifest = registry.manifest("test", null, "instance-1")
+        val manifest = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
         val probes =
             manifest
                 .probes
@@ -85,10 +85,10 @@ class OptionalArgumentInstrumentationTest {
 
         val probes =
             registry
-                .manifest("test", null, "instance-1")
+                .manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
                 .probes
                 .filter { it.className == "com.example.target.DefaultArgumentTarget" && it.kind == ProbeKind.OPTIONAL_ARGUMENT }
-        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null)).batch.deltas
+        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null, "run-1")).batch.deltas
 
         fun hitsFor(parameterIndex: Int): Long {
             val probe = probes.single { it.parameterIndex == parameterIndex }
@@ -118,14 +118,14 @@ class OptionalArgumentInstrumentationTest {
 
         val probe =
             registry
-                .manifest("test", null, "instance-1")
+                .manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
                 .probes
                 .single { it.className == "com.example.target.OpenBase" && it.kind == ProbeKind.OPTIONAL_ARGUMENT }
         assertTrue(probe.overridable, "greet is open, on a non-final class")
 
         val hits =
             registry
-                .computeDeltaBatch(ResourceAttributes("test", null, "i-1", null))
+                .computeDeltaBatch(ResourceAttributes("test", null, "i-1", null, "run-1"))
                 .batch.deltas
                 .single { it.classId == probe.classId && it.probeIndex == probe.probeIndex }
                 .hitsTotal
@@ -148,14 +148,14 @@ class OptionalArgumentInstrumentationTest {
 
         val probe =
             registry
-                .manifest("test", null, "instance-1")
+                .manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
                 .probes
                 .single { it.className == "com.example.target.Greeter" && it.kind == ProbeKind.OPTIONAL_ARGUMENT }
         assertTrue(probe.overridable, "an interface target is overridable")
 
         val hits =
             registry
-                .computeDeltaBatch(ResourceAttributes("test", null, "i-1", null))
+                .computeDeltaBatch(ResourceAttributes("test", null, "i-1", null, "run-1"))
                 .batch.deltas
                 .single { it.classId == probe.classId && it.probeIndex == probe.probeIndex }
                 .hitsTotal
@@ -172,7 +172,7 @@ class OptionalArgumentInstrumentationTest {
 
         val probes =
             registry
-                .manifest("test", null, "instance-1")
+                .manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
                 .probes
                 .filter { it.className == "com.example.target.DefaultArgumentTargetKt" && it.methodName == "inlineWithDefault" }
         assertTrue(probes.isNotEmpty())

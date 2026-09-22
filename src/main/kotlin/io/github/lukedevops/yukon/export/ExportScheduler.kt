@@ -28,6 +28,13 @@ import kotlin.random.Random
  */
 class ExportScheduler(
     private val config: AgentConfig,
+    /**
+     * Stamped on every delta batch and manifest this scheduler sends. The agent passes the same
+     * value to the static baseline, so all three payloads carry one run id. Required, with no
+     * default: a scheduler that made its own would name a different run from the baseline. See
+     * ADR 0032.
+     */
+    private val resource: ResourceAttributes,
     private val registry: ProbeRegistry,
     /** Endpoint hit and manifest state; see [EndpointRegistry] and ADR 0017. */
     private val endpointRegistry: EndpointRegistry,
@@ -253,12 +260,11 @@ class ExportScheduler(
      */
     private fun sendDeltaBatch(final: Boolean) {
         try {
-            val resource = resourceAttributes()
             val probeBatches = registry.computeDeltaBatches(resource, maxDeltasPerBatch)
             val riders =
                 endpointRegistry.computeDeltas(maxDeltasPerBatch).map(::endpointDeltaRider) +
                     dependencyRegistry.computeDeltas(maxDeltasPerBatch).map(::dependencyDeltaRider)
-            for (send in composeDeltaSends(resource, probeBatches, riders, final)) {
+            for (send in composeDeltaSends(probeBatches, riders, final)) {
                 exporter.exportDeltaBatch(send.batch)
                 send.probeSnapshot?.let(registry::advanceBaseline)
                 send.riders.forEach { it.advance() }
@@ -298,7 +304,6 @@ class ExportScheduler(
      * ended cleanly.
      */
     private fun composeDeltaSends(
-        resource: ResourceAttributes,
         probeBatches: List<ProbeRegistry.DeltaSnapshot>,
         riders: List<Rider<DeltaBatch>>,
         final: Boolean,
@@ -351,12 +356,7 @@ class ExportScheduler(
     private fun sendManifestDelta() {
         try {
             val classChunks =
-                registry.computeManifestDeltas(
-                    config.serviceName,
-                    config.serviceVersion,
-                    config.serviceInstanceId,
-                    maxManifestEntriesPerChunk,
-                )
+                registry.computeManifestDeltas(resource, maxManifestEntriesPerChunk)
             val riders =
                 endpointRegistry.computeManifestEntries(maxManifestEntriesPerChunk).map(::endpointManifestRider) +
                     dependencyRegistry.computeManifestEntries(maxManifestEntriesPerChunk).map(::dependencyManifestRider) +
@@ -431,11 +431,8 @@ class ExportScheduler(
 
     private fun emptyManifest(): ProbeManifest =
         ProbeManifest(
-            serviceName = config.serviceName,
-            serviceVersion = config.serviceVersion,
+            resource = resource,
             probes = emptyList(),
-            skippedClasses = emptyList(),
-            serviceInstanceId = config.serviceInstanceId,
             referencesRecorded = referencesRecorded,
         )
 
@@ -454,14 +451,6 @@ class ExportScheduler(
                 manifest.unreportedClasses.size + manifest.dependencies.size + manifest.externalClasses.size
         val riders = mutableListOf<Rider<ProbeManifest>>()
     }
-
-    private fun resourceAttributes() =
-        ResourceAttributes(
-            serviceName = config.serviceName,
-            serviceVersion = config.serviceVersion,
-            serviceInstanceId = config.serviceInstanceId,
-            environment = config.environment,
-        )
 
     companion object {
         /** A delta is a few dozen bytes on the wire, so this is well under a megabyte per POST. */

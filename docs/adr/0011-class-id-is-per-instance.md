@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted, amended by ADR 0032
 ---
 
 # class_id is per instance, so the manifest carries the instance ID

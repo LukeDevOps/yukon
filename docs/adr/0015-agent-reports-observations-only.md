@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted, amended by ADR 0032
 ---
 
 # The agent reports observations; classification is the collector's job

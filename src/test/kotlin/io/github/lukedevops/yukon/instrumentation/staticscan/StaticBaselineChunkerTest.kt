@@ -12,7 +12,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 class StaticBaselineChunkerTest {
-    private val resource = ResourceAttributes("checkout", "1.0.0", "instance-1", "test")
+    private val resource = ResourceAttributes("checkout", "1.0.0", "instance-1", "test", "run-1")
 
     private fun declared(
         name: String,

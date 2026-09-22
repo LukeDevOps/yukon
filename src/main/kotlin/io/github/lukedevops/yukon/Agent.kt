@@ -66,6 +66,8 @@ object Agent {
      * [endpointTransformer] is null exactly when [AgentConfig.endpointsEnabled] was false, or
      * when endpoint instrumentation failed to install; either way there is nothing to uninstall
      * for it.
+     *
+     * [resource] is the one every payload from this start carries, run id included.
      */
     internal class Running(
         val scheduler: ExportScheduler,
@@ -76,6 +78,7 @@ object Agent {
         private val endpointInstrumentation: EndpointInstrumentation? = null,
         val endpointTransformer: ResettableClassFileTransformer? = null,
         val dependencyRegistry: DependencyRegistry = DependencyRegistry(),
+        val resource: ResourceAttributes,
     ) {
         fun stop() {
             Runtime.getRuntime().removeShutdownHook(shutdownHook)
@@ -150,10 +153,13 @@ object Agent {
             log.log(Level.INFO, "yukon: endpointsEnabled=false, no framework's endpoints will be instrumented")
         }
 
+        // Made once here and shared, so every payload this process sends names the same run.
+        val resource = ResourceAttributes.forNewRun(config)
         val exporter = HttpOtlpStyleExporter(config.collectorEndpoint, config.authToken)
         val scheduler =
             ExportScheduler(
                 config,
+                resource,
                 registry,
                 endpointRegistry,
                 exporter,
@@ -174,7 +180,7 @@ object Agent {
 
         if (config.staticBaselineEnabled) {
             val referenceFilter = BaselineReferenceFilter(dependencyRegistry, externalClassRegistry)
-            startStaticBaselineScan(config, exporter, registry, staticBaselineMismatchDetector, referenceFilter)
+            startStaticBaselineScan(config, resource, exporter, registry, staticBaselineMismatchDetector, referenceFilter)
         }
 
         val shutdownHook = Thread({ scheduler.flushOnShutdown(SHUTDOWN_FLUSH_TIMEOUT) }, "yukon-shutdown-hook")
@@ -188,6 +194,7 @@ object Agent {
             endpointInstrumentation,
             endpointTransformer,
             dependencyRegistry,
+            resource,
         )
     }
 
@@ -211,6 +218,7 @@ object Agent {
      */
     private fun startStaticBaselineScan(
         config: AgentConfig,
+        resource: ResourceAttributes,
         exporter: Exporter,
         registry: ProbeRegistry,
         mismatchDetector: StaticBaselineMismatchDetector,
@@ -219,13 +227,6 @@ object Agent {
         val scanner = StaticBaselineScanner(config.instrumentedPackagePrefixes, config.excludedPackagePrefixes)
         val publisher =
             StaticBaselinePublisher(scanner::scan, exporter, registry, mismatchDetector, filterReferences = referenceFilter::filter)
-        val resource =
-            ResourceAttributes(
-                config.serviceName,
-                config.serviceVersion,
-                config.serviceInstanceId,
-                config.environment,
-            )
         val worker = Thread({ publisher.run(resource) }, "yukon-static-baseline-scan")
         worker.isDaemon = true
         worker.start()

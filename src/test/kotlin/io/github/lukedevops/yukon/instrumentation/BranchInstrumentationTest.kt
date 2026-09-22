@@ -52,11 +52,11 @@ class BranchInstrumentationTest {
         val target = install(registry, config)
         repeat(3) { target.javaClass.getMethod("classify", Int::class.java).invoke(target, 5) }
 
-        val manifest = registry.manifest("test", null, "instance-1")
+        val manifest = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
         val branchIndices = manifest.probes.filter { it.methodName == "classify" && it.kind == ProbeKind.BRANCH }.map { it.probeIndex }
         assertEquals(2, branchIndices.size)
 
-        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null)).batch.deltas
+        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null, "run-1")).batch.deltas
         val byIndex = deltas.associateBy { it.probeIndex }
 
         val hitBranches = branchIndices.filter { it in byIndex }
@@ -75,10 +75,10 @@ class BranchInstrumentationTest {
         val target = loadFixtureFresh()
         repeat(3) { target.javaClass.getMethod("classify", Int::class.java).invoke(target, 5) }
 
-        val manifest = registry.manifest("test", null, "instance-1")
+        val manifest = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
         val branchIndices = manifest.probes.filter { it.methodName == "classify" && it.kind == ProbeKind.BRANCH }.map { it.probeIndex }
         assertEquals(2, branchIndices.size, "the resource read off the loader must yield the same two-outcome site")
-        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null)).batch.deltas
+        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null, "run-1")).batch.deltas
         assertEquals(3L, deltas.single { it.probeIndex in branchIndices }.hitsTotal)
     }
 
@@ -91,10 +91,10 @@ class BranchInstrumentationTest {
         repeat(2) { target.javaClass.getMethod("classify", Int::class.java).invoke(target, 5) }
         repeat(3) { target.javaClass.getMethod("classify", Int::class.java).invoke(target, -1) }
 
-        val manifest = registry.manifest("test", null, "instance-1")
+        val manifest = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
         val branchIndices = manifest.probes.filter { it.methodName == "classify" && it.kind == ProbeKind.BRANCH }.map { it.probeIndex }
 
-        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null)).batch.deltas
+        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null, "run-1")).batch.deltas
         val byIndex = deltas.associateBy { it.probeIndex }
 
         val counts = branchIndices.map { byIndex.getValue(it).hitsTotal }.sorted()
@@ -109,12 +109,12 @@ class BranchInstrumentationTest {
         val target = install(registry, config)
         repeat(4) { target.javaClass.getMethod("classifyDense", Int::class.java).invoke(target, 1) }
 
-        val manifest = registry.manifest("test", null, "instance-1")
+        val manifest = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
         val branchIndices =
             manifest.probes.filter { it.methodName == "classifyDense" && it.kind == ProbeKind.BRANCH }.map { it.probeIndex }
         assertEquals(4, branchIndices.size, "3 cases + 1 default")
 
-        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null)).batch.deltas
+        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null, "run-1")).batch.deltas
         val byIndex = deltas.associateBy { it.probeIndex }
 
         val hitBranches = branchIndices.filter { it in byIndex }
@@ -134,11 +134,11 @@ class BranchInstrumentationTest {
         repeat(3) { method.invoke(target, 2) }
         repeat(4) { method.invoke(target, 99) } // falls to default
 
-        val manifest = registry.manifest("test", null, "instance-1")
+        val manifest = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
         val branchIndices =
             manifest.probes.filter { it.methodName == "classifyDense" && it.kind == ProbeKind.BRANCH }.map { it.probeIndex }
 
-        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null)).batch.deltas
+        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null, "run-1")).batch.deltas
         val byIndex = deltas.associateBy { it.probeIndex }
 
         val counts = branchIndices.map { byIndex.getValue(it).hitsTotal }.sorted()
@@ -153,12 +153,12 @@ class BranchInstrumentationTest {
         val target = install(registry, config)
         repeat(5) { target.javaClass.getMethod("classifySparse", Int::class.java).invoke(target, 1000) }
 
-        val manifest = registry.manifest("test", null, "instance-1")
+        val manifest = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
         val branchIndices =
             manifest.probes.filter { it.methodName == "classifySparse" && it.kind == ProbeKind.BRANCH }.map { it.probeIndex }
         assertEquals(3, branchIndices.size, "2 cases + 1 default")
 
-        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null)).batch.deltas
+        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null, "run-1")).batch.deltas
         val byIndex = deltas.associateBy { it.probeIndex }
 
         val hitBranches = branchIndices.filter { it in byIndex }
@@ -175,13 +175,13 @@ class BranchInstrumentationTest {
         target.javaClass.getMethod("classify", Int::class.java).invoke(target, 5)
         repeat(2) { target.javaClass.getMethod("classifyDense", Int::class.java).invoke(target, 2) }
 
-        val manifest = registry.manifest("test", null, "instance-1")
+        val manifest = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
         val classifyBranches =
             manifest.probes.filter { it.methodName == "classify" && it.kind == ProbeKind.BRANCH }.map { it.probeIndex }
         val denseBranches =
             manifest.probes.filter { it.methodName == "classifyDense" && it.kind == ProbeKind.BRANCH }.map { it.probeIndex }
 
-        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null)).batch.deltas
+        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null, "run-1")).batch.deltas
         val byIndex = deltas.associateBy { it.probeIndex }
 
         val hitClassifyBranches = classifyBranches.filter { it in byIndex }
@@ -207,14 +207,14 @@ class BranchInstrumentationTest {
         assertEquals(-1, method.invoke(target, 99), "99 is out of range, so it takes the default too")
         assertEquals(3, method.invoke(target, 3))
 
-        val manifest = registry.manifest("test", null, "instance-1")
+        val manifest = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
         val branches = manifest.probes.filter { it.methodName == "classifyGappy" && it.kind == ProbeKind.BRANCH }
         assertEquals(5, branches.size, "four real cases plus one default; no probe for the filler")
 
         val classId = branches.first().classId
         val byIndex =
             registry
-                .computeDeltaBatch(ResourceAttributes("test", null, "i-1", null))
+                .computeDeltaBatch(ResourceAttributes("test", null, "i-1", null, "run-1"))
                 .batch.deltas
                 .filter { it.classId == classId }
                 .associateBy { it.probeIndex }
@@ -230,10 +230,10 @@ class BranchInstrumentationTest {
         val target = install(registry, config)
         target.javaClass.getMethod("classify", Int::class.java).invoke(target, 5)
 
-        val manifest = registry.manifest("test", null, "instance-1")
+        val manifest = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
         val methodProbeIndex = manifest.probes.single { it.methodName == "classify" && it.kind == ProbeKind.METHOD }.probeIndex
 
-        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null)).batch.deltas
+        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null, "run-1")).batch.deltas
         val byIndex = deltas.associateBy { it.probeIndex }
 
         assertTrue(methodProbeIndex in byIndex)
@@ -247,7 +247,7 @@ class BranchInstrumentationTest {
 
         install(registry, config)
 
-        val manifest = registry.manifest("test", null, "instance-1")
+        val manifest = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
         val classProbes = manifest.probes.filter { it.className == "com.example.target.BranchTarget" }
         val branchProbes = classProbes.filter { it.kind == ProbeKind.BRANCH }
         val methodProbes = classProbes.filter { it.kind == ProbeKind.METHOD }
