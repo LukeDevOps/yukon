@@ -390,7 +390,7 @@ version-scoped read gives the version's age rather than the code's, and a
 fleet replaced faster than the retention window cannot report an age older
 than that window. It reads as recently introduced exactly where the code is
 oldest. The manifest's whole contract is the age, so it waits on the
-service-level first-seen that bug describes.
+service-level location row that bug describes.
 
 Phase two, JaCoCo for the vacuous test case. Needed only for the surviving
 case above, and only once the manifest stands on its own. JaCoCo's runtime
