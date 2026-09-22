@@ -20,7 +20,7 @@ Two things fall out of it when it happens. The poms need licence metadata,
 which nothing generates today. And a published testkit fixes its own API, so
 the query surface is worth a look before it is frozen rather than after.
 
-### Dependency usage: in progress
+### Dependency usage: landed, with follow-ups
 
 Grilled and settled on 2026-09-21; ADR 0030 holds the decision and
 `CONTEXT.md` the terms (dependency, reference, absent reference, live
@@ -119,12 +119,34 @@ and proves unloaded, used and the split end to end against two fixture jars.
 Chunk 7 has landed in `yukon-collector` (`4bc51e7`): its generated bindings
 are bumped to BSR commit `df061083`, which carries every dependency field, it
 forwards them untouched, and `LogSink` logs their counts and
-`references_recorded`; the relay round-trip tests carry each field. Chunk 8,
-`yukon-server`, is in progress: a migration, a port of the rules with the demo's
-cases as store tests, `GET /api/v1/services/{s}/dependencies` with a status
-filter, absent references, and a `dependencies` block on `report` that says
-whether the unreferenced/unreached split was judged. A web UI page for it is
-not part of chunk 8. Landing order, one chunk and one commit each:
+`references_recorded`; the relay round-trip tests carry each field.
+
+Chunk 8 has landed in `yukon-server` (`f417d3b`): migration 0012, a port of
+the rules with all 25 of the demo's cases as store subtests, `GET
+/api/v1/services/{s}/dependencies` with a status filter, `GET
+/absent-references`, and a `dependencies` block on `report` with a
+`split_available` flag. Proved end to end with the compose `stack` profile
+and `:demo:runDemoStack`: the server's answer for the plain demo matches the
+stub's (annotations unloaded, protobuf-java and byte-buddy unreferenced,
+kotlin-stdlib used). The server judges a baseline complete from each
+instance's latest complete scan, as its never-loaded rule does, and counts a
+sweep-reported class as loaded; the stub and the testkit differ from it only
+in the "never loaded" mark on a site, never in a status.
+
+Open, recorded rather than started:
+- A web UI page for dependency usage in `yukon-server` (and its `types.ts`
+  mirror), tracked in that repo's STATUS.md.
+- `absentReferences()` in the testkit has no settle gate, and
+  `dependency()`'s gate assumes one delta batch per flush.
+- The Boot 2 `jar:file:<outer>!/<entry>!/` code-source form is pinned only by
+  unit tests; no Boot 2 loader has been run.
+- A `byte-buddy-agent` jar sitting flat in an exploded war's `WEB-INF/lib`
+  is turned away by the agent-jar rule and reads as no dependency.
+- The plain demo's `-cp` loads the agent from its unshaded classes.
+- Every Kotlin service reads kotlin-stdlib as used through `kotlin.Metadata`,
+  which is true but says nothing about the adopter's own use of it.
+
+Landing order as built, one chunk and one commit each:
 
 0. Wire and codec: `DependencyLocation`, `DependencyDelta`,
    `referenced_classes`, `ClassReferences`, `ExternalClass`.
