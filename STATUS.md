@@ -382,14 +382,15 @@ travel together, because either alone misleads: how long the finding has been
 dead, and how long Yukon has been watching. "Dead for 90 days" says nothing
 until the reader knows whether the window is 90 days or three years.
 
-One real gap. `probes` is keyed by instance, so `first_seen_at` restarts with
-every new instance row. A service-level age is `min(first_seen_at)` across
-in-scope instances, which in a fleet of short-lived containers is bounded by
-the oldest instance still in scope rather than by how long the code has been
-dead: a service redeployed weekly reports at most a week, however long the
-method has actually been dead. Closing it needs a service-level first-seen
-keyed by class, method and descriptor instead of by instance. That is the one
-piece of real schema work here, and the feature is worth little without it.
+One real gap, filed as a bug in `yukon-server`'s STATUS.md rather than held
+here. `probes.first_seen_at` dates one instance's knowledge of a location, so
+the age a read reports is capped by the query's scope and by the retention
+prune, never reaching past the oldest surviving in-scope instance: a
+version-scoped read gives the version's age rather than the code's, and a
+fleet replaced faster than the retention window cannot report an age older
+than that window. It reads as recently introduced exactly where the code is
+oldest. The manifest's whole contract is the age, so it waits on the
+service-level first-seen that bug describes.
 
 Phase two, JaCoCo for the vacuous test case. Needed only for the surviving
 case above, and only once the manifest stands on its own. JaCoCo's runtime
