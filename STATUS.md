@@ -281,6 +281,19 @@ Landing order:
 4. Tests from v1/v2 fixture pairs: each kind of edit keeps or changes the key
    as the ADR says, plus the collision and inlined-copy cases.
 
+Progress:
+
+- Step 1 landed with ADR 0031 (`7de11e8`, amended in `46269de` to name
+  local variables from the `LocalVariableTable`).
+- Step 2 landed: `ConditionFingerprinter`, a second read of the class
+  bytes beside the analyser, gives every tracked site a fingerprint or
+  null, and every switch its case keys in the rewriter's outcome order.
+  Stack depth is tracked by hand, since ByteBuddy's shaded ASM has no
+  `AnalyzerAdapter`. Review found that a condition holding its own
+  branches (ternary, elvis, the earlier `&&` operand) empties the stack
+  partway, so its window starts late and an edit before that point keeps
+  the key; ADR 0031's consequences say so.
+
 The server side (service rows for keyed branch outcomes, and revisiting
 `known_for_days` on the keyless ones) is tracked in `yukon-server`'s
 STATUS.md. The deletion manifest's branch level waits on this too.

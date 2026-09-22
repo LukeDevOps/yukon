@@ -26,11 +26,11 @@ import net.bytebuddy.jar.asm.TypePath
  * This is read-only. It only sizes the probe array and builds manifest metadata, ahead of the
  * actual rewrite that [BranchProbeAsmVisitorWrapper] performs later in the same class transform.
  *
- * A switch's outcome count is one per distinct case target plus the default. A `TABLESWITCH`
- * over sparse case values carries filler entries for the gaps that jump straight to the default
- * label; those are the default outcome, not cases of their own, and counting them separately
- * would report "case 4 never hit" for a switch that has no case 4. [BranchProbeMethodVisitor]
- * applies the same rule when it rewrites the switch, so the two agree on the slot count.
+ * A switch's outcome count is one per case entry plus the default. A `TABLESWITCH` over sparse
+ * case values carries filler entries for the gaps that jump straight to the default label; those
+ * are the default outcome, not cases of their own, and counting them separately would report
+ * "case 4 never hit" for a switch that has no case 4. [BranchProbeMethodVisitor] applies the same
+ * rule when it rewrites the switch, so the two agree on the slot count.
  */
 object BranchSiteAnalyzer {
     /** Everything one pass over a class's bytecode yields. */
@@ -555,6 +555,8 @@ object BranchSiteAnalyzer {
 
         ClassReader(classBytes).accept(classVisitor, ClassReader.SKIP_FRAMES)
 
+        attachConditionFingerprints(sites, classBytes)
+
         val defaultSites = resolveDefaultSites(internalClassName, classAccess, methodAccess, localNames, defaultCandidates)
         val resolved = defaultSites.mapTo(mutableSetOf()) { it.defaultName to it.defaultDescriptor }
         val unresolvedDefaultSites = defaultShapedNames.distinct().filterNot { it in resolved }
@@ -616,6 +618,43 @@ object BranchSiteAnalyzer {
             references.byMethod,
             references.onClass,
         )
+    }
+
+    /**
+     * Attaches each site's condition fingerprint and, for a switch, its case keys, from a second,
+     * independent [ConditionFingerprinter] pass over the same bytes. Fingerprint `i` of a method
+     * goes to that method's `i`-th entry in [sites], in encounter order, dropped sites counted:
+     * [ConditionFingerprinter] visits every method and every tracked site regardless of scope, the
+     * same way [DefaultSiteAwareMethodVisitor.recordSite] numbers a method's sites regardless of
+     * whether they get dropped. A method whose fingerprint count does not match its site count is
+     * left with no fingerprints at all, and a class this pass cannot read leaves every site as it
+     * was. This never throws: a fingerprinting failure costs fingerprints, not the analysis.
+     */
+    private fun attachConditionFingerprints(
+        sites: MutableList<BranchSite>,
+        classBytes: ByteArray,
+    ) {
+        val fingerprintsByMethod =
+            try {
+                ConditionFingerprinter.analyze(classBytes)
+            } catch (_: Exception) {
+                return
+            }
+        val siteIndicesByMethod = mutableMapOf<Pair<String, String>, MutableList<Int>>()
+        sites.forEachIndexed { index, site ->
+            siteIndicesByMethod.getOrPut(site.methodName to site.methodDescriptor) { mutableListOf() } += index
+        }
+        for ((methodKey, siteIndices) in siteIndicesByMethod) {
+            val result = fingerprintsByMethod[methodKey] ?: continue
+            if (result.fingerprints.size != siteIndices.size) continue
+            siteIndices.forEachIndexed { ordinal, siteListIndex ->
+                sites[siteListIndex] =
+                    sites[siteListIndex].copy(
+                        conditionFingerprint = result.fingerprints[ordinal],
+                        caseKeys = result.caseKeys[ordinal],
+                    )
+            }
+        }
     }
 
     /** Where each of a class's references ends up: on a probed method, or on the class. */

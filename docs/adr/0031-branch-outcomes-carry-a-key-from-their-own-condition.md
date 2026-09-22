@@ -24,6 +24,9 @@ When two tracked sites in one method share a fingerprint, none of them gets a ke
 
 - An edit to the condition itself, a method rename, a signature change or a compiler upgrade that changes the bytecode all give new keys. Consumers restart those outcomes' dates. That is the price of never inventing history.
 - Two identical conditions in one method share a fingerprint, as do two copies of one inline call. They lose their keys and fall back to capped dates. Without a `LocalVariableTable`, `if (a > 0)` and `if (b > 0)` on two locals of one type also collide, so stripping debug info costs keys but never correctness.
+- A condition that holds branches of its own, such as a ternary, an elvis or the earlier operand of `&&`, empties the operand stack partway through. Its window starts at the last empty-stack point before the site in bytecode order, so an edit to the part of the expression before that point can keep the key. The window is still a pure function of the method's bytecode, so equal bytecode always gives equal keys.
+- The analyser computes stack depth without frames. At a label reached only by a jump it has not seen yet, such as a loop body placed after a `GOTO` to its test, the depth is unknown and the sites there get no key until the stack is next known to be empty.
+- Fingerprints come from a second read of the class bytes beside the analyser's own pass, so the agent reads each probed class one more time at load.
 - The key is not part of the layout hash. The layout hash names a slot layout within one build, and the key does not change it.
 - ADR 0005's statement that cross-instance identity is built from class, method, descriptor, line and branch index holds for methods. For branch outcomes, consumers join on the branch key.
 - The collector passes the field through without a bindings change, since Go protobuf keeps unknown fields when it re-marshals.

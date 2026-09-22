@@ -18,6 +18,14 @@ package io.github.lukedevops.yukon.instrumentation.branch
  * class's own code, and set to the origin class, dotted, otherwise; [line] is the origin's own
  * source line for a kept copy, and this method's own line otherwise. A dropped copy from another
  * class carries no origin, since nothing about it reaches the manifest.
+ *
+ * [conditionFingerprint] is the site's canonical fingerprint text, built by [ConditionFingerprinter]
+ * from the instructions between the last point the operand stack was empty and the site's own jump
+ * or switch. It is null when the site cannot be fingerprinted with confidence. See ADR 0031.
+ *
+ * [caseKeys] is set only for a switch: one entry per case outcome, in the exact order
+ * [BranchProbeMethodVisitor] numbers case outcomes, so `caseKeys.size + 1 == outcomeCount` holds.
+ * Null for a conditional.
  */
 data class BranchSite(
     val methodName: String,
@@ -27,4 +35,6 @@ data class BranchSite(
     val outcomeCount: Int = 2,
     val dropReason: BranchDropReason? = null,
     val inlinedFromClassName: String? = null,
+    val conditionFingerprint: String? = null,
+    val caseKeys: List<Int>? = null,
 )
