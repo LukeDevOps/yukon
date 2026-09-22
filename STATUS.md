@@ -102,7 +102,22 @@ reads as one artifact with no version), and a jar holding the agent's own
 package is never a dependency, since an unshaded agent build carries no
 `Premain-Class`. The plain demo's `-cp` puts `yukon-*-plain.jar` ahead of the
 shaded agent jar, so its agent runs from the unshaded classes; that predates
-this work and is left as found. Landing order, one chunk and one commit each:
+this work and is left as found.
+
+Chunk 6 (testkit) has landed: `dependency(group, artifact)`,
+`awaitDependency`, `unloadedDependencies()`, `unreferencedDependencies()`,
+`unreachedDependencies()` and `absentReferences()`, applying a port of the
+demo's rules, with the demo's cases ported too and three more added to both.
+The split queries throw rather than return an empty list when the include
+rules or a complete baseline are missing, so an assertion of "none" cannot
+pass on missing data. `dependency()` refuses to answer until two delta batches
+have followed the listing's manifest, since the manifest and the delta batch go
+out side by side; an instance that splits one flush's deltas across several
+batches would read as settled early. `absentReferences()` has no such gate. The
+`agentTest` suite runs with `staticBaselineEnabled=true` at no measurable cost
+and proves unloaded, used and the split end to end against two fixture jars.
+Chunks 7 and 8 are in the other two repos. Landing order, one chunk and one
+commit each:
 
 0. Wire and codec: `DependencyLocation`, `DependencyDelta`,
    `referenced_classes`, `ClassReferences`, `ExternalClass`.

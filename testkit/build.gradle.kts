@@ -67,6 +67,24 @@ tasks.test {
 // that way.
 val agentTestCollectorPort = 4329
 
+// Two one-class jars for the agentTest suite's dependency test, built here rather than taken from
+// the suite's own classpath so which one loads is fully under the test's control. dep-used carries
+// a pom.properties and is called from com.example.agenttarget; dep-unused has none, so its
+// identity comes from the filename with an empty group, and nothing ever loads it.
+val depUsed = sourceSets.create("depUsed")
+val depUnused = sourceSets.create("depUnused")
+val fixtureDependencyDir = layout.buildDirectory.dir("fixture-dependencies")
+val depUsedJar by tasks.registering(Jar::class) {
+    archiveFileName.set("dep-used-1.0.jar")
+    destinationDirectory.set(fixtureDependencyDir)
+    from(depUsed.output)
+}
+val depUnusedJar by tasks.registering(Jar::class) {
+    archiveFileName.set("dep-unused-1.0.jar")
+    destinationDirectory.set(fixtureDependencyDir)
+    from(depUnused.output)
+}
+
 testing {
     suites {
         register<JvmTestSuite>("agentTest") {
@@ -83,6 +101,7 @@ testing {
                 // already do.
                 implementation(project())
                 implementation("org.jetbrains.kotlin:kotlin-test-junit5:2.2.21")
+                implementation(files(depUsedJar, depUnusedJar))
             }
             targets {
                 all {
@@ -100,6 +119,7 @@ testing {
                                 "-javaagent:${agentJar.absolutePath}=" +
                                     "includePackages=com.example.agenttarget," +
                                     "flushIntervalSeconds=1," +
+                                    "staticBaselineEnabled=true," +
                                     "serviceName=testkit-agent-test," +
                                     "endpointsEnabled=false," +
                                     "endpoint=http://localhost:$agentTestCollectorPort",

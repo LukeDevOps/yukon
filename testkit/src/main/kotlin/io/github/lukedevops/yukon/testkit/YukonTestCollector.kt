@@ -7,6 +7,7 @@ import io.github.lukedevops.yukon.export.DisabledEndpointModule
 import io.github.lukedevops.yukon.export.EndpointDiscoverySource
 import io.github.lukedevops.yukon.export.GeneratedBy
 import io.github.lukedevops.yukon.export.ProbeKind
+import io.github.lukedevops.yukon.export.ProbeManifest
 import io.github.lukedevops.yukon.export.ProtoPayloadCodec
 import io.github.lukedevops.yukon.export.SkippedClass
 import io.github.lukedevops.yukon.export.UnreportedClass
@@ -43,6 +44,12 @@ import kotlin.concurrent.withLock
  * merges into one [EndpointRef] whose call count sums every instance's latest total, the same
  * cross-instance aggregation [hitCount] already does for method probes by class and method name.
  *
+ * Dependency queries ([dependency], [unloadedDependencies], [unreferencedDependencies],
+ * [unreachedDependencies], [absentReferences]) apply ADR 0030's rules within this one test JVM
+ * and follow the same rule again: a dependency no manifest has listed throws
+ * [UnknownDependencyException], and a question the data cannot answer yet, or at all without a
+ * complete static baseline, throws [IllegalStateException] instead of returning an empty list.
+ *
  * Close this with [close], typically from a `.use { }` block, once a test is done with it.
  */
 class YukonTestCollector private constructor(
@@ -70,6 +77,7 @@ class YukonTestCollector private constructor(
         val calls: List<CallEdge> = emptyList(),
         val inlinedFromClassName: String? = null,
         val generatedBy: GeneratedBy = GeneratedBy.NONE,
+        val referencedClasses: List<String> = emptyList(),
     )
 
     /** A class's superclass and direct interfaces, resolved to a class name. See ADR 0024. */
@@ -85,6 +93,7 @@ class YukonTestCollector private constructor(
         val inline: Boolean,
         val calls: List<CallEdge>,
         val generatedBy: GeneratedBy = GeneratedBy.NONE,
+        val referencedClasses: List<String> = emptyList(),
     )
 
     /**
@@ -153,6 +162,22 @@ class YukonTestCollector private constructor(
     private data class InstanceEndpointKey(
         val serviceInstanceId: String,
         val endpointId: Int,
+    )
+
+    /** Scopes a per-instance id (`dependency_id`, `class_id`) or a class name to the instance that reported it. */
+    private data class InstanceKey<T>(
+        val serviceInstanceId: String,
+        val id: T,
+    )
+
+    /**
+     * One instance's static-baseline references for one declared class: the class-level list and
+     * each declared method's. Kept per instance, since ADR 0030 splits unreferenced from unreached
+     * only with a complete baseline from each instance that lists the dependency.
+     */
+    private data class BaselineReferences(
+        val classReferences: List<String>,
+        val methods: List<DeclaredMethodInfo>,
     )
 
     /** Accumulates one static baseline scan's chunks. Only merged into [consultedDeclaredNames] once complete. */
@@ -228,6 +253,24 @@ class YukonTestCollector private constructor(
     private val endpointKeysByIdentity = ConcurrentHashMap<EndpointIdentity, MutableSet<InstanceEndpointKey>>()
     private val endpointHitsByKey = ConcurrentHashMap<InstanceEndpointKey, Long>()
     private val disabledEndpointModulesByName = ConcurrentHashMap<String, DisabledEndpointModule>()
+
+    // Dependency usage (ADR 0030). Everything is per instance: dependency_id and class_id are
+    // assigned by each instance's own registry.
+    private val dependencyLocations = ConcurrentHashMap<InstanceKey<Int>, DependencyView>()
+
+    /** The listing instance's delta-batch count when a dependency's record first arrived; see [isSettled]. */
+    private val dependencyListedAtBatch = ConcurrentHashMap<InstanceKey<Int>, Long>()
+    private val deltaBatchesByInstance = ConcurrentHashMap<String, AtomicLong>()
+    private val loadedClassesTotals = ConcurrentHashMap<InstanceKey<Int>, Long>()
+    private val externalClassesByName = ConcurrentHashMap<InstanceKey<String>, ExternalClassView>()
+    private val classLevelReferences = ConcurrentHashMap<InstanceKey<Int>, List<String>>()
+    private val classNamesByClassId = ConcurrentHashMap<InstanceKey<Int>, String>()
+    private val baselineReferences = ConcurrentHashMap<InstanceKey<String>, BaselineReferences>()
+    private val instancesRecordingReferences: MutableSet<String> = ConcurrentHashMap.newKeySet()
+    private val instanceIds: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+    /** Per instance, every class a manifest named as probed, skipped or unreported: every class that loaded there. */
+    private val loadedClassNamesByInstance = ConcurrentHashMap<String, MutableSet<String>>()
 
     /** Base URL to pass as an agent's `endpoint=` option, for example `http://localhost:54321`. */
     val endpoint: String = "http://localhost:${server.address.port}"
@@ -936,6 +979,233 @@ class YukonTestCollector private constructor(
         return UnknownEndpointException("${identity.verb} ${identity.routeTemplate}: never mentioned by any manifest")
     }
 
+    /**
+     * What ADR 0030's rules say about the dependency carrying `groupId:artifactId`, merged across
+     * every instance that listed it. A shaded jar carries several identities and matches any one of
+     * them. [groupId] null or empty matches a filename-derived identity, which has no group: for
+     * example `dependency(null, "commons-lang3")` for a jar with no `pom.properties`, or
+     * `dependency("com.fasterxml.jackson.core", "jackson-databind")` for one with it.
+     *
+     * The agent lists the startup classpath on a background thread and delivers the result on the
+     * flush after the listing ends. Its loaded-class counts can arrive a flush later, since the
+     * manifest and the delta batch go out side by side and the agent counts nothing before the
+     * listing ends. So a dependency is judged only once its listing instance has sent two delta batches after the
+     * manifest that listed it; before that this throws [IllegalStateException] rather than calling
+     * it unloaded or unreferenced on half the data. [awaitDependency] waits for exactly that point,
+     * and [awaitSettled] after the listing has ended covers it too.
+     *
+     * Throws [UnknownDependencyException] if no manifest has listed the dependency, naming the
+     * identities this collector does know.
+     */
+    fun dependency(
+        groupId: String?,
+        artifactId: String,
+    ): DependencyStatus {
+        val wanted = groupId.orEmpty() to artifactId
+        val finding =
+            computeDependencyReport(dependencyViews()).findings.firstOrNull { wanted in it.identities }
+                ?: throw unknownDependency(wanted)
+        checkSettled(listOf(finding))
+        return toDependencyStatus(finding)
+    }
+
+    /**
+     * Blocks until some manifest has listed the dependency carrying `groupId:artifactId`, matched
+     * the way [dependency] matches, and the instance that listed it has sent two delta batches
+     * since, so [dependency] answers without throwing. Throws [TimeoutException] if [timeout]
+     * elapses first.
+     */
+    fun awaitDependency(
+        groupId: String?,
+        artifactId: String,
+        timeout: Duration,
+    ) {
+        val wanted = groupId.orEmpty() to artifactId
+        awaitUntil(timeout, "no manifest listed dependency ${wanted.first}:${wanted.second}, settled, within $timeout") {
+            val listings =
+                dependencyLocations.filterValues { view -> view.identities.any { (it.groupId to it.artifactId) == wanted } }.keys
+            listings.isNotEmpty() && listings.all(::isSettled)
+        }
+    }
+
+    /**
+     * Every dependency some instance listed from its startup classpath with no class from it
+     * loaded on any instance, sorted by [DependencyStatus.identityKey]. Needs neither references
+     * nor a static baseline. An empty list means none, but only once the listing has arrived: a
+     * test should first [awaitDependency] on one dependency it knows is there.
+     *
+     * Throws [IllegalStateException] while any listed dependency is not yet settled; see [dependency].
+     */
+    fun unloadedDependencies(): List<DependencyStatus> = dependenciesWithStatus(DependencyUsage.UNLOADED, needsSplit = false)
+
+    /**
+     * Every loaded dependency nothing in the adopter's code references, sorted by
+     * [DependencyStatus.identityKey]. Often a library another library needs, or one reached only
+     * through a service lookup, so this is an observation, not a verdict that the jar can go.
+     *
+     * Throws [IllegalStateException] unless every loaded dependency could be split into
+     * unreferenced or unreached: that needs `references_recorded`, which the agent sends only with
+     * `includePackages` set, and a complete static baseline (`staticBaselineEnabled=true`) from
+     * every instance that lists it. An empty list without them would read as "none" when the
+     * real answer is "unknown". Throws the same way while a dependency is not yet settled.
+     */
+    fun unreferencedDependencies(): List<DependencyStatus> = dependenciesWithStatus(DependencyUsage.UNREFERENCED, needsSplit = true)
+
+    /**
+     * Every dependency the adopter's code references only from methods never hit or classes never
+     * loaded, sorted by [DependencyStatus.identityKey], each with those sites in
+     * [DependencyStatus.sites]. Throws [IllegalStateException] under the same conditions as
+     * [unreferencedDependencies].
+     */
+    fun unreachedDependencies(): List<DependencyStatus> = dependenciesWithStatus(DependencyUsage.UNREACHED, needsSplit = true)
+
+    /**
+     * Every referenced class no loader could find, sorted by class name, with the sites that
+     * reference it: code guarded by a check for an optional library, for example. Throws
+     * [IllegalStateException] when no instance sent `references_recorded`, which the agent sends
+     * only with `includePackages` set, since an empty list would then say nothing.
+     */
+    fun absentReferences(): List<AbsentReference> {
+        val report = computeDependencyReport(dependencyViews())
+        check(!report.referencesUnavailable) {
+            "no instance sent references_recorded, so absent references are unknown: run the agent with includePackages set"
+        }
+        return report.absentReferences
+    }
+
+    private fun dependenciesWithStatus(
+        status: DependencyUsage,
+        needsSplit: Boolean,
+    ): List<DependencyStatus> {
+        val report = computeDependencyReport(dependencyViews())
+        checkSettled(report.findings)
+        if (needsSplit) {
+            val unsplit = report.findings.filter { it.status == DependencyUsage.NO_LIVE_REFERENCE || it.status == DependencyUsage.LOADED }
+            check(!report.referencesUnavailable && unsplit.isEmpty()) {
+                val which =
+                    if (report.referencesUnavailable) {
+                        "no instance sent references_recorded"
+                    } else {
+                        "these read ${DependencyUsage.NO_LIVE_REFERENCE} or ${DependencyUsage.LOADED}: " +
+                            unsplit.joinToString(", ") { it.identityKey }
+                    }
+                "unreferenced and unreached need references_recorded (the agent's includePackages set) and a complete static " +
+                    "baseline (staticBaselineEnabled=true) from every instance that lists the dependency; $which"
+            }
+        }
+        return report.findings
+            .filter { it.status == status }
+            .sortedBy { it.identityKey }
+            .map(::toDependencyStatus)
+    }
+
+    /** True once the instance that listed [key] has sent two delta batches after the manifest carrying it. */
+    private fun isSettled(key: InstanceKey<Int>): Boolean {
+        val listedAt = dependencyListedAtBatch[key] ?: return false
+        return (deltaBatchesByInstance[key.serviceInstanceId]?.get() ?: 0L) >= listedAt + 2
+    }
+
+    private fun checkSettled(findings: List<DependencyFinding>) {
+        val keys = findings.map { it.identityKey }.toSet()
+        val unsettled =
+            dependencyLocations.entries
+                .filter { (key, view) -> view.identityKey in keys && !isSettled(key) }
+                .map { (key, view) -> "${view.identityKey} on ${key.serviceInstanceId}" }
+                .sorted()
+        check(unsettled.isEmpty()) {
+            "listed, but its loaded-class counts and reference mappings may not have arrived yet: ${unsettled.joinToString(", ")}; " +
+                "call awaitSettled or awaitDependency first"
+        }
+    }
+
+    private fun unknownDependency(wanted: Pair<String, String>): UnknownDependencyException {
+        val known =
+            dependencyLocations.values
+                .map { it.identityKey }
+                .distinct()
+                .sorted()
+        if (known.isEmpty()) {
+            return UnknownDependencyException(
+                "${wanted.first}:${wanted.second}: no manifest has listed any dependency yet; the agent lists the startup " +
+                    "classpath on a background thread and delivers it on the flush after the listing ends",
+            )
+        }
+        return UnknownDependencyException(
+            "${wanted.first}:${wanted.second}: never listed by any manifest; known dependencies: ${known.joinToString(", ")}",
+        )
+    }
+
+    private fun toDependencyStatus(finding: DependencyFinding): DependencyStatus =
+        DependencyStatus(
+            identityKey = finding.identityKey,
+            status = finding.status,
+            identities =
+                finding.identities.map { (groupId, artifactId) ->
+                    DependencyIdentityRef(groupId, artifactId, finding.versionsByIdentity["$groupId:$artifactId"].orEmpty())
+                },
+            loadedClassesTotal = finding.loadedClassesTotal,
+            classCount = finding.classCount,
+            discoverySources = finding.discoverySources,
+            sites = finding.sites,
+        )
+
+    /**
+     * One [InstanceDependencyView] per instance heard from, built the way the demo's stub
+     * collector builds its own, except that an unreported class counts as loaded (ADR 0027).
+     */
+    private fun dependencyViews(): List<InstanceDependencyView> =
+        instanceIds.sorted().map { instanceId ->
+            val probes = probesByKey.filterKeys { it.serviceInstanceId == instanceId }
+            val methodReferences =
+                probes
+                    .filterValues { it.kind == ProbeKind.METHOD }
+                    .map { (key, probe) ->
+                        HeldReferences(
+                            className = probe.className,
+                            methodName = probe.methodName,
+                            methodDescriptor = probe.methodDescriptor,
+                            origin = ReferenceOrigin.MANIFEST_METHOD,
+                            referencedClasses = probe.referencedClasses,
+                            inline = probe.inline,
+                            hits = hitsByKey[key] ?: 0L,
+                        )
+                    }
+            val classReferences =
+                classLevelReferences
+                    .filterKeys { it.serviceInstanceId == instanceId }
+                    .map { (key, referenced) ->
+                        val className = classNamesByClassId[key] ?: "class_id ${key.id}"
+                        HeldReferences(className, null, null, ReferenceOrigin.MANIFEST_CLASS, referenced)
+                    }
+            val declaredReferences =
+                baselineReferences
+                    .filterKeys { it.serviceInstanceId == instanceId }
+                    .flatMap { (key, declared) ->
+                        listOf(HeldReferences(key.id, null, null, ReferenceOrigin.BASELINE, declared.classReferences)) +
+                            declared.methods.map {
+                                HeldReferences(
+                                    key.id,
+                                    it.methodName,
+                                    it.methodDescriptor,
+                                    ReferenceOrigin.BASELINE,
+                                    it.referencedClasses,
+                                    inline = it.inline,
+                                )
+                            }
+                    }
+            val instanceScans = scans.filterKeys { it.serviceInstanceId == instanceId }.values
+            InstanceDependencyView(
+                instanceId = instanceId,
+                referencesRecorded = instanceId in instancesRecordingReferences,
+                baselineComplete = instanceScans.isNotEmpty() && instanceScans.all { it.complete },
+                dependencies = dependencyLocations.filterKeys { it.serviceInstanceId == instanceId }.values.toList(),
+                loadedClassesTotal = loadedClassesTotals.filterKeys { it.serviceInstanceId == instanceId }.mapKeys { it.key.id },
+                externalClasses = externalClassesByName.filterKeys { it.serviceInstanceId == instanceId }.mapKeys { it.key.id },
+                references = methodReferences + classReferences + declaredReferences,
+                loadedClassNames = loadedClassNamesByInstance[instanceId].orEmpty().toSet(),
+            )
+        }
+
     override fun close() {
         server.stop(0)
         executor.shutdown()
@@ -959,7 +1229,12 @@ class YukonTestCollector private constructor(
             val key = InstanceEndpointKey(instanceId, delta.endpointId)
             endpointHitsByKey.merge(key, delta.hitsTotal, ::maxOf)
         }
+        for (delta in batch.dependencyDeltas) {
+            loadedClassesTotals.merge(InstanceKey(instanceId, delta.dependencyId), delta.loadedClassesTotal, ::maxOf)
+        }
         if (batch.finalFlush) instancesThatEndedCleanly += instanceId
+        instanceIds += instanceId
+        deltaBatchesByInstance.computeIfAbsent(instanceId) { AtomicLong() }.incrementAndGet()
         deltaBatchSeq.incrementAndGet()
         respond(exchange, 200)
         signalAll()
@@ -997,6 +1272,7 @@ class YukonTestCollector private constructor(
                     location.calls,
                     location.inlinedFromClassName,
                     location.generatedBy,
+                    location.referencedClasses,
                 )
             nameIndex.computeIfAbsent(location.className) { ConcurrentHashMap.newKeySet() }.add(key)
             if (location.kind == ProbeKind.OPTIONAL_ARGUMENT) {
@@ -1042,8 +1318,45 @@ class YukonTestCollector private constructor(
         for (module in manifest.disabledEndpointModules) {
             disabledEndpointModulesByName.putIfAbsent(module.module, module)
         }
+        storeDependencyData(manifest)
         respond(exchange, 200)
         signalAll()
+    }
+
+    /** Stores what ADR 0030's rules read from one manifest, keyed by its instance. */
+    private fun storeDependencyData(manifest: ProbeManifest) {
+        val instanceId = manifest.serviceInstanceId
+        instanceIds += instanceId
+        if (manifest.referencesRecorded) instancesRecordingReferences += instanceId
+        val loaded = loadedClassNamesByInstance.computeIfAbsent(instanceId) { ConcurrentHashMap.newKeySet() }
+        for (location in manifest.probes) {
+            loaded += location.className
+            classNamesByClassId[InstanceKey(instanceId, location.classId)] = location.className
+        }
+        manifest.skippedClasses.forEach { loaded += it.className }
+        manifest.unreportedClasses.forEach { loaded += it.className }
+        val batchesSoFar = deltaBatchesByInstance.computeIfAbsent(instanceId) { AtomicLong() }.get()
+        for (dependency in manifest.dependencies) {
+            val key = InstanceKey(instanceId, dependency.dependencyId)
+            dependencyLocations[key] =
+                DependencyView(
+                    dependencyId = dependency.dependencyId,
+                    identities =
+                        dependency.identities.map {
+                            DependencyIdentityView(it.groupId.orEmpty(), it.artifactId, it.version.orEmpty())
+                        },
+                    discoverySource = dependency.discoverySource,
+                    classCount = dependency.classCount,
+                    location = dependency.location,
+                )
+            dependencyListedAtBatch.putIfAbsent(key, batchesSoFar)
+        }
+        for (references in manifest.classReferences) {
+            classLevelReferences[InstanceKey(instanceId, references.classId)] = references.referencedClasses
+        }
+        for (external in manifest.externalClasses) {
+            externalClassesByName[InstanceKey(instanceId, external.className)] = ExternalClassView(external.dependencyId, external.absent)
+        }
     }
 
     private fun handleStaticBaseline(exchange: HttpExchange) {
@@ -1071,12 +1384,25 @@ class YukonTestCollector private constructor(
                     serviceInstanceId = instanceId,
                     methods =
                         declaredClass.methods.map {
-                            DeclaredMethodInfo(it.methodName, it.methodDescriptor, it.inline, it.calls, it.generatedBy)
+                            DeclaredMethodInfo(
+                                it.methodName,
+                                it.methodDescriptor,
+                                it.inline,
+                                it.calls,
+                                it.generatedBy,
+                                it.referencedClasses,
+                            )
                         },
                     superClassName = declaredClass.superClassName,
                     interfaceNames = declaredClass.interfaceNames,
                 )
+            baselineReferences[InstanceKey(instanceId, declaredClass.className)] =
+                BaselineReferences(declaredClass.referencedClasses, progress.declaredClasses.getValue(declaredClass.className).methods)
         }
+        for (external in baseline.externalClasses) {
+            externalClassesByName[InstanceKey(instanceId, external.className)] = ExternalClassView(external.dependencyId, external.absent)
+        }
+        instanceIds += instanceId
         if (!wasComplete && progress.complete) {
             consultedDeclaredNames += progress.declaredNames
             consultedAllInlineOrGeneratedNames += progress.allInlineOrGeneratedNames
