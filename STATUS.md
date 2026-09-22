@@ -116,8 +116,15 @@ out side by side; an instance that splits one flush's deltas across several
 batches would read as settled early. `absentReferences()` has no such gate. The
 `agentTest` suite runs with `staticBaselineEnabled=true` at no measurable cost
 and proves unloaded, used and the split end to end against two fixture jars.
-Chunks 7 and 8 are in the other two repos. Landing order, one chunk and one
-commit each:
+Chunk 7 has landed in `yukon-collector` (`4bc51e7`): its generated bindings
+are bumped to BSR commit `df061083`, which carries every dependency field, it
+forwards them untouched, and `LogSink` logs their counts and
+`references_recorded`; the relay round-trip tests carry each field. Chunk 8,
+`yukon-server`, is in progress: a migration, a port of the rules with the demo's
+cases as store tests, `GET /api/v1/services/{s}/dependencies` with a status
+filter, absent references, and a `dependencies` block on `report` that says
+whether the unreferenced/unreached split was judged. A web UI page for it is
+not part of chunk 8. Landing order, one chunk and one commit each:
 
 0. Wire and codec: `DependencyLocation`, `DependencyDelta`,
    `referenced_classes`, `ClassReferences`, `ExternalClass`.
