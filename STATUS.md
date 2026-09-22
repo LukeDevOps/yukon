@@ -311,6 +311,34 @@ OpenAPI import was settled as `yukon-server` work and is tracked there.
 
 ## Parked
 
+### v2 idea: use production data to skip CI tests for dead paths
+
+Explore, not designed. Use what Yukon knows about production to decide which
+tests a CI run can skip: if a code path is never executed in the fleet, a test
+that exercises only that path adds CI time without protecting anything users
+reach.
+
+Questions to settle before a grill:
+
+- Joining tests to code. Yukon knows which probes production hits, not which
+  tests reach which probes. Per-test coverage would come from the testkit
+  recording hits per test (the agent already runs under test JVMs), giving a
+  test-to-probe map to diff against the fleet's never-hit set.
+- "Only it". A test is skippable only when every probe it reaches is never hit
+  in production, not when it merely touches one dead path. Shared setup code
+  that production runs will usually make that set small.
+- Confidence. Never hit is an observation over a window, not proof (ADR 0015);
+  the skip needs the collector's threshold (instances, days, traffic) and
+  should fail open: no data, stale data or a changed file means run the test.
+- Code changes. A change to a dead path must run its tests, so the skip needs
+  the diff; otherwise a path revived by a PR ships untested.
+- The better product may be the report, not the skip: "these tests guard only
+  code production never runs" is a prompt to delete both, where silently
+  skipping them keeps dead code alive with its tests switched off.
+- Where it lives: a testkit or Gradle/JUnit integration asking `yukon-server`
+  for the never-hit set of a service and version.
+
+
 ### A module disabled after it has already declared routes
 
 A module that throws is switched off for the rest of the process, and its
