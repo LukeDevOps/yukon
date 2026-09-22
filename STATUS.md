@@ -263,7 +263,7 @@ but it cannot key a branch that way: a row keyed on `branch_index` would move
 an old date onto a new branch and call it dead for years. So branch probes
 keep per-instance dates there, capped by scope and marked `dates_capped`,
 and `known_for_days` still drops the ones whose capped date is too recent.
-See the capped location dates entry in `yukon-server`'s STATUS.md.
+See the service-wide dates entry in `yukon-server`'s STATUS.md.
 
 A grilling session settled the design in ADR 0031: each kept branch outcome
 gets a branch key, a digest of its class, method, descriptor, condition
