@@ -73,7 +73,20 @@ spring-web), none absent, no JDK type listed. Every Kotlin class references
 is true. A referenced class whose loader throws from `getResource` is recorded
 as absent. The proto no longer promises every referenced name an
 `ExternalClass` entry: one may arrive a manifest later, and a name that never
-gets one belongs to no dependency. Landing order, one chunk and one commit
+gets one belongs to no dependency.
+
+Chunk 4 (references in the static baseline) has landed. The scan has no
+defining loader and in a fat jar cannot see `BOOT-INF/lib`, so it maps names
+through a class index the listing builds only when the baseline is enabled
+(11,356 names for `demo-spring`), released as soon as the baseline has read
+it. The publisher waits for the listing, which releases the wait on failure as
+well as success, with a two-minute backstop. Two resolution choices: a name
+seen at the root of a jar counts as the adopter's own only when no dependency
+holds it, since on a flat `-cp` classpath the scan walks dependency jars too;
+and the baseline never records a name as absent, because it cannot tell a
+missing class from one in a jar only a runtime loader opens, and the first
+recording of a name wins. `StaticBaseline.external_classes` stays empty; every
+mapping travels on the manifest. Landing order, one chunk and one commit
 each:
 
 0. Wire and codec: `DependencyLocation`, `DependencyDelta`,

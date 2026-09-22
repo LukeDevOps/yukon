@@ -22,6 +22,7 @@ import java.lang.reflect.Proxy
 import java.net.InetSocketAddress
 import java.nio.file.Files
 import java.nio.file.Path
+import java.time.Duration
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 import kotlin.test.Test
@@ -179,8 +180,44 @@ class AgentTest {
             assertTrue(running.dependencyRegistry.isListingComplete, "the listing thread never finished")
             // The test classpath carries the Kotlin stdlib as a jar, and nothing in it is under the include rules.
             assertTrue(running.dependencyRegistry.entries().any { entry -> entry.identities.any { it.artifactId == "kotlin-stdlib" } })
+            assertEquals(0, running.dependencyRegistry.classIndexSize, "no class index without the static baseline")
         } finally {
             running?.stop()
+        }
+    }
+
+    @Test
+    fun `with the static baseline enabled the baseline keeps references into listed dependencies and drops JDK names`() {
+        val received = CompletableFuture<StaticBaseline>()
+        val collector = HttpServer.create(InetSocketAddress("localhost", 0), 0)
+        collector.createContext("/v1/yukon/static-baseline") { exchange ->
+            received.complete(ProtoPayloadCodec.decodeStaticBaseline(exchange.requestBody.readBytes()))
+            exchange.sendResponseHeaders(200, -1)
+            exchange.close()
+        }
+        collector.start()
+        val instrumentation = ByteBuddyAgent.install()
+
+        // The Kotlin fixtures under com.example.target reference kotlin-stdlib, a jar on the test
+        // classpath the listing registers as a dependency, and java.lang, which the platform provides.
+        val running =
+            Agent.start(
+                "includePackages=com.example.target,flushIntervalSeconds=3600,endpointsEnabled=false," +
+                    "staticBaselineEnabled=true,endpoint=http://localhost:${collector.address.port}",
+                instrumentation,
+            )
+        try {
+            assertNotNull(running)
+            val references =
+                received.get(30, TimeUnit.SECONDS).declaredClasses.flatMap { declared ->
+                    declared.referencedClasses + declared.methods.flatMap { it.referencedClasses }
+                }
+            assertTrue(references.any { it.startsWith("kotlin.") }, "no reference into kotlin-stdlib was kept: $references")
+            assertTrue(references.none { it.startsWith("java.") }, "a JDK name was sent: $references")
+            assertEquals(0, running.dependencyRegistry.classIndexSize, "the class index is released once the baseline is filtered")
+        } finally {
+            running?.stop()
+            collector.stop(0)
         }
     }
 
@@ -192,6 +229,7 @@ class AgentTest {
 
         assertFalse(registry.isListingComplete)
         assertTrue(registry.entries().isEmpty())
+        assertEquals(DependencyRegistry.ListingOutcome.FAILED, registry.awaitListing(Duration.ofMillis(1)))
     }
 
     @Test
@@ -219,6 +257,7 @@ class AgentTest {
                 "/libs/a.jar",
                 classCount = 2,
                 origin = DependencyOrigin.FlatJar(Path.of("/libs/a.jar")),
+                classNames = setOf("org.a.A"),
             )
 
         Agent.runDependencyListing({ listOf(listed) }, registry)
@@ -228,6 +267,25 @@ class AgentTest {
         assertEquals(DependencyDiscoverySource.STARTUP_CLASSPATH, entry.discoverySource)
         assertEquals(DependencyOrigin.FlatJar(Path.of("/libs/a.jar")), entry.origin)
         assertEquals(2, entry.classCount)
+        assertEquals(null, registry.dependencyForClass("org.a.A"), "an unindexed registry keeps no class names")
+    }
+
+    @Test
+    fun `a listing into an indexing registry indexes each dependency's class names`() {
+        val registry = DependencyRegistry(indexClassNames = true)
+        val listed =
+            ListedDependency(
+                listOf(DependencyIdentity("g", "a", "1")),
+                DependencyIdentitySource.POM_PROPERTIES,
+                "/libs/a.jar",
+                classCount = 1,
+                origin = DependencyOrigin.FlatJar(Path.of("/libs/a.jar")),
+                classNames = setOf("org.a.A"),
+            )
+
+        Agent.runDependencyListing({ listOf(listed) }, registry)
+
+        assertEquals(registry.entries().single().dependencyId, registry.dependencyForClass("org.a.A"))
     }
 
     @Test

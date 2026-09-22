@@ -14,6 +14,12 @@ import java.lang.System.Logger.Level
  * completed. Every class loaded during startup, which is exactly when an app server deploys its
  * WAR, registers before this scan finishes and would otherwise never be checked at all.
  *
+ * References are passed through [filterReferences] before chunking, so the chunk weights count
+ * only what is sent; in the agent that is [BaselineReferenceFilter], which waits for the dependency
+ * listing. Without one, or when it throws, every reference list is emptied, since unfiltered lists
+ * would carry JDK names and names nothing maps, and losing the references is better than losing
+ * the baseline.
+ *
  * Chunks are sent in order and the first failure stops the send. There is no next flush to
  * retry the static baseline on, so what the collector has at that point is a partial scan, which
  * it can recognise from `chunk_count` and must not diff as if it were complete.
@@ -24,6 +30,7 @@ class StaticBaselinePublisher(
     private val registry: ProbeRegistry,
     private val mismatchDetector: StaticBaselineMismatchDetector,
     private val maxEntriesPerChunk: Int = DEFAULT_MAX_ENTRIES_PER_CHUNK,
+    private val filterReferences: (StaticScanResult) -> StaticScanResult = StaticScanResult::withoutReferences,
 ) {
     private val log = System.getLogger(StaticBaselinePublisher::class.java.name)
 
@@ -41,7 +48,14 @@ class StaticBaselinePublisher(
             }
         }
 
-        val chunks = StaticBaselineChunker.chunk(result, resource, System.currentTimeMillis(), maxEntriesPerChunk)
+        val filtered =
+            try {
+                filterReferences(result)
+            } catch (e: Exception) {
+                log.log(Level.WARNING, "yukon: could not filter the static baseline's references; it is sent without them", e)
+                result.withoutReferences()
+            }
+        val chunks = StaticBaselineChunker.chunk(filtered, resource, System.currentTimeMillis(), maxEntriesPerChunk)
         for (chunk in chunks) {
             try {
                 exporter.exportStaticBaseline(chunk)

@@ -115,4 +115,30 @@ class StaticBaselineChunkerTest {
         assertEquals(0, chunks.single().chunkIndex)
         assertEquals(1, chunks.single().chunkCount)
     }
+
+    @Test
+    fun `method and class references add to a class's weight, so references alone can seal a chunk`() {
+        // Each class weighs 1 method + 1 supertypes record = 2 without references. "First" adds
+        // 2 method references and 1 class reference for 5, so a cap of 6 cannot also hold "Second".
+        val first =
+            DeclaredClass(
+                "First",
+                listOf(DeclaredMethod("m", "()V", referencedClasses = listOf("org.lib.A", "org.lib.B"))),
+                referencedClasses = listOf("org.lib.C"),
+            )
+        val second = DeclaredClass("Second", listOf(DeclaredMethod("m", "()V")))
+        val result = StaticScanResult(listOf(first, second), emptyList(), emptyList())
+
+        val withReferences = StaticBaselineChunker.chunk(result, resource, scannedAt = 1L, maxEntriesPerChunk = 6)
+        val withoutReferences =
+            StaticBaselineChunker.chunk(
+                StaticScanResult(listOf(DeclaredClass("First", listOf(DeclaredMethod("m", "()V"))), second), emptyList(), emptyList()),
+                resource,
+                scannedAt = 1L,
+                maxEntriesPerChunk = 6,
+            )
+
+        assertEquals(listOf(listOf("First"), listOf("Second")), withReferences.map { c -> c.declaredClasses.map { it.className } })
+        assertEquals(listOf(listOf("First", "Second")), withoutReferences.map { c -> c.declaredClasses.map { it.className } })
+    }
 }

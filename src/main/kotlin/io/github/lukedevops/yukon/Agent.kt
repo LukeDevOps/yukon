@@ -18,6 +18,7 @@ import io.github.lukedevops.yukon.instrumentation.branch.BranchDropCounts
 import io.github.lukedevops.yukon.instrumentation.endpoints.EndpointInstrumentation
 import io.github.lukedevops.yukon.instrumentation.endpoints.EndpointModules
 import io.github.lukedevops.yukon.instrumentation.endpoints.api.EndpointModule
+import io.github.lukedevops.yukon.instrumentation.staticscan.BaselineReferenceFilter
 import io.github.lukedevops.yukon.instrumentation.staticscan.StaticBaselineMismatchDetector
 import io.github.lukedevops.yukon.instrumentation.staticscan.StaticBaselinePublisher
 import io.github.lukedevops.yukon.instrumentation.staticscan.StaticBaselineScanner
@@ -104,7 +105,7 @@ object Agent {
 
         val registry = ProbeRegistry(confirmsDefinitions = true)
         val endpointRegistry = EndpointRegistry()
-        val dependencyRegistry = DependencyRegistry()
+        val dependencyRegistry = DependencyRegistry(indexClassNames = config.staticBaselineEnabled)
         // One resolver for both users, so its caches and its registrations of jars discovered by
         // load are shared: the loaded-class count and the external-class mapping must agree on a
         // jar's dependency id.
@@ -172,7 +173,8 @@ object Agent {
         startDependencyListing(config, dependencyRegistry)
 
         if (config.staticBaselineEnabled) {
-            startStaticBaselineScan(config, exporter, registry, staticBaselineMismatchDetector)
+            val referenceFilter = BaselineReferenceFilter(dependencyRegistry, externalClassRegistry)
+            startStaticBaselineScan(config, exporter, registry, staticBaselineMismatchDetector, referenceFilter)
         }
 
         val shutdownHook = Thread({ scheduler.flushOnShutdown(SHUTDOWN_FLUSH_TIMEOUT) }, "yukon-shutdown-hook")
@@ -212,9 +214,11 @@ object Agent {
         exporter: Exporter,
         registry: ProbeRegistry,
         mismatchDetector: StaticBaselineMismatchDetector,
+        referenceFilter: BaselineReferenceFilter,
     ) {
         val scanner = StaticBaselineScanner(config.instrumentedPackagePrefixes, config.excludedPackagePrefixes)
-        val publisher = StaticBaselinePublisher(scanner::scan, exporter, registry, mismatchDetector)
+        val publisher =
+            StaticBaselinePublisher(scanner::scan, exporter, registry, mismatchDetector, filterReferences = referenceFilter::filter)
         val resource =
             ResourceAttributes(
                 config.serviceName,
@@ -230,7 +234,8 @@ object Agent {
     /**
      * Lists the startup classpath's dependencies on its own daemon thread, off `premain`: judging
      * whether a jar is the adopter's own reads every entry name, and in a fat jar that means
-     * streaming each nested jar. Runs once per process, always. See ADR 0030.
+     * streaming each nested jar. Runs once per process, always. With the static baseline enabled
+     * it also keeps every dependency's class names for the registry's class index. See ADR 0030.
      */
     private fun startDependencyListing(
         config: AgentConfig,
@@ -241,6 +246,7 @@ object Agent {
                 config.instrumentedPackagePrefixes,
                 config.excludedPackagePrefixes,
                 onNotADependency = registry::recordNotADependency,
+                keepClassNames = config.staticBaselineEnabled,
             )
         val worker =
             Thread({
@@ -275,10 +281,11 @@ object Agent {
     }
 
     /**
-     * Runs [list] to completion, then registers everything it found and marks the listing
-     * complete. Nothing escapes: a failure is logged at WARNING and registers nothing, so the
-     * collector sees no dependencies from this instance rather than a partial list it would read
-     * as the whole classpath.
+     * Runs [list] to completion, then registers everything it found, with its class names for the
+     * class index, and marks the listing complete. Nothing escapes: a failure is logged at WARNING,
+     * registers nothing and marks the listing failed, so the collector sees no dependencies from
+     * this instance rather than a partial list it would read as the whole classpath, and nothing
+     * waiting on the listing waits any longer.
      *
      * `internal` so a test can drive a failing listing without a real classpath.
      */
@@ -296,11 +303,13 @@ object Agent {
                     DependencyDiscoverySource.STARTUP_CLASSPATH,
                     dependency.classCount,
                     dependency.origin,
+                    dependency.classNames,
                 )
             }
             registry.markListingComplete()
         } catch (t: Throwable) {
             log.log(Level.WARNING, "yukon: the startup dependency listing failed; no dependencies will be reported", t)
+            registry.markListingFailed()
         }
     }
 }

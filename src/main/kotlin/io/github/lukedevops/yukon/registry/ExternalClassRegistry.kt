@@ -15,6 +15,10 @@ import java.util.concurrent.atomic.AtomicLong
  * an unsupported scheme) is resolved once and never sent. A name no loader could find is sent as
  * absent.
  *
+ * The static baseline records names it has already mapped through [recordResolved]; they go out on
+ * the manifest the same way, so the baseline itself never carries a mapping and no name is sent
+ * twice.
+ *
  * Delivery follows [DependencyRegistry]'s snapshot pattern: [computeManifestEntries] stages entries
  * onto the snapshot it returns, and [advanceManifest] marks exactly those delivered once the send
  * carrying them is confirmed.
@@ -27,12 +31,14 @@ class ExternalClassRegistry(
         val className: String,
         val location: String?,
         val sequence: Long,
+        val absent: Boolean,
+        resolvedId: Int? = null,
     ) {
         @Volatile
-        var resolved: Boolean = false
+        var resolved: Boolean = resolvedId != null
 
         @Volatile
-        var dependencyId: Int? = null
+        var dependencyId: Int? = resolvedId
 
         @Volatile
         var delivered: Boolean = false
@@ -59,7 +65,24 @@ class ExternalClassRegistry(
         location: String?,
     ) {
         if (entries.containsKey(className)) return
-        entries.putIfAbsent(className, Entry(className, location, nextSequence.getAndIncrement()))
+        entries.putIfAbsent(className, Entry(className, location, nextSequence.getAndIncrement(), absent = location == null))
+    }
+
+    /**
+     * Records [className] (dotted) as already resolved: to dependency [dependencyId], or as absent
+     * when it is null. The static baseline records this way, having mapped the name from the
+     * startup listing's class index rather than from a loader. The first recording of a name wins,
+     * whichever way it was made.
+     */
+    fun recordResolved(
+        className: String,
+        dependencyId: Int?,
+    ) {
+        if (entries.containsKey(className)) return
+        entries.putIfAbsent(
+            className,
+            Entry(className, null, nextSequence.getAndIncrement(), absent = dependencyId == null, resolvedId = dependencyId),
+        )
     }
 
     /**
@@ -81,9 +104,9 @@ class ExternalClassRegistry(
     }
 
     private fun toExternalClass(entry: Entry): ExternalClass? {
-        val location = entry.location ?: return ExternalClass(entry.className, null, absent = true)
+        if (entry.absent) return ExternalClass(entry.className, null, absent = true)
         if (!entry.resolved) {
-            entry.dependencyId = resolveLocation(location)
+            entry.dependencyId = entry.location?.let(resolveLocation)
             entry.resolved = true
         }
         return entry.dependencyId?.let { ExternalClass(entry.className, it) }

@@ -16,11 +16,20 @@ import java.io.IOException
 import java.lang.System.Logger.Level
 import java.util.jar.JarFile
 
+/**
+ * What one static baseline scan found. [ownClassNames] is every class name the scan saw in a
+ * directory root or under `BOOT-INF/classes`/`WEB-INF/classes`, in scope or not: the adopter's own
+ * code. [flatJarClassNames] is every class name it saw at the root of a jar, which may be the
+ * adopter's own jar or a dependency on a flat classpath. Both are kept only to filter the scan's
+ * references and are never sent.
+ */
 data class StaticScanResult(
     val declaredClasses: List<DeclaredClass>,
     val staticallyUnsafeClasses: List<StaticallyUnsafeClass>,
     val unreadableClasses: List<UnreadableClass>,
     val unprobedClasses: List<UnprobedClass> = emptyList(),
+    val ownClassNames: Set<String> = emptySet(),
+    val flatJarClassNames: Set<String> = emptySet(),
 ) {
     /** Every class name the scan saw, in any bucket. */
     fun allClassNames(): Set<String> =
@@ -30,6 +39,18 @@ data class StaticScanResult(
             unreadableClasses.mapTo(this) { it.className }
             unprobedClasses.mapTo(this) { it.className }
         }
+
+    /** This result with every method's and every class's reference list emptied. */
+    fun withoutReferences(): StaticScanResult =
+        copy(
+            declaredClasses =
+                declaredClasses.map { declared ->
+                    declared.copy(
+                        methods = declared.methods.map { it.copy(referencedClasses = emptyList()) },
+                        referencedClasses = emptyList(),
+                    )
+                },
+        )
 }
 
 /**
@@ -66,8 +87,10 @@ class StaticBaselineScanner(
         val unsafe = mutableListOf<StaticallyUnsafeClass>()
         val unreadable = mutableListOf<UnreadableClass>()
         val unprobed = mutableListOf<UnprobedClass>()
+        val ownClassNames = HashSet<String>()
+        val flatJarClassNames = HashSet<String>()
 
-        fun toResult() = StaticScanResult(declared, unsafe, unreadable, unprobed)
+        fun toResult() = StaticScanResult(declared, unsafe, unreadable, unprobed, ownClassNames, flatJarClassNames)
     }
 
     /**
@@ -138,7 +161,10 @@ class StaticBaselineScanner(
         if (root.isDirectory) {
             val locator = withSupportingTypesFallback(ClassFileLocator.ForFolder(root))
             val pool = TypePool.Default.WithLazyResolution.of(locator)
-            candidateClassNamesInFolder(root).forEach { className -> classify(className, pool, locator, buckets) }
+            candidateClassNamesInFolder(root).forEach { className ->
+                buckets.ownClassNames += className
+                classify(className, pool, locator, buckets)
+            }
             return
         }
         if (!isJarFile(root)) return
@@ -188,6 +214,7 @@ class StaticBaselineScanner(
             // BOOT-INF/classes/META-INF/versions/N/, which only the stripped name reveals.
             if (!isClassEntry(relativeName)) continue
             val className = relativeName.removeSuffix(".class").replace('/', '.')
+            if (nestedPrefix != null) buckets.ownClassNames += className else buckets.flatJarClassNames += className
             classify(className, pool, locator, buckets)
         }
     }
@@ -233,7 +260,8 @@ class StaticBaselineScanner(
                 buckets.unprobed += UnprobedClass(className, "no concrete methods to probe")
                 return
             }
-            buckets.declared += DeclaredClass(className, scanned.methods, scanned.superClassName, scanned.interfaceNames)
+            buckets.declared +=
+                DeclaredClass(className, scanned.methods, scanned.superClassName, scanned.interfaceNames, scanned.classReferences)
         } catch (e: Exception) {
             // Covers a corrupt class file, or a failure resolving a supporting type (e.g. an
             // annotation's own definition) while describing this one. Either way, this class
@@ -242,11 +270,12 @@ class StaticBaselineScanner(
         }
     }
 
-    /** [DeclaredMethod]s for one class, plus the supertypes read from the same analysis pass. */
+    /** [DeclaredMethod]s for one class, plus the supertypes and class-level references read from the same analysis pass. */
     private class ScannedMethods(
         val methods: List<DeclaredMethod>,
         val superClassName: String?,
         val interfaceNames: List<String>,
+        val classReferences: List<String>,
     )
 
     /**
@@ -255,12 +284,14 @@ class StaticBaselineScanner(
      * attribute ([ScalaClassDetector]), and the same bytes are also used to detect inline
      * functions with the same LocalVariableTable rule [BranchSiteAnalyzer] uses at transform time,
      * merged into each declared method, to detect a `<clinit>` of the class's own, to read its
-     * in-scope call edges, and to read its superclass and interfaces.
+     * in-scope call edges and its out-of-scope references, and to read its superclass and
+     * interfaces. References are listed as the analyser records them, JDK names included;
+     * [BaselineReferenceFilter] drops those before the baseline is sent.
      *
      * A class whose bytes cannot be resolved here is not itself unreadable: its [TypeDescription]
      * already resolved successfully through [pool][TypePool], so it is still declared, just
      * treated as a non-Scala class, with every method's [DeclaredMethod.inline] and
-     * [DeclaredMethod.calls] left empty, [DeclaredClass.superClassName] left null, no
+     * [DeclaredMethod.calls] and references left empty, [DeclaredClass.superClassName] left null, no
      * `<clinit>` entry added, and [DeclaredClass.interfaceNames] left empty. This can only happen
      * if the two disagree about what is readable, which no locator this scanner builds does.
      *
@@ -307,15 +338,28 @@ class StaticBaselineScanner(
                     analysis.isInline(it.internalName, it.descriptor),
                     analysis.callsOf(it.internalName, it.descriptor),
                     analysis.generatedBy(it.internalName, it.descriptor),
+                    analysis.referencesOf(it.internalName, it.descriptor),
                 )
             }
         val typeInitializer =
             if (analysis.hasTypeInitializer) {
-                listOf(DeclaredMethod("<clinit>", "()V", calls = analysis.callsOf("<clinit>", "()V")))
+                listOf(
+                    DeclaredMethod(
+                        "<clinit>",
+                        "()V",
+                        calls = analysis.callsOf("<clinit>", "()V"),
+                        referencedClasses = analysis.referencesOf("<clinit>", "()V"),
+                    ),
+                )
             } else {
                 emptyList()
             }
-        return ScannedMethods(declaredMethods + typeInitializer, analysis.superClassName, analysis.interfaceNames)
+        return ScannedMethods(
+            declaredMethods + typeInitializer,
+            analysis.superClassName,
+            analysis.interfaceNames,
+            analysis.classReferences,
+        )
     }
 
     /**

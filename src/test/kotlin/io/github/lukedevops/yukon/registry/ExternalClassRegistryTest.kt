@@ -89,4 +89,34 @@ class ExternalClassRegistryTest {
 
         assertEquals(listOf(2, 2, 1), registry.computeManifestEntries(2).map { it.externalClasses.size })
     }
+
+    @Test
+    fun `a name recorded already resolved goes out with that id or as absent, and nothing resolves it again`() {
+        registry.recordResolved("org.a.Foo", 7)
+        registry.recordResolved("org.gone.Missing", null)
+
+        assertEquals(
+            listOf(ExternalClass("org.a.Foo", 7), ExternalClass("org.gone.Missing", null, absent = true)),
+            sent(registry.computeManifestEntries(100)),
+        )
+        assertTrue(resolved.isEmpty())
+    }
+
+    @Test
+    fun `a name recorded already resolved goes out once after a confirmed send`() {
+        registry.recordResolved("org.a.Foo", 7)
+        registry.computeManifestEntries(100).forEach(registry::advanceManifest)
+
+        assertTrue(registry.computeManifestEntries(100).isEmpty())
+    }
+
+    @Test
+    fun `a name the transform recorded first keeps that recording, and the other way round`() {
+        registry.record("org.a.Foo", "jar:file:/libs/a.jar!/")
+        registry.recordResolved("org.a.Foo", 7)
+        registry.recordResolved("org.b.Bar", 7)
+        registry.record("org.b.Bar", "jar:file:/libs/b.jar!/")
+
+        assertEquals(listOf(ExternalClass("org.a.Foo", 0), ExternalClass("org.b.Bar", 7)), sent(registry.computeManifestEntries(100)))
+    }
 }

@@ -14,7 +14,8 @@ import java.util.zip.ZipInputStream
 
 /**
  * One dependency the startup listing found, or the sweep found at load. [origin] is where its
- * bytes live, kept off the wire.
+ * bytes live, kept off the wire. [classNames] are the dotted names of the classes it holds, empty
+ * when the listing was not asked to keep them.
  */
 data class ListedDependency(
     val identities: List<DependencyIdentity>,
@@ -22,6 +23,7 @@ data class ListedDependency(
     val location: String,
     val classCount: Int,
     val origin: DependencyOrigin,
+    val classNames: Set<String> = emptySet(),
 )
 
 /**
@@ -50,12 +52,18 @@ data class ListedDependency(
  *
  * Every jar read and judged not a dependency (an agent jar, a fat jar, a jar of the adopter's own)
  * goes to [onNotADependency], so the sweep can recognise its classes without reading it again.
+ *
+ * With [keepClassNames], each dependency carries the names of its classes for the registry's class
+ * index, and a jar whose identity key was already found adds its names to that dependency's. A name
+ * held by two jars stays with the first in search order, the one a loader would find.
+ * Without it, [ListedDependency.classNames] is empty, so nothing holds them past each jar's read.
  */
 class StartupClasspathLister(
     includes: List<String>,
     excludes: List<String>,
     private val classPath: String = System.getProperty("java.class.path").orEmpty(),
     private val onNotADependency: (DependencyOrigin) -> Unit = {},
+    private val keepClassNames: Boolean = false,
 ) {
     private val log = System.getLogger(StartupClasspathLister::class.java.name)
     private val classifier = JarClassifier(includes, excludes)
@@ -64,17 +72,35 @@ class StartupClasspathLister(
     fun list(): List<ListedDependency> {
         val found = LinkedHashMap<List<String>, ListedDependency>()
         val visited = mutableSetOf<File>()
+        val claimed = HashSet<String>()
         val pending = ArrayDeque(classPath.split(File.pathSeparator).filter { it.isNotEmpty() }.map(::File))
         while (pending.isNotEmpty()) {
             val root = pending.removeFirst()
             if (!root.isFile) continue
             val canonical = runCatching { root.canonicalFile }.getOrDefault(root.absoluteFile)
             if (!visited.add(canonical)) continue
-            val referenced = listJar(root.absoluteFile) { found.putIfAbsent(DependencyRegistry.identityKey(it.identities), it) }
+            val referenced = listJar(root.absoluteFile) { add(found, claimed, it) }
             // Searched straight after the jar naming them, before the next classpath entry, as the JDK does.
             referenced.asReversed().forEach(pending::addFirst)
         }
         return found.values.toList()
+    }
+
+    /**
+     * Adds [listed] to [found], merging it into an earlier jar with the same identity key. Each kept
+     * class name goes only to the first jar in search order holding it, tracked in [claimed], so a
+     * name stays with that jar even when a later jar's identity was first seen earlier still.
+     */
+    private fun add(
+        found: LinkedHashMap<List<String>, ListedDependency>,
+        claimed: MutableSet<String>,
+        listed: ListedDependency,
+    ) {
+        val names = if (keepClassNames) listed.classNames.filterTo(LinkedHashSet()) { claimed.add(it) } else emptySet()
+        val kept = listed.copy(classNames = names)
+        val key = DependencyRegistry.identityKey(kept.identities)
+        val first = found.putIfAbsent(key, kept) ?: return
+        if (keepClassNames) found[key] = first.copy(classNames = first.classNames + kept.classNames)
     }
 
     /** Lists one flat jar, reporting each dependency it yields to [emit]; returns the jars its `Class-Path` names. */

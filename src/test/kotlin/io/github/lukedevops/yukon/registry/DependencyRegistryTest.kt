@@ -6,6 +6,7 @@ import io.github.lukedevops.yukon.export.DependencyIdentitySource
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Files
 import java.nio.file.Path
+import java.time.Duration
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -282,5 +283,122 @@ class DependencyRegistryTest {
         assertEquals(null, registry.idForOrigin(DependencyOrigin.FlatJar(dir.resolve("other.jar"))))
         assertEquals(id, registry.idForKey(listOf("g:a")))
         assertEquals(null, registry.idForKey(listOf("g:b")))
+    }
+
+    @Test
+    fun `the class index is kept only when asked for, and the first registration of a name wins`() {
+        val indexed = DependencyRegistry(indexClassNames = true)
+        val first =
+            indexed.register(
+                listOf(DependencyIdentity("g", "a", "1")),
+                DependencyIdentitySource.POM_PROPERTIES,
+                "/libs/a.jar",
+                DependencyDiscoverySource.STARTUP_CLASSPATH,
+                classNames = listOf("org.shared.Both", "org.a.OnlyA"),
+            )
+        val second =
+            indexed.register(
+                listOf(DependencyIdentity("g", "b", "1")),
+                DependencyIdentitySource.POM_PROPERTIES,
+                "/libs/b.jar",
+                DependencyDiscoverySource.STARTUP_CLASSPATH,
+                classNames = listOf("org.shared.Both", "org.b.OnlyB"),
+            )
+
+        assertEquals(first, indexed.dependencyForClass("org.shared.Both"))
+        assertEquals(first, indexed.dependencyForClass("org.a.OnlyA"))
+        assertEquals(second, indexed.dependencyForClass("org.b.OnlyB"))
+        assertEquals(null, indexed.dependencyForClass("org.none.Nowhere"))
+        assertEquals(3, indexed.classIndexSize)
+
+        val unindexed = DependencyRegistry()
+        unindexed.register(
+            listOf(DependencyIdentity("g", "a", "1")),
+            DependencyIdentitySource.POM_PROPERTIES,
+            "/libs/a.jar",
+            DependencyDiscoverySource.STARTUP_CLASSPATH,
+            classNames = listOf("org.a.OnlyA"),
+        )
+        assertEquals(null, unindexed.dependencyForClass("org.a.OnlyA"))
+        assertEquals(0, unindexed.classIndexSize)
+    }
+
+    @Test
+    fun `a name from a second jar with an identity already registered maps to the first record`() {
+        val registry = DependencyRegistry(indexClassNames = true)
+        val first =
+            registry.register(
+                listOf(DependencyIdentity("g", "a", "1")),
+                DependencyIdentitySource.POM_PROPERTIES,
+                "/libs/a-1.jar",
+                DependencyDiscoverySource.STARTUP_CLASSPATH,
+                classNames = listOf("org.a.Old"),
+            )
+        registry.register(
+            listOf(DependencyIdentity("g", "a", "2")),
+            DependencyIdentitySource.POM_PROPERTIES,
+            "/libs/a-2.jar",
+            DependencyDiscoverySource.STARTUP_CLASSPATH,
+            classNames = listOf("org.a.New"),
+        )
+
+        assertEquals(first, registry.dependencyForClass("org.a.New"))
+    }
+
+    @Test
+    fun `awaiting the listing returns complete once it is marked complete`() {
+        val registry = DependencyRegistry()
+        val worker =
+            Thread {
+                Thread.sleep(50)
+                registry.markListingComplete()
+            }
+        worker.start()
+
+        assertEquals(DependencyRegistry.ListingOutcome.COMPLETE, registry.awaitListing(Duration.ofSeconds(10)))
+        worker.join()
+    }
+
+    @Test
+    fun `a failed listing releases the wait at once`() {
+        val registry = DependencyRegistry()
+        registry.markListingFailed()
+
+        val started = System.nanoTime()
+        assertEquals(DependencyRegistry.ListingOutcome.FAILED, registry.awaitListing(Duration.ofSeconds(30)))
+        assertTrue(System.nanoTime() - started < Duration.ofSeconds(5).toNanos())
+        assertFalse(registry.isListingComplete)
+    }
+
+    @Test
+    fun `a listing that never ends times the wait out`() {
+        val registry = DependencyRegistry()
+
+        assertEquals(DependencyRegistry.ListingOutcome.TIMED_OUT, registry.awaitListing(Duration.ofMillis(20)))
+    }
+
+    @Test
+    fun `a released class index answers nothing and indexes nothing registered later`() {
+        val registry = DependencyRegistry(indexClassNames = true)
+        registry.register(
+            listOf(DependencyIdentity("g", "a", "1")),
+            DependencyIdentitySource.POM_PROPERTIES,
+            "/libs/a.jar",
+            DependencyDiscoverySource.STARTUP_CLASSPATH,
+            classNames = listOf("org.a.A"),
+        )
+
+        registry.releaseClassIndex()
+        registry.register(
+            listOf(DependencyIdentity("g", "b", "1")),
+            DependencyIdentitySource.POM_PROPERTIES,
+            "/libs/b.jar",
+            DependencyDiscoverySource.STARTUP_CLASSPATH,
+            classNames = listOf("org.b.B"),
+        )
+
+        assertEquals(null, registry.dependencyForClass("org.a.A"))
+        assertEquals(null, registry.dependencyForClass("org.b.B"))
+        assertEquals(0, registry.classIndexSize)
     }
 }

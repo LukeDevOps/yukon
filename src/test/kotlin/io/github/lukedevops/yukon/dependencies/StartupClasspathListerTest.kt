@@ -392,4 +392,48 @@ class StartupClasspathListerTest {
         assertEquals(first.toAbsolutePath().toString(), listed.single().location)
         assertEquals(1, listed.single().classCount)
     }
+
+    @Test
+    fun `class names are kept only when asked for, including a fat jar's nested dependencies`() {
+        val flat = TestJars.write(dir.resolve("flat-1.0.jar"), listOf(classEntry("org.flat.F")))
+        val nested = nestedJar(pom("g", "nested", "1.0"), classEntry("org.nested.N"), classEntry("org.nested.M"))
+        val fat =
+            TestJars.write(
+                dir.resolve("app.jar"),
+                listOf(
+                    "BOOT-INF/classes/com/acme/App.class" to ByteArray(4),
+                    "BOOT-INF/lib/nested-1.0.jar" to nested,
+                ),
+                mapOf("Spring-Boot-Lib" to "BOOT-INF/lib/"),
+            )
+
+        val kept = StartupClasspathLister(emptyList(), emptyList(), classPath(flat, fat), keepClassNames = true).list()
+        val dropped = lister(classPath(flat, fat)).list()
+
+        assertEquals(listOf(setOf("org.flat.F"), setOf("org.nested.N", "org.nested.M")), kept.map { it.classNames })
+        assertTrue(dropped.all { it.classNames.isEmpty() })
+    }
+
+    @Test
+    fun `a second jar with an identity already listed adds its class names to the first`() {
+        val one = TestJars.write(dir.resolve("a/lib-1.0.jar"), listOf(pom("g", "lib", "1.0"), classEntry("org.lib.Old")))
+        val two = TestJars.write(dir.resolve("b/lib-2.0.jar"), listOf(pom("g", "lib", "2.0"), classEntry("org.lib.New")))
+
+        val listed = StartupClasspathLister(emptyList(), emptyList(), classPath(one, two), keepClassNames = true).list()
+
+        assertEquals(one.toAbsolutePath().toString(), listed.single().location)
+        assertEquals(setOf("org.lib.Old", "org.lib.New"), listed.single().classNames)
+    }
+
+    @Test
+    fun `a class name held by two jars stays with the first in search order, even when a later jar merges into an earlier identity`() {
+        val first = TestJars.write(dir.resolve("a/lib-1.0.jar"), listOf(pom("g", "lib", "1.0"), classEntry("org.lib.Old")))
+        val other = TestJars.write(dir.resolve("other-1.0.jar"), listOf(pom("g", "other", "1.0"), classEntry("org.shared.Both")))
+        val second = TestJars.write(dir.resolve("b/lib-2.0.jar"), listOf(pom("g", "lib", "2.0"), classEntry("org.shared.Both")))
+
+        val listed = StartupClasspathLister(emptyList(), emptyList(), classPath(first, other, second), keepClassNames = true).list()
+
+        assertEquals(setOf("org.lib.Old"), listed.single { it.identities.single().artifactId == "lib" }.classNames)
+        assertEquals(setOf("org.shared.Both"), listed.single { it.identities.single().artifactId == "other" }.classNames)
+    }
 }

@@ -77,7 +77,7 @@ internal class JarClassifier(
     ): ListedDependency? {
         if (isAdoptersOwn(contents, displayName)) return null
         val identity = DependencyIdentityReader.identify(contents, fileName)
-        return ListedDependency(identity.identities, identity.identitySource, location, identity.classCount, origin)
+        return ListedDependency(identity.identities, identity.identitySource, location, identity.classCount, origin, contents.classNames)
     }
 
     /**

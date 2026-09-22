@@ -47,6 +47,7 @@ class StaticBaselineScannerTest {
     private val generatedInterfaceDefaultImplsBytes =
         classBytes("kotlin/test/com/example/target/GeneratedInterface\$DefaultImpls.class")
     private val recordTargetBytes = classBytes("java/test/com/example/target/RecordTarget.class")
+    private val referenceTargetBytes = classBytes("java/test/com/example/target/ReferenceTarget.class")
 
     /** The fixture root [CallEdgeAnalyzerTest][io.github.lukedevops.yukon.instrumentation.branch.CallEdgeAnalyzerTest] exercises directly. */
     private fun callEdgeFixtureRoot(): File =
@@ -678,5 +679,83 @@ class StaticBaselineScannerTest {
 
         assertTrue(wideMethod.single { it.methodName == "callsOtherClass" }.calls.isNotEmpty())
         assertTrue(narrowMethod.single { it.methodName == "callsOtherClass" }.calls.isEmpty())
+    }
+
+    /** A class in `com.example.target` whose own `<clinit>` calls `Lib.StaticOwner.compute()`, and which has no other method. */
+    private fun clinitReferenceBytes(): ByteArray {
+        val writer = ClassWriter(ClassWriter.COMPUTE_MAXS)
+        writer.visit(Opcodes.V17, Opcodes.ACC_PUBLIC, "com/example/target/ClinitReference", null, "java/lang/Object", null)
+        writer.visitField(Opcodes.ACC_STATIC or Opcodes.ACC_PUBLIC, "value", "I", null, null).visitEnd()
+        val clinit = writer.visitMethod(Opcodes.ACC_STATIC, "<clinit>", "()V", null, null)
+        clinit.visitCode()
+        clinit.visitMethodInsn(Opcodes.INVOKESTATIC, "com/example/library/Lib\$StaticOwner", "compute", "()I", false)
+        clinit.visitFieldInsn(Opcodes.PUTSTATIC, "com/example/target/ClinitReference", "value", "I")
+        clinit.visitInsn(Opcodes.RETURN)
+        clinit.visitMaxs(0, 0)
+        clinit.visitEnd()
+        writer.visitEnd()
+        return writer.toByteArray()
+    }
+
+    @Test
+    fun `declares each method's references and the class's own references from the analysis`() {
+        val root = directoryRoot("com/example/target/ReferenceTarget.class" to referenceTargetBytes)
+        val scanner = StaticBaselineScanner(listOf("com.example.target"))
+
+        val declared = scanner.scan(listOf(root)).declaredClasses.single { it.className == "com.example.target.ReferenceTarget" }
+
+        val newInstance = declared.methods.single { it.methodName == "newInstance" }
+        assertEquals(listOf("com.example.library.Lib\$New"), newInstance.referencedClasses.filter { it.startsWith("com.example.") })
+        assertTrue("com.example.library.Lib\$Base" in declared.referencedClasses)
+        assertTrue("com.example.library.Lib\$Iface" in declared.referencedClasses)
+    }
+
+    @Test
+    fun `declares the references a class's own static initializer holds`() {
+        val root = directoryRoot("com/example/target/ClinitReference.class" to clinitReferenceBytes())
+        val scanner = StaticBaselineScanner(listOf("com.example.target"))
+
+        val declared = scanner.scan(listOf(root)).declaredClasses.single { it.className == "com.example.target.ClinitReference" }
+
+        assertEquals(
+            listOf("com.example.library.Lib\$StaticOwner"),
+            declared.methods.single { it.methodName == "<clinit>" }.referencedClasses,
+        )
+    }
+
+    @Test
+    fun `with no include rules every class is in scope, so no reference is declared`() {
+        val root = directoryRoot("com/example/target/ReferenceTarget.class" to referenceTargetBytes)
+        val scanner = StaticBaselineScanner(emptyList())
+
+        val declared = scanner.scan(listOf(root)).declaredClasses.single { it.className == "com.example.target.ReferenceTarget" }
+
+        assertTrue(declared.referencedClasses.isEmpty())
+        assertTrue(declared.methods.all { it.referencedClasses.isEmpty() })
+    }
+
+    @Test
+    fun `records every class name in a directory root or a nested classes root as the adopter's own, in scope or not`() {
+        val directory =
+            directoryRoot(
+                "com/example/target/SampleTarget.class" to sampleTargetBytes,
+                "com/example/other/OtherTarget.class" to otherTargetBytes,
+            )
+        val fatJar =
+            jarRoot(
+                "BOOT-INF/classes/com/example/boot/OutOfScope.class" to otherTargetBytes,
+                "BOOT-INF/lib/some-dependency.jar" to byteArrayOf(1, 2, 3, 4),
+                "org/springframework/boot/loader/Launcher.class" to otherTargetBytes,
+            )
+        val flatJar = jarRoot("org/flat/Library.class" to otherTargetBytes)
+        val scanner = StaticBaselineScanner(listOf("com.example.target"))
+
+        val result = scanner.scan(listOf(directory, fatJar, flatJar))
+
+        assertEquals(
+            setOf("com.example.target.SampleTarget", "com.example.other.OtherTarget", "com.example.boot.OutOfScope"),
+            result.ownClassNames,
+        )
+        assertEquals(setOf("org.springframework.boot.loader.Launcher", "org.flat.Library"), result.flatJarClassNames)
     }
 }

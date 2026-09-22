@@ -6,7 +6,10 @@ import io.github.lukedevops.yukon.export.DependencyIdentity
 import io.github.lukedevops.yukon.export.DependencyIdentitySource
 import io.github.lukedevops.yukon.export.DependencyLocation
 import java.nio.file.Path
+import java.time.Duration
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
@@ -46,10 +49,31 @@ sealed interface DependencyOrigin {
  * Their count goes out as a cumulative total through [computeDeltas] and [advanceDeltas], the same
  * snapshot pattern, whenever it differs from the last total delivered.
  *
+ * Constructed with `indexClassNames`, the registry also keeps a class index: every class name of
+ * every dependency the startup listing registers, mapped to that dependency's id, the first
+ * registration of a name winning as the classpath search order would. The static baseline maps its
+ * references through it ([dependencyForClass]), since it has no defining loader to ask. Without the
+ * flag no index is kept: it costs memory in proportion to the dependencies' class count. For the
+ * same reason the baseline releases it ([releaseClassIndex]) once it has been read.
+ *
  * Safe to use from several threads: the listing thread registers, the sweep records loads and
  * registers jars found at load on the scheduler thread, and the send pool computes and advances.
  */
-class DependencyRegistry {
+class DependencyRegistry(
+    indexClassNames: Boolean = false,
+) {
+    /** How the startup listing ended, as [awaitListing] saw it. */
+    enum class ListingOutcome {
+        /** Finished, with every dependency it found registered. */
+        COMPLETE,
+
+        /** Failed; nothing it found is registered. */
+        FAILED,
+
+        /** Still running when the wait ran out. */
+        TIMED_OUT,
+    }
+
     /** One tracked dependency. Instantiable only by [DependencyRegistry]. */
     class DependencyEntry internal constructor(
         val dependencyId: Int,
@@ -107,6 +131,10 @@ class DependencyRegistry {
     private val nextDeltaSequence = AtomicLong(0)
 
     @Volatile
+    private var classIndex: ConcurrentHashMap<String, Int>? = if (indexClassNames) ConcurrentHashMap() else null
+    private val listingEnded = CountDownLatch(1)
+
+    @Volatile
     private var listingComplete = false
 
     /**
@@ -117,15 +145,51 @@ class DependencyRegistry {
     val isListingComplete: Boolean
         get() = listingComplete
 
-    /** Records that the startup listing finished. */
+    /** Records that the startup listing finished, releasing every [awaitListing]. */
     fun markListingComplete() {
         listingComplete = true
+        listingEnded.countDown()
+    }
+
+    /**
+     * Records that the startup listing failed, releasing every [awaitListing] at once rather than
+     * leaving it to wait out its timeout. [isListingComplete] stays false.
+     */
+    fun markListingFailed() {
+        listingEnded.countDown()
+    }
+
+    /** Waits up to [timeout] for the startup listing to end, and says how it ended. */
+    fun awaitListing(timeout: Duration): ListingOutcome {
+        val ended = listingEnded.await(timeout.toNanos(), TimeUnit.NANOSECONDS)
+        return when {
+            listingComplete -> ListingOutcome.COMPLETE
+            ended -> ListingOutcome.FAILED
+            else -> ListingOutcome.TIMED_OUT
+        }
+    }
+
+    /** The id of the dependency the class index maps [className] (dotted) to, or null. Always null without the index. */
+    fun dependencyForClass(className: String): Int? = classIndex?.get(className)
+
+    /** How many class names the class index holds; 0 without the index or once it is released. */
+    val classIndexSize: Int
+        get() = classIndex?.size ?: 0
+
+    /**
+     * Drops the class index and stops keeping one, so its memory is not held for the life of the
+     * process once the static baseline, its one reader, has been filtered.
+     */
+    fun releaseClassIndex() {
+        classIndex = null
     }
 
     /**
      * Registers a dependency and returns its id. A dependency whose identity key is already
      * registered keeps the record it has, first registration wins, and this returns that record's
      * id. [identities] must not be empty.
+     *
+     * With the class index kept, each of [classNames] not yet indexed is mapped to the returned id.
      */
     fun register(
         identities: List<DependencyIdentity>,
@@ -134,9 +198,23 @@ class DependencyRegistry {
         discoverySource: DependencyDiscoverySource,
         classCount: Int? = null,
         origin: DependencyOrigin? = null,
+        classNames: Collection<String> = emptyList(),
     ): Int {
         require(identities.isNotEmpty()) { "a dependency at $location needs at least one identity" }
-        return entriesByKey
+        val id = registerEntry(identities, identitySource, location, discoverySource, classCount, origin)
+        classIndex?.let { index -> for (className in classNames) index.putIfAbsent(className, id) }
+        return id
+    }
+
+    private fun registerEntry(
+        identities: List<DependencyIdentity>,
+        identitySource: DependencyIdentitySource,
+        location: String,
+        discoverySource: DependencyDiscoverySource,
+        classCount: Int?,
+        origin: DependencyOrigin?,
+    ): Int =
+        entriesByKey
             .computeIfAbsent(identityKey(identities)) {
                 val entry =
                     DependencyEntry(
@@ -152,7 +230,6 @@ class DependencyRegistry {
                 if (origin != null) entriesByOrigin.putIfAbsent(origin.canonical(), entry)
                 entry
             }.dependencyId
-    }
 
     /**
      * The id of the dependency registered with [origin], compared by canonical path so a symlinked

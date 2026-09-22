@@ -28,7 +28,7 @@ internal class ReferencedClassLocator(
     )
 
     private val byLoader = WeakHashMap<ClassLoader, MutableMap<String, Any>>()
-    private val providedByPlatform = ConcurrentHashMap<String, Boolean>()
+    private val platformClasses = PlatformProvidedClasses(platformLoader)
 
     /**
      * Where [className] (dotted) lives as [classLoader] sees it, or null when the reference is to be
@@ -60,15 +60,7 @@ internal class ReferencedClassLocator(
             }
         if (url == null) return Found(null)
         if (url.startsWith("jrt:")) return null
-        val platform =
-            providedByPlatform.getOrPut(resourceName) {
-                try {
-                    platformLoader.getResource(resourceName) != null
-                } catch (_: Exception) {
-                    false
-                }
-            }
-        return classify(url, platform)
+        return classify(url, platformClasses.provides(className))
     }
 
     companion object {
