@@ -86,8 +86,23 @@ holds it, since on a flat `-cp` classpath the scan walks dependency jars too;
 and the baseline never records a name as absent, because it cannot tell a
 missing class from one in a jar only a runtime loader opens, and the first
 recording of a name wins. `StaticBaseline.external_classes` stays empty; every
-mapping travels on the manifest. Landing order, one chunk and one commit
-each:
+mapping travels on the manifest.
+
+Chunk 5 (`references_recorded`, the stub's dependency report, the Spring demo)
+has landed. `ProbeManifest.references_recorded` is set on every manifest when
+the include rules are set, so a collector can tell an instance that records
+nothing from one that references nothing; the collector judges each dependency
+only by the recording instances that list it. `runSpringDemo` reports 5
+unloaded (commons-lang3 among them), 26 unreferenced (spring-webmvc and the
+rest of the framework), jackson-databind unreached from the never-loaded
+`LegacyPricing#apply`, and 5 used. Two agent-side fixes came out of the demo
+runs: a filename version must contain a dot (`endpoints-ktor-2.jar` had read
+as `endpoints-ktor` at version 2 and merged with ktor-3; `jsr305-3.jar` now
+reads as one artifact with no version), and a jar holding the agent's own
+package is never a dependency, since an unshaded agent build carries no
+`Premain-Class`. The plain demo's `-cp` puts `yukon-*-plain.jar` ahead of the
+shaded agent jar, so its agent runs from the unshaded classes; that predates
+this work and is left as found. Landing order, one chunk and one commit each:
 
 0. Wire and codec: `DependencyLocation`, `DependencyDelta`,
    `referenced_classes`, `ClassReferences`, `ExternalClass`.

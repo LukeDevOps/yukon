@@ -26,6 +26,12 @@ dependencies {
     // consumer's app never depends on the agent at compile time.
     implementation(project(":"))
     implementation("com.google.protobuf:protobuf-java:3.25.5")
+
+    testImplementation(kotlin("test"))
+}
+
+tasks.test {
+    useJUnitPlatform()
 }
 
 kotlin {

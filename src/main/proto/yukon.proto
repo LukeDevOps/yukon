@@ -219,6 +219,12 @@ message ProbeManifest {
   // The mapping from each referenced class name to its dependency, or to absent. See
   // ExternalClass.
   repeated ExternalClass external_classes = 12;
+  // True when this instance records references, which it does only when its include rules are
+  // set: with every class in scope nothing is out of scope to reference, so empty reference lists
+  // would otherwise read as "no dependency is referenced". Set on every manifest the instance
+  // sends. A collector claims unreferenced or unreached only for an instance that sent it true.
+  // See ADR 0030.
+  bool references_recorded = 13;
 }
 
 // No line field, unlike ProbeLocation. A method's first source line is

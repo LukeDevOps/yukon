@@ -110,7 +110,9 @@ referenced class that no loader can find is an *absent reference* and is reporte
 - A jar whose manifest carries `Premain-Class` or `Launcher-Agent-Class` is never a dependency, so
   Yukon's own jar, an OpenTelemetry agent or a profiler never reads as unreferenced.
 - Unreferenced and unreached are claimed only for instances whose include rules are set, since with
-  every class in scope library-to-library references would count as the adopter's. They are split only
+  every class in scope library-to-library references would count as the adopter's. Every manifest
+  carries `references_recorded`, true exactly when the include rules are set, so a collector can
+  tell an instance that references nothing from one that records nothing. They are split only
   with a complete static baseline from each such instance: a reference inside a class that never
   loaded is visible only to the baseline, and without it a collector would call that dependency
   unreferenced when it is unreached. Without the baseline the two merge into "no live reference",

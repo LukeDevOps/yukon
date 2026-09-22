@@ -101,10 +101,31 @@ class DependencyIdentityReaderTest {
                 "foo.jar" to DependencyIdentity(null, "foo", null),
                 "my-lib.jar" to DependencyIdentity(null, "my-lib", null),
                 "legacy-2.1.ZIP" to DependencyIdentity(null, "legacy", "2.1"),
+                "annotations-13.0.jar" to DependencyIdentity(null, "annotations", "13.0"),
+                "hibernate-core-6.4.0.Final.jar" to DependencyIdentity(null, "hibernate-core", "6.4.0.Final"),
+                "foo-1.0-SNAPSHOT.jar" to DependencyIdentity(null, "foo", "1.0-SNAPSHOT"),
+                "foo-1-SNAPSHOT.jar" to DependencyIdentity(null, "foo", "1-SNAPSHOT"),
+                "yukon-1.0-SNAPSHOT-plain.jar" to DependencyIdentity(null, "yukon", "1.0-SNAPSHOT-plain"),
+                "kotlin-stdlib-jdk8-1.9.0.jar" to DependencyIdentity(null, "kotlin-stdlib-jdk8", "1.9.0"),
             )
         for ((fileName, expected) in cases) {
             val identity = identifyFile(fileName, emptyList(), manifest = mapOf("Created-By" to "test"))
             assertEquals(DependencyIdentitySource.FILENAME, identity.identitySource, fileName)
+            assertEquals(listOf(expected), identity.identities, fileName)
+        }
+    }
+
+    @Test
+    fun `a trailing number with no dot is part of the artifact, so a module per framework major version keeps its own identity`() {
+        val cases =
+            mapOf(
+                "endpoints-ktor-2.jar" to DependencyIdentity(null, "endpoints-ktor-2", null),
+                "endpoints-ktor-3.jar" to DependencyIdentity(null, "endpoints-ktor-3", null),
+                "endpoints-ktor-2-1.0.jar" to DependencyIdentity(null, "endpoints-ktor-2", "1.0"),
+                "scala-library-2-bridge.jar" to DependencyIdentity(null, "scala-library-2-bridge", null),
+            )
+        for ((fileName, expected) in cases) {
+            val identity = identifyFile(fileName, emptyList(), manifest = mapOf("Created-By" to "test"))
             assertEquals(listOf(expected), identity.identities, fileName)
         }
     }

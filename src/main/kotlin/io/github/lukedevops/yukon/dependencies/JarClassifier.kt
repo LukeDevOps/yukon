@@ -17,6 +17,11 @@ import java.util.jar.Manifest
  * carries `Premain-Class`, such as `byte-buddy-agent`, is a library the application calls, not a
  * running agent, so it stays a dependency.
  *
+ * A jar holding a class in the agent's own package ([TypeMatchPolicy.AGENT_PACKAGE_PREFIX]) is
+ * never a dependency either, flat or nested. The agent-jar rule reads the manifest, and an unshaded
+ * build of the agent carries no `Premain-Class`: the plain demo puts one on its `-cp` beside the
+ * shaded agent jar, and it read as a dependency of the application it was measuring.
+ *
  * With [includes] set, a jar holding any class [TypeMatchPolicy.isIncluded] admits is the
  * adopter's own. With [includes] empty, no jar is.
  */
@@ -64,7 +69,7 @@ internal class JarClassifier(
     }
 
     /**
-     * Judges a jar stored inside a fat jar: null when it is the adopter's own, else the dependency
+     * Judges a jar stored inside a fat jar: null when it is the agent's or the adopter's own, else the dependency
      * with its identity read. [displayName] names the jar in the INFO line the adopter's-own rule
      * may log.
      */
@@ -75,6 +80,7 @@ internal class JarClassifier(
         displayName: String,
         origin: DependencyOrigin,
     ): ListedDependency? {
+        if (contents.classNames.any { it.startsWith(TypeMatchPolicy.AGENT_PACKAGE_PREFIX) }) return null
         if (isAdoptersOwn(contents, displayName)) return null
         val identity = DependencyIdentityReader.identify(contents, fileName)
         return ListedDependency(identity.identities, identity.identitySource, location, identity.classCount, origin, contents.classNames)

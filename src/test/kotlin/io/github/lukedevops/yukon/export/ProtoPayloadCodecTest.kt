@@ -1406,6 +1406,29 @@ class ProtoPayloadCodecTest {
     }
 
     @Test
+    fun `a manifest's references recorded flag round-trips through the wire, both ways`() {
+        val recording = ProbeManifest("checkout", "1.0.0", emptyList(), serviceInstanceId = "instance-1", referencesRecorded = true)
+        val notRecording = recording.copy(referencesRecorded = false)
+
+        assertTrue(ProtoProbeManifest.parseFrom(ProtoPayloadCodec.encode(recording)).referencesRecorded)
+        assertFalse(ProtoProbeManifest.parseFrom(ProtoPayloadCodec.encode(notRecording)).referencesRecorded)
+        assertEquals(recording, ProtoPayloadCodec.decodeProbeManifest(ProtoPayloadCodec.encode(recording)))
+        assertEquals(notRecording, ProtoPayloadCodec.decodeProbeManifest(ProtoPayloadCodec.encode(notRecording)))
+    }
+
+    @Test
+    fun `a manifest with no references recorded field set decodes as false, matching an old payload`() {
+        val wireBytes =
+            ProtoProbeManifest
+                .newBuilder()
+                .setServiceName("checkout")
+                .build()
+                .toByteArray()
+
+        assertFalse(ProtoPayloadCodec.decodeProbeManifest(wireBytes).referencesRecorded)
+    }
+
+    @Test
     fun `a dependency with an unspecified or unknown identity or discovery source fails to decode`() {
         fun manifestWith(dependency: ProtoDependencyLocation.Builder): ByteArray =
             ProtoProbeManifest

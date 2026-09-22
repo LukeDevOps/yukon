@@ -782,6 +782,53 @@ class ExportSchedulerTest {
         }
     }
 
+    /**
+     * Sends two class chunks, one standalone rider manifest and, on a second flush, a manifest
+     * holding only a late class, all under [agentConfig], and returns every manifest sent.
+     */
+    private fun manifestsSentUnder(agentConfig: AgentConfig): List<ProbeManifest> {
+        val registry = ProbeRegistry()
+        registry.register("com.example.A", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "a", "()V", 1)))
+        registry.register("com.example.B", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "b", "()V", 1)))
+        val exporter = RecordingExporter()
+        val scheduler =
+            ExportScheduler(
+                agentConfig,
+                registry,
+                EndpointRegistry(),
+                exporter,
+                maxManifestEntriesPerChunk = 3,
+                dependencyRegistry = dependencyRegistryWith("a", "b", "c"),
+            )
+        scheduler.flush()
+        registry.register("com.example.C", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "c", "()V", 1)))
+        scheduler.flush()
+        return exporter.manifests
+    }
+
+    @Test
+    fun `every manifest sent says references are recorded when include rules are set, standalone rider manifests included`() {
+        val manifests = manifestsSentUnder(AgentConfig.parse("serviceName=checkout,includePackages=com.example"))
+
+        assertTrue(
+            manifests.any { it.probes.isEmpty() && it.dependencies.isNotEmpty() },
+            "the scenario must send a standalone rider manifest",
+        )
+        assertTrue(manifests.count { it.probes.isNotEmpty() } >= 3, "the scenario must send several class chunks")
+        assertTrue(manifests.all { it.referencesRecorded }, "every sent manifest must carry referencesRecorded = true")
+    }
+
+    @Test
+    fun `every manifest sent says references are not recorded when no include rules are set`() {
+        val manifests = manifestsSentUnder(config)
+
+        assertTrue(
+            manifests.any { it.probes.isEmpty() && it.dependencies.isNotEmpty() },
+            "the scenario must send a standalone rider manifest",
+        )
+        assertTrue(manifests.none { it.referencesRecorded }, "no sent manifest may carry referencesRecorded = true")
+    }
+
     private fun externalClassRegistryWith(vararg classNames: String): ExternalClassRegistry =
         ExternalClassRegistry({ true }) { 7 }.apply {
             for (name in classNames) record(name, "jar:file:/libs/lib.jar!/")

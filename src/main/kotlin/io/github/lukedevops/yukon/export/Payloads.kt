@@ -192,6 +192,11 @@ data class ClassSupertypes(
  *
  * [dependencies], [classReferences] and [externalClasses] are delivered incrementally like the
  * rest of this payload, each entry sent once per instance. See ADR 0030.
+ *
+ * [referencesRecorded] is true when the instance records references at all, which it does only
+ * when its include rules are set. The agent sets it on every manifest it sends, so a collector can
+ * tell an instance whose code references nothing from one that records nothing, and claims
+ * unreferenced or unreached only for an instance that sent it true. See ADR 0030.
  */
 data class ProbeManifest(
     val serviceName: String,
@@ -206,6 +211,7 @@ data class ProbeManifest(
     val dependencies: List<DependencyLocation> = emptyList(),
     val classReferences: List<ClassReferences> = emptyList(),
     val externalClasses: List<ExternalClass> = emptyList(),
+    val referencesRecorded: Boolean = false,
 )
 
 /**

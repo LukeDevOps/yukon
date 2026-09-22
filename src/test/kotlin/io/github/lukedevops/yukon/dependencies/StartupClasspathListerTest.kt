@@ -78,9 +78,39 @@ class StartupClasspathListerTest {
         val agent = TestJars.write(dir.resolve("agent.jar"), listOf(classEntry("x.Agent")), mapOf("Premain-Class" to "x.Agent"))
         val launcher =
             TestJars.write(dir.resolve("launcher.jar"), listOf(classEntry("y.Agent")), mapOf("Launcher-Agent-Class" to "y.Agent"))
-        val lib = TestJars.write(dir.resolve("lib-1.jar"), listOf(classEntry("z.Lib")))
+        val lib = TestJars.write(dir.resolve("lib-1.0.jar"), listOf(classEntry("z.Lib")))
 
         assertEquals(listOf("lib"), artifacts(lister(classPath(agent, launcher, lib)).list()))
+    }
+
+    @Test
+    fun `a jar holding the agent's own package is never a dependency, flat or nested, whatever its manifest says`() {
+        val plainAgent = TestJars.write(dir.resolve("yukon-1.0-SNAPSHOT-plain.jar"), listOf(classEntry("io.github.lukedevops.yukon.Agent")))
+        val fat =
+            TestJars.write(
+                dir.resolve("app.jar"),
+                listOf(
+                    "BOOT-INF/lib/yukon-1.0.jar" to nestedJar(classEntry("io.github.lukedevops.yukon.Agent")),
+                    "BOOT-INF/lib/lib-1.0.jar" to nestedJar(classEntry("org.lib.L")),
+                ),
+                mapOf("Spring-Boot-Lib" to "BOOT-INF/lib/"),
+            )
+        val judged = mutableListOf<DependencyOrigin>()
+
+        val listed =
+            StartupClasspathLister(
+                emptyList(),
+                emptyList(),
+                classPath(plainAgent, fat),
+                onNotADependency = { judged += it },
+            ).list()
+
+        assertEquals(listOf("lib"), artifacts(listed))
+        assertEquals(
+            2,
+            judged.count { it.toString().contains("yukon") },
+            "both agent jars are recorded as judged, so the sweep never reads them",
+        )
     }
 
     @Test
@@ -95,14 +125,14 @@ class StartupClasspathListerTest {
     @Test
     fun `with includes set a jar holding an in-scope class is the adopter's own and one with only out-of-scope classes is listed`() {
         val own = TestJars.write(dir.resolve("app.jar"), listOf(classEntry("com.acme.App")))
-        val lib = TestJars.write(dir.resolve("lib-1.jar"), listOf(classEntry("org.lib.Lib")))
+        val lib = TestJars.write(dir.resolve("lib-1.0.jar"), listOf(classEntry("org.lib.Lib")))
 
         assertEquals(listOf("lib"), artifacts(lister(classPath(own, lib), includes = listOf("com.acme")).list()))
     }
 
     @Test
     fun `a jar whose only in-scope classes are excluded is a dependency`() {
-        val lib = TestJars.write(dir.resolve("lib-1.jar"), listOf(classEntry("com.acme.generated.X")))
+        val lib = TestJars.write(dir.resolve("lib-1.0.jar"), listOf(classEntry("com.acme.generated.X")))
 
         val listed = lister(classPath(lib), includes = listOf("com.acme"), excludes = listOf("com.acme.generated")).list()
 
@@ -343,7 +373,7 @@ class StartupClasspathListerTest {
 
     @Test
     fun `a missing classpath entry is skipped`() {
-        val lib = TestJars.write(dir.resolve("lib-1.jar"), listOf(classEntry("org.lib.L")))
+        val lib = TestJars.write(dir.resolve("lib-1.0.jar"), listOf(classEntry("org.lib.L")))
 
         assertEquals(listOf("lib"), artifacts(lister(classPath(dir.resolve("nope.jar"), dir.resolve("nodir"), lib)).list()))
     }
@@ -352,7 +382,7 @@ class StartupClasspathListerTest {
     fun `a corrupt jar is skipped with one WARNING naming it and the rest are still listed`() {
         val corrupt = dir.resolve("corrupt-1.0.jar")
         Files.write(corrupt, "this is not a zip file".toByteArray())
-        val lib = TestJars.write(dir.resolve("lib-1.jar"), listOf(classEntry("org.lib.L")))
+        val lib = TestJars.write(dir.resolve("lib-1.0.jar"), listOf(classEntry("org.lib.L")))
 
         lateinit var listed: List<ListedDependency>
         val records = captureLogRecords { listed = lister(classPath(corrupt, lib)).list() }
@@ -366,7 +396,7 @@ class StartupClasspathListerTest {
     @Test
     fun `a flat jar with no entries at all is skipped with one WARNING naming it`() {
         val empty = TestJars.write(dir.resolve("empty-1.0.jar"), emptyList())
-        val lib = TestJars.write(dir.resolve("lib-1.jar"), listOf(classEntry("org.lib.L")))
+        val lib = TestJars.write(dir.resolve("lib-1.0.jar"), listOf(classEntry("org.lib.L")))
 
         lateinit var listed: List<ListedDependency>
         val records = captureLogRecords { listed = lister(classPath(empty, lib)).list() }

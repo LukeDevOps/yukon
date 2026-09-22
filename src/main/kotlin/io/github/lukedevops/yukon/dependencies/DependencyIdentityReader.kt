@@ -18,7 +18,7 @@ internal data class JarIdentity(
  * `Apache Tomcat`); its `Implementation-Version` only fills in a version the filename lacks.
  */
 internal object DependencyIdentityReader {
-    private val VERSIONED_STEM = Regex("^(.+?)-(\\d[^-]*(?:-.+)?)$")
+    private val VERSIONED_STEM = Regex("^(.+?)-((?:\\d+\\.\\d+|\\d+-SNAPSHOT)(?:[.-][A-Za-z0-9_+]+)*)$")
     private val ARCHIVE_EXTENSION = Regex("\\.(jar|zip)$", RegexOption.IGNORE_CASE)
 
     /** [fileName] is the jar's own name, without any directory or outer-jar path. */
@@ -59,9 +59,12 @@ internal object DependencyIdentityReader {
             ?.ifEmpty { null }
 
     /**
-     * Strips a `.jar` or `.zip` extension, then splits at the first `-` followed by a digit when the rest of the name
-     * can be a version: `guava-33.0.0-jre.jar` is `guava` at `33.0.0-jre`. A name with no such
-     * split is all artifact, with no version.
+     * Strips a `.jar` or `.zip` extension, then splits at the first `-` after which the rest of the
+     * name looks like a version: digits, a dot and digits, or `<digits>-SNAPSHOT`, then any number
+     * of `.` or `-` qualifiers. `guava-33.0.0-jre.jar` is `guava` at `33.0.0-jre`, and
+     * `hibernate-core-6.4.0.Final.jar` is `hibernate-core` at `6.4.0.Final`. A bare number is not a
+     * version, so `endpoints-ktor-2.jar` is all artifact and stays apart from `endpoints-ktor-3.jar`.
+     * A name with no such split is all artifact, with no version.
      */
     fun fromFilename(fileName: String): DependencyIdentity {
         val stem = ARCHIVE_EXTENSION.replace(fileName, "")

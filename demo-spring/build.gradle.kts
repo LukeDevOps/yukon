@@ -18,6 +18,11 @@ dependencies {
     // (see "Managing Dependencies" in the Spring Boot Gradle plugin reference docs).
     implementation(platform(SpringBootPlugin.BOM_COORDINATES))
     implementation("org.springframework.boot:spring-boot-starter-webmvc")
+
+    // On the classpath and never used, so the stub collector's dependency report shows it as
+    // unloaded. The Boot BOM manages its version, so none is given here: a pinned one would be
+    // raised to the BOM's regardless.
+    runtimeOnly("org.apache.commons:commons-lang3")
 }
 
 kotlin {

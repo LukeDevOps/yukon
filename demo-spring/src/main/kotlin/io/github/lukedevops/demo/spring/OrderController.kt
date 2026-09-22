@@ -22,6 +22,13 @@ import org.springframework.web.bind.annotation.RestController
  * the method tier either. [get]'s legacy-pricing branch is always off in this demo, the same
  * feature-flag shape as the plain demo server's `/checkout`, and its [PriceFormatter] comes from
  * [PricingConfiguration], the `@Bean`-bearing class Spring proxies with CGLIB.
+ *
+ * Three of the demo's dependencies show the three statuses short of used in the stub
+ * collector's dependency report. `commons-lang3` is on the classpath and no class from it loads,
+ * so it is unloaded. `jackson-databind` is loaded by Spring and referenced only from
+ * [LegacyPricing], which never loads, so it is unreached. `spring-webmvc` is loaded by Spring and
+ * never named here, since the mapping annotations above come from `spring-web`, so it is
+ * unreferenced, as are several other framework jars.
  */
 @RestController
 class OrderController(

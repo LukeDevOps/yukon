@@ -418,8 +418,16 @@ class ExportScheduler(
             target.size += rider.size
             target.riders += rider
         }
-        return builders.map { ManifestSend(it.manifest, it.probeSnapshot, it.riders) }
+        return builders.map { ManifestSend(it.manifest.copy(referencesRecorded = referencesRecorded), it.probeSnapshot, it.riders) }
     }
+
+    /**
+     * Whether this instance records references, stamped on every manifest it sends: true exactly
+     * when include rules are set, since with every class in scope nothing is out of scope to
+     * reference. See ADR 0030.
+     */
+    private val referencesRecorded: Boolean
+        get() = config.instrumentedPackagePrefixes.isNotEmpty()
 
     private fun emptyManifest(): ProbeManifest =
         ProbeManifest(
@@ -428,6 +436,7 @@ class ExportScheduler(
             probes = emptyList(),
             skippedClasses = emptyList(),
             serviceInstanceId = config.serviceInstanceId,
+            referencesRecorded = referencesRecorded,
         )
 
     private class ManifestSendBuilder(

@@ -106,6 +106,23 @@ private data class DeclaredMethodInfo(
     val inline: Boolean,
     val calls: List<CallEdgeInfo> = emptyList(),
     val generatedBy: GeneratedBy = GeneratedBy.GENERATED_BY_NONE,
+    val referencedClasses: List<String> = emptyList(),
+)
+
+/** Scopes a dependency id to the instance that reported it, for the same reason as [InstanceProbeKey]. */
+private data class InstanceDependencyKey(
+    val serviceInstanceId: String,
+    val dependencyId: Int,
+)
+
+/**
+ * One instance's static-baseline references for one declared class: the class-level list and each
+ * declared method's. Kept per instance, unlike [staticallyDeclaredClasses], since ADR 0030 splits
+ * unreferenced from unreached only with a complete baseline from each instance.
+ */
+private data class BaselineReferences(
+    val classReferences: List<String>,
+    val methods: List<DeclaredMethodInfo>,
 )
 
 private data class EndpointInfo(
@@ -176,6 +193,22 @@ private data class ScanProgress(
 
 private val scans = ConcurrentHashMap<ScanKey, ScanProgress>()
 
+// Dependency usage (ADR 0030), all per instance: dependency_id and class_id are assigned by each
+// instance's own registry.
+private val dependencyLocations = ConcurrentHashMap<InstanceDependencyKey, DependencyView>()
+
+// Cumulative distinct class names, max()-merged like latestHitsTotal.
+private val latestLoadedClassesTotal = ConcurrentHashMap<InstanceDependencyKey, Long>()
+private val firstLoadedAt = ConcurrentHashMap<InstanceDependencyKey, Long>()
+private val externalClasses = ConcurrentHashMap<InstanceClassKey, ExternalClassView>()
+private val probeReferencedClasses = ConcurrentHashMap<InstanceProbeKey, List<String>>()
+private val classLevelReferences = ConcurrentHashMap<InstanceClassIdKey, List<String>>()
+private val baselineReferences = ConcurrentHashMap<InstanceClassKey, BaselineReferences>()
+
+/** Instance ids any manifest arrived from with `references_recorded` set. See ADR 0030. */
+private val instancesRecordingReferences = Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
+private val manifestInstanceIds = Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
+
 /** One node of the call graph [computeUnreachedClusters] resolves: a probed method, by identity alone. See ADR 0024. */
 private data class NodeKey(
     val className: String,
@@ -228,7 +261,9 @@ private data class UnreachedClusterInfo(
  * hit history in memory. On shutdown, it prints two reports: "never hit" (manifest probes with
  * no delta that ever reported a hit) and, since the demo server opts into
  * `staticBaselineEnabled=true`, "never loaded" (classes the static scan found that never once
- * appeared in the reactive manifest at all).
+ * appeared in the reactive manifest at all). It also prints the optional-argument, endpoint,
+ * unreached-cluster and dependency reports, the last applying ADR 0030's statuses to each
+ * dependency the instances listed.
  *
  * Takes the port to bind as its one argument, defaulting to [DemoPorts.COLLECTOR_PORT] for a run
  * by hand. Port 0 binds an ephemeral one; either way the port that was actually bound is printed,
@@ -251,6 +286,7 @@ fun main(args: Array<String>) {
             printEndpointReport()
             printNeverLoadedReport()
             printUnreachedClusterReport()
+            printDependencyReport()
         },
     )
 }
@@ -273,6 +309,11 @@ private fun handleDeltaBatch(exchange: HttpExchange) {
     for (delta in batch.endpointDeltasList) {
         val key = InstanceEndpointKey(instanceId, delta.endpointId)
         latestEndpointHitsTotal.merge(key, delta.hitsTotal, ::maxOf)
+    }
+    for (delta in batch.dependencyDeltasList) {
+        val key = InstanceDependencyKey(instanceId, delta.dependencyId)
+        latestLoadedClassesTotal.merge(key, delta.loadedClassesTotal, ::maxOf)
+        if (delta.firstLoadedAt > 0L) firstLoadedAt.merge(key, delta.firstLoadedAt, ::minOf)
     }
     if (batch.finalFlush) instancesThatEndedCleanly += instanceId
     val totalHits = latestHitsTotal.values.sum()
@@ -311,6 +352,29 @@ private fun handleManifest(exchange: HttpExchange) {
             manifestCallEdges[InstanceProbeKey(instanceId, location.classId, location.probeIndex)] =
                 location.callsList.map { CallEdgeInfo(it.className, it.methodName, it.methodDescriptor, it.virtual) }
         }
+        if (location.referencedClassesList.isNotEmpty()) {
+            probeReferencedClasses[InstanceProbeKey(instanceId, location.classId, location.probeIndex)] =
+                location.referencedClassesList.toList()
+        }
+    }
+    manifestInstanceIds += instanceId
+    if (manifest.referencesRecorded) instancesRecordingReferences += instanceId
+    for (dependency in manifest.dependenciesList) {
+        dependencyLocations[InstanceDependencyKey(instanceId, dependency.dependencyId)] =
+            DependencyView(
+                dependencyId = dependency.dependencyId,
+                identities = dependency.identitiesList.map { DependencyIdentityView(it.groupId, it.artifactId, it.version) },
+                discoverySource = dependency.discoverySource,
+                classCount = if (dependency.hasClassCount()) dependency.classCount else null,
+                location = dependency.location,
+            )
+    }
+    for (references in manifest.classReferencesList) {
+        classLevelReferences[InstanceClassIdKey(instanceId, references.classId)] = references.referencedClassesList.toList()
+    }
+    for (external in manifest.externalClassesList) {
+        externalClasses[InstanceClassKey(instanceId, external.className)] =
+            ExternalClassView(if (external.hasDependencyId()) external.dependencyId else null, external.absent)
     }
     for (skipped in manifest.skippedClassesList) {
         skippedClasses[InstanceClassKey(instanceId, skipped.className)] = SkippedInfo(skipped.reason, skipped.skippedAt)
@@ -343,7 +407,9 @@ private fun handleManifest(exchange: HttpExchange) {
             "(known total: ${skippedClasses.size}), ${manifest.endpointsList.size} endpoints " +
             "(known total: ${manifestEndpoints.size}) and ${manifest.disabledEndpointModulesList.size} disabled endpoint modules, " +
             "$callEdgeCount call edges (known total: ${manifestCallEdges.values.sumOf { it.size }}) and " +
-            "${manifest.classSupertypesList.size} class supertypes records (known total: ${classSupertypes.size})",
+            "${manifest.classSupertypesList.size} class supertypes records (known total: ${classSupertypes.size}), " +
+            "${manifest.dependenciesList.size} dependencies (known total: ${dependencyLocations.size}) and " +
+            "${manifest.externalClassesList.size} external classes (known total: ${externalClasses.size})",
     )
     respondOk(exchange)
 }
@@ -359,10 +425,17 @@ private fun handleStaticBaseline(exchange: HttpExchange) {
                     it.inline,
                     it.callsList.map { call -> CallEdgeInfo(call.className, call.methodName, call.methodDescriptor, call.virtual) },
                     it.generatedBy,
+                    it.referencedClassesList.toList(),
                 )
             }
+        baselineReferences[InstanceClassKey(baseline.resource.serviceInstanceId, declaredClass.className)] =
+            BaselineReferences(declaredClass.referencedClassesList.toList(), staticallyDeclaredClasses.getValue(declaredClass.className))
         staticallyDeclaredSupertypes[declaredClass.className] =
             SupertypesInfo(declaredClass.superClassName.ifEmpty { null }, declaredClass.interfaceNamesList)
+    }
+    for (external in baseline.externalClassesList) {
+        externalClasses[InstanceClassKey(baseline.resource.serviceInstanceId, external.className)] =
+            ExternalClassView(if (external.hasDependencyId()) external.dependencyId else null, external.absent)
     }
     for (unsafe in baseline.staticallyUnsafeClassesList) {
         staticallyUnsafeClasses[unsafe.className] = unsafe.reason
@@ -869,4 +942,74 @@ private fun widenToSubtypes(
         queue += reverseSubtypes[current].orEmpty()
     }
     return result
+}
+
+/**
+ * Reports each dependency as unloaded, unreferenced, unreached, with no live reference, or used,
+ * merged across instances by identity, plus every referenced class no loader could find. The
+ * rules are ADR 0030's and live in [computeDependencyReport]; this only gathers what each instance
+ * sent into the shape that function reads.
+ */
+private fun printDependencyReport() {
+    formatDependencyReport(computeDependencyReport(dependencyViews())).forEach(::println)
+}
+
+/** One [InstanceDependencyView] per instance heard from, built from the maps the handlers fill. */
+private fun dependencyViews(): List<InstanceDependencyView> {
+    val instanceIds = allInstanceIds + manifestInstanceIds + dependencyLocations.keys.map { it.serviceInstanceId }
+    return instanceIds.sorted().map { instanceId ->
+        val probes = manifestProbes.filterKeys { it.serviceInstanceId == instanceId }
+        val classNamesById = probes.entries.associate { (key, info) -> key.classId to info.className }
+        val methodReferences =
+            probes
+                .filterValues { it.kind == ProbeKind.METHOD }
+                .map { (key, info) ->
+                    HeldReferences(
+                        className = info.className,
+                        methodName = info.methodName,
+                        methodDescriptor = info.methodDescriptor,
+                        origin = ReferenceOrigin.MANIFEST_METHOD,
+                        referencedClasses = probeReferencedClasses[key].orEmpty(),
+                        inline = info.inline,
+                        hits = latestHitsTotal[key] ?: 0L,
+                    )
+                }
+        val classReferences =
+            classLevelReferences
+                .filterKeys { it.serviceInstanceId == instanceId }
+                .map { (key, referenced) ->
+                    val className = classNamesById[key.classId] ?: "class_id ${key.classId}"
+                    HeldReferences(className, null, null, ReferenceOrigin.MANIFEST_CLASS, referenced)
+                }
+        val declaredReferences =
+            baselineReferences
+                .filterKeys { it.serviceInstanceId == instanceId }
+                .flatMap { (key, declared) ->
+                    listOf(HeldReferences(key.className, null, null, ReferenceOrigin.BASELINE, declared.classReferences)) +
+                        declared.methods.map {
+                            HeldReferences(
+                                key.className,
+                                it.methodName,
+                                it.methodDescriptor,
+                                ReferenceOrigin.BASELINE,
+                                it.referencedClasses,
+                                inline = it.inline,
+                            )
+                        }
+                }
+        val instanceScans = scans.filterKeys { it.serviceInstanceId == instanceId }.values
+        InstanceDependencyView(
+            instanceId = instanceId,
+            referencesRecorded = instanceId in instancesRecordingReferences,
+            baselineComplete = instanceScans.isNotEmpty() && instanceScans.all { it.complete },
+            dependencies = dependencyLocations.filterKeys { it.serviceInstanceId == instanceId }.values.toList(),
+            loadedClassesTotal =
+                latestLoadedClassesTotal.filterKeys { it.serviceInstanceId == instanceId }.mapKeys { it.key.dependencyId },
+            externalClasses = externalClasses.filterKeys { it.serviceInstanceId == instanceId }.mapKeys { it.key.className },
+            references = methodReferences + classReferences + declaredReferences,
+            loadedClassNames =
+                probes.values.map { it.className }.toSet() +
+                    skippedClasses.keys.filter { it.serviceInstanceId == instanceId }.map { it.className },
+        )
+    }
 }
