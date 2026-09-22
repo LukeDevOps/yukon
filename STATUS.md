@@ -265,18 +265,25 @@ keep per-instance dates there, capped by scope and marked `dates_capped`,
 and `known_for_days` still drops the ones whose capped date is too recent.
 See the capped location dates entry in `yukon-server`'s STATUS.md.
 
-What the agent needs to send is an identity for a branch that survives
-edits elsewhere in the class and, as far as possible, edits elsewhere in the
-same method. Numbering sites within their method removes the first kind of
-drift, and the server could key on method plus that index. It leaves the
-second: a new conditional early in a method still renumbers the later ones.
-A content key, such as a hash of the condition's own instructions and its
-place in the method's control flow, would survive more edits, at the cost of
-two identical conditions in one method needing a tiebreak. This wants an ADR
-before any code, and a proto field, since `branch_index` also keys the
-per-instance rows and should not change meaning.
+A grilling session settled the design in ADR 0031: each kept branch outcome
+gets a branch key, a digest of its class, method, descriptor, condition
+fingerprint and outcome, sent as `branch_key` on `ProbeLocation` beside
+`branch_index`. Sites that share a fingerprint in one method get no key, and
+neither does any case the analyser cannot fingerprint with confidence.
 
-The deletion manifest's branch level waits on this too.
+Landing order:
+
+1. ADR 0031 and the glossary terms (branch outcome, branch index, branch key).
+2. Stack-depth tracking and the condition fingerprint in `BranchSiteAnalyzer`,
+   stored on `BranchSite`.
+3. The key itself, with collision handling and switch case keys, carried
+   through `ProbeMeta` into the manifest, and the proto field.
+4. Tests from v1/v2 fixture pairs: each kind of edit keeps or changes the key
+   as the ADR says, plus the collision and inlined-copy cases.
+
+The server side (service rows for keyed branch outcomes, and revisiting
+`known_for_days` on the keyless ones) is tracked in `yukon-server`'s
+STATUS.md. The deletion manifest's branch level waits on this too.
 
 ### Follow-ups the branch-probe round left open
 

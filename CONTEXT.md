@@ -21,8 +21,20 @@ A small integer the registry assigns to a class the first time it registers. Uni
 A hash of a class's method and branch signatures in slot order. Two loads of a class with the same name and hash share a count array; a different hash gets a fresh one.
 
 **Branch site**:
-One conditional jump or switch in a method's bytecode. A conditional has two outcomes; a switch has one per distinct case target plus the default. Only a site the adopter wrote gets probes; an inlined copy from out-of-scope code and coroutine machinery keep their place in the numbering and get none.
+One conditional jump or switch in a method's bytecode. A conditional has two outcomes; a switch has one per case entry plus the default, so two cases that share a body are still two outcomes. Only a site the adopter wrote gets probes; an inlined copy from out-of-scope code and coroutine machinery keep their place in the numbering and get none.
 _Avoid_: decision, condition
+
+**Branch outcome**:
+One way out of a branch site. A conditional's two are the taken jump and the fall-through; a switch's are its case entries and its default. Each kept outcome gets one probe.
+_Avoid_: edge, branch (alone), arm
+
+**Branch index**:
+A branch outcome's ordinal within its class for one build, counting every outcome of every site in bytecode order, dropped or kept. Says which outcome within this build, never which outcome across builds.
+_Avoid_: branch id, stable branch index
+
+**Branch key**:
+An opaque token naming one branch outcome across builds and instances, compared only for equality. Absent when the agent cannot name the outcome safely, which it treats as a new outcome rather than risk giving it another's history.
+_Avoid_: branch id, stable branch index, branch hash
 
 **Inlined copy**:
 A branch site inside code the compiler copied from an inline function into a caller, recognised from the class's SMAP. Kept and labelled with its origin class when that class is in scope; dropped otherwise.
