@@ -311,32 +311,114 @@ OpenAPI import was settled as `yukon-server` work and is tracked there.
 
 ## Parked
 
-### v2 idea: use production data to skip CI tests for dead paths
+### Deletion manifest over MCP, and why the CI skip was rejected
 
-Explore, not designed. Use what Yukon knows about production to decide which
-tests a CI run can skip: if a code path is never executed in the fleet, a test
-that exercises only that path adds CI time without protecting anything users
-reach.
+Explore, not designed. This started as a CI idea: use the fleet's never-hit
+set to skip tests that only exercise dead paths. That form is rejected. What
+survives is a deletion manifest served to an adopter's own coding agent.
 
-Questions to settle before a grill:
+Why the CI skip was rejected, any one of these being enough:
 
-- Joining tests to code. Yukon knows which probes production hits, not which
-  tests reach which probes. Per-test coverage would come from the testkit
-  recording hits per test (the agent already runs under test JVMs), giving a
-  test-to-probe map to diff against the fleet's never-hit set.
-- "Only it". A test is skippable only when every probe it reaches is never hit
-  in production, not when it merely touches one dead path. Shared setup code
-  that production runs will usually make that set small.
-- Confidence. Never hit is an observation over a window, not proof (ADR 0015);
-  the skip needs the collector's threshold (instances, days, traffic) and
-  should fail open: no data, stale data or a changed file means run the test.
-- Code changes. A change to a dead path must run its tests, so the skip needs
-  the diff; otherwise a path revived by a PR ships untested.
-- The better product may be the report, not the skip: "these tests guard only
-  code production never runs" is a prompt to delete both, where silently
-  skipping them keeps dead code alive with its tests switched off.
-- Where it lives: a testkit or Gradle/JUnit integration asking `yukon-server`
-  for the never-hit set of a service and version.
+- It reverses ADR 0015. Classification and confidence live at the collector,
+  and the testkit stops at query primitives on purpose, as the note below on
+  the CI-gate helper already says. A skip is that same policy call made
+  louder: a gate fails a build where a human looks, a skip quietly stops
+  running something.
+- The incentive runs backwards. A skip makes dead code cheaper to keep,
+  because it stops costing CI time, which takes away the reason to delete
+  it. Deleting the code gets the same CI saving and keeps the pressure on.
+- The saving is unmeasured and probably small. A test is skippable only when
+  every probe it reaches is never hit in the fleet, and shared setup code
+  that production runs sits in almost every test's path.
+- A wrongly skipped test is invisible. Nothing in the build says a
+  regression went unguarded.
+
+The report form, "these tests guard only dead code", was weighed as the safer
+half and rejected too. On the JVM the compiler already finds every test that
+names a deleted method, and IntelliJ's Safe Delete lists those tests and
+offers to remove them in the same refactor, so the report restates what the
+adopter's own tools give for free. It has the dilution problem as well: tests
+reaching only never-hit methods is a near-empty set, and relaxing it to
+"mostly dead" sets a threshold, which is the ADR 0015 line again.
+
+One case survives both arguments: a test that reaches dead code without
+naming it, usually an end-to-end test whose whole point was that path.
+Deleting the code leaves it compiling and often passing, and it guards
+nothing. Phase two below is the only part that needs per-test coverage.
+
+What replaces it. Serve the server's dead-code findings as a manifest an
+adopter's coding agent reads to open a deletion PR. The compiler argument
+above is IDE-shaped: it holds for a human with a usage index and Safe
+Delete, not for an agent writing a patch, which has neither until it
+compiles.
+
+Most of the data is already there. `/unreached-clusters` returns a rooted
+connected group of never-hit methods with its routes, members and
+never-loaded classes, which is already a deletion unit. With `/never-hit`,
+`/never-loaded` and the unloaded rows from `/dependencies`, the manifest is a
+composition of endpoints the server serves today, not a new data path. Scope
+it per cluster rather than per service, so one cluster is one reviewable PR:
+a service-wide manifest invites an agent to open a 400-deletion PR nobody
+reads properly. A REST endpoint under `/api/v1` is the contract and the MCP
+server a thin wrapper over it, so the contract outlives changes to the MCP
+spec.
+
+Age metadata, so the threshold stays the adopter's. The manifest carries how
+long each finding has been dead and sets no threshold of its own. Yukon
+cannot know about a month-end batch job, a disaster recovery path or a flag
+that is off until it is not, and the adopter can. This is the ADR 0015
+posture on a new surface: report the observation and its span, and let the
+consumer decide what is old enough to act on. This also answers most of the
+trust problem with agent-raised PRs: the judgement sits with the party that
+has the context for it.
+
+The store mostly holds this already. `probes.first_seen_at` (migration 0002)
+dates a probe, `instances.first_seen_at` and `last_seen_at` bound the
+observation window per instance, and `last_hit_at` is derived already as
+`max(probe_counts.updated_at) FILTER (WHERE hits_total > 0)` for the
+stale-hit finding, null when nothing ever hit it. Putting these on the
+never-hit rows is read-path work, not a schema change. Two facts have to
+travel together, because either alone misleads: how long the finding has been
+dead, and how long Yukon has been watching. "Dead for 90 days" says nothing
+until the reader knows whether the window is 90 days or three years.
+
+One real gap. `probes` is keyed by instance, so `first_seen_at` restarts with
+every new instance row. A service-level age is `min(first_seen_at)` across
+in-scope instances, which in a fleet of short-lived containers is bounded by
+the oldest instance still in scope rather than by how long the code has been
+dead: a service redeployed weekly reports at most a week, however long the
+method has actually been dead. Closing it needs a service-level first-seen
+keyed by class, method and descriptor instead of by instance. That is the one
+piece of real schema work here, and the feature is worth little without it.
+
+Phase two, JaCoCo for the vacuous test case. Needed only for the surviving
+case above, and only once the manifest stands on its own. JaCoCo's runtime
+dumps and resets execution data per test (`IAgent.getExecutionData(true)`),
+which gives a test-to-method map to intersect with the never-hit set. Yukon
+never runs in the test JVM: the join is offline on class, method name and
+descriptor, the key both already carry. The two agree more than they appear
+to, since ADR 0003 takes its per-class count array from JaCoCo, ADR 0015 uses
+JaCoCo's own `SyntheticFilter` allow-list with one refinement, and
+`BranchSiteAnalyzer` already tolerates JaCoCo-instrumented bytecode as input,
+confirmed against 0.8.13's offline `Instrumenter`. Branch level will not
+join, because JaCoCo's branch identity is merge-point based while Yukon's
+slots are allocated in encounter order, so a first cut is method level only.
+Inline probes stay excluded, as ADR 0025 and the server's rules exclude them
+already. Set JaCoCo's `includes` to the agent's `includePackages`: it bounds
+the per-test dump cost and lines the two sets up by construction.
+
+Open before any of this is built:
+
+- The instance-keyed age gap above, which is the one schema change.
+- What the manifest says about a finding whose observation window has holes,
+  an instance absent for a month.
+- Whether the manifest carries the exclusions the server already tracks
+  (inline probes, generated methods, disabled-module endpoints) as evidence
+  beside a finding, rather than filtering them out where no reviewer sees
+  them.
+- Whether any of it sits behind publishing. Nothing is published anywhere,
+  so no adopter can run the agent yet, let alone point an agent at its
+  output.
 
 
 ### A module disabled after it has already declared routes
