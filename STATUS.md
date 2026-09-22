@@ -298,8 +298,18 @@ Progress:
   hex), `ProbeMeta` and the manifest carry it, and `ProbeLocation` has
   `optional string branch_key = 18`. The layout hash is pinned by a test
   and unchanged. The testkit's `ProbeRef` exposes `branchKey`. `buf` was
-  not available locally; the change is a new field only, and CI runs
-  `buf breaking`.
+  not available locally; the change is a new field only, and CI's `buf`
+  workflow passed on it.
+- Step 4 landed: v1/v2 fixture pairs under `com.example.target.keypairs`,
+  renamed to one class name with `ClassRemapper`, prove each edit ADR
+  0031 names keeps or changes the key, plus an end-to-end check through
+  the real transform in two class loaders. No main-code bug turned up.
+  Review replaced the ternary pair, which only put a statement between
+  the ternary and the condition, with one where the `if` expression sits
+  inside the condition: an edit to its true arm keeps the outer key and
+  an edit to its false arm changes it, as the Consequences say.
+
+The agent side is done. What is left is the server side below.
 
 The server side (service rows for keyed branch outcomes, and revisiting
 `known_for_days` on the keyless ones) is tracked in `yukon-server`'s
