@@ -571,7 +571,7 @@ object BranchSiteAnalyzer {
         val resolvedGetters = scalaGetterSites.mapTo(mutableSetOf()) { it.getterName to it.getterDescriptor }
         val unresolvedScalaGetterSites = getterCandidateNames.filterNot { it in resolvedGetters }
         val hasTypeInitializer = ("<clinit>" to "()V") in methodAccess
-        val generatedByMethod = computeGeneratedBy(internalClassName, superInternalName, methodAccess)
+        val generatedByMethod = computeGeneratedBy(classBytes, internalClassName, superInternalName, methodAccess)
 
         val callEdgeEntryPoints = if (hasTypeInitializer) eligibleMethodKeys + ("<clinit>" to "()V") else eligibleMethodKeys
         val resolvedCalls =
@@ -1628,9 +1628,17 @@ object BranchSiteAnalyzer {
      * What compiled each of [internalClassName]'s own declared methods into existence, from
      * bytecode shape alone, per ADR 0026. No rule here reads an annotation or `kotlin.Metadata`.
      *
-     * A class named with the `$DefaultImpls` suffix marks every method it declares
-     * [GeneratedBy.DEFAULT_IMPLS]: the class exists only to hold interface default-method bodies,
-     * so nothing further needs checking.
+     * A class named with the `$DefaultImpls` suffix marks a method [GeneratedBy.DEFAULT_IMPLS] only
+     * when its body only forwards, as [defaultImplsForwarders] checks, and marks nothing else in the
+     * class. Under `-jvm-default=enable`, the default from language version 2.2, the interface
+     * method holds the real body and `$DefaultImpls` keeps a forwarder for callers compiled against
+     * the older layout, which nothing in the application calls and which would otherwise read as
+     * never hit. Under
+     * `-jvm-default=disable`, the default up to language version 2.1, the interface method is
+     * abstract and `$DefaultImpls` holds the real body, conditionals included, so marking every
+     * method in the class would hide code the adopter wrote. The forwarder test reads the body,
+     * never the `Deprecated` attribute kotlinc gives a forwarder, since an adopter's own
+     * `@Deprecated` default method carries that attribute too.
      *
      * A class whose direct superclass is `java.lang.Enum` marks `values()` returning an array of
      * the class, `valueOf(Ljava/lang/String;)` returning the class, and `getEntries()` of any
@@ -1651,14 +1659,16 @@ object BranchSiteAnalyzer {
      * compiler itself never produces that partial shape.
      */
     private fun computeGeneratedBy(
+        classBytes: ByteArray,
         internalClassName: String,
         superInternalName: String?,
         methodAccess: Map<Pair<String, String>, Int>,
     ): Map<Pair<String, String>, GeneratedBy> {
         val result = mutableMapOf<Pair<String, String>, GeneratedBy>()
 
-        if (internalClassName.endsWith("\$DefaultImpls")) {
-            for (key in methodAccess.keys) result[key] = GeneratedBy.DEFAULT_IMPLS
+        if (internalClassName.endsWith(DEFAULT_IMPLS_SUFFIX)) {
+            val interfaceInternalName = internalClassName.removeSuffix(DEFAULT_IMPLS_SUFFIX)
+            for (key in defaultImplsForwarders(classBytes, interfaceInternalName)) result[key] = GeneratedBy.DEFAULT_IMPLS
             return result
         }
 
@@ -1684,6 +1694,179 @@ object BranchSiteAnalyzer {
 
         markDataClassMembers(internalClassName, methodAccess, result)
         return result
+    }
+
+    private const val DEFAULT_IMPLS_SUFFIX = "\$DefaultImpls"
+
+    /**
+     * The methods of a `$DefaultImpls` class whose body only forwards to [interfaceInternalName]:
+     * it loads each of its parameters once, in declaration order, with the load opcode for that
+     * parameter's type, then makes exactly one `invokestatic` whose owner is the interface, then
+     * returns with one xRETURN. Labels, line numbers, frames and other pseudo-instructions are
+     * ignored; any other instruction, including a conditional jump, a `checkcast` or a boxing call,
+     * means the method is not a forwarder.
+     *
+     * The rule is kept this narrow on purpose. A real forwarder shape it misses shows up as a
+     * false never-hit, which someone can see and report; a wider rule that also matched a real body
+     * would hide that body from never-hit with nothing to show for it. Every forwarder kotlinc
+     * 2.2.21 emits under `-jvm-default=enable` matches, generic, `long`/`double`, property accessor,
+     * `$default` and suspend methods included (checked with `javap`).
+     */
+    private fun defaultImplsForwarders(
+        classBytes: ByteArray,
+        interfaceInternalName: String,
+    ): Set<Pair<String, String>> {
+        val forwarders = mutableSetOf<Pair<String, String>>()
+        val classVisitor =
+            object : ClassVisitor(Opcodes.ASM9) {
+                override fun visitMethod(
+                    access: Int,
+                    name: String,
+                    descriptor: String,
+                    signature: String?,
+                    exceptions: Array<out String>?,
+                ): MethodVisitor? {
+                    if (access and BODYLESS_FLAGS != 0) return null
+                    val firstSlot = if (access and Opcodes.ACC_STATIC != 0) 0 else 1
+                    val expectedLoads = mutableListOf<Pair<Int, Int>>()
+                    var slot = firstSlot
+                    for (type in parseParameterDescriptors(descriptor)) {
+                        expectedLoads += loadOpcodeFor(type) to slot
+                        slot += slotWidth(type)
+                    }
+                    return ForwarderShapeVisitor(interfaceInternalName, expectedLoads) { forwarders += name to descriptor }
+                }
+            }
+        ClassReader(classBytes).accept(classVisitor, ClassReader.SKIP_DEBUG or ClassReader.SKIP_FRAMES)
+        return forwarders
+    }
+
+    /** The xLOAD opcode that pushes a local of field descriptor [type]. */
+    private fun loadOpcodeFor(type: String): Int =
+        when (type[0]) {
+            'J' -> Opcodes.LLOAD
+            'F' -> Opcodes.FLOAD
+            'D' -> Opcodes.DLOAD
+            'L', '[' -> Opcodes.ALOAD
+            else -> Opcodes.ILOAD
+        }
+
+    /**
+     * Walks one method body and calls [onForwarder] at its end when the body is exactly
+     * [expectedLoads], then one `invokestatic` on [interfaceInternalName], then one xRETURN. See
+     * [defaultImplsForwarders].
+     */
+    private class ForwarderShapeVisitor(
+        private val interfaceInternalName: String,
+        private val expectedLoads: List<Pair<Int, Int>>,
+        private val onForwarder: () -> Unit,
+    ) : MethodVisitor(Opcodes.ASM9) {
+        private var loadsSeen = 0
+        private var invoked = false
+        private var returned = false
+        private var broken = false
+
+        private fun reject() {
+            broken = true
+        }
+
+        override fun visitVarInsn(
+            opcode: Int,
+            varIndex: Int,
+        ) {
+            if (invoked || loadsSeen >= expectedLoads.size || expectedLoads[loadsSeen] != (opcode to varIndex)) {
+                reject()
+                return
+            }
+            loadsSeen++
+        }
+
+        override fun visitMethodInsn(
+            opcode: Int,
+            owner: String,
+            name: String,
+            descriptor: String,
+            isInterface: Boolean,
+        ) {
+            if (invoked || opcode != Opcodes.INVOKESTATIC || owner != interfaceInternalName || loadsSeen != expectedLoads.size) {
+                reject()
+                return
+            }
+            invoked = true
+        }
+
+        override fun visitInsn(opcode: Int) {
+            if (!invoked || returned || opcode !in Opcodes.IRETURN..Opcodes.RETURN) {
+                reject()
+                return
+            }
+            returned = true
+        }
+
+        override fun visitIntInsn(
+            opcode: Int,
+            operand: Int,
+        ) = reject()
+
+        override fun visitTypeInsn(
+            opcode: Int,
+            type: String,
+        ) = reject()
+
+        override fun visitFieldInsn(
+            opcode: Int,
+            owner: String,
+            name: String,
+            descriptor: String,
+        ) = reject()
+
+        override fun visitInvokeDynamicInsn(
+            name: String,
+            descriptor: String,
+            bootstrapMethodHandle: Handle,
+            vararg bootstrapMethodArguments: Any?,
+        ) = reject()
+
+        override fun visitJumpInsn(
+            opcode: Int,
+            label: Label,
+        ) = reject()
+
+        override fun visitLdcInsn(value: Any?) = reject()
+
+        override fun visitIincInsn(
+            varIndex: Int,
+            increment: Int,
+        ) = reject()
+
+        override fun visitTableSwitchInsn(
+            min: Int,
+            max: Int,
+            dflt: Label,
+            vararg labels: Label,
+        ) = reject()
+
+        override fun visitLookupSwitchInsn(
+            dflt: Label,
+            keys: IntArray,
+            labels: Array<out Label>,
+        ) = reject()
+
+        override fun visitMultiANewArrayInsn(
+            descriptor: String,
+            numDimensions: Int,
+        ) = reject()
+
+        override fun visitTryCatchBlock(
+            start: Label,
+            end: Label,
+            handler: Label,
+            type: String?,
+        ) = reject()
+
+        override fun visitEnd() {
+            if (!broken && invoked && returned) onForwarder()
+        }
     }
 
     private fun isEqualsHashCodeOrToString(

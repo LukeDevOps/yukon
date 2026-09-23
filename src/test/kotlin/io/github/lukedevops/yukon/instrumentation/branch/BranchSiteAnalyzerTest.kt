@@ -1,8 +1,12 @@
 package io.github.lukedevops.yukon.instrumentation.branch
 
 import io.github.lukedevops.yukon.export.GeneratedBy
+import io.github.lukedevops.yukon.instrumentation.JvmDefaultDisableFixtures
 import net.bytebuddy.jar.asm.ClassReader
 import net.bytebuddy.jar.asm.ClassWriter
+import net.bytebuddy.jar.asm.Label
+import net.bytebuddy.jar.asm.MethodVisitor
+import net.bytebuddy.jar.asm.Opcodes
 import org.jacoco.core.instr.Instrumenter
 import org.jacoco.core.runtime.OfflineInstrumentationAccessGenerator
 import java.io.File
@@ -12,6 +16,12 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class BranchSiteAnalyzerTest {
+    private companion object {
+        const val DISABLED_INTERFACE_DESCRIPTOR = "Lcom/example/target/jvmdefaultdisable/DisabledDefaultInterface;"
+        const val ASM_INTERFACE = "com/example/target/AsmShape"
+        const val ASM_METHOD_DESCRIPTOR = "(L$ASM_INTERFACE;J)J"
+    }
+
     private fun readFixtureBytes(): ByteArray = File("build/classes/java/test/com/example/target/BranchTarget.class").readBytes()
 
     private fun readInlineTargetBytes(simpleName: String): ByteArray =
@@ -342,10 +352,121 @@ class BranchSiteAnalyzerTest {
     }
 
     @Test
-    fun `every method of a DefaultImpls class is marked DEFAULT_IMPLS`() {
+    fun `a default-mode DefaultImpls method that only forwards to the interface is marked DEFAULT_IMPLS`() {
         val analysis = BranchSiteAnalyzer.analyze(readInlineTargetBytes("GeneratedInterface\$DefaultImpls")) { _, _ -> true }
 
         assertEquals(GeneratedBy.DEFAULT_IMPLS, analysis.generatedBy("withBody", "(Lcom/example/target/GeneratedInterface;)I"))
+        assertEquals(
+            GeneratedBy.DEFAULT_IMPLS,
+            analysis.generatedBy("getLabel", "(Lcom/example/target/GeneratedInterface;)Ljava/lang/String;"),
+        )
+    }
+
+    @Test
+    fun `a disable-mode DefaultImpls method holding the interface method's real body is NONE`() {
+        val analysis =
+            BranchSiteAnalyzer.analyze(JvmDefaultDisableFixtures.classBytes("DisabledDefaultInterface\$DefaultImpls")) { _, _ -> true }
+
+        assertEquals(GeneratedBy.NONE, analysis.generatedBy("withBranch", "($DISABLED_INTERFACE_DESCRIPTOR" + "I)I"))
+        assertEquals(GeneratedBy.NONE, analysis.generatedBy("withBody", "($DISABLED_INTERFACE_DESCRIPTOR)I"))
+        assertEquals(GeneratedBy.NONE, analysis.generatedBy("getLabel", "($DISABLED_INTERFACE_DESCRIPTOR)Ljava/lang/String;"))
+        assertEquals(GeneratedBy.NONE, analysis.generatedBy("priv", "($DISABLED_INTERFACE_DESCRIPTOR" + "I)I"))
+    }
+
+    @Test
+    fun `a disable-mode DefaultImpls method whose one invokestatic targets its own class, not the interface, is NONE`() {
+        val analysis =
+            BranchSiteAnalyzer.analyze(JvmDefaultDisableFixtures.classBytes("DisabledDefaultInterface\$DefaultImpls")) { _, _ -> true }
+
+        assertEquals(GeneratedBy.NONE, analysis.generatedBy("callsPrivate", "($DISABLED_INTERFACE_DESCRIPTOR" + "I)I"))
+    }
+
+    @Test
+    fun `a hand-built DefaultImpls method loading every argument, calling the interface once, and returning is DEFAULT_IMPLS`() {
+        val bytes =
+            asmDefaultImplsClass { mv ->
+                mv.visitVarInsn(Opcodes.ALOAD, 0)
+                mv.visitVarInsn(Opcodes.LLOAD, 1)
+                mv.visitMethodInsn(Opcodes.INVOKESTATIC, ASM_INTERFACE, "access\$f\$jd", "(L$ASM_INTERFACE;J)J", true)
+                mv.visitInsn(Opcodes.LRETURN)
+            }
+
+        assertEquals(GeneratedBy.DEFAULT_IMPLS, BranchSiteAnalyzer.analyze(bytes) { _, _ -> true }.generatedBy("f", ASM_METHOD_DESCRIPTOR))
+    }
+
+    @Test
+    fun `a DefaultImpls method whose one invokestatic targets an owner other than the interface is NONE`() {
+        val bytes =
+            asmDefaultImplsClass { mv ->
+                mv.visitVarInsn(Opcodes.ALOAD, 0)
+                mv.visitVarInsn(Opcodes.LLOAD, 1)
+                mv.visitMethodInsn(Opcodes.INVOKESTATIC, "com/example/target/SomewhereElse", "f", "(L$ASM_INTERFACE;J)J", false)
+                mv.visitInsn(Opcodes.LRETURN)
+            }
+
+        assertEquals(GeneratedBy.NONE, BranchSiteAnalyzer.analyze(bytes) { _, _ -> true }.generatedBy("f", ASM_METHOD_DESCRIPTOR))
+    }
+
+    @Test
+    fun `a DefaultImpls forwarder with one extra instruction before its return is NONE`() {
+        val bytes =
+            asmDefaultImplsClass { mv ->
+                mv.visitVarInsn(Opcodes.ALOAD, 0)
+                mv.visitVarInsn(Opcodes.LLOAD, 1)
+                mv.visitMethodInsn(Opcodes.INVOKESTATIC, ASM_INTERFACE, "access\$f\$jd", "(L$ASM_INTERFACE;J)J", true)
+                mv.visitInsn(Opcodes.LNEG)
+                mv.visitInsn(Opcodes.LRETURN)
+            }
+
+        assertEquals(GeneratedBy.NONE, BranchSiteAnalyzer.analyze(bytes) { _, _ -> true }.generatedBy("f", ASM_METHOD_DESCRIPTOR))
+    }
+
+    @Test
+    fun `a DefaultImpls forwarder that calls the interface twice is NONE`() {
+        val bytes =
+            asmDefaultImplsClass { mv ->
+                mv.visitVarInsn(Opcodes.ALOAD, 0)
+                mv.visitVarInsn(Opcodes.LLOAD, 1)
+                mv.visitMethodInsn(Opcodes.INVOKESTATIC, ASM_INTERFACE, "access\$f\$jd", "(L$ASM_INTERFACE;J)J", true)
+                mv.visitInsn(Opcodes.POP2)
+                mv.visitVarInsn(Opcodes.ALOAD, 0)
+                mv.visitVarInsn(Opcodes.LLOAD, 1)
+                mv.visitMethodInsn(Opcodes.INVOKESTATIC, ASM_INTERFACE, "access\$f\$jd", "(L$ASM_INTERFACE;J)J", true)
+                mv.visitInsn(Opcodes.LRETURN)
+            }
+
+        assertEquals(GeneratedBy.NONE, BranchSiteAnalyzer.analyze(bytes) { _, _ -> true }.generatedBy("f", ASM_METHOD_DESCRIPTOR))
+    }
+
+    @Test
+    fun `a DefaultImpls forwarder that skips an argument is NONE`() {
+        val bytes =
+            asmDefaultImplsClass { mv ->
+                mv.visitVarInsn(Opcodes.ALOAD, 0)
+                mv.visitMethodInsn(Opcodes.INVOKESTATIC, ASM_INTERFACE, "access\$g\$jd", "(L$ASM_INTERFACE;)J", true)
+                mv.visitInsn(Opcodes.LRETURN)
+            }
+
+        assertEquals(GeneratedBy.NONE, BranchSiteAnalyzer.analyze(bytes) { _, _ -> true }.generatedBy("f", ASM_METHOD_DESCRIPTOR))
+    }
+
+    /**
+     * A `$DefaultImpls` class for [ASM_INTERFACE] declaring one `public static long f(AsmShape, long)`
+     * whose body [body] writes, with a label and a line number around it, as kotlinc emits.
+     */
+    private fun asmDefaultImplsClass(body: (MethodVisitor) -> Unit): ByteArray {
+        val writer = ClassWriter(ClassWriter.COMPUTE_MAXS)
+        writer.visit(Opcodes.V1_8, Opcodes.ACC_PUBLIC or Opcodes.ACC_FINAL, "$ASM_INTERFACE\$DefaultImpls", null, "java/lang/Object", null)
+        val mv = writer.visitMethod(Opcodes.ACC_PUBLIC or Opcodes.ACC_STATIC, "f", ASM_METHOD_DESCRIPTOR, null, null)
+        mv.visitCode()
+        val start = Label()
+        mv.visitLabel(start)
+        mv.visitLineNumber(7, start)
+        body(mv)
+        mv.visitMaxs(0, 0)
+        mv.visitEnd()
+        writer.visitEnd()
+        return writer.toByteArray()
     }
 
     @Test

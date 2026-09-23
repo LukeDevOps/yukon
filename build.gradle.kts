@@ -17,6 +17,7 @@ repositories {
 evaluationDependsOn(":bootstrap")
 evaluationDependsOn(":fixtures-scala3")
 evaluationDependsOn(":fixtures-scala2")
+evaluationDependsOn(":fixtures-kotlin-jvm-default-disable")
 
 dependencies {
     // Compile-time only: at runtime the holder class comes from the target JVM's bootstrap
@@ -318,26 +319,39 @@ tasks.shadowJar {
 }
 
 // Scala default-getter resolution (ADR 0023) is proven against real scalac output, compiled by
-// the two fixture modules below. Neither is a test dependency, only a task dependency: putting
-// either on the test classpath would let JUnit discovery load these classes before install()
-// wires up instrumentation, defeating the fixture's purpose (see FixtureClassLoader). The output
-// directory and runtime classpath are read lazily through providers, resolved only when the test
-// task actually runs, so configuring this project never forces either fixture project to
-// evaluate its dependencies.
+// the two Scala fixture modules below, and `$DefaultImpls` marking (ADR 0026) against kotlinc
+// output under -jvm-default=disable, compiled by the third. None is a test dependency, only a
+// task dependency: putting one on the test classpath would let JUnit discovery load these
+// classes before install() wires up instrumentation, defeating the fixture's purpose (see
+// FixtureClassLoader). The output directory and runtime classpath are read lazily through
+// providers, resolved only when the test task actually runs, so configuring this project never
+// forces a fixture project to evaluate its dependencies.
 val scala3FixtureClassesDir = project(":fixtures-scala3").layout.buildDirectory.dir("classes/scala/main")
 val scala3FixtureRuntimeClasspath = project(":fixtures-scala3").configurations.named("runtimeClasspath")
 val scala2FixtureClassesDir = project(":fixtures-scala2").layout.buildDirectory.dir("classes/scala/main")
 val scala2FixtureRuntimeClasspath = project(":fixtures-scala2").configurations.named("runtimeClasspath")
+val jvmDefaultDisableFixtureClassesDir =
+    project(":fixtures-kotlin-jvm-default-disable").layout.buildDirectory.dir("classes/kotlin/main")
+val jvmDefaultDisableFixtureRuntimeClasspath =
+    project(":fixtures-kotlin-jvm-default-disable").configurations.named("runtimeClasspath")
 
 tasks.test {
     useJUnitPlatform()
     jvmArgs("-Djdk.attach.allowAttachSelf=true")
-    dependsOn(":fixtures-scala3:classes", ":fixtures-scala2:classes")
+    dependsOn(":fixtures-scala3:classes", ":fixtures-scala2:classes", ":fixtures-kotlin-jvm-default-disable:classes")
     doFirst {
         systemProperty("yukon.fixtures.scala3.dir", scala3FixtureClassesDir.get().asFile.absolutePath)
         systemProperty("yukon.fixtures.scala3.classpath", scala3FixtureRuntimeClasspath.get().asPath)
         systemProperty("yukon.fixtures.scala2.dir", scala2FixtureClassesDir.get().asFile.absolutePath)
         systemProperty("yukon.fixtures.scala2.classpath", scala2FixtureRuntimeClasspath.get().asPath)
+        systemProperty(
+            "yukon.fixtures.jvmdefaultdisable.dir",
+            jvmDefaultDisableFixtureClassesDir.get().asFile.absolutePath,
+        )
+        systemProperty(
+            "yukon.fixtures.jvmdefaultdisable.classpath",
+            jvmDefaultDisableFixtureRuntimeClasspath.get().asPath,
+        )
     }
 }
 

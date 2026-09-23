@@ -267,6 +267,17 @@ Landing order, one Opus chunk and one commit each:
 4. `yukon-server`: the `read.go` comments that say a BRANCH probe never
    carries the mark. No logic change.
 
+Progress:
+
+- Chunk 1 landed: `BranchSiteAnalyzer.defaultImplsForwarders` accepts a
+  body that loads each parameter once in order, makes one `invokestatic` on
+  the interface, and returns; anything else is `NONE`. Every forwarder kotlinc
+  2.2.21 emits under `enable` fits, generic, `long`/`double`, accessor,
+  `$default` and suspend shapes included. `:fixtures-kotlin-jvm-default-disable`
+  compiles the `disable` case and is wired in like the Scala fixtures. Review
+  also fixed the proto's `GeneratedBy` comment, which still named every
+  `$DefaultImpls` method.
+
 ### Generators other than Spring are not recognised
 
 ADR 0029 turns away a runtime-generated class by the markers its generator puts

@@ -6,6 +6,7 @@ import io.github.lukedevops.yukon.export.GeneratedBy
 import io.github.lukedevops.yukon.export.ProbeKind
 import io.github.lukedevops.yukon.export.ResourceAttributes
 import io.github.lukedevops.yukon.instrumentation.FixtureClassLoader
+import io.github.lukedevops.yukon.instrumentation.JvmDefaultDisableFixtures
 import io.github.lukedevops.yukon.instrumentation.YukonInstrumentation
 import io.github.lukedevops.yukon.registry.ProbeRegistry
 import net.bytebuddy.agent.ByteBuddyAgent
@@ -384,6 +385,32 @@ class StaticBaselineScannerTest {
 
         val withoutClinit = result.declaredClasses.single { it.className == "com.example.target.SampleTarget" }
         assertTrue(withoutClinit.methods.none { it.methodName == "<clinit>" })
+    }
+
+    @Test
+    fun `declares a disable-mode DefaultImpls body method NONE and a default-mode DefaultImpls forwarder DEFAULT_IMPLS`() {
+        val disabledDefaultImpls = "com/example/target/jvmdefaultdisable/DisabledDefaultInterface\$DefaultImpls.class"
+        val root =
+            directoryRoot(
+                "com/example/target/GeneratedInterface\$DefaultImpls.class" to generatedInterfaceDefaultImplsBytes,
+                disabledDefaultImpls to File(JvmDefaultDisableFixtures.outputDir, disabledDefaultImpls).readBytes(),
+            )
+        val scanner = StaticBaselineScanner(listOf("com.example.target"))
+
+        val result = scanner.scan(listOf(root))
+
+        val forwarders = result.declaredClasses.single { it.className == "com.example.target.GeneratedInterface\$DefaultImpls" }.methods
+        assertEquals(GeneratedBy.DEFAULT_IMPLS, forwarders.single { it.methodName == "withBody" }.generatedBy)
+        assertEquals(GeneratedBy.DEFAULT_IMPLS, forwarders.single { it.methodName == "getLabel" }.generatedBy)
+
+        val bodies =
+            result.declaredClasses
+                .single { it.className == "com.example.target.jvmdefaultdisable.DisabledDefaultInterface\$DefaultImpls" }
+                .methods
+        assertEquals(GeneratedBy.NONE, bodies.single { it.methodName == "withBranch" }.generatedBy)
+        assertEquals(GeneratedBy.NONE, bodies.single { it.methodName == "withBody" }.generatedBy)
+        assertEquals(GeneratedBy.NONE, bodies.single { it.methodName == "getLabel" }.generatedBy)
+        assertEquals(GeneratedBy.NONE, bodies.single { it.methodName == "callsPrivate" }.generatedBy)
     }
 
     @Test

@@ -6,6 +6,7 @@ rootProject.name = "yukon"
 include("bootstrap")
 include("fixtures-scala3")
 include("fixtures-scala2")
+include("fixtures-kotlin-jvm-default-disable")
 include("demo")
 include("demo-spring")
 include("testkit")

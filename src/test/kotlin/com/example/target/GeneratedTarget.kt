@@ -36,8 +36,16 @@ class HandWrittenCopy(
 
 enum class GeneratedColour { RED, GREEN }
 
+/**
+ * Compiled under the root build's default `-jvm-default` mode, so each method of its
+ * `$DefaultImpls` class only forwards to the interface's own default method. The disable-mode
+ * counterpart is `com.example.target.jvmdefaultdisable.DisabledDefaultInterface`.
+ */
 interface GeneratedInterface {
     fun withBody(): Int = 42
+
+    val label: String
+        get() = "enabled"
 }
 
 class GeneratedInterfaceImpl : GeneratedInterface

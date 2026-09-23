@@ -14,11 +14,16 @@ import kotlin.test.assertEquals
 
 /**
  * Proves generated-method marking (ADR 0026) through the real transform pipeline, on the
- * `GeneratedTarget.kt` and `RecordTarget.java` fixtures, rather than only through
+ * `GeneratedTarget.kt` and `RecordTarget.java` fixtures and the `-jvm-default=disable` fixture
+ * module, rather than only through
  * [io.github.lukedevops.yukon.instrumentation.branch.BranchSiteAnalyzerTest]'s direct bytecode
  * checks.
  */
 class GeneratedMethodMarkingTest {
+    private companion object {
+        const val DISABLED_DEFAULT_IMPLS = "com.example.target.jvmdefaultdisable.DisabledDefaultInterface\$DefaultImpls"
+    }
+
     private var installedTransformer: ResettableClassFileTransformer? = null
     private var installedYukon: YukonInstrumentation? = null
 
@@ -113,7 +118,7 @@ class GeneratedMethodMarkingTest {
     }
 
     @Test
-    fun `every method of a DefaultImpls class is marked DEFAULT_IMPLS`() {
+    fun `a default-mode DefaultImpls method that only forwards to the interface is marked DEFAULT_IMPLS`() {
         val registry = ProbeRegistry()
         val config = AgentConfig.parse("includePackages=com.example.target")
         install(registry, config)
@@ -126,6 +131,55 @@ class GeneratedMethodMarkingTest {
                 .probes
                 .filter { it.className == "com.example.target.GeneratedInterface\$DefaultImpls" && it.kind == ProbeKind.METHOD }
         assertEquals(GeneratedBy.DEFAULT_IMPLS, probes.single { it.methodName == "withBody" }.generatedBy)
+        assertEquals(GeneratedBy.DEFAULT_IMPLS, probes.single { it.methodName == "getLabel" }.generatedBy)
+    }
+
+    @Test
+    fun `a disable-mode DefaultImpls method holding the interface method's real body is NONE on its METHOD probe`() {
+        val registry = ProbeRegistry()
+        val config = AgentConfig.parse("includePackages=com.example.target")
+        install(registry, config)
+
+        Class.forName(DISABLED_DEFAULT_IMPLS, true, JvmDefaultDisableFixtures.classLoader(javaClass.classLoader))
+
+        val probes =
+            registry
+                .manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
+                .probes
+                .filter { it.className == DISABLED_DEFAULT_IMPLS && it.kind == ProbeKind.METHOD }
+        assertEquals(GeneratedBy.NONE, probes.single { it.methodName == "withBranch" }.generatedBy)
+        assertEquals(GeneratedBy.NONE, probes.single { it.methodName == "withBody" }.generatedBy)
+        assertEquals(GeneratedBy.NONE, probes.single { it.methodName == "getLabel" }.generatedBy)
+        assertEquals(GeneratedBy.NONE, probes.single { it.methodName == "callsPrivate" }.generatedBy)
+    }
+
+    @Test
+    fun `a disable-mode DefaultImpls method's conditional gets branch probes that count each outcome`() {
+        val registry = ProbeRegistry()
+        val config = AgentConfig.parse("includePackages=com.example.target")
+        install(registry, config)
+
+        val loader = JvmDefaultDisableFixtures.classLoader(javaClass.classLoader)
+        val impl = Class.forName("${JvmDefaultDisableFixtures.PACKAGE_PREFIX}DisabledDefaultInterfaceImpl", true, loader)
+        val instance = impl.getDeclaredConstructor().newInstance()
+        val withBranch = impl.getMethod("withBranch", Int::class.java)
+        repeat(2) { withBranch.invoke(instance, 5) }
+        repeat(3) { withBranch.invoke(instance, 1) }
+
+        val branchProbes =
+            registry
+                .manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
+                .probes
+                .filter { it.className == DISABLED_DEFAULT_IMPLS && it.methodName == "withBranch" && it.kind == ProbeKind.BRANCH }
+        assertEquals(2, branchProbes.size, "the one if in withBranch's body is a two-outcome site")
+        branchProbes.forEach { assertEquals(GeneratedBy.NONE, it.generatedBy) }
+
+        val deltas = registry.computeDeltaBatch(ResourceAttributes("test", null, "i-1", null, "run-1")).batch.deltas
+        val counts =
+            branchProbes
+                .map { probe -> deltas.single { it.classId == probe.classId && it.probeIndex == probe.probeIndex }.hitsTotal }
+                .sorted()
+        assertEquals(listOf(2L, 3L), counts)
     }
 
     @Test
