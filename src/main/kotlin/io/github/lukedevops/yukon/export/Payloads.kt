@@ -19,15 +19,16 @@ enum class ProbeKind { METHOD, BRANCH, OPTIONAL_ARGUMENT }
 
 /**
  * What compiled a method into existence rather than the adopter writing its body, from bytecode
- * shape alone: an enum's `values`/`valueOf`/`getEntries`, a data class's `componentN`/`copy`/
- * `equals`/`hashCode`/`toString`, a `$DefaultImpls` method that only forwards to the interface's
- * own default method, or a Java record's `equals`/`hashCode`/`toString`. Set on a
- * [ProbeKind.METHOD] probe and a [DeclaredMethod], and on a [ProbeKind.OPTIONAL_ARGUMENT] probe
- * as its target's own mark; a branch probe never carries this. A collector leaves a generated probe out of never-hit, stale-hit, the call graph and the
- * two optional-parameter findings by default: the compiler will emit the method again
- * regardless of what the adopter does, so a zero hit count is not a finding the adopter can act
- * on. The hit count itself is still kept and counted, since a call to a generated method, such as
- * `copy`, is still evidence of use. See ADR 0026.
+ * shape alone: an enum's `values`/`valueOf`/`getEntries`, a data class's `componentN` and `copy`
+ * and whichever of `equals`/`hashCode`/`toString` the adopter did not override (the generated ones
+ * have no line-number table), a `$DefaultImpls` method that only forwards to the interface's own
+ * default method, or a Java record's `equals`/`hashCode`/`toString`. Set on a [ProbeKind.METHOD]
+ * probe and a [DeclaredMethod], and on a [ProbeKind.OPTIONAL_ARGUMENT] probe as its target's own
+ * mark; a branch probe never carries this. A collector leaves a generated probe out of never-hit,
+ * stale-hit, the call graph and the two optional-parameter findings by default: the compiler will
+ * emit the method again regardless of what the adopter does, so a zero hit count is not a finding
+ * the adopter can act on. The hit count itself is still kept and counted, since a call to a
+ * generated method, such as `copy`, is still evidence of use. See ADR 0026.
  */
 enum class GeneratedBy { NONE, ENUM, DATA_CLASS, DEFAULT_IMPLS, RECORD }
 

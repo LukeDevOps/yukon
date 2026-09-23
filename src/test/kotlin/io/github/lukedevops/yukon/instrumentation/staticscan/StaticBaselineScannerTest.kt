@@ -45,6 +45,7 @@ class StaticBaselineScannerTest {
     private val functionReferenceBodyClassBytes =
         classBytes("kotlin/test/com/example/target/FunctionReferenceTarget\$viaReference\$f\$1.class")
     private val generatedPointBytes = classBytes("kotlin/test/com/example/target/GeneratedPoint.class")
+    private val generatedPointCustomEqualsBytes = classBytes("kotlin/test/com/example/target/GeneratedPointCustomEquals.class")
     private val generatedColourBytes = classBytes("kotlin/test/com/example/target/GeneratedColour.class")
     private val generatedInterfaceDefaultImplsBytes =
         classBytes("kotlin/test/com/example/target/GeneratedInterface\$DefaultImpls.class")
@@ -418,6 +419,7 @@ class StaticBaselineScannerTest {
         val root =
             directoryRoot(
                 "com/example/target/GeneratedPoint.class" to generatedPointBytes,
+                "com/example/target/GeneratedPointCustomEquals.class" to generatedPointCustomEqualsBytes,
                 "com/example/target/GeneratedColour.class" to generatedColourBytes,
                 "com/example/target/GeneratedInterface\$DefaultImpls.class" to generatedInterfaceDefaultImplsBytes,
                 "com/example/target/RecordTarget.class" to recordTargetBytes,
@@ -434,6 +436,12 @@ class StaticBaselineScannerTest {
         assertEquals(GeneratedBy.DATA_CLASS, point.single { it.methodName == "toString" }.generatedBy)
         assertEquals(GeneratedBy.NONE, point.single { it.methodName == "<init>" }.generatedBy)
         assertEquals(GeneratedBy.NONE, point.single { it.methodName == "getX" }.generatedBy)
+
+        val customEquals = result.declaredClasses.single { it.className == "com.example.target.GeneratedPointCustomEquals" }.methods
+        assertEquals(GeneratedBy.NONE, customEquals.single { it.methodName == "equals" }.generatedBy)
+        assertEquals(GeneratedBy.NONE, customEquals.single { it.methodName == "hashCode" }.generatedBy)
+        assertEquals(GeneratedBy.DATA_CLASS, customEquals.single { it.methodName == "toString" }.generatedBy)
+        assertEquals(GeneratedBy.DATA_CLASS, customEquals.single { it.methodName == "copy" }.generatedBy)
 
         val colour = result.declaredClasses.single { it.className == "com.example.target.GeneratedColour" }.methods
         assertEquals(GeneratedBy.ENUM, colour.single { it.methodName == "values" }.generatedBy)

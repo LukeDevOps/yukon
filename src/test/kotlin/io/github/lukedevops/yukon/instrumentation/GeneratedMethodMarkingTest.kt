@@ -81,6 +81,29 @@ class GeneratedMethodMarkingTest {
     }
 
     @Test
+    fun `a data class's hand-written equals and hashCode are NONE, while its generated toString, componentN, and copy are DATA_CLASS`() {
+        val registry = ProbeRegistry()
+        val config = AgentConfig.parse("includePackages=com.example.target")
+        install(registry, config)
+
+        Class.forName("com.example.target.GeneratedPointCustomEquals", true, fixtureLoader())
+
+        val probes =
+            registry
+                .manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
+                .probes
+                .filter { it.className == "com.example.target.GeneratedPointCustomEquals" && it.kind == ProbeKind.METHOD }
+
+        assertEquals(GeneratedBy.NONE, probes.single { it.methodName == "equals" }.generatedBy)
+        assertEquals(GeneratedBy.NONE, probes.single { it.methodName == "hashCode" }.generatedBy)
+        assertEquals(GeneratedBy.DATA_CLASS, probes.single { it.methodName == "toString" }.generatedBy)
+        assertEquals(GeneratedBy.DATA_CLASS, probes.single { it.methodName == "component1" }.generatedBy)
+        assertEquals(GeneratedBy.DATA_CLASS, probes.single { it.methodName == "component2" }.generatedBy)
+        assertEquals(GeneratedBy.DATA_CLASS, probes.single { it.methodName == "copy" }.generatedBy)
+        assertEquals(GeneratedBy.NONE, probes.single { it.methodName == "<init>" }.generatedBy)
+    }
+
+    @Test
     fun `calling a data class's copy still increments its probe, since a generated method's hit count is still evidence`() {
         val registry = ProbeRegistry()
         val config = AgentConfig.parse("includePackages=com.example.target")

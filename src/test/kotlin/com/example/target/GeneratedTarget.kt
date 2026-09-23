@@ -8,12 +8,32 @@ data class GeneratedPoint(
     fun custom(): Int = x
 }
 
-/** A data class whose `toString` is hand-written; ADR 0026 marks it generated anyway. */
+/**
+ * A data class whose `toString` is hand-written. kotlinc gives it a line-number table, so ADR 0026
+ * leaves it unmarked while the generated `equals` and `hashCode` beside it are marked.
+ */
 data class GeneratedPointCustomToString(
     val x: Int,
     val y: String,
 ) {
     override fun toString(): String = "($x, $y)"
+}
+
+/**
+ * A data class with a hand-written `equals`, holding a real conditional, and a hand-written
+ * `hashCode`, while `toString`, `componentN` and `copy` are left to the compiler. ADR 0026 leaves
+ * the two hand-written methods unmarked, since they carry line-number tables, and marks the rest.
+ */
+data class GeneratedPointCustomEquals(
+    val x: Int,
+    val y: String,
+) {
+    override fun equals(other: Any?): Boolean {
+        if (other !is GeneratedPointCustomEquals) return false
+        return x == other.x
+    }
+
+    override fun hashCode(): Int = x
 }
 
 /** A data class with a constructor default, so its `copy$default` carries an omission probe. */

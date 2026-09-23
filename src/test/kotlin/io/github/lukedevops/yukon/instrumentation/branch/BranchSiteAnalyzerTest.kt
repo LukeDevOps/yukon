@@ -315,10 +315,53 @@ class BranchSiteAnalyzerTest {
     }
 
     @Test
-    fun `a hand-written toString on a data class is still marked DATA_CLASS`() {
+    fun `a hand-written toString on a data class is NONE, while the generated equals, hashCode, componentN, and copy stay DATA_CLASS`() {
         val analysis = BranchSiteAnalyzer.analyze(readInlineTargetBytes("GeneratedPointCustomToString")) { _, _ -> true }
 
+        assertEquals(GeneratedBy.NONE, analysis.generatedBy("toString", "()Ljava/lang/String;"))
+        assertEquals(GeneratedBy.DATA_CLASS, analysis.generatedBy("equals", "(Ljava/lang/Object;)Z"))
+        assertEquals(GeneratedBy.DATA_CLASS, analysis.generatedBy("hashCode", "()I"))
+        assertEquals(GeneratedBy.DATA_CLASS, analysis.generatedBy("component1", "()I"))
+        assertEquals(GeneratedBy.DATA_CLASS, analysis.generatedBy("component2", "()Ljava/lang/String;"))
+        assertEquals(
+            GeneratedBy.DATA_CLASS,
+            analysis.generatedBy("copy", "(ILjava/lang/String;)Lcom/example/target/GeneratedPointCustomToString;"),
+        )
+    }
+
+    @Test
+    fun `a hand-written equals and hashCode on a data class are NONE, while the generated toString, componentN, and copy are DATA_CLASS`() {
+        val analysis = BranchSiteAnalyzer.analyze(readInlineTargetBytes("GeneratedPointCustomEquals")) { _, _ -> true }
+
+        assertEquals(GeneratedBy.NONE, analysis.generatedBy("equals", "(Ljava/lang/Object;)Z"))
+        assertEquals(GeneratedBy.NONE, analysis.generatedBy("hashCode", "()I"))
         assertEquals(GeneratedBy.DATA_CLASS, analysis.generatedBy("toString", "()Ljava/lang/String;"))
+        assertEquals(GeneratedBy.DATA_CLASS, analysis.generatedBy("component1", "()I"))
+        assertEquals(GeneratedBy.DATA_CLASS, analysis.generatedBy("component2", "()Ljava/lang/String;"))
+        assertEquals(
+            GeneratedBy.DATA_CLASS,
+            analysis.generatedBy("copy", "(ILjava/lang/String;)Lcom/example/target/GeneratedPointCustomEquals;"),
+        )
+    }
+
+    @Test
+    fun `with debug info stripped, a data class's hand-written equals and hashCode are DATA_CLASS like its other members`() {
+        val writer = ClassWriter(0)
+        ClassReader(readInlineTargetBytes("GeneratedPointCustomEquals")).accept(writer, ClassReader.SKIP_DEBUG)
+        val stripped = writer.toByteArray()
+
+        val analysis = BranchSiteAnalyzer.analyze(stripped) { _, _ -> true }
+
+        assertFalse(analysis.hasLineNumbers)
+        assertEquals(GeneratedBy.DATA_CLASS, analysis.generatedBy("equals", "(Ljava/lang/Object;)Z"))
+        assertEquals(GeneratedBy.DATA_CLASS, analysis.generatedBy("hashCode", "()I"))
+        assertEquals(GeneratedBy.DATA_CLASS, analysis.generatedBy("toString", "()Ljava/lang/String;"))
+        assertEquals(GeneratedBy.DATA_CLASS, analysis.generatedBy("component1", "()I"))
+        assertEquals(GeneratedBy.DATA_CLASS, analysis.generatedBy("component2", "()Ljava/lang/String;"))
+        assertEquals(
+            GeneratedBy.DATA_CLASS,
+            analysis.generatedBy("copy", "(ILjava/lang/String;)Lcom/example/target/GeneratedPointCustomEquals;"),
+        )
     }
 
     @Test

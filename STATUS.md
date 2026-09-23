@@ -277,6 +277,13 @@ Progress:
   compiles the `disable` case and is wired in like the Scala fixtures. Review
   also fixed the proto's `GeneratedBy` comment, which still named every
   `$DefaultImpls` method.
+- Chunk 2 landed: `markDataClassMembers` marks `equals`, `hashCode` and
+  `toString` only when the method saw no `visitLineNumber`, from a
+  `methodsWithLineNumbers` set collected for every method whatever the method
+  filter says, so the baseline follows without a scanner change. The new
+  `GeneratedPointCustomEquals` fixture holds a hand-written `equals` with two
+  conditional sites for chunk 3. Stripped debug info leaves all three marked,
+  pinned by a test.
 
 ### Generators other than Spring are not recognised
 

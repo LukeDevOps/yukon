@@ -19,12 +19,13 @@ enum ProbeKind {
 }
 
 // What compiled a method into existence rather than the adopter writing its body: an enum's
-// values/valueOf/getEntries, a data class's componentN/copy/equals/hashCode/toString, a
-// $DefaultImpls method that only forwards to the interface's own default method, or a Java
-// record's equals/hashCode/toString. A collector
-// leaves a generated probe out of never-hit, stale-hit, and the call graph by default, since the
-// compiler will emit the method again regardless of what the adopter does; its hit count is still
-// evidence, so the probe itself is kept rather than dropped. See ADR 0026.
+// values/valueOf/getEntries, a data class's componentN/copy and whichever of
+// equals/hashCode/toString the adopter did not override (the generated ones have no line-number
+// table), a $DefaultImpls method that only forwards to the interface's own default method, or a
+// Java record's equals/hashCode/toString. A collector leaves a generated probe out of never-hit,
+// stale-hit, and the call graph by default, since the compiler will emit the method again
+// regardless of what the adopter does; its hit count is still evidence, so the probe itself is kept
+// rather than dropped. See ADR 0026.
 enum GeneratedBy {
   GENERATED_BY_NONE = 0;
   ENUM = 1;

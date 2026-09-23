@@ -66,7 +66,8 @@ object BranchSiteAnalyzer {
         private val droppedOrdinalsByMethod: Map<Pair<String, String>, Set<Int>> = emptyMap(),
         /**
          * What compiled each method into existence, keyed by (name, descriptor), computed once
-         * per class from its own method table and superclass. See [generatedBy] and ADR 0026.
+         * per class from its own method table, superclass and method bodies. See [generatedBy]
+         * and ADR 0026.
          */
         private val generatedByMethod: Map<Pair<String, String>, GeneratedBy> = emptyMap(),
         /**
@@ -408,6 +409,7 @@ object BranchSiteAnalyzer {
         var interfaceInternalNames: List<String> = emptyList()
         var smap = KotlinSmap.EMPTY
         val methodAccess = mutableMapOf<Pair<String, String>, Int>()
+        val methodsWithLineNumbers = mutableSetOf<Pair<String, String>>()
         val localNames = mutableMapOf<Pair<String, String>, MutableMap<Int, String>>()
         val defaultCandidates = mutableListOf<DefaultCandidate>()
         val defaultShapedNames = mutableListOf<Pair<String, String>>()
@@ -522,6 +524,7 @@ object BranchSiteAnalyzer {
                                 start: Label,
                             ) {
                                 hasLineNumbers = true
+                                methodsWithLineNumbers += name to descriptor
                                 if (isTypeInitializer) firstLines.putIfAbsent(name to descriptor, line)
                             }
                         }
@@ -548,7 +551,10 @@ object BranchSiteAnalyzer {
                         includePackages = includePackages,
                         excludePackages = excludePackages,
                         onSiteDropped = { ordinal -> droppedOrdinalsByMethod.getOrPut(name to descriptor) { mutableSetOf() } += ordinal },
-                        onLineNumberSeen = { hasLineNumbers = true },
+                        onLineNumberSeen = {
+                            hasLineNumbers = true
+                            methodsWithLineNumbers += name to descriptor
+                        },
                     )
                 }
             }
@@ -571,7 +577,7 @@ object BranchSiteAnalyzer {
         val resolvedGetters = scalaGetterSites.mapTo(mutableSetOf()) { it.getterName to it.getterDescriptor }
         val unresolvedScalaGetterSites = getterCandidateNames.filterNot { it in resolvedGetters }
         val hasTypeInitializer = ("<clinit>" to "()V") in methodAccess
-        val generatedByMethod = computeGeneratedBy(classBytes, internalClassName, superInternalName, methodAccess)
+        val generatedByMethod = computeGeneratedBy(classBytes, internalClassName, superInternalName, methodAccess, methodsWithLineNumbers)
 
         val callEdgeEntryPoints = if (hasTypeInitializer) eligibleMethodKeys + ("<clinit>" to "()V") else eligibleMethodKeys
         val resolvedCalls =
@@ -1652,17 +1658,20 @@ object BranchSiteAnalyzer {
      * `component1` through `componentN`, each taking no parameters, whose return types in order
      * equal the parameter types of some `<init>` with exactly N parameters, plus a `copy` taking
      * those same N parameter types and returning the class itself, plus
-     * `equals(Ljava/lang/Object;)Z`, `hashCode()I`, and `toString()Ljava/lang/String;`. Every one
-     * of those members is marked [GeneratedBy.DATA_CLASS] only when all of them are present; a
-     * class that hand-writes some but not all, such as a bare `copy` and `component1` with no
-     * `equals`, `hashCode`, or `toString`, is left [GeneratedBy.NONE] throughout, since the
-     * compiler itself never produces that partial shape.
+     * `equals(Ljava/lang/Object;)Z`, `hashCode()I`, and `toString()Ljava/lang/String;`. Nothing is
+     * marked unless all of them are present; a class that hand-writes some but not all, such as a
+     * bare `copy` and `component1` with no `equals`, `hashCode`, or `toString`, is left
+     * [GeneratedBy.NONE] throughout, since the compiler itself never produces that partial shape.
+     * Once the shape matches, `componentN` and `copy` are [GeneratedBy.DATA_CLASS], and each of
+     * `equals`, `hashCode` and `toString` is [GeneratedBy.DATA_CLASS] only when it is absent from
+     * [methodsWithLineNumbers]; see [markDataClassMembers].
      */
     private fun computeGeneratedBy(
         classBytes: ByteArray,
         internalClassName: String,
         superInternalName: String?,
         methodAccess: Map<Pair<String, String>, Int>,
+        methodsWithLineNumbers: Set<Pair<String, String>>,
     ): Map<Pair<String, String>, GeneratedBy> {
         val result = mutableMapOf<Pair<String, String>, GeneratedBy>()
 
@@ -1692,7 +1701,7 @@ object BranchSiteAnalyzer {
             }
         }
 
-        markDataClassMembers(internalClassName, methodAccess, result)
+        markDataClassMembers(internalClassName, methodAccess, methodsWithLineNumbers, result)
         return result
     }
 
@@ -1879,13 +1888,24 @@ object BranchSiteAnalyzer {
 
     /**
      * Finds a consecutive `component1..componentN` group, a matching `<init>`, a matching `copy`,
-     * and all three of `equals`/`hashCode`/`toString`, and marks every one of them
-     * [GeneratedBy.DATA_CLASS] in [result] only when every part of the shape is present. Leaves
-     * [result] untouched otherwise.
+     * and all three of `equals`/`hashCode`/`toString`, and leaves [result] untouched unless every
+     * part of the shape is present. When it is, the `componentN` group and `copy` are marked
+     * [GeneratedBy.DATA_CLASS], and so is each of `equals`, `hashCode` and `toString` that is not
+     * in [methodsWithLineNumbers].
+     *
+     * kotlinc 2.2.21 emits the generated `equals`, `hashCode` and `toString` with no line-number
+     * table, and an override the adopter wrote with a table pointing at its body; access flags,
+     * the local variable table and parameter annotations are the same for both (checked with
+     * `javap`). A method with at least one line number is therefore the adopter's and stays
+     * [GeneratedBy.NONE], so a hand-written `equals` reads as ordinary code. Kotlin forbids
+     * hand-writing `componentN` or `copy` on a data class, so those two need no such check. A class
+     * compiled without debug info has no line numbers anywhere, so all three are marked; ADR 0026
+     * accepts that, and the class already draws the stripped-debug warning.
      */
     private fun markDataClassMembers(
         internalClassName: String,
         methodAccess: Map<Pair<String, String>, Int>,
+        methodsWithLineNumbers: Set<Pair<String, String>>,
         result: MutableMap<Pair<String, String>, GeneratedBy>,
     ) {
         val components =
@@ -1914,15 +1934,15 @@ object BranchSiteAnalyzer {
                 name == "copy" && returnTypeOf(descriptor) == ownerDescriptor && parseParameterDescriptors(descriptor) == componentTypes
             } ?: return
 
-        if (("equals" to "(Ljava/lang/Object;)Z") !in methodAccess) return
-        if (("hashCode" to "()I") !in methodAccess) return
-        if (("toString" to "()Ljava/lang/String;") !in methodAccess) return
+        val objectMethodKeys =
+            listOf("equals" to "(Ljava/lang/Object;)Z", "hashCode" to "()I", "toString" to "()Ljava/lang/String;")
+        if (objectMethodKeys.any { it !in methodAccess }) return
 
         for (index in 1..componentCount) result[components.getValue(index).first] = GeneratedBy.DATA_CLASS
         result[copyKey] = GeneratedBy.DATA_CLASS
-        result["equals" to "(Ljava/lang/Object;)Z"] = GeneratedBy.DATA_CLASS
-        result["hashCode" to "()I"] = GeneratedBy.DATA_CLASS
-        result["toString" to "()Ljava/lang/String;"] = GeneratedBy.DATA_CLASS
+        for (key in objectMethodKeys) {
+            if (key !in methodsWithLineNumbers) result[key] = GeneratedBy.DATA_CLASS
+        }
     }
 
     /** `long` and `double` take two local variable slots; everything else, one. */
