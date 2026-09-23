@@ -1,5 +1,5 @@
 ---
-description: Build a settled design as sequential chunks, autonomously through the landing order. Sonnet implements each chunk from a written brief; Fable reviews the implementation, fixes findings, runs the build, commits one chunk per commit, and continues to the next unless the user asked for a breakpoint. Manual invocation only.
+description: Build a settled design as sequential chunks, autonomously through the landing order. An Opus 5.5 subagent implements each chunk from a written brief; the main Opus 5.5 session reviews the implementation, fixes findings, runs the build, commits one chunk per commit, and continues to the next unless the user asked for a breakpoint. Manual invocation only.
 argument-hint: [which chunk to build next, or the design section that lists the landing order]
 disable-model-invocation: true
 ---
@@ -7,17 +7,17 @@ disable-model-invocation: true
 # Chunked build
 
 Turn an already-settled design into code one chunk at a time. Each chunk is
-built by a Sonnet subagent from a brief this session writes, reviewed here
+built by an Opus 5.5 subagent from a brief this session writes, reviewed here
 by reading the implementation, and committed only after a clean pass.
 `$ARGUMENTS` names the chunk to build next, or the design section whose
 landing order says what comes next.
 
 ## Who does what
 
-- The main (Fable) session owns the design, the briefs, the review, the
+- The main session (Opus 5.5) owns the design, the briefs, the review, the
   fixes, the commit message and the project's status log. Judgement never
   moves to the subagent.
-- One Sonnet subagent (`general-purpose`, `model: sonnet`) implements one
+- One Opus 5.5 subagent (`general-purpose`, `model: opus`) implements one
   chunk, with "do not commit" in its brief. It reports back; it does not
   decide.
 - Chunks run one after another, never in parallel. They share the build
@@ -126,7 +126,7 @@ pager's status, not ktlint's.
 One chunk, one commit, directly on the branch the project's notes say to
 use. The message says what the chunk does and why in plain sentences, and
 names the bytecode or library fact the review added when there is one.
-Credit both models with `Co-Authored-By` lines. Never add a session link
+Credit the model with a `Co-Authored-By` line. Never add a session link
 to a public repo's history.
 
 Then add a status entry to the project's design notes: what landed, what
