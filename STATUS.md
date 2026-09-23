@@ -20,6 +20,25 @@ Two things fall out of it when it happens. The poms need licence metadata,
 which nothing generates today. And a published testkit fixes its own API, so
 the query surface is worth a look before it is frozen rather than after.
 
+### Naming hidden code: decided, not started
+
+ADR 0034, with server ADR 0028. A lambda body reaches the server under
+the compiler's name (`main$lambda$0`), and nothing says what it is or
+which file holds it. The agent will send what the bytecode knows:
+- `CallEdge.kind`, where `CREATES` covers `invokedynamic` targets and
+  body-class methods, with `captured_count` beside it;
+- `lambda_body` on methods;
+- `source_file` and `body_class` on classes. `ClassSupertypes` becomes
+  `ClassLocation`, and `DeclaredClass` gains the same two fields.
+
+Order: proto and BSR, then the agent with compiler fixtures for the
+Kotlin name rule, then the server, then the UI, then `runDemoStack`.
+
+Open, and not part of this: an endpoint whose handler is an
+`invokedynamic` lambda (`/checkout` in the demo) still has no handler
+name. The question is whether the registration advice can map the
+handler instance's hidden class to its implementation method.
+
 ### Run id on every payload: landed in all three repos
 
 ADR 0032. The agent makes a random run id once per process and stamps it on

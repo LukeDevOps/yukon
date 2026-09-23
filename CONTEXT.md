@@ -163,8 +163,16 @@ A Kotlin `inline` function, whose body is copied into Kotlin callers so its own 
 ### Call graph
 
 **Call edge**:
-One caller method's static reference to one callee method, or its use of a class that runs that class's initializer, read from the caller's bytecode at transform time and deduplicated per caller. The callee is named as the bytecode names it: owner class, method name and descriptor. Only callees inside the include rules are recorded.
+One caller method's static reference to one callee method, or its use of a class that runs that class's initializer, read from the caller's bytecode at transform time and deduplicated per caller. The callee is named as the bytecode names it: owner class, method name and descriptor. Only callees inside the include rules are recorded. Every call edge is either a call or a creation edge.
 _Avoid_: call site (one invoke instruction; never on the wire), edge (one outcome of a branch site), dependency (a jar, never an edge)
+
+**Creation edge**:
+A call edge from a method to a body it hands to someone else to run: a lambda body, a method passed by reference, or a method of a body class. It reaches its target the way a call does, since the body can only run after its creator ran.
+_Avoid_: defines edge, lambda edge
+
+**Lambda body**:
+A method the compiler made from a lambda the source never named, such as kotlinc's `main$lambda$0` or javac's `lambda$main$0`. It holds the adopter's own code, is probed like any method, and is named after the method that creates it.
+_Avoid_: synthetic method (kotlinc's bodies are not synthetic), anonymous function
 
 **Supertypes**:
 A class's superclass and direct interfaces, sent with the class so a collector can widen a virtual call edge to the methods that override or inherit its callee.
