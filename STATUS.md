@@ -20,7 +20,7 @@ Two things fall out of it when it happens. The poms need licence metadata,
 which nothing generates today. And a published testkit fixes its own API, so
 the query surface is worth a look before it is frozen rather than after.
 
-### Naming hidden code: A1 in the working tree
+### Naming hidden code: A1 committed, A2 in the working tree
 
 ADR 0034, with server ADR 0028. A lambda body reaches the server under
 the compiler's name (`main$lambda$0`), and nothing says what it is or
@@ -31,19 +31,30 @@ which file holds it. The agent will send what the bytecode knows:
 - `source_file`, `body_kind` and `source_name` on classes.
   `ClassSupertypes` becomes `ClassLocation`, and `DeclaredClass` gains
   the same three fields. `body_kind` tells an anonymous class, an object
-  expression, a local class, a lambda compiled to a class and a
-  reference apart, from `InnerClasses`, `kotlin.Metadata` and the Kotlin
-  runtime base classes.
+  expression, a local class and a lambda compiled to a class apart, from
+  `InnerClasses`, `kotlin.Metadata` and the Kotlin runtime base classes.
 
 Order: proto and BSR, then the agent with compiler fixtures for the
 Kotlin name rule, then the server, then the UI, then `runDemoStack`.
 
-A1, in the working tree and not committed: the proto, `kind`,
-`captured_count`, `lambda_body`, `source_file` and the `ClassLocation`
-rename, through the analyser, registry, baseline, codec, testkit and
-stub collector. A2 is `body_kind` and `source_name`. `lambda_body`
-also follows scalac's `$adapted` forwarder to the body it calls, which
-the ADR's wording does not yet say.
+A1 is committed as `bcd30a8`: the proto, `kind`, `captured_count`,
+`lambda_body`, `source_file` and the `ClassLocation` rename, through
+the analyser, registry, baseline, codec, testkit and stub collector.
+`lambda_body` also follows scalac's `$adapted` forwarder to the body it
+calls, and the ADR says so.
+
+A2 is in the working tree and not committed: `body_kind` and
+`source_name` on `ClassLocation` and `DeclaredClass`, read once per
+class by `BodyKindRule`, with kotlinc and javac fixtures for each kind.
+A body class the agent does not probe is a pass-through: every Kotlin
+function or property reference class, each `$sam$` wrapper, and each
+suspend function's continuation. The analyser uses the type matcher's
+own `isTurnedAwayByShape`. So `::twice` gives its creator
+`CREATES twice`, and a continuation leaves no edge, since its
+`invokeSuspend` only calls back into its own function. `BodyKind` has no
+`REFERENCE`, and 5 is reserved. `ShadedBodyKindRuleTest` runs the rule
+from the shaded jar, since relocation rewrites any string starting with
+`kotlin`.
 
 Open, and not part of this: an endpoint whose handler is an
 `invokedynamic` lambda (`/checkout` in the demo) still has no handler

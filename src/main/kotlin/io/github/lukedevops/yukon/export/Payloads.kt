@@ -253,13 +253,47 @@ data class CallEdge(
  * [sourceFile] is the class file's `SourceFile` attribute exactly as it appears, such as
  * `DemoServerMain.kt`: a file name, never a path. Null when the class has none. The agent does not
  * clean it, so a value such as `<generated>` is sent as it is. See ADR 0034.
+ *
+ * [bodyKind] says what kind of body class this is, or [BodyKind.NONE] when it is not one.
+ * [sourceName] is the name the source gave a [BodyKind.LOCAL_CLASS], such as `Local` for
+ * `Foo$1Local`, and null for every other kind. See [BodyKind] and ADR 0034.
  */
 data class ClassLocation(
     val classId: Int,
     val superClassName: String?,
     val interfaceNames: List<String>,
     val sourceFile: String? = null,
+    val bodyKind: BodyKind = BodyKind.NONE,
+    val sourceName: String? = null,
 )
+
+/**
+ * What kind of body class a class is, read from its own class file. A body class exists only to
+ * carry a body its creator hands to someone else. A class is one only when it has an
+ * `EnclosingMethod` attribute. The rule checks [LAMBDA_CLASS] first, then the class's own
+ * `InnerClasses` entry. A Kotlin function or property reference class has no kind here: kotlinc
+ * marks it synthetic, so it never reaches the wire, and its creator's edges pass through it to
+ * the function it names. See ADR 0034.
+ */
+enum class BodyKind {
+    /** The class has no `EnclosingMethod` attribute, so it is not a body class. */
+    NONE,
+
+    /**
+     * An anonymous class, such as javac's `new Runnable() { ... }`: the class's own `InnerClasses`
+     * entry has no name and it carries no `kotlin.Metadata`, or it has no entry for itself at all.
+     */
+    ANONYMOUS_CLASS,
+
+    /** A Kotlin object expression (`object : Runnable { ... }`): its own `InnerClasses` entry has no name, and it carries `kotlin.Metadata`. */
+    OBJECT_EXPRESSION,
+
+    /** A class declared inside a method: its own `InnerClasses` entry has a name, which is [ClassLocation.sourceName]. */
+    LOCAL_CLASS,
+
+    /** A Kotlin lambda compiled to a class, or any suspend lambda: its superclass is one of the Kotlin runtime's lambda base classes. */
+    LAMBDA_CLASS,
+}
 
 /**
  * [resource] is the same one the process stamps on its delta batches and static baseline.
@@ -329,8 +363,9 @@ data class DeclaredMethod(
  * [DeclaredMethod.referencedClasses]. The same listing rule as [ProbeLocation.referencedClasses]
  * applies. See ADR 0030.
  *
- * [sourceFile] is the same field [ClassLocation] carries for a loaded class, read the same way.
- * Null when the class has none, or when its bytes could not be read. See ADR 0034.
+ * [sourceFile], [bodyKind] and [sourceName] are the same fields [ClassLocation] carries for a
+ * loaded class, read the same way. They are null, [BodyKind.NONE] and null when the class's bytes
+ * could not be read. See ADR 0034.
  */
 data class DeclaredClass(
     val className: String,
@@ -339,6 +374,8 @@ data class DeclaredClass(
     val interfaceNames: List<String> = emptyList(),
     val referencedClasses: List<String> = emptyList(),
     val sourceFile: String? = null,
+    val bodyKind: BodyKind = BodyKind.NONE,
+    val sourceName: String? = null,
 )
 
 /**

@@ -1,5 +1,6 @@
 package io.github.lukedevops.yukon.instrumentation.staticscan
 
+import io.github.lukedevops.yukon.export.BodyKind
 import io.github.lukedevops.yukon.export.DeclaredClass
 import io.github.lukedevops.yukon.export.DeclaredMethod
 import io.github.lukedevops.yukon.export.StaticallyUnsafeClass
@@ -268,6 +269,8 @@ class StaticBaselineScanner(
                     scanned.interfaceNames,
                     scanned.classReferences,
                     scanned.sourceFile,
+                    scanned.bodyKind,
+                    scanned.sourceName,
                 )
         } catch (e: Exception) {
             // Covers a corrupt class file, or a failure resolving a supporting type (e.g. an
@@ -277,13 +280,15 @@ class StaticBaselineScanner(
         }
     }
 
-    /** [DeclaredMethod]s for one class, plus the supertypes, class-level references and source file read from the same analysis pass. */
+    /** [DeclaredMethod]s for one class, plus the supertypes, class-level references, source file and body kind read from the same analysis pass. */
     private class ScannedMethods(
         val methods: List<DeclaredMethod>,
         val superClassName: String?,
         val interfaceNames: List<String>,
         val classReferences: List<String>,
         val sourceFile: String?,
+        val bodyKind: BodyKind,
+        val sourceName: String?,
     )
 
     /**
@@ -293,16 +298,18 @@ class StaticBaselineScanner(
      * functions with the same LocalVariableTable rule [BranchSiteAnalyzer] uses at transform time,
      * merged into each declared method, to detect a `<clinit>` of the class's own, to read its
      * in-scope call edges, its out-of-scope references and its lambda bodies, and to read its
-     * superclass, interfaces and source file. References are listed as the analyser records them, JDK names included;
-     * [BaselineReferenceFilter] drops those before the baseline is sent.
+     * superclass, interfaces, source file and body kind. References are listed as the analyser
+     * records them, JDK names included; [BaselineReferenceFilter] drops those before the baseline
+     * is sent.
      *
      * A class whose bytes cannot be resolved here is not itself unreadable: its [TypeDescription]
      * already resolved successfully through [pool][TypePool], so it is still declared, just
      * treated as a non-Scala class, with every method's [DeclaredMethod.inline] and
      * [DeclaredMethod.calls] and references left empty, no method marked as a lambda body,
-     * [DeclaredClass.superClassName] and [DeclaredClass.sourceFile] left null, no `<clinit>` entry
-     * added, and [DeclaredClass.interfaceNames] left empty. This can only happen
-     * if the two disagree about what is readable, which no locator this scanner builds does.
+     * [DeclaredClass.superClassName], [DeclaredClass.sourceFile] and [DeclaredClass.sourceName]
+     * left null, [DeclaredClass.bodyKind] left [BodyKind.NONE], no `<clinit>` entry added, and
+     * [DeclaredClass.interfaceNames] left empty. This can only happen if the two disagree about
+     * what is readable, which no locator this scanner builds does.
      *
      * A `<clinit>` entry is appended after every other declared method, mirroring
      * [io.github.lukedevops.yukon.instrumentation.YukonInstrumentation]'s own placement of the
@@ -370,6 +377,8 @@ class StaticBaselineScanner(
             analysis.interfaceNames,
             analysis.classReferences,
             analysis.sourceFile,
+            analysis.bodyKind,
+            analysis.sourceName,
         )
     }
 

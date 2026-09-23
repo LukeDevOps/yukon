@@ -4,10 +4,10 @@ import net.bytebuddy.description.annotation.AnnotationDescription
 import net.bytebuddy.description.method.MethodDescription
 import net.bytebuddy.description.type.TypeDescription
 import net.bytebuddy.matcher.ElementMatcher
+import net.bytebuddy.matcher.ElementMatchers.any
 import net.bytebuddy.matcher.ElementMatchers.isAbstract
 import net.bytebuddy.matcher.ElementMatchers.isBridge
 import net.bytebuddy.matcher.ElementMatchers.isNative
-import net.bytebuddy.matcher.ElementMatchers.isSynthetic
 import net.bytebuddy.matcher.ElementMatchers.isTypeInitializer
 import net.bytebuddy.matcher.ElementMatchers.not
 import java.lang.annotation.ElementType
@@ -60,15 +60,36 @@ object TypeMatchPolicy {
         prefix: String,
     ): Boolean = className == prefix || className.startsWith("$prefix.") || className.startsWith("$prefix$")
 
+    /**
+     * The types this agent instruments: in scope by [isIncluded], and not turned away by
+     * [isTurnedAwayByShape].
+     */
     fun typeNameMatcher(
         instrumentedPackagePrefixes: List<String>,
         excludedPackagePrefixes: List<String>,
     ): ElementMatcher.Junction<TypeDescription> =
-        not(isSynthetic<TypeDescription>())
-            .and { typeDescription: TypeDescription ->
-                isIncluded(typeDescription.name, instrumentedPackagePrefixes, excludedPackagePrefixes)
-            }.and { typeDescription: TypeDescription -> !isRuntimeGenerated(typeDescription.name) }
-            .and { typeDescription: TypeDescription -> !isCoroutineContinuation(typeDescription) }
+        any<TypeDescription>().and { typeDescription: TypeDescription ->
+            isIncluded(typeDescription.name, instrumentedPackagePrefixes, excludedPackagePrefixes) &&
+                !isTurnedAwayByShape(typeDescription.name, typeDescription.isSynthetic) { superClassNameOf(typeDescription) }
+        }
+
+    /**
+     * Whether [typeNameMatcher] turns a class away for what the class itself states, not for where
+     * it lives: it is synthetic, a framework generated it at runtime ([isRuntimeGenerated]), or it
+     * is a suspend function's own continuation ([isContinuationSuperclass]). [className] and the
+     * result of [superClassName] are dotted. [superClassName] is read only when the other tests
+     * pass, since a type description may have to resolve it.
+     *
+     * [io.github.lukedevops.yukon.instrumentation.branch.BranchSiteAnalyzer] asks the same question
+     * of a class it reads from bytes, and passes through a body class this turns away. Both call
+     * this one function, so the class the agent never probes and the class the analyser passes
+     * through are always the same class. See ADR 0034.
+     */
+    fun isTurnedAwayByShape(
+        className: String,
+        isSynthetic: Boolean,
+        superClassName: () -> String?,
+    ): Boolean = isSynthetic || isRuntimeGenerated(className) || isContinuationSuperclass(superClassName())
 
     /**
      * Markers in the name of a class a framework synthesized in memory, carried in the middle of
@@ -161,33 +182,37 @@ object TypeMatchPolicy {
         )
 
     /**
-     * Whether [typeDescription] is a suspend function's own continuation class: `final class ...
+     * Whether [superClassName], dotted, is the direct superclass of a suspend function's own
+     * continuation class: `final class ...
      * extends kotlin.coroutines.jvm.internal.ContinuationImpl` (or `RestrictedContinuationImpl`
      * for restricted suspension), kotlinc's own name for it. Such a class holds no code the
      * adopter wrote: its `invokeSuspend` runs only on resumption after a real suspension, so on a
      * function that never suspends it reads as never hit and, as a body class, roots a false
      * unreached cluster. See ADR 0025.
      *
-     * Only the superclass's own name is wanted, never its members. Under a lazily resolving pool
-     * (`TypePool.Default.WithLazyResolution`, which ByteBuddy's `AgentBuilder` uses by default and
-     * `StaticBaselineScanner` builds for every root) a superclass no locator can find still
-     * answers to its name, so a continuation class is recognised even when the Kotlin stdlib sits
-     * in a dependency jar the scan never opens. Under an eagerly resolving pool the erasure lookup
-     * throws `TypePool.Resolution.NoSuchTypeException` instead; that is caught and reads as "not a
-     * continuation", so no pool choice can throw out of a type matcher. A class extending
-     * `SuspendLambda` is not caught by this check: `SuspendLambda` itself extends
+     * A class extending `SuspendLambda` is not caught by this check: `SuspendLambda` itself extends
      * `ContinuationImpl`, but a suspend lambda's direct superclass is `SuspendLambda`, and it holds
      * the adopter's own body.
      */
-    private fun isCoroutineContinuation(typeDescription: TypeDescription): Boolean {
-        val superclassName =
-            try {
-                typeDescription.superClass?.asErasure()?.name
-            } catch (_: Exception) {
-                null
-            } ?: return false
-        return CONTINUATION_SUPERCLASS_SUFFIXES.any { superclassName.endsWith(it) }
-    }
+    fun isContinuationSuperclass(superClassName: String?): Boolean =
+        superClassName != null && CONTINUATION_SUPERCLASS_SUFFIXES.any { superClassName.endsWith(it) }
+
+    /**
+     * [typeDescription]'s direct superclass, dotted, or null when it has none or it cannot be
+     * resolved. Only the superclass's own name is wanted, never its members. Under a lazily
+     * resolving pool (`TypePool.Default.WithLazyResolution`, which ByteBuddy's `AgentBuilder` uses
+     * by default and `StaticBaselineScanner` builds for every root) a superclass no locator can
+     * find still answers to its name, so a continuation class is recognised even when the Kotlin
+     * stdlib sits in a dependency jar the scan never opens. Under an eagerly resolving pool the
+     * erasure lookup throws `TypePool.Resolution.NoSuchTypeException` instead; that is caught and
+     * reads as "not a continuation", so no pool choice can throw out of a type matcher.
+     */
+    private fun superClassNameOf(typeDescription: TypeDescription): String? =
+        try {
+            typeDescription.superClass?.asErasure()?.name
+        } catch (_: Exception) {
+            null
+        }
 
     /**
      * Native methods are excluded along with abstract ones: neither has a body to plant a probe in.

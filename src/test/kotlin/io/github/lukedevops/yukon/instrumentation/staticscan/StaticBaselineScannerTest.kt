@@ -1,6 +1,7 @@
 package io.github.lukedevops.yukon.instrumentation.staticscan
 
 import io.github.lukedevops.yukon.config.AgentConfig
+import io.github.lukedevops.yukon.export.BodyKind
 import io.github.lukedevops.yukon.export.CallEdge
 import io.github.lukedevops.yukon.export.CallEdgeKind
 import io.github.lukedevops.yukon.export.GeneratedBy
@@ -423,6 +424,56 @@ class StaticBaselineScannerTest {
     }
 
     @Test
+    fun `declares each class's body kind and a local class's source name, and passes through each synthetic reference class`() {
+        val kotlinClasses =
+            listOf(
+                "BodyKindTarget",
+                "BodyKindTarget\$localClass\$Local",
+                "BodyKindTarget\$suspendLambda\$1",
+                "BodyKindTarget\$functionReference\$1",
+                "BodyKindTarget\$unboundPropertyReference\$1",
+                "ObjectExpressionTarget\$makeHandler\$1",
+            )
+        val javaClasses = listOf("BodyKindJavaTarget", "BodyKindJavaTarget\$1", "BodyKindJavaTarget\$1Local")
+        val root =
+            directoryRoot(
+                *(
+                    kotlinClasses.map { "com/example/target/$it.class" to classBytes("kotlin/test/com/example/target/$it.class") } +
+                        javaClasses.map { "com/example/target/$it.class" to classBytes("java/test/com/example/target/$it.class") }
+                ).toTypedArray(),
+            )
+
+        val declaredClasses =
+            StaticBaselineScanner(listOf("com.example.target"))
+                .scan(listOf(root))
+                .declaredClasses
+        val declared = declaredClasses.associate { it.className.removePrefix("com.example.target.") to (it.bodyKind to it.sourceName) }
+        val creator = declaredClasses.single { it.className == "com.example.target.BodyKindTarget" }
+
+        assertEquals(
+            mapOf(
+                "BodyKindTarget" to (BodyKind.NONE to null),
+                "BodyKindTarget\$localClass\$Local" to (BodyKind.LOCAL_CLASS to "Local"),
+                "BodyKindTarget\$suspendLambda\$1" to (BodyKind.LAMBDA_CLASS to null),
+                "ObjectExpressionTarget\$makeHandler\$1" to (BodyKind.OBJECT_EXPRESSION to null),
+                "BodyKindJavaTarget" to (BodyKind.NONE to null),
+                "BodyKindJavaTarget\$1" to (BodyKind.ANONYMOUS_CLASS to null),
+                "BodyKindJavaTarget\$1Local" to (BodyKind.LOCAL_CLASS to "Local"),
+            ),
+            declared,
+            "kotlinc marks a reference class synthetic, and the type matcher turns every synthetic class away",
+        )
+        assertEquals(
+            listOf(CallEdge("com.example.target.BodyKindTarget", "twice", "(I)I", virtual = false, kind = CallEdgeKind.CREATES)),
+            creator.methods.single { it.methodName == "functionReference" }.calls,
+        )
+        assertEquals(
+            listOf(CallEdge("com.example.target.BodyKindTarget", "getBase", "()I", virtual = false, kind = CallEdgeKind.CREATES)),
+            creator.methods.single { it.methodName == "unboundPropertyReference" }.calls,
+        )
+    }
+
+    @Test
     fun `declares clinit for a fixture that has one, and not for one that does not`() {
         val root =
             directoryRoot(
@@ -690,7 +741,7 @@ class StaticBaselineScannerTest {
     }
 
     @Test
-    fun `declares a bound function reference's body-class edges the same way the manifest carries them for the loaded class`() {
+    fun `declares a bound function reference's pass-through edge the same way the manifest carries it for the loaded class`() {
         val root = callEdgeFixtureRoot()
         val scanner = StaticBaselineScanner(listOf("com.example.target", "com.example.other"))
 
@@ -721,19 +772,7 @@ class StaticBaselineScannerTest {
             )
             assertEquals(
                 listOf(
-                    CallEdge(
-                        "com.example.target.FunctionReferenceTarget\$viaReference\$f\$1",
-                        "<init>",
-                        "(Ljava/lang/Object;)V",
-                        virtual = false,
-                    ),
-                    CallEdge(
-                        "com.example.target.FunctionReferenceTarget\$viaReference\$f\$1",
-                        "invoke",
-                        "()Ljava/lang/Integer;",
-                        virtual = false,
-                        kind = CallEdgeKind.CREATES,
-                    ),
+                    CallEdge("com.example.target.FunctionReferenceTarget", "secret", "()I", virtual = false, kind = CallEdgeKind.CREATES),
                 ),
                 declared.methods.single { it.methodName == "viaReference" }.calls,
             )

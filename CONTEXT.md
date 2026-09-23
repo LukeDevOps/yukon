@@ -178,11 +178,11 @@ _Avoid_: synthetic method (kotlinc's bodies are not synthetic), anonymous functi
 A class's superclass and direct interfaces, sent with the class so a collector can widen a virtual call edge to the methods that override or inherit its callee.
 
 **Pass-through**:
-A compiler-generated method with no probe of its own, such as a bridge, an `access$` accessor or Kotlin's `$default`, whose callees are attributed to whatever references it, in its own class or another. Lambda bodies are not pass-throughs: they hold the adopter's own code and get probes.
+A compiler-generated method with no probe of its own, such as a bridge, an `access$` accessor, Kotlin's `$default`, or any method of a body class the agent does not probe, such as a Kotlin reference class's forwarding `invoke`, whose callees are attributed to whatever references it, in its own class or another. Lambda bodies are not pass-throughs: they hold the adopter's own code and get probes.
 
 **Body class**:
-A class that exists only to carry a body its creator hands to someone else: a function reference, a suspend lambda, an object expression, an anonymous or local class. Its creator is treated as the caller of every method it declares.
-_Avoid_: lambda class (a Java lambda is a hidden class with no class file), adapter (Scala's boxing forwarder), callback
+A class that exists only to carry a body its creator hands to someone else: a function or property reference, a Kotlin lambda compiled to a class (every suspend lambda is one), an object expression, an anonymous or local class. Its creator is treated as the caller of every method it declares. A body class the agent does not probe (a Kotlin function or property reference, a `$sam$` wrapper, a suspend function's continuation) is a pass-through instead, so the creator reaches the function or accessor it names.
+_Avoid_: lambda class for every body class (it names only the Kotlin lambda kind, and a Java lambda is a hidden class with no class file), adapter (Scala's boxing forwarder), callback
 
 **Unreached cluster**:
 A root plus every never-hit method reachable from it through call edges whose every in-scope caller is itself in the cluster. Deleting the root removes the whole cluster.

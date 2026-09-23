@@ -210,6 +210,43 @@ message ClassLocation {
   // has none. The agent does not clean it: a value such as <generated> is sent as it is, and
   // whoever displays it decides whether it names a real file.
   string source_file = 4;
+  // What kind of body class this is; see BodyKind. NONE, the zero value, when the class is not a
+  // body class.
+  BodyKind body_kind = 5;
+  // The name the source gave a LOCAL_CLASS, such as Local for Foo$1Local, read from the class's
+  // own InnerClasses entry. Set only for LOCAL_CLASS, and empty for every other kind.
+  string source_name = 6;
+}
+
+// What kind of body class a class is, read from its own class file. A body class exists only to
+// carry a body its creator hands to someone else, and a class is one only when it has an
+// EnclosingMethod attribute. The agent checks LAMBDA_CLASS, then the class's own InnerClasses
+// entry for LOCAL_CLASS, OBJECT_EXPRESSION and ANONYMOUS_CLASS, and the first match wins. See
+// ADR 0034.
+enum BodyKind {
+  // The class has no EnclosingMethod attribute, so it is not a body class. The zero value.
+  NONE = 0;
+  // An anonymous class, such as javac's new Runnable() { ... }: the class's own InnerClasses entry
+  // has no name and the class carries no kotlin.Metadata, or the class has no InnerClasses entry
+  // for itself at all. A Kotlin body class of a shape the agent does not know, such as one
+  // extending a new Kotlin runtime base class, reads as OBJECT_EXPRESSION instead, since it has an
+  // unnamed entry and kotlin.Metadata.
+  ANONYMOUS_CLASS = 1;
+  // A Kotlin object expression, such as object : Runnable { ... }: the class's own InnerClasses
+  // entry has no name, and the class carries kotlin.Metadata.
+  OBJECT_EXPRESSION = 2;
+  // A class declared inside a method: the class's own InnerClasses entry has a name, which is
+  // source_name.
+  LOCAL_CLASS = 3;
+  // A Kotlin lambda compiled to a class, or any suspend lambda: the superclass is
+  // kotlin.jvm.internal.Lambda, kotlin.coroutines.jvm.internal.SuspendLambda or
+  // kotlin.coroutines.jvm.internal.RestrictedSuspendLambda.
+  LAMBDA_CLASS = 4;
+  // A Kotlin function or property reference class has no kind, and 5 stays unused. kotlinc marks
+  // such a class synthetic, so the agent never sends it, and its creator's CREATES edges pass
+  // through it to the function it names.
+  reserved 5;
+  reserved "REFERENCE";
 }
 
 // A class the JVM has loaded that reached no manifest, neither as a probed
@@ -328,6 +365,12 @@ message DeclaredClass {
   // and read the same way. Empty when the class has none, or when its bytes could not be read.
   // See ADR 0034.
   string source_file = 6;
+  // The same field ClassLocation carries for a loaded class, read the same way. NONE when the
+  // class is not a body class, or when its bytes could not be read. See ADR 0034.
+  BodyKind body_kind = 7;
+  // The same field ClassLocation carries for a loaded class, read the same way. Set only for
+  // LOCAL_CLASS, and empty for every other kind. See ADR 0034.
+  string source_name = 8;
 }
 
 // A class the static scanner found on the classpath but judged unsafe to

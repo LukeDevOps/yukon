@@ -339,7 +339,13 @@ tasks.test {
     useJUnitPlatform()
     jvmArgs("-Djdk.attach.allowAttachSelf=true")
     dependsOn(":fixtures-scala3:classes", ":fixtures-scala2:classes", ":fixtures-kotlin-jvm-default-disable:classes")
+    // ShadedBodyKindRuleTest runs the analyser from the shaded jar, since relocation rewrites
+    // string constants in the agent's own classes and only the shaded copy shows the effect.
+    dependsOn(tasks.shadowJar)
+    val shadedAgentJar = tasks.shadowJar.flatMap { it.archiveFile }
+    inputs.file(shadedAgentJar)
     doFirst {
+        systemProperty("yukon.agent.shadedJar", shadedAgentJar.get().asFile.absolutePath)
         systemProperty("yukon.fixtures.scala3.dir", scala3FixtureClassesDir.get().asFile.absolutePath)
         systemProperty("yukon.fixtures.scala3.classpath", scala3FixtureRuntimeClasspath.get().asPath)
         systemProperty("yukon.fixtures.scala2.dir", scala2FixtureClassesDir.get().asFile.absolutePath)

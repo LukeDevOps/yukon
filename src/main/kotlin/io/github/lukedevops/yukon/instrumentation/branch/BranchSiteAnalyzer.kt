@@ -1,5 +1,6 @@
 package io.github.lukedevops.yukon.instrumentation.branch
 
+import io.github.lukedevops.yukon.export.BodyKind
 import io.github.lukedevops.yukon.export.CallEdge
 import io.github.lukedevops.yukon.export.CallEdgeKind
 import io.github.lukedevops.yukon.export.GeneratedBy
@@ -96,6 +97,10 @@ object BranchSiteAnalyzer {
          * or the bytes were never read. See ADR 0034.
          */
         val sourceFile: String? = null,
+        /** What kind of body class this is, from [BodyKindRule]. [BodyKind.NONE] on [EMPTY]. See ADR 0034. */
+        val bodyKind: BodyKind = BodyKind.NONE,
+        /** The source name of a [BodyKind.LOCAL_CLASS], and null for every other kind. See ADR 0034. */
+        val sourceName: String? = null,
     ) {
         /**
          * Whether the method is a lambda body: [methodFilter][analyze] accepted it, an
@@ -465,6 +470,8 @@ object BranchSiteAnalyzer {
 
         var internalClassName = ""
         var sourceFile: String? = null
+        var hasEnclosingMethod = false
+        var ownInnerClassEntry: BodyKindRule.OwnInnerClassEntry? = null
         var classAccess = 0
         var superInternalName: String? = null
         var interfaceInternalNames: List<String> = emptyList()
@@ -508,6 +515,23 @@ object BranchSiteAnalyzer {
                 ) {
                     sourceFile = source
                     smap = KotlinSmapParser.parse(debug)
+                }
+
+                override fun visitOuterClass(
+                    owner: String,
+                    name: String?,
+                    descriptor: String?,
+                ) {
+                    hasEnclosingMethod = true
+                }
+
+                override fun visitInnerClass(
+                    name: String,
+                    outerName: String?,
+                    innerName: String?,
+                    access: Int,
+                ) {
+                    if (name == internalClassName) ownInnerClassEntry = BodyKindRule.OwnInnerClassEntry(innerName)
                 }
 
                 // Delivered after visitSource() and before any visitMethod(), so this flag is
@@ -668,6 +692,7 @@ object BranchSiteAnalyzer {
             )
 
         val lambdaBodies = findLambdaBodies(internalClassName, methodAccess, rawCandidatesByMethod, eligibleMethodKeys)
+        val bodyClass = BodyKindRule.classify(hasEnclosingMethod, superInternalName, ownInnerClassEntry, isKotlinClass)
 
         return Analysis(
             sites,
@@ -689,6 +714,8 @@ object BranchSiteAnalyzer {
             references.onClass,
             lambdaBodies,
             sourceFile,
+            bodyClass.kind,
+            bodyClass.sourceName,
         )
     }
 
@@ -920,16 +947,28 @@ object BranchSiteAnalyzer {
      * flag corrected the same way a same-class target's is.
      *
      * A candidate named `<init>` or `<clinit>` whose owner's [MethodTable.hasEnclosingMethod] is
-     * true names a body class: a function reference, a suspend lambda, an object expression, or an
-     * anonymous or local class. In addition to the edge already added for that candidate, an edge
+     * true names a body class: a suspend lambda, an object expression, or an anonymous or local
+     * class. A function or property reference is a body class too, but a synthetic one, handled
+     * below. In addition to the edge already added for that candidate, an edge
      * is added from the entry point to every method the body class declares with a body, other than
      * `<init>` and `<clinit>`, that the method tier would probe, with the same non-virtual
      * correction a same-class target gets. The creator is the only method that can ever reach a
      * body class's methods, so without this edge every one of them would look uncalled the moment
-     * its only caller is out of scope, which is the common case: a framework invokes a lambda body,
-     * and a function reference's `invoke` is called by whatever the reference was handed to. A
+     * its only caller is out of scope, which is the common case: a framework invokes an object
+     * expression's `run`, or a coroutine library resumes a suspend lambda. A
      * named, non-local class carries no `EnclosingMethod` attribute, so `new` on one is never
      * expanded this way.
+     *
+     * A body class the agent never probes ([MethodTable.isUnprobedBodyClass]) is a pass-through as
+     * a whole, since an edge into it would name a method with no probe. kotlinc makes such classes
+     * for every function and property reference and each `$sam$` wrapper, which are synthetic, and
+     * for every suspend function's own continuation. A candidate for any of its methods adds no
+     * edge to the class itself. Its own raw candidates are substituted in its place instead. When the candidate is
+     * its `<init>` or `<clinit>`, the raw candidates of every other method it declares with a body
+     * are substituted too, as `CREATES` edges, the way the body-class edges above are. So
+     * `val f = ::twice` gives its creator a `CREATES` edge to `twice`, the same edge a Java
+     * `this::twice` gives. A continuation's `invokeSuspend` calls back into the suspend function that
+     * created it, which is a self-edge and is dropped. See ADR 0034.
      *
      * Self-edges (the entry-point method calling itself, directly or through a pass-through
      * chain) are dropped, and so is a candidate for this class's own `<clinit>`, which a
@@ -955,7 +994,9 @@ object BranchSiteAnalyzer {
      * reference is attributed exactly where the pass-through's callees are. A cross-class `$default`
      * resolved to its target also adds its own references, since its body evaluates the default
      * expressions on the caller's behalf. A body-class join adds none: the body class's methods hold
-     * their own references in their own class's analysis.
+     * their own references in their own class's analysis. A body class the agent never probes has no
+     * analysis of its own, so each of its methods the walk passes through adds its references like any other
+     * pass-through.
      */
     private fun resolveCallEdges(
         internalClassName: String,
@@ -1079,6 +1120,18 @@ object BranchSiteAnalyzer {
 
                 val declaredWithBody = access and BODYLESS_FLAGS == 0
                 val isConstructorOrInitializer = name == "<init>" || name == "<clinit>"
+                if (table.isUnprobedBodyClass) {
+                    references += table.rawReferencesByMethod[name to descriptor].orEmpty()
+                    table.rawCandidatesByMethod[name to descriptor].orEmpty().forEach(::visitInside)
+                    if (isConstructorOrInitializer) {
+                        for ((bodyKey, bodyAccess) in table.methodAccess) {
+                            val (bodyName, bodyDescriptor) = bodyKey
+                            if (bodyName == "<init>" || bodyName == "<clinit>" || bodyAccess and BODYLESS_FLAGS != 0) continue
+                            visit(owner, bodyName, bodyDescriptor, bodyAccess and NON_VIRTUAL_FLAGS == 0, CallEdgeKind.CREATES, 0)
+                        }
+                    }
+                    return
+                }
                 if (declaredWithBody && !isConstructorOrInitializer && wouldNotBeProbedByMethodTier(access, name, table.isScalaClass)) {
                     references += table.rawReferencesByMethod[name to descriptor].orEmpty()
                     table.rawCandidatesByMethod[name to descriptor].orEmpty().forEach(::visitInside)
@@ -2398,7 +2451,23 @@ object BranchSiteAnalyzer {
         val isScalaClass: Boolean = false,
         val hasEnclosingMethod: Boolean = false,
         val rawReferencesByMethod: Map<Pair<String, String>, Set<String>> = emptyMap(),
-    )
+        val internalName: String = "",
+        val superInternalName: String? = null,
+    ) {
+        /**
+         * A body class the type matcher turns away by [TypeMatchPolicy.isTurnedAwayByShape], so
+         * none of its methods ever has a probe: a synthetic class, such as each function or
+         * property reference and each `$sam$` wrapper kotlinc makes, or a suspend function's own
+         * continuation. See ADR 0034.
+         */
+        val isUnprobedBodyClass: Boolean
+            get() =
+                hasEnclosingMethod &&
+                    TypeMatchPolicy.isTurnedAwayByShape(
+                        internalName.replace('/', '.'),
+                        classAccess and Opcodes.ACC_SYNTHETIC != 0,
+                    ) { superInternalName?.replace('/', '.') }
+    }
 
     /**
      * A minimal reader for a class this agent is not instrumenting: what
@@ -2411,6 +2480,7 @@ object BranchSiteAnalyzer {
     private fun readMethodTable(classBytes: ByteArray): MethodTable {
         var classAccess = 0
         var internalName = ""
+        var superInternalName: String? = null
         var hasEnclosingMethod = false
         val methodAccess = mutableMapOf<Pair<String, String>, Int>()
         val localNames = mutableMapOf<Pair<String, String>, MutableMap<Int, String>>()
@@ -2430,6 +2500,7 @@ object BranchSiteAnalyzer {
                 ) {
                     classAccess = access
                     internalName = name
+                    superInternalName = superName
                 }
 
                 override fun visitOuterClass(
@@ -2485,6 +2556,8 @@ object BranchSiteAnalyzer {
             isScalaClass,
             hasEnclosingMethod,
             rawReferencesByMethod,
+            internalName,
+            superInternalName,
         )
     }
 }

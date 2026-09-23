@@ -1,5 +1,6 @@
 package io.github.lukedevops.yukon.export
 
+import io.github.lukedevops.yukon.proto.BodyKind as ProtoBodyKind
 import io.github.lukedevops.yukon.proto.CallEdge as ProtoCallEdge
 import io.github.lukedevops.yukon.proto.CallEdgeKind as ProtoCallEdgeKind
 import io.github.lukedevops.yukon.proto.ClassLocation as ProtoClassLocation
@@ -260,6 +261,8 @@ object ProtoPayloadCodec {
             .setSuperClassName(location.superClassName ?: "")
             .addAllInterfaceNames(location.interfaceNames)
             .setSourceFile(location.sourceFile ?: "")
+            .setBodyKind(toProto(location.bodyKind))
+            .setSourceName(location.sourceName ?: "")
             .build()
 
     private fun fromProto(location: ProtoClassLocation): ClassLocation =
@@ -268,7 +271,28 @@ object ProtoPayloadCodec {
             superClassName = location.superClassName.ifEmpty { null },
             interfaceNames = location.interfaceNamesList,
             sourceFile = location.sourceFile.ifEmpty { null },
+            bodyKind = fromProto(location.bodyKind),
+            sourceName = location.sourceName.ifEmpty { null },
         )
+
+    private fun toProto(kind: BodyKind): ProtoBodyKind =
+        when (kind) {
+            BodyKind.NONE -> ProtoBodyKind.NONE
+            BodyKind.ANONYMOUS_CLASS -> ProtoBodyKind.ANONYMOUS_CLASS
+            BodyKind.OBJECT_EXPRESSION -> ProtoBodyKind.OBJECT_EXPRESSION
+            BodyKind.LOCAL_CLASS -> ProtoBodyKind.LOCAL_CLASS
+            BodyKind.LAMBDA_CLASS -> ProtoBodyKind.LAMBDA_CLASS
+        }
+
+    private fun fromProto(kind: ProtoBodyKind): BodyKind =
+        when (kind) {
+            ProtoBodyKind.NONE -> BodyKind.NONE
+            ProtoBodyKind.ANONYMOUS_CLASS -> BodyKind.ANONYMOUS_CLASS
+            ProtoBodyKind.OBJECT_EXPRESSION -> BodyKind.OBJECT_EXPRESSION
+            ProtoBodyKind.LOCAL_CLASS -> BodyKind.LOCAL_CLASS
+            ProtoBodyKind.LAMBDA_CLASS -> BodyKind.LAMBDA_CLASS
+            ProtoBodyKind.UNRECOGNIZED -> throw IllegalArgumentException("unrecognized body kind on the wire: $kind")
+        }
 
     private fun toProto(kind: ProbeKind): ProtoProbeKind =
         when (kind) {
@@ -367,6 +391,8 @@ object ProtoPayloadCodec {
             .addAllInterfaceNames(declaredClass.interfaceNames)
             .addAllReferencedClasses(declaredClass.referencedClasses)
             .setSourceFile(declaredClass.sourceFile ?: "")
+            .setBodyKind(toProto(declaredClass.bodyKind))
+            .setSourceName(declaredClass.sourceName ?: "")
             .build()
 
     private fun fromProto(declaredClass: ProtoDeclaredClass): DeclaredClass =
@@ -377,6 +403,8 @@ object ProtoPayloadCodec {
             interfaceNames = declaredClass.interfaceNamesList,
             referencedClasses = declaredClass.referencedClassesList,
             sourceFile = declaredClass.sourceFile.ifEmpty { null },
+            bodyKind = fromProto(declaredClass.bodyKind),
+            sourceName = declaredClass.sourceName.ifEmpty { null },
         )
 
     private fun toProto(method: DeclaredMethod): ProtoDeclaredMethod =

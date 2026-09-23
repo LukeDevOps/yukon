@@ -1,6 +1,7 @@
 package io.github.lukedevops.yukon.instrumentation
 
 import io.github.lukedevops.yukon.config.AgentConfig
+import io.github.lukedevops.yukon.export.BodyKind
 import io.github.lukedevops.yukon.export.ResourceAttributes
 import io.github.lukedevops.yukon.registry.ProbeMeta
 import io.github.lukedevops.yukon.registry.ProbeRegistry
@@ -72,9 +73,22 @@ class BranchSiteCountMismatchTest {
             interfaceNames: List<String>,
             classReferences: List<String>,
             sourceFile: String?,
+            bodyKind: BodyKind,
+            sourceName: String?,
         ): LongArray {
             registered += className
-            return super.register(className, layoutHash, probes, classLoader, superClassName, interfaceNames, classReferences, sourceFile)
+            return super.register(
+                className,
+                layoutHash,
+                probes,
+                classLoader,
+                superClassName,
+                interfaceNames,
+                classReferences,
+                sourceFile,
+                bodyKind,
+                sourceName,
+            )
         }
     }
 

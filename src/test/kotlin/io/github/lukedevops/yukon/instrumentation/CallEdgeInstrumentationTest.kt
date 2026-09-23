@@ -1,6 +1,7 @@
 package io.github.lukedevops.yukon.instrumentation
 
 import io.github.lukedevops.yukon.config.AgentConfig
+import io.github.lukedevops.yukon.export.BodyKind
 import io.github.lukedevops.yukon.export.CallEdge
 import io.github.lukedevops.yukon.export.CallEdgeKind
 import io.github.lukedevops.yukon.export.ProbeKind
@@ -19,7 +20,7 @@ import kotlin.test.assertTrue
  * a METHOD probe carries its own in-scope call edges, a BRANCH probe carries none, and the class
  * gets its own [io.github.lukedevops.yukon.export.ClassLocation] record. Also proves the ADR 0034
  * facts on the same path: an edge's kind and captured count, a method's lambda body flag, and the
- * class's source file.
+ * class's source file, body kind and source name.
  */
 class CallEdgeInstrumentationTest {
     private var installedTransformer: ResettableClassFileTransformer? = null
@@ -112,7 +113,7 @@ class CallEdgeInstrumentationTest {
     }
 
     @Test
-    fun `a bound function reference's constructor edge on the manifest also carries the body class's typed invoke`() {
+    fun `a bound function reference passes through to the function it names on the manifest, since kotlinc marks its class synthetic`() {
         val registry = ProbeRegistry()
         val config = AgentConfig.parse("includePackages=com.example.target")
         install(registry, config)
@@ -132,19 +133,7 @@ class CallEdgeInstrumentationTest {
                 }
         assertEquals(
             listOf(
-                CallEdge(
-                    "com.example.target.FunctionReferenceTarget\$viaReference\$f\$1",
-                    "<init>",
-                    "(Ljava/lang/Object;)V",
-                    virtual = false,
-                ),
-                CallEdge(
-                    "com.example.target.FunctionReferenceTarget\$viaReference\$f\$1",
-                    "invoke",
-                    "()Ljava/lang/Integer;",
-                    virtual = false,
-                    kind = CallEdgeKind.CREATES,
-                ),
+                CallEdge("com.example.target.FunctionReferenceTarget", "secret", "()I", virtual = false, kind = CallEdgeKind.CREATES),
             ),
             viaReferenceProbe.calls,
         )
@@ -227,6 +216,55 @@ class CallEdgeInstrumentationTest {
         assertEquals(
             "CreationEdgeJavaTarget.java",
             manifest.classLocations.single { it.classId == methodProbes.first().classId }.sourceFile,
+        )
+    }
+
+    @Test
+    fun `through the real pipeline, each class location carries its body kind, and a reference class passes through to its accessors`() {
+        val registry = ProbeRegistry()
+        val config = AgentConfig.parse("includePackages=com.example.target")
+        install(registry, config)
+
+        val kotlinLoader = FixtureClassLoader(arrayOf(File("build/classes/kotlin/test").toURI().toURL()), javaClass.classLoader)
+        val javaLoader = FixtureClassLoader(arrayOf(File("build/classes/java/test").toURI().toURL()), javaClass.classLoader)
+        val kotlinClasses =
+            listOf(
+                "BodyKindTarget",
+                "BodyKindTarget\$localClass\$Local",
+                "BodyKindTarget\$serializableLambda\$1",
+                "ObjectExpressionTarget\$makeHandler\$1",
+            )
+        val javaClasses = listOf("BodyKindJavaTarget\$1", "BodyKindJavaTarget\$1Local")
+        kotlinClasses.forEach { Class.forName("com.example.target.$it", false, kotlinLoader) }
+        Class.forName("com.example.target.BodyKindTarget\$mutablePropertyReference\$1", false, kotlinLoader)
+        javaClasses.forEach { Class.forName("com.example.target.$it", false, javaLoader) }
+
+        val manifest = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
+        val classNames = manifest.probes.associate { it.classId to it.className.removePrefix("com.example.target.") }
+        val kinds = manifest.classLocations.associate { classNames.getValue(it.classId) to (it.bodyKind to it.sourceName) }
+
+        assertEquals(
+            mapOf(
+                "BodyKindTarget" to (BodyKind.NONE to null),
+                "BodyKindTarget\$localClass\$Local" to (BodyKind.LOCAL_CLASS to "Local"),
+                "BodyKindTarget\$serializableLambda\$1" to (BodyKind.LAMBDA_CLASS to null),
+                "ObjectExpressionTarget\$makeHandler\$1" to (BodyKind.OBJECT_EXPRESSION to null),
+                "BodyKindJavaTarget\$1" to (BodyKind.ANONYMOUS_CLASS to null),
+                "BodyKindJavaTarget\$1Local" to (BodyKind.LOCAL_CLASS to "Local"),
+            ),
+            kinds.filterKeys { it.startsWith("BodyKind") || it.startsWith("ObjectExpressionTarget") },
+            "kotlinc marks the property reference class synthetic, so the type matcher turns it away and it has no class location",
+        )
+        assertEquals(
+            listOf(
+                CallEdge("com.example.target.BodyKindTarget", "getCounter", "()I", virtual = false, kind = CallEdgeKind.CREATES),
+                CallEdge("com.example.target.BodyKindTarget", "setCounter", "(I)V", virtual = false, kind = CallEdgeKind.CREATES),
+            ),
+            manifest.probes
+                .single {
+                    it.className == "com.example.target.BodyKindTarget" && it.methodName == "mutablePropertyReference" &&
+                        it.kind == ProbeKind.METHOD
+                }.calls,
         )
     }
 

@@ -359,26 +359,21 @@ class CallEdgeAnalyzerTest {
     }
 
     @Test
-    fun `a bound function reference to a private method is a body class, joined by its constructor edge`() {
+    fun `a bound function reference to a private method passes through its synthetic class to the accessor it calls`() {
         val analysis = analyzeTarget("FunctionReferenceTarget")
 
         assertEquals(
             listOf(
                 CallEdge(
-                    "com.example.target.FunctionReferenceTarget\$viaReference\$f\$1",
-                    "<init>",
-                    "(Ljava/lang/Object;)V",
-                    virtual = false,
-                ),
-                CallEdge(
-                    "com.example.target.FunctionReferenceTarget\$viaReference\$f\$1",
-                    "invoke",
-                    "()Ljava/lang/Integer;",
+                    "com.example.target.FunctionReferenceTarget",
+                    "access\$secret",
+                    "(Lcom/example/target/FunctionReferenceTarget;)I",
                     virtual = false,
                     kind = CallEdgeKind.CREATES,
                 ),
             ),
             analysis.callsOf("viaReference", "()I"),
+            "this test's filter accepts every method, access\$secret included, so the walk stops at the accessor",
         )
     }
 

@@ -464,4 +464,30 @@ class TypeMatchPolicyTest {
 
         assertTrue(TypeMatchPolicy.typeNameMatcher(listOf("com.example"), emptyList()).matches(pool.describe(name).resolve()))
     }
+
+    @Test
+    fun `the shape test turns away a synthetic class, a runtime-generated one and a continuation, and nothing else`() {
+        val plainSuper = { "java.lang.Object" }
+
+        assertTrue(TypeMatchPolicy.isTurnedAwayByShape("com.acme.Foo\$bar\$1", isSynthetic = true, plainSuper))
+        assertTrue(TypeMatchPolicy.isTurnedAwayByShape("com.acme.Foo\$\$SpringCGLIB\$\$0", isSynthetic = false, plainSuper))
+        assertTrue(
+            TypeMatchPolicy.isTurnedAwayByShape("com.acme.FooKt\$bar\$1", isSynthetic = false) {
+                "kotlin.coroutines.jvm.internal.ContinuationImpl"
+            },
+        )
+        assertFalse(
+            TypeMatchPolicy.isTurnedAwayByShape("com.acme.Foo\$bar\$1", isSynthetic = false) {
+                "kotlin.coroutines.jvm.internal.SuspendLambda"
+            },
+            "a suspend lambda holds the adopter's own body",
+        )
+        assertFalse(TypeMatchPolicy.isTurnedAwayByShape("com.acme.Foo", isSynthetic = false, plainSuper))
+        assertFalse(TypeMatchPolicy.isTurnedAwayByShape("com.acme.Foo", isSynthetic = false) { null })
+    }
+
+    @Test
+    fun `the shape test reads no superclass when the class is already turned away`() {
+        assertTrue(TypeMatchPolicy.isTurnedAwayByShape("com.acme.Foo", isSynthetic = true) { error("superclass read") })
+    }
 }

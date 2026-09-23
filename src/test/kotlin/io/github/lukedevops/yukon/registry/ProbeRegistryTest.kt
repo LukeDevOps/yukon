@@ -1,5 +1,6 @@
 package io.github.lukedevops.yukon.registry
 
+import io.github.lukedevops.yukon.export.BodyKind
 import io.github.lukedevops.yukon.export.CallEdge
 import io.github.lukedevops.yukon.export.ProbeKind
 import io.github.lukedevops.yukon.export.ResourceAttributes
@@ -748,6 +749,33 @@ class ProbeRegistryTest {
             val sourceFiles = sent.classLocations.associate { it.classId to it.sourceFile }
             assertEquals("Foo.kt", sourceFiles[classIds.getValue("com.example.Foo")])
             assertEquals(null, sourceFiles[classIds.getValue("com.example.NoSource")])
+        }
+    }
+
+    @Test
+    fun `manifest and computeManifestDelta carry the class's body kind and source name`() {
+        val registry = ProbeRegistry()
+        registry.register(
+            "com.example.Foo\$1Local",
+            layoutHash = 1L,
+            probes = listOf(ProbeMeta(ProbeKind.METHOD, "run", "()V", line = 1)),
+            superClassName = "java.lang.Object",
+            bodyKind = BodyKind.LOCAL_CLASS,
+            sourceName = "Local",
+        )
+        registry.register("com.example.Foo", layoutHash = 1L, probes = listOf(ProbeMeta(ProbeKind.METHOD, "run", "()V", line = 1)))
+        val resource = ResourceAttributes("checkout", "1.0.0", "instance-1", null, "run-1")
+
+        val manifest = registry.manifest(resource)
+        val delta = registry.computeManifestDelta(resource).manifest
+
+        for (sent in listOf(manifest, delta)) {
+            val classIds = sent.probes.associate { it.className to it.classId }
+            val locations = sent.classLocations.associateBy { it.classId }
+            val local = locations.getValue(classIds.getValue("com.example.Foo\$1Local"))
+            val plain = locations.getValue(classIds.getValue("com.example.Foo"))
+            assertEquals(BodyKind.LOCAL_CLASS to "Local", local.bodyKind to local.sourceName)
+            assertEquals(BodyKind.NONE to null, plain.bodyKind to plain.sourceName)
         }
     }
 

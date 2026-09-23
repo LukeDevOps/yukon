@@ -8,6 +8,7 @@ import io.github.lukedevops.yukon.advice.OptionalBits
 import io.github.lukedevops.yukon.advice.ProbeIndex
 import io.github.lukedevops.yukon.bootstrap.YukonProbeArrays
 import io.github.lukedevops.yukon.config.AgentConfig
+import io.github.lukedevops.yukon.export.BodyKind
 import io.github.lukedevops.yukon.export.ProbeKind
 import io.github.lukedevops.yukon.instrumentation.branch.BranchDropCounts
 import io.github.lukedevops.yukon.instrumentation.branch.BranchDropReason
@@ -192,6 +193,8 @@ class YukonInstrumentation(
         /** Every referenced class kept, dotted, with where it was found; see [ReferencedClassLocator.Found]. */
         val externalClasses: Map<String, String?>,
         val sourceFile: String?,
+        val bodyKind: BodyKind,
+        val sourceName: String?,
     )
 
     /**
@@ -249,6 +252,8 @@ class YukonInstrumentation(
                 interfaceNames = pending.interfaceNames,
                 classReferences = pending.classReferences,
                 sourceFile = pending.sourceFile,
+                bodyKind = pending.bodyKind,
+                sourceName = pending.sourceName,
             )
             for ((className, location) in pending.externalClasses) externalClassRegistry.record(className, location)
         }
@@ -534,6 +539,8 @@ class YukonInstrumentation(
                 references.keep(analysis.classReferences),
                 references.kept(),
                 analysis.sourceFile,
+                analysis.bodyKind,
+                analysis.sourceName,
             ),
         )
         if (staticBaselineMismatchDetector.shouldWarnAbout(typeDescription.name)) {

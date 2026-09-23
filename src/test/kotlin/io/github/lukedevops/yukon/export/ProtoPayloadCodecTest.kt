@@ -5,8 +5,10 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import io.github.lukedevops.yukon.proto.BodyKind as ProtoBodyKind
 import io.github.lukedevops.yukon.proto.CallEdge as ProtoCallEdge
 import io.github.lukedevops.yukon.proto.CallEdgeKind as ProtoCallEdgeKind
+import io.github.lukedevops.yukon.proto.ClassLocation as ProtoClassLocation
 import io.github.lukedevops.yukon.proto.DeltaBatch as ProtoDeltaBatch
 import io.github.lukedevops.yukon.proto.DependencyDiscoverySource as ProtoDependencyDiscoverySource
 import io.github.lukedevops.yukon.proto.DependencyIdentity as ProtoDependencyIdentity
@@ -1226,6 +1228,103 @@ class ProtoPayloadCodecTest {
             listOf("Foo.kt", "<generated>", ""),
             ProtoProbeManifest.parseFrom(bytes).classLocationsList.map { it.sourceFile },
         )
+    }
+
+    @Test
+    fun `a class location's body kind and source name round-trip through the wire, every kind included`() {
+        val locations =
+            BodyKind.entries.mapIndexed { index, kind ->
+                ClassLocation(
+                    classId = index,
+                    superClassName = "java.lang.Object",
+                    interfaceNames = emptyList(),
+                    bodyKind = kind,
+                    sourceName = if (kind == BodyKind.LOCAL_CLASS) "Local" else null,
+                )
+            }
+        val manifest =
+            ProbeManifest(
+                resource = ResourceAttributes("checkout", null, "", null, "run-1"),
+                probes = emptyList(),
+                classLocations = locations,
+            )
+
+        val bytes = ProtoPayloadCodec.encode(manifest)
+        val wire = ProtoProbeManifest.parseFrom(bytes).classLocationsList
+
+        assertEquals(manifest, ProtoPayloadCodec.decodeProbeManifest(bytes))
+        assertEquals(
+            listOf(
+                ProtoBodyKind.NONE,
+                ProtoBodyKind.ANONYMOUS_CLASS,
+                ProtoBodyKind.OBJECT_EXPRESSION,
+                ProtoBodyKind.LOCAL_CLASS,
+                ProtoBodyKind.LAMBDA_CLASS,
+            ),
+            wire.map { it.bodyKind },
+        )
+        assertEquals(listOf("", "", "", "Local", ""), wire.map { it.sourceName })
+    }
+
+    @Test
+    fun `a class location with no body kind or source name on the wire decodes as not a body class`() {
+        val wireManifest =
+            ProtoProbeManifest
+                .newBuilder()
+                .setResource(ProtoResourceAttributes.newBuilder().setServiceName("checkout").setRunId("run-1"))
+                .addClassLocations(ProtoClassLocation.newBuilder().setClassId(0).setSuperClassName("java.lang.Object"))
+                .build()
+
+        val location = ProtoPayloadCodec.decodeProbeManifest(wireManifest.toByteArray()).classLocations.single()
+
+        assertEquals(BodyKind.NONE, location.bodyKind)
+        assertEquals(null, location.sourceName)
+    }
+
+    @Test
+    fun `an unrecognized body kind on the wire is rejected`() {
+        val wireManifest =
+            ProtoProbeManifest
+                .newBuilder()
+                .setResource(ProtoResourceAttributes.newBuilder().setServiceName("checkout").setRunId("run-1"))
+                .addClassLocations(ProtoClassLocation.newBuilder().setClassId(0).setBodyKindValue(99))
+                .build()
+
+        assertFailsWith<IllegalArgumentException> {
+            ProtoPayloadCodec.decodeProbeManifest(wireManifest.toByteArray())
+        }
+    }
+
+    @Test
+    fun `a declared class's body kind and source name round-trip through the wire`() {
+        val baseline =
+            StaticBaseline(
+                resource = ResourceAttributes("checkout", null, "instance-1", null, "run-1"),
+                declaredClasses =
+                    listOf(
+                        DeclaredClass(
+                            className = "com.example.Foo\$1Local",
+                            methods = listOf(DeclaredMethod("run", "()V")),
+                            sourceFile = "Foo.java",
+                            bodyKind = BodyKind.LOCAL_CLASS,
+                            sourceName = "Local",
+                        ),
+                        DeclaredClass(
+                            className = "com.example.Foo\$bar\$1",
+                            methods = listOf(DeclaredMethod("invokeSuspend", "(Ljava/lang/Object;)Ljava/lang/Object;")),
+                            bodyKind = BodyKind.LAMBDA_CLASS,
+                        ),
+                        DeclaredClass(className = "com.example.Foo", methods = listOf(DeclaredMethod("bar", "()V"))),
+                    ),
+                scannedAt = 1000L,
+            )
+
+        val bytes = ProtoPayloadCodec.encode(baseline)
+        val wire = ProtoStaticBaseline.parseFrom(bytes).declaredClassesList
+
+        assertEquals(baseline, ProtoPayloadCodec.decodeStaticBaseline(bytes))
+        assertEquals(listOf(ProtoBodyKind.LOCAL_CLASS, ProtoBodyKind.LAMBDA_CLASS, ProtoBodyKind.NONE), wire.map { it.bodyKind })
+        assertEquals(listOf("Local", "", ""), wire.map { it.sourceName })
     }
 
     @Test

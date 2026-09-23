@@ -1,6 +1,7 @@
 package io.github.lukedevops.yukon.registry
 
 import io.github.lukedevops.yukon.export.ClassReferences
+import io.github.lukedevops.yukon.export.BodyKind
 import io.github.lukedevops.yukon.export.ClassLocation
 import io.github.lukedevops.yukon.export.DeltaBatch
 import io.github.lukedevops.yukon.export.ProbeDelta
@@ -104,6 +105,8 @@ open class ProbeRegistry(
         val classLoaderRef: WeakReference<ClassLoader>?,
         val classReferences: List<String>,
         val sourceFile: String?,
+        val bodyKind: BodyKind,
+        val sourceName: String?,
     ) {
         /** The last cumulative count successfully delivered to the collector, per probe. */
         var lastSent: LongArray = LongArray(counts.size)
@@ -189,8 +192,9 @@ open class ProbeRegistry(
      * which array slot a probe hit increments.
      *
      * [sourceFile] is the class file's `SourceFile` attribute as it appears, or null when it has
-     * none. It travels in the same [ClassLocation] record and, like the supertypes, plays no part
-     * in the key or the hash. See ADR 0034.
+     * none. [bodyKind] and [sourceName] say what kind of body class it is and, for a local class,
+     * the name the source gave it. All three travel in the same [ClassLocation] record and, like
+     * the supertypes, play no part in the key or the hash. See ADR 0034.
      *
      * [classReferences] are the class's own out-of-scope references outside any probed method,
      * dotted (ADR 0030). They travel as one [ClassReferences] record, staged, withheld and committed
@@ -209,6 +213,8 @@ open class ProbeRegistry(
         interfaceNames: List<String> = emptyList(),
         classReferences: List<String> = emptyList(),
         sourceFile: String? = null,
+        bodyKind: BodyKind = BodyKind.NONE,
+        sourceName: String? = null,
     ): LongArray {
         val key = RegistryKey(className, layoutHash, System.identityHashCode(classLoader))
         val entry =
@@ -223,6 +229,8 @@ open class ProbeRegistry(
                     classLoaderRef = weakClassLoaderRef(classLoader),
                     classReferences = classReferences,
                     sourceFile = sourceFile,
+                    bodyKind = bodyKind,
+                    sourceName = sourceName,
                 )
             }
         return entry.counts
@@ -606,7 +614,7 @@ open class ProbeRegistry(
 
     /** [entry]'s [ClassLocation] record. */
     private fun classLocationOf(entry: ClassEntry): ClassLocation =
-        ClassLocation(entry.classId, entry.superClassName, entry.interfaceNames, entry.sourceFile)
+        ClassLocation(entry.classId, entry.superClassName, entry.interfaceNames, entry.sourceFile, entry.bodyKind, entry.sourceName)
 
     /** [entry]'s [ClassReferences] record, or null when it has no class-level references. */
     private fun classReferencesOf(entry: ClassEntry): ClassReferences? =
