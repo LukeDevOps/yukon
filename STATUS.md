@@ -223,7 +223,7 @@ mostly per class (ADR 0030).
 ADR 0030 does not depend on the answer. Its origin rule already covers the
 unset case for deciding which jars are dependencies.
 
-### Generated methods: branches marked, two over-marks closed
+### Generated methods: branches marked, two over-marks closed: landed in both repos
 
 Grilled and settled on 2026-09-23 as an amendment to ADR 0026; `CONTEXT.md`'s
 "generated method" was reworded. The question was the branch sites inside a
@@ -291,6 +291,9 @@ Progress:
   and 10, the six extra rows all `TaxRate#equals` branches at line -1; with
   it, 34 and the same 4, with 11 generated and not judged. A single-`Double`
   data class's `hashCode` has no branch site, so only `equals` showed.
+- Chunk 4 landed in `yukon-server` (`e5f53f4`): the `Probe` comment in
+  `read.go` and the README say a branch probe carries its method's mark. No
+  logic change and no bindings bump, since the proto changed only in comments.
 
 ### Generators other than Spring are not recognised
 
