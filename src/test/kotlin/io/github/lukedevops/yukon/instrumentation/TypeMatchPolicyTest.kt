@@ -157,6 +157,26 @@ class TypeMatchPolicyTest {
         assertTrue("ship" in matchedNotScala, "a method reference's own target is an ordinary method, untouched by the rule")
     }
 
+    @Test
+    fun `each compiler's lambda body name passes the lambda-body name rule`() {
+        assertTrue(TypeMatchPolicy.isLambdaBodyName("lambda\$classifyViaLambda\$0"), "javac")
+        assertTrue(TypeMatchPolicy.isLambdaBodyName("\$anonfun\$classify\$1"), "Scala 2")
+        assertTrue(TypeMatchPolicy.isLambdaBodyName("\$anonfun\$1"), "Scala 3")
+        assertTrue(TypeMatchPolicy.isLambdaBodyName("main\$lambda\$0"), "kotlinc")
+        assertTrue(TypeMatchPolicy.isLambdaBodyName("main\$lambda\$0\$0"), "kotlinc, nested")
+        assertTrue(TypeMatchPolicy.isLambdaBodyName("main\$lambda\$12\$3\$0"), "kotlinc, nested twice")
+    }
+
+    @Test
+    fun `a forwarder or a name a person could write fails the lambda-body name rule`() {
+        assertFalse(TypeMatchPolicy.isLambdaBodyName("\$anonfun\$classify\$1\$adapted"), "Scala 2's boxing forwarder")
+        assertFalse(TypeMatchPolicy.isLambdaBodyName("twice"))
+        assertFalse(TypeMatchPolicy.isLambdaBodyName("main\$lambda"), "no number after the marker")
+        assertFalse(TypeMatchPolicy.isLambdaBodyName("\$lambda\$0"), "no method name before the marker")
+        assertFalse(TypeMatchPolicy.isLambdaBodyName("main\$lambda\$0x"))
+        assertFalse(TypeMatchPolicy.isLambdaBodyName("access\$000"))
+    }
+
     /** Builds a type with one static synthetic method named [name], returning `int`, taking no arguments. */
     private fun typeWithSyntheticMethod(
         typeName: String,

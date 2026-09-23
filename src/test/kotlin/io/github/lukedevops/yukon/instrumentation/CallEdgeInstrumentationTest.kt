@@ -2,6 +2,7 @@ package io.github.lukedevops.yukon.instrumentation
 
 import io.github.lukedevops.yukon.config.AgentConfig
 import io.github.lukedevops.yukon.export.CallEdge
+import io.github.lukedevops.yukon.export.CallEdgeKind
 import io.github.lukedevops.yukon.export.ProbeKind
 import io.github.lukedevops.yukon.export.ResourceAttributes
 import io.github.lukedevops.yukon.registry.ProbeRegistry
@@ -16,7 +17,9 @@ import kotlin.test.assertTrue
 /**
  * Proves through the real pipeline that call edges and supertypes (ADR 0024) reach the manifest:
  * a METHOD probe carries its own in-scope call edges, a BRANCH probe carries none, and the class
- * gets its own [io.github.lukedevops.yukon.export.ClassSupertypes] record.
+ * gets its own [io.github.lukedevops.yukon.export.ClassLocation] record. Also proves the ADR 0034
+ * facts on the same path: an edge's kind and captured count, a method's lambda body flag, and the
+ * class's source file.
  */
 class CallEdgeInstrumentationTest {
     private var installedTransformer: ResettableClassFileTransformer? = null
@@ -40,7 +43,7 @@ class CallEdgeInstrumentationTest {
     }
 
     @Test
-    fun `a METHOD probe carries its calls, a BRANCH probe carries none, and the class gets a supertypes record`() {
+    fun `a METHOD probe carries its calls, a BRANCH probe carries none, and the class gets a class location record`() {
         val registry = ProbeRegistry()
         val config = AgentConfig.parse("includePackages=com.example.target")
         install(registry, config)
@@ -64,7 +67,7 @@ class CallEdgeInstrumentationTest {
         assertTrue(branchProbes.isNotEmpty(), "callsSelfRecursively's if/else contributes branch probes")
         assertTrue(branchProbes.all { it.calls.isEmpty() }, "a BRANCH probe never carries call edges")
 
-        val supertypes = manifest.classSupertypes.single { it.classId == callsPrivateMethodProbe.classId }
+        val supertypes = manifest.classLocations.single { it.classId == callsPrivateMethodProbe.classId }
         assertEquals("java.lang.Object", supertypes.superClassName)
         assertEquals(emptyList(), supertypes.interfaceNames)
     }
@@ -140,9 +143,90 @@ class CallEdgeInstrumentationTest {
                     "invoke",
                     "()Ljava/lang/Integer;",
                     virtual = false,
+                    kind = CallEdgeKind.CREATES,
                 ),
             ),
             viaReferenceProbe.calls,
+        )
+    }
+
+    @Test
+    fun `through the real matcher, a Kotlin lambda's creation edge, its lambda body flag and the class's source file reach the manifest`() {
+        val registry = ProbeRegistry()
+        val config = AgentConfig.parse("includePackages=com.example.target")
+        install(registry, config)
+
+        val loader = FixtureClassLoader(arrayOf(File("build/classes/kotlin/test").toURI().toURL()), javaClass.classLoader)
+        val targetClass = Class.forName("com.example.target.CreationEdgeTarget", true, loader)
+        val target = targetClass.getDeclaredConstructor().newInstance()
+        targetClass.getMethod("capturing", Int::class.java).invoke(target, 1)
+        targetClass.getMethod("callsDefault").invoke(target)
+
+        val manifest = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
+        val methodProbes =
+            manifest.probes.filter { it.className == "com.example.target.CreationEdgeTarget" && it.kind == ProbeKind.METHOD }
+
+        assertTrue(
+            CallEdge(
+                "com.example.target.CreationEdgeTarget",
+                "capturing\$lambda\$0",
+                "(II)I",
+                virtual = false,
+                kind = CallEdgeKind.CREATES,
+                capturedCount = 1,
+            ) in methodProbes.single { it.methodName == "capturing" }.calls,
+        )
+        assertEquals(
+            listOf(
+                CallEdge("com.example.target.CreationEdgeTarget", "withDefault\$lambda\$0", "(I)I", virtual = false, kind = CallEdgeKind.CREATES),
+                CallEdge("com.example.target.CreationEdgeTarget", "withDefault", "(Lkotlin/jvm/functions/Function1;)I", virtual = false),
+            ),
+            methodProbes.single { it.methodName == "callsDefault" }.calls,
+            "the real matcher leaves withDefault\$default unprobed, so its lambda is created by the method that calls it",
+        )
+        assertEquals(
+            setOf(
+                "plain\$lambda\$0",
+                "capturing\$lambda\$0",
+                "capturingThis\$lambda\$0",
+                "nested\$lambda\$0",
+                "nested\$lambda\$0\$0",
+                "withDefault\$lambda\$0",
+            ),
+            methodProbes.filter { it.lambdaBody }.map { it.methodName }.toSet(),
+        )
+        assertEquals(
+            "CreationEdgeTarget.kt",
+            manifest.classLocations.single { it.classId == methodProbes.first().classId }.sourceFile,
+        )
+    }
+
+    @Test
+    fun `through the real matcher, a javac lambda body is flagged and a method reference's target is not`() {
+        val registry = ProbeRegistry()
+        val config = AgentConfig.parse("includePackages=com.example.target")
+        install(registry, config)
+
+        val loader = FixtureClassLoader(arrayOf(File("build/classes/java/test").toURI().toURL()), javaClass.classLoader)
+        Class.forName("com.example.target.CreationEdgeJavaTarget", true, loader)
+
+        val manifest = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
+        val methodProbes =
+            manifest.probes.filter { it.className == "com.example.target.CreationEdgeJavaTarget" && it.kind == ProbeKind.METHOD }
+
+        assertEquals(
+            setOf("lambda\$capturing\$0", "lambda\$capturingThis\$1", "lambda\$innerConstructorReference\$2"),
+            methodProbes.filter { it.lambdaBody }.map { it.methodName }.toSet(),
+        )
+        assertEquals(
+            listOf(
+                CallEdge("com.example.target.CreationEdgeJavaTarget", "name", "()Ljava/lang/String;", virtual = true, kind = CallEdgeKind.CREATES),
+            ),
+            methodProbes.single { it.methodName == "boundReference" }.calls,
+        )
+        assertEquals(
+            "CreationEdgeJavaTarget.java",
+            manifest.classLocations.single { it.classId == methodProbes.first().classId }.sourceFile,
         )
     }
 

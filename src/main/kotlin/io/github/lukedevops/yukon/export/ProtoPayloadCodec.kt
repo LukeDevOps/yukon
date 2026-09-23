@@ -1,8 +1,9 @@
 package io.github.lukedevops.yukon.export
 
 import io.github.lukedevops.yukon.proto.CallEdge as ProtoCallEdge
+import io.github.lukedevops.yukon.proto.CallEdgeKind as ProtoCallEdgeKind
+import io.github.lukedevops.yukon.proto.ClassLocation as ProtoClassLocation
 import io.github.lukedevops.yukon.proto.ClassReferences as ProtoClassReferences
-import io.github.lukedevops.yukon.proto.ClassSupertypes as ProtoClassSupertypes
 import io.github.lukedevops.yukon.proto.DeclaredClass as ProtoDeclaredClass
 import io.github.lukedevops.yukon.proto.DeclaredMethod as ProtoDeclaredMethod
 import io.github.lukedevops.yukon.proto.DeltaBatch as ProtoDeltaBatch
@@ -114,7 +115,7 @@ object ProtoPayloadCodec {
             .addAllSkippedClasses(manifest.skippedClasses.map { toProto(it) })
             .addAllEndpoints(manifest.endpoints.map { toProto(it) })
             .addAllDisabledEndpointModules(manifest.disabledEndpointModules.map { toProto(it) })
-            .addAllClassSupertypes(manifest.classSupertypes.map { toProto(it) })
+            .addAllClassLocations(manifest.classLocations.map { toProto(it) })
             .addAllUnreportedClasses(manifest.unreportedClasses.map { toProto(it) })
             .addAllDependencies(manifest.dependencies.map { toProto(it) })
             .addAllClassReferences(manifest.classReferences.map { toProto(it) })
@@ -129,7 +130,7 @@ object ProtoPayloadCodec {
             skippedClasses = manifest.skippedClassesList.map { fromProto(it) },
             endpoints = manifest.endpointsList.map { fromProto(it) },
             disabledEndpointModules = manifest.disabledEndpointModulesList.map { fromProto(it) },
-            classSupertypes = manifest.classSupertypesList.map { fromProto(it) },
+            classLocations = manifest.classLocationsList.map { fromProto(it) },
             unreportedClasses = manifest.unreportedClassesList.map { fromProto(it) },
             dependencies = manifest.dependenciesList.map { fromProto(it) },
             classReferences = manifest.classReferencesList.map { fromProto(it) },
@@ -184,6 +185,7 @@ object ProtoPayloadCodec {
                 .setInlinedFromClassName(location.inlinedFromClassName ?: "")
                 .setGeneratedBy(toProto(location.generatedBy))
                 .addAllReferencedClasses(location.referencedClasses)
+                .setLambdaBody(location.lambdaBody)
         location.branchIndex?.let { builder.branchIndex = it }
         location.parameterIndex?.let { builder.parameterIndex = it }
         location.branchKey?.let { builder.branchKey = it }
@@ -213,6 +215,7 @@ object ProtoPayloadCodec {
             generatedBy = fromProto(location.generatedBy),
             referencedClasses = location.referencedClassesList,
             branchKey = if (location.hasBranchKey()) location.branchKey else null,
+            lambdaBody = location.lambdaBody,
         )
     }
 
@@ -223,6 +226,8 @@ object ProtoPayloadCodec {
             .setMethodName(edge.methodName)
             .setMethodDescriptor(edge.methodDescriptor)
             .setVirtual(edge.virtual)
+            .setKind(toProto(edge.kind))
+            .setCapturedCount(edge.capturedCount)
             .build()
 
     private fun fromProto(edge: ProtoCallEdge): CallEdge =
@@ -231,21 +236,38 @@ object ProtoPayloadCodec {
             methodName = edge.methodName,
             methodDescriptor = edge.methodDescriptor,
             virtual = edge.virtual,
+            kind = fromProto(edge.kind),
+            capturedCount = edge.capturedCount,
         )
 
-    private fun toProto(supertypes: ClassSupertypes): ProtoClassSupertypes =
-        ProtoClassSupertypes
+    private fun toProto(kind: CallEdgeKind): ProtoCallEdgeKind =
+        when (kind) {
+            CallEdgeKind.CALL -> ProtoCallEdgeKind.CALL
+            CallEdgeKind.CREATES -> ProtoCallEdgeKind.CREATES
+        }
+
+    private fun fromProto(kind: ProtoCallEdgeKind): CallEdgeKind =
+        when (kind) {
+            ProtoCallEdgeKind.CALL -> CallEdgeKind.CALL
+            ProtoCallEdgeKind.CREATES -> CallEdgeKind.CREATES
+            ProtoCallEdgeKind.UNRECOGNIZED -> throw IllegalArgumentException("unrecognized call edge kind on the wire: $kind")
+        }
+
+    private fun toProto(location: ClassLocation): ProtoClassLocation =
+        ProtoClassLocation
             .newBuilder()
-            .setClassId(supertypes.classId)
-            .setSuperClassName(supertypes.superClassName ?: "")
-            .addAllInterfaceNames(supertypes.interfaceNames)
+            .setClassId(location.classId)
+            .setSuperClassName(location.superClassName ?: "")
+            .addAllInterfaceNames(location.interfaceNames)
+            .setSourceFile(location.sourceFile ?: "")
             .build()
 
-    private fun fromProto(supertypes: ProtoClassSupertypes): ClassSupertypes =
-        ClassSupertypes(
-            classId = supertypes.classId,
-            superClassName = supertypes.superClassName.ifEmpty { null },
-            interfaceNames = supertypes.interfaceNamesList,
+    private fun fromProto(location: ProtoClassLocation): ClassLocation =
+        ClassLocation(
+            classId = location.classId,
+            superClassName = location.superClassName.ifEmpty { null },
+            interfaceNames = location.interfaceNamesList,
+            sourceFile = location.sourceFile.ifEmpty { null },
         )
 
     private fun toProto(kind: ProbeKind): ProtoProbeKind =
@@ -344,6 +366,7 @@ object ProtoPayloadCodec {
             .setSuperClassName(declaredClass.superClassName ?: "")
             .addAllInterfaceNames(declaredClass.interfaceNames)
             .addAllReferencedClasses(declaredClass.referencedClasses)
+            .setSourceFile(declaredClass.sourceFile ?: "")
             .build()
 
     private fun fromProto(declaredClass: ProtoDeclaredClass): DeclaredClass =
@@ -353,6 +376,7 @@ object ProtoPayloadCodec {
             superClassName = declaredClass.superClassName.ifEmpty { null },
             interfaceNames = declaredClass.interfaceNamesList,
             referencedClasses = declaredClass.referencedClassesList,
+            sourceFile = declaredClass.sourceFile.ifEmpty { null },
         )
 
     private fun toProto(method: DeclaredMethod): ProtoDeclaredMethod =
@@ -364,6 +388,7 @@ object ProtoPayloadCodec {
             .addAllCalls(method.calls.map { toProto(it) })
             .setGeneratedBy(toProto(method.generatedBy))
             .addAllReferencedClasses(method.referencedClasses)
+            .setLambdaBody(method.lambdaBody)
             .build()
 
     private fun fromProto(method: ProtoDeclaredMethod): DeclaredMethod =
@@ -374,6 +399,7 @@ object ProtoPayloadCodec {
             calls = method.callsList.map { fromProto(it) },
             generatedBy = fromProto(method.generatedBy),
             referencedClasses = method.referencedClassesList,
+            lambdaBody = method.lambdaBody,
         )
 
     private fun toProto(unsafeClass: StaticallyUnsafeClass): ProtoStaticallyUnsafeClass =

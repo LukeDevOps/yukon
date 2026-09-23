@@ -1,6 +1,7 @@
 package io.github.lukedevops.yukon.instrumentation.branch
 
 import io.github.lukedevops.yukon.export.CallEdge
+import io.github.lukedevops.yukon.export.CallEdgeKind
 import net.bytebuddy.dynamic.ClassFileLocator
 import java.io.File
 import kotlin.test.Test
@@ -139,7 +140,7 @@ class CallEdgeAnalyzerTest {
 
         assertEquals(
             setOf(
-                CallEdge("com.example.target.CallEdgeTarget", "callsLambda\$lambda\$0", "(I)I", virtual = false),
+                CallEdge("com.example.target.CallEdgeTarget", "callsLambda\$lambda\$0", "(I)I", virtual = false, kind = CallEdgeKind.CREATES),
                 CallEdge("com.example.target.CallEdgeTargetKt", "applyOp", "(Lkotlin/jvm/functions/Function1;I)I", virtual = false),
             ),
             analysis.callsOf("callsLambda", "()I").toSet(),
@@ -152,11 +153,11 @@ class CallEdgeAnalyzerTest {
         val analysis = BranchSiteAnalyzer.analyze(bytes, includePackages = includePackages) { _, _ -> true }
 
         assertEquals(
-            listOf(CallEdge("com.example.target.LambdaTarget", "lambda\$classifyViaLambda\$0", "(I)I", virtual = false)),
+            listOf(CallEdge("com.example.target.LambdaTarget", "lambda\$classifyViaLambda\$0", "(I)I", virtual = false, kind = CallEdgeKind.CREATES)),
             analysis.callsOf("classifyViaLambda", "(I)I"),
         )
         assertEquals(
-            listOf(CallEdge("com.example.target.LambdaTarget", "ship", "()Ljava/lang/String;", virtual = true)),
+            listOf(CallEdge("com.example.target.LambdaTarget", "ship", "()Ljava/lang/String;", virtual = true, kind = CallEdgeKind.CREATES)),
             analysis.callsOf("shipViaMethodReference", "()Ljava/lang/String;"),
         )
     }
@@ -374,6 +375,7 @@ class CallEdgeAnalyzerTest {
                     "invoke",
                     "()Ljava/lang/Integer;",
                     virtual = false,
+                    kind = CallEdgeKind.CREATES,
                 ),
             ),
             analysis.callsOf("viaReference", "()I"),
@@ -410,18 +412,21 @@ class CallEdgeAnalyzerTest {
                     "invokeSuspend",
                     "(Ljava/lang/Object;)Ljava/lang/Object;",
                     virtual = false,
+                    kind = CallEdgeKind.CREATES,
                 ),
                 CallEdge(
                     "com.example.target.SuspendLambdaTarget\$usesSuspend\$1",
                     "create",
                     "(Lkotlin/coroutines/Continuation;)Lkotlin/coroutines/Continuation;",
                     virtual = false,
+                    kind = CallEdgeKind.CREATES,
                 ),
                 CallEdge(
                     "com.example.target.SuspendLambdaTarget\$usesSuspend\$1",
                     "invoke",
                     "(Lkotlin/coroutines/Continuation;)Ljava/lang/Object;",
                     virtual = false,
+                    kind = CallEdgeKind.CREATES,
                 ),
                 CallEdge("com.example.target.SuspendLambdaTarget", "runIt", "(Lkotlin/jvm/functions/Function1;)V", virtual = false),
             ),
@@ -441,7 +446,7 @@ class CallEdgeAnalyzerTest {
                     "(Lcom/example/target/ObjectExpressionTarget;)V",
                     virtual = false,
                 ),
-                CallEdge("com.example.target.ObjectExpressionTarget\$makeHandler\$1", "run", "()V", virtual = true),
+                CallEdge("com.example.target.ObjectExpressionTarget\$makeHandler\$1", "run", "()V", virtual = true, kind = CallEdgeKind.CREATES),
             ),
             analysis.callsOf("makeHandler", "()Ljava/lang/Runnable;"),
         )
@@ -463,7 +468,7 @@ class CallEdgeAnalyzerTest {
                     "(Lcom/example/target/AnonymousClassTarget;)V",
                     virtual = false,
                 ),
-                CallEdge("com.example.target.AnonymousClassTarget\$1", "run", "()V", virtual = true),
+                CallEdge("com.example.target.AnonymousClassTarget\$1", "run", "()V", virtual = true, kind = CallEdgeKind.CREATES),
             ),
             analysis.callsOf("makeAnonymousRunnable", "()Ljava/lang/Runnable;"),
         )
@@ -482,7 +487,7 @@ class CallEdgeAnalyzerTest {
                     "(Lcom/example/target/AnonymousClassTarget;)V",
                     virtual = false,
                 ),
-                CallEdge("com.example.target.AnonymousClassTarget\$1LocalRunnable", "run", "()V", virtual = true),
+                CallEdge("com.example.target.AnonymousClassTarget\$1LocalRunnable", "run", "()V", virtual = true, kind = CallEdgeKind.CREATES),
             ),
             analysis.callsOf("makeLocalClassRunnable", "()Ljava/lang/Runnable;"),
         )

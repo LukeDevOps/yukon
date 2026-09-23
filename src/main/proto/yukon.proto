@@ -143,6 +143,28 @@ message ProbeLocation {
   // and instances, compared only for equality. Unset when the agent cannot name the outcome
   // safely. A collector treats a missing key as an outcome it has never seen. See ADR 0031.
   optional string branch_key = 18;
+  // Set only for a METHOD probe. True when an invokedynamic in this method's own class names it as
+  // the LambdaMetafactory implementation, directly or through the boxing forwarder scalac puts in
+  // between, and its name is one a compiler gives a body the source never named: javac's lambda$...,
+  // scalac's $anonfun$... (never an $adapted forwarder), or kotlinc's ...$lambda$N, nested ones
+  // included. False for a named method passed by reference, and for every other method. The
+  // method that creates the body is the source of its CREATES edge. See ADR 0034.
+  bool lambda_body = 19;
+}
+
+// What a CallEdge records. A collector reaches the target of either kind the same way; the kind
+// only changes how the edge is named and drawn. See ADR 0034.
+enum CallEdgeKind {
+  // The caller runs the callee: an invoke instruction, a new, or a static field use that runs the
+  // owner's initializer. Every edge that is not CREATES.
+  CALL = 0;
+  // The caller hands a body to someone else to run, so the body can only run after the caller ran.
+  // It is the edge to the implementation method of a LambdaMetafactory invokedynamic, whether a
+  // lambda body or a named method passed by reference. It is also the edge to each probed method of
+  // a body class the caller creates with new or reads with getstatic INSTANCE. The constructor
+  // edge of that new, and the initializer edge of that getstatic, stay CALL edges, since the caller
+  // runs them itself.
+  CREATES = 1;
 }
 
 // One caller method's static reference to one callee method, read from the caller's bytecode at
@@ -159,18 +181,35 @@ message CallEdge {
   // collector widens a virtual edge to every override it knows about, and treats a non-virtual
   // edge as naming its one real target exactly.
   bool virtual = 4;
+  // CALL, the zero value, or CREATES; see CallEdgeKind. An edge that takes the place of a
+  // pass-through is CREATES when either the edge to the pass-through or the pass-through's own
+  // edge is CREATES, since what a created body reaches runs only once that body runs. Otherwise it
+  // is CALL. An edge a lambda body's own bytecode records is judged like any other method's.
+  CallEdgeKind kind = 5;
+  // Set only on a CREATES edge from an invokedynamic: how many of the target descriptor's leading
+  // parameters take values captured at the call site rather than the functional interface's own
+  // arguments. It is read from the call site's invokedType. A receiver bound by a reference to an
+  // instance method is not counted, since it is not in the target's parameter list. 0 on every
+  // other edge, and on a CREATES edge that captures nothing.
+  uint32 captured_count = 6;
 }
 
-// A class's superclass and direct interfaces, sent once per class alongside its probes so a
-// collector can widen a CallEdge.virtual call to every type that overrides or inherits its
-// callee.
-message ClassSupertypes {
+// What a loaded class's own header says about it, sent once per class alongside its probes. Its
+// superclass and direct interfaces let a collector widen a CallEdge.virtual call to every type that
+// overrides or inherits its callee (ADR 0024). Its source file lets a collector say where the
+// class's code is (ADR 0034).
+message ClassLocation {
   int32 class_id = 1;
   // Dotted, as the class header names it. Empty only for java.lang.Object itself, which this
   // agent never instruments. An interface's own super_class_name is java.lang.Object, the same
   // as any other type, since that is what the class file's own super_class entry names.
   string super_class_name = 2;
   repeated string interface_names = 3;
+  // The class file's SourceFile attribute exactly as it appears, such as DemoServerMain.kt. It is
+  // a file name and never a path, since the class file records nothing more. Empty when the class
+  // has none. The agent does not clean it: a value such as <generated> is sent as it is, and
+  // whoever displays it decides whether it names a real file.
+  string source_file = 4;
 }
 
 // A class the JVM has loaded that reached no manifest, neither as a probed
@@ -218,8 +257,9 @@ message ProbeManifest {
   repeated SkippedClass skipped_classes = 4;
   repeated EndpointLocation endpoints = 6;
   repeated DisabledEndpointModule disabled_endpoint_modules = 7;
-  // Sent once per class alongside its probes, staged and committed the same way. See ADR 0024.
-  repeated ClassSupertypes class_supertypes = 8;
+  // Sent once per class alongside its probes, staged and committed the same way. See ADRs 0024
+  // and 0034.
+  repeated ClassLocation class_locations = 8;
   // Found by the sweep, not by a transform. Delivered incrementally like the
   // rest of this message. See ADR 0027.
   repeated UnreportedClass unreported_classes = 9;
@@ -262,12 +302,15 @@ message DeclaredMethod {
   // The out-of-scope classes this method's own bytecode references, the same rule
   // ProbeLocation.referenced_classes uses. See ADR 0030.
   repeated string referenced_classes = 6;
+  // The same rule as ProbeLocation.lambda_body, read from the same class. False for the class's
+  // own <clinit> entry. See ADR 0034.
+  bool lambda_body = 7;
 }
 
 message DeclaredClass {
   string class_name = 1;
   repeated DeclaredMethod methods = 2;
-  // The class's superclass and direct interfaces, the same fields ClassSupertypes carries for a
+  // The class's superclass and direct interfaces, the same fields ClassLocation carries for a
   // loaded class, and read the same way: dotted, as the class file's own super_class and
   // interfaces entries name them. Empty only for java.lang.Object itself, which this agent never
   // instruments; an interface's own super_class_name is java.lang.Object too. Null (empty string
@@ -281,6 +324,10 @@ message DeclaredClass {
   // references travel on DeclaredMethod.referenced_classes. The same listing rule as
   // ProbeLocation.referenced_classes applies. See ADR 0030.
   repeated string referenced_classes = 5;
+  // The class file's SourceFile attribute, the same field ClassLocation carries for a loaded class
+  // and read the same way. Empty when the class has none, or when its bytes could not be read.
+  // See ADR 0034.
+  string source_file = 6;
 }
 
 // A class the static scanner found on the classpath but judged unsafe to

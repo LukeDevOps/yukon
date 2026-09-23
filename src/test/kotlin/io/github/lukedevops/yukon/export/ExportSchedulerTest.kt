@@ -312,7 +312,7 @@ class ExportSchedulerTest {
         }
         val exporter = RecordingExporter()
         // Each class weighs 2 in the manifest cap (1 probe + 0 edges + 1 for its own
-        // ClassSupertypes record, ADR 0024), so the cap is 4, not 2, to keep two classes per
+        // ClassLocation record, ADR 0024), so the cap is 4, not 2, to keep two classes per
         // chunk: 2 + 2 = 4 fits, and a third class's own 2 would push it past the cap.
         val scheduler =
             ExportScheduler(config, resource, registry, EndpointRegistry(), exporter, maxDeltasPerBatch = 2, maxManifestEntriesPerChunk = 4)
@@ -795,7 +795,7 @@ class ExportSchedulerTest {
         val probes = (1..4).map { ProbeMeta(ProbeKind.METHOD, "m$it", "()V", 1) }
         registry.register("com.example.Foo", 1L, probes)
         val exporter = RecordingExporter()
-        // The class weighs 5 (4 probes + its ClassSupertypes record), one short of the cap of 6.
+        // The class weighs 5 (4 probes + its ClassLocation record), one short of the cap of 6.
         // The three dependencies form one chunk of weight 3, which does not fit beside the class
         // and so goes out on its own manifest.
         val scheduler =
@@ -814,7 +814,7 @@ class ExportSchedulerTest {
         assertEquals(listOf(0, 3), exporter.manifests.map { it.dependencies.size })
         for (manifest in exporter.manifests) {
             val weight =
-                manifest.probes.size + manifest.probes.sumOf { it.calls.size } + manifest.classSupertypes.size +
+                manifest.probes.size + manifest.probes.sumOf { it.calls.size } + manifest.classLocations.size +
                     manifest.skippedClasses.size + manifest.unreportedClasses.size + manifest.endpoints.size +
                     manifest.disabledEndpointModules.size + manifest.dependencies.size
             assertTrue(weight <= 6, "a sent manifest must not exceed the cap it was chunked under, got $weight")
@@ -940,7 +940,7 @@ class ExportSchedulerTest {
             classReferences = listOf("org.lib.C"),
         )
         val exporter = RecordingExporter()
-        // The class weighs 5 (1 probe, 2 method references, its supertypes record, 1 class
+        // The class weighs 5 (1 probe, 2 method references, its class location record, 1 class
         // reference). Two external classes do not fit beside it under a cap of 6.
         val scheduler =
             ExportScheduler(
@@ -959,7 +959,7 @@ class ExportSchedulerTest {
         for (manifest in exporter.manifests) {
             val weight =
                 manifest.probes.size + manifest.probes.sumOf { it.calls.size + it.referencedClasses.size } +
-                    manifest.classSupertypes.size + manifest.classReferences.sumOf { it.referencedClasses.size } +
+                    manifest.classLocations.size + manifest.classReferences.sumOf { it.referencedClasses.size } +
                     manifest.externalClasses.size
             assertTrue(weight <= 6, "a sent manifest must not exceed the cap it was chunked under, got $weight")
         }
@@ -1230,7 +1230,7 @@ class ExportSchedulerTest {
         val endpointRegistry = EndpointRegistry()
         endpointRegistry.register(key = "k", framework = "fake", verb = "GET", verbatimTemplate = "/x")
         val exporter = RecordingExporter()
-        // The class alone weighs 5 (1 probe + 3 edges + 1 for its own ClassSupertypes record),
+        // The class alone weighs 5 (1 probe + 3 edges + 1 for its own ClassLocation record),
         // exactly the cap, so the endpoint cannot share its chunk without overshooting.
         val scheduler = ExportScheduler(config, resource, registry, endpointRegistry, exporter, maxManifestEntriesPerChunk = 5)
 
@@ -1239,7 +1239,7 @@ class ExportSchedulerTest {
         assertEquals(2, exporter.manifests.size, "the endpoint must go out in a chunk of its own")
         for (manifest in exporter.manifests) {
             val weight =
-                manifest.probes.size + manifest.probes.sumOf { it.calls.size } + manifest.classSupertypes.size +
+                manifest.probes.size + manifest.probes.sumOf { it.calls.size } + manifest.classLocations.size +
                     manifest.skippedClasses.size + manifest.unreportedClasses.size + manifest.endpoints.size +
                     manifest.disabledEndpointModules.size
             assertTrue(weight <= 5, "a sent manifest must not exceed the cap it was chunked under, got $weight")

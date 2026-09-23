@@ -1301,9 +1301,9 @@ class YukonTestCollector private constructor(
             }
         rejectionFor("manifest", manifest.resource)?.let { return reject(exchange, it) }
         val instanceId = manifest.resource.serviceInstanceId
-        // A class's own ClassSupertypes record is always staged and committed together with its
+        // A class's own ClassLocation record is always staged and committed together with its
         // probe locations (see ProbeRegistry.computeManifestDeltas), so every classId this manifest
-        // mentions in classSupertypes also has a matching probe location earlier in this same call.
+        // mentions in classLocations also has a matching probe location earlier in this same call.
         val classNamesByClassId = mutableMapOf<Int, String>()
         for (location in manifest.probes) {
             val key = ProbeKey(instanceId, location.classId, location.probeIndex)
@@ -1345,9 +1345,9 @@ class YukonTestCollector private constructor(
             unreportedByClassName.putIfAbsent(unreported.className, unreported)
             dynamicallyKnownClassNames += unreported.className
         }
-        for (supertypes in manifest.classSupertypes) {
-            val className = classNamesByClassId[supertypes.classId] ?: continue
-            supertypesByClassName[className] = SupertypesInfo(supertypes.superClassName, supertypes.interfaceNames)
+        for (classLocation in manifest.classLocations) {
+            val className = classNamesByClassId[classLocation.classId] ?: continue
+            supertypesByClassName[className] = SupertypesInfo(classLocation.superClassName, classLocation.interfaceNames)
         }
         for (endpointLocation in manifest.endpoints) {
             val identity = EndpointIdentity(endpointLocation.verb, endpointLocation.routeTemplate)

@@ -1,6 +1,8 @@
 package io.github.lukedevops.yukon.instrumentation
 
 import io.github.lukedevops.yukon.config.AgentConfig
+import io.github.lukedevops.yukon.export.CallEdge
+import io.github.lukedevops.yukon.export.CallEdgeKind
 import io.github.lukedevops.yukon.export.ProbeKind
 import io.github.lukedevops.yukon.export.ResourceAttributes
 import io.github.lukedevops.yukon.instrumentation.branch.ScalaFixtures
@@ -17,7 +19,8 @@ import kotlin.test.assertTrue
  * Proves through the real pipeline that a lambda body gets probed like any other method, method
  * tier and branch tier alike: javac's `lambda$...` and scalac's `$anonfun$...` inside a class
  * scalac itself compiled (ADR 0015). Scala 2's `$adapted` boxing forwarder gets no probe of its
- * own, matching Scala 3, whose adapter is a bridge.
+ * own, matching Scala 3, whose adapter is a bridge. Each scalac body is also flagged as a lambda
+ * body and reached by a creation edge through that forwarder (ADR 0034).
  */
 class LambdaInstrumentationTest {
     private var installedTransformer: ResettableClassFileTransformer? = null
@@ -140,5 +143,38 @@ class LambdaInstrumentationTest {
                 .associateBy { it.probeIndex }
         assertEquals(3L, byIndex.getValue(bodyProbe.probeIndex).hitsTotal)
         assertEquals(setOf(2L, 1L), branchIndices.map { byIndex.getValue(it).hitsTotal }.toSet(), "two positive, one non-positive")
+    }
+
+    @Test
+    fun `a scalac lambda body is flagged and created through its boxing forwarder, in Scala 2 and Scala 3`() {
+        for ((module, bodyName) in listOf("scala2" to "\$anonfun\$classify\$1", "scala3" to "\$anonfun\$1")) {
+            val registry = ProbeRegistry()
+            install(registry, AgentConfig.parse("includePackages=com.example.scalatarget"))
+            try {
+                val loader = ScalaFixtures.classLoader(module, javaClass.classLoader)
+                Class.forName("com.example.scalatarget.LambdaHost\$", true, loader)
+
+                val manifest = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
+                val methodProbes = manifest.probes.filter { it.kind == ProbeKind.METHOD && it.className == "com.example.scalatarget.LambdaHost\$" }
+
+                assertEquals(listOf(bodyName), methodProbes.filter { it.lambdaBody }.map { it.methodName }, module)
+                assertEquals(
+                    listOf(
+                        CallEdge(
+                            "com.example.scalatarget.LambdaHost\$",
+                            bodyName,
+                            "(I)Ljava/lang/String;",
+                            virtual = false,
+                            kind = CallEdgeKind.CREATES,
+                        ),
+                    ),
+                    methodProbes.single { it.methodName == "classify" }.calls,
+                    "$module names the forwarder in the invokedynamic, and the forwarder's call keeps the CREATES kind",
+                )
+                assertEquals("Targets.scala", manifest.classLocations.single { it.classId == methodProbes.first().classId }.sourceFile)
+            } finally {
+                tearDown()
+            }
+        }
     }
 }

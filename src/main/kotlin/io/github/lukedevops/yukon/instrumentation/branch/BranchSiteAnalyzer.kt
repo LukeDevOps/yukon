@@ -1,6 +1,7 @@
 package io.github.lukedevops.yukon.instrumentation.branch
 
 import io.github.lukedevops.yukon.export.CallEdge
+import io.github.lukedevops.yukon.export.CallEdgeKind
 import io.github.lukedevops.yukon.export.GeneratedBy
 import io.github.lukedevops.yukon.instrumentation.ScalaClassDetector
 import io.github.lukedevops.yukon.instrumentation.TypeMatchPolicy
@@ -89,7 +90,25 @@ object BranchSiteAnalyzer {
          * getters, and pass-throughs nothing in the class reaches. See [placeReferences] and ADR 0030.
          */
         val classReferences: List<String> = emptyList(),
+        private val lambdaBodies: Set<Pair<String, String>> = emptySet(),
+        /**
+         * The class file's `SourceFile` attribute exactly as it appears, or null when it has none
+         * or the bytes were never read. See ADR 0034.
+         */
+        val sourceFile: String? = null,
     ) {
+        /**
+         * Whether the method is a lambda body: [methodFilter][analyze] accepted it, an
+         * `invokedynamic` in this class names it as the `LambdaMetafactory` implementation, and
+         * its name passes [TypeMatchPolicy.isLambdaBodyName]. The `invokedynamic` may name it
+         * through a pass-through, which is how scalac reaches a body through its `$adapted`
+         * boxing forwarder. Always false on [EMPTY]. See ADR 0034.
+         */
+        fun isLambdaBody(
+            name: String,
+            descriptor: String,
+        ): Boolean = (name to descriptor) in lambdaBodies
+
         /**
          * The out-of-scope classes this method references, dotted, first seen first: its own
          * bytecode, signature and annotations, plus those of every pass-through it reaches, by the
@@ -194,12 +213,18 @@ object BranchSiteAnalyzer {
      * cross-class `$default` resolution. [virtualRaw] is true for `invokevirtual`/
      * `invokeinterface`, or for an `invokedynamic` whose `LambdaMetafactory` implementation handle
      * has an `H_INVOKEVIRTUAL`/`H_INVOKEINTERFACE` tag. See ADR 0024.
+     *
+     * [kind] is [CallEdgeKind.CREATES] only for such an `invokedynamic`, and [capturedCount] is
+     * then its [capturedCount]; every other candidate is a [CallEdgeKind.CALL] with nothing
+     * captured. See ADR 0034.
      */
     internal data class RawCandidate(
         val owner: String,
         val name: String,
         val descriptor: String,
         val virtualRaw: Boolean,
+        val kind: CallEdgeKind = CallEdgeKind.CALL,
+        val capturedCount: Int = 0,
     )
 
     /** One resolved cross-class `$default` target: see [resolveCrossClassDefaultTarget]. */
@@ -251,7 +276,7 @@ object BranchSiteAnalyzer {
             references.descriptor(descriptor)
             references.handle(bootstrapMethodHandle)
             bootstrapMethodArguments.forEach(references::constant)
-            lambdaCandidateOrNull(bootstrapMethodHandle, bootstrapMethodArguments)?.let { candidatesForMethod += it }
+            lambdaCandidateOrNull(descriptor, bootstrapMethodHandle, bootstrapMethodArguments)?.let { candidatesForMethod += it }
         }
 
         override fun visitTypeInsn(
@@ -341,11 +366,13 @@ object BranchSiteAnalyzer {
 
     /**
      * The `LambdaMetafactory` implementation method an `invokedynamic` instruction names, as a
-     * [RawCandidate], or null for any other bootstrap (`StringConcatFactory`, Kotlin's own,
-     * records). The implementation method is bootstrap argument index 1, verified against javac
-     * 21 and Kotlin 2.2.21 output. See ADR 0024.
+     * [CallEdgeKind.CREATES] [RawCandidate], or null for any other bootstrap
+     * (`StringConcatFactory`, Kotlin's own, records). The implementation method is bootstrap
+     * argument index 1, verified against javac 21 and Kotlin 2.2.21 output. [invokedDescriptor] is
+     * the instruction's own descriptor, the call site's `invokedType`. See ADRs 0024 and 0034.
      */
     private fun lambdaCandidateOrNull(
+        invokedDescriptor: String,
         bootstrapMethodHandle: Handle,
         bootstrapMethodArguments: Array<out Any>,
     ): RawCandidate? {
@@ -353,7 +380,40 @@ object BranchSiteAnalyzer {
         if (bootstrapMethodHandle.name != "metafactory" && bootstrapMethodHandle.name != "altMetafactory") return null
         val implementationHandle = bootstrapMethodArguments.getOrNull(1) as? Handle ?: return null
         val virtualRaw = implementationHandle.tag == Opcodes.H_INVOKEVIRTUAL || implementationHandle.tag == Opcodes.H_INVOKEINTERFACE
-        return RawCandidate(implementationHandle.owner, implementationHandle.name, implementationHandle.desc, virtualRaw)
+        return RawCandidate(
+            implementationHandle.owner,
+            implementationHandle.name,
+            implementationHandle.desc,
+            virtualRaw,
+            CallEdgeKind.CREATES,
+            capturedCount(invokedDescriptor, implementationHandle.tag),
+        )
+    }
+
+    /**
+     * How many of an implementation method's leading parameters a `LambdaMetafactory` call site
+     * fills with captured values. Each parameter of [invokedDescriptor], the call site's
+     * `invokedType`, is one captured value. The metafactory passes them to the implementation in
+     * order, ahead of the functional interface's own arguments.
+     *
+     * For an instance method ([implementationTag] `H_INVOKEVIRTUAL`, `H_INVOKEINTERFACE` or
+     * `H_INVOKESPECIAL`), the first captured value is the receiver, which is not in the
+     * implementation's parameter list, so it is not counted. An unbound reference such as
+     * `Foo::name` captures nothing and takes its receiver from the interface's first argument, so
+     * the result never goes below zero. A static method and a constructor (`H_NEWINVOKESPECIAL`)
+     * have no receiver to bind, so every captured value fills a parameter. See ADR 0034.
+     */
+    internal fun capturedCount(
+        invokedDescriptor: String,
+        implementationTag: Int,
+    ): Int {
+        val captured = parseParameterDescriptors(invokedDescriptor).size
+        val receiver =
+            when (implementationTag) {
+                Opcodes.H_INVOKEVIRTUAL, Opcodes.H_INVOKEINTERFACE, Opcodes.H_INVOKESPECIAL -> 1
+                else -> 0
+            }
+        return (captured - receiver).coerceAtLeast(0)
     }
 
     /** How many probe slots a switch with these case targets and this default owns. */
@@ -404,6 +464,7 @@ object BranchSiteAnalyzer {
         var isKotlinClass = false
 
         var internalClassName = ""
+        var sourceFile: String? = null
         var classAccess = 0
         var superInternalName: String? = null
         var interfaceInternalNames: List<String> = emptyList()
@@ -445,6 +506,7 @@ object BranchSiteAnalyzer {
                     source: String?,
                     debug: String?,
                 ) {
+                    sourceFile = source
                     smap = KotlinSmapParser.parse(debug)
                 }
 
@@ -605,6 +667,8 @@ object BranchSiteAnalyzer {
                 excludePackages = excludePackages,
             )
 
+        val lambdaBodies = findLambdaBodies(internalClassName, methodAccess, rawCandidatesByMethod, eligibleMethodKeys)
+
         return Analysis(
             sites,
             firstLines,
@@ -623,7 +687,47 @@ object BranchSiteAnalyzer {
             isKotlinClass,
             references.byMethod,
             references.onClass,
+            lambdaBodies,
+            sourceFile,
         )
+    }
+
+    /**
+     * The probed methods of this class that are lambda bodies, per ADR 0034: an `invokedynamic` in
+     * this class names the method as the `LambdaMetafactory` implementation, [eligibleMethodKeys]
+     * holds it, and its name passes [TypeMatchPolicy.isLambdaBodyName].
+     *
+     * When the implementation is a same-class pass-through (declared with a body, not probed), the
+     * same-class methods it calls are tested in its place, transitively. Scala 2 and Scala 3 both name
+     * an `$adapted` boxing forwarder as the implementation whenever the body takes or returns a
+     * primitive, and the forwarder calls the real `$anonfun$` body. Without this step no such
+     * body would be flagged.
+     */
+    private fun findLambdaBodies(
+        internalClassName: String,
+        methodAccess: Map<Pair<String, String>, Int>,
+        rawCandidatesByMethod: Map<Pair<String, String>, List<RawCandidate>>,
+        eligibleMethodKeys: Set<Pair<String, String>>,
+    ): Set<Pair<String, String>> {
+        val pending =
+            ArrayDeque(
+                rawCandidatesByMethod.values
+                    .flatten()
+                    .filter { it.kind == CallEdgeKind.CREATES && it.owner == internalClassName }
+                    .map { it.name to it.descriptor },
+            )
+        val named = mutableSetOf<Pair<String, String>>()
+        while (pending.isNotEmpty()) {
+            val key = pending.removeFirst()
+            if (!named.add(key)) continue
+            val access = methodAccess[key] ?: continue
+            val isPassThrough = key !in eligibleMethodKeys && access and BODYLESS_FLAGS == 0
+            if (!isPassThrough) continue
+            for (candidate in rawCandidatesByMethod[key].orEmpty()) {
+                if (candidate.owner == internalClassName) pending += candidate.name to candidate.descriptor
+            }
+        }
+        return named.filterTo(mutableSetOf()) { it in eligibleMethodKeys && TypeMatchPolicy.isLambdaBodyName(it.first) }
     }
 
     /**
@@ -833,6 +937,19 @@ object BranchSiteAnalyzer {
      * the class being analysed: a method of this class that runs has already initialised it. Edges are deduplicated per entry point by (owner, name, descriptor,
      * virtual).
      *
+     * Every edge has a kind (ADR 0034). A candidate starts with its own: [CallEdgeKind.CREATES]
+     * for a `LambdaMetafactory` `invokedynamic`, [CallEdgeKind.CALL] for everything else. The
+     * edges that take a pass-through's place keep the kind of the candidate that reached it, and
+     * a `CREATES` candidate found inside the pass-through stays `CREATES`. So once a walk passes a
+     * `CREATES` step, every edge below it is `CREATES`: such an edge only runs once the created
+     * body runs, never when the creator runs. The captured count travels with the kind, capped at
+     * the substituted target's own parameter count. The only pass-through a compiler names as an
+     * implementation is scalac's boxing forwarder, which passes its parameters on in order. The body-class edges are `CREATES` edges with
+     * nothing captured, while the constructor or initializer edge that leads to them keeps the
+     * kind it arrived with. Edges are deduplicated per entry point by every field, kind and
+     * captured count included, so a method that both calls and creates the same target keeps
+     * both edges.
+     *
      * References (ADR 0030) ride the same walk, unfiltered: an entry point starts with its own, and
      * every pass-through substituted into it, same-class or cross-class, adds its own, so a
      * reference is attributed exactly where the pass-through's callees are. A cross-class `$default`
@@ -891,15 +1008,39 @@ object BranchSiteAnalyzer {
             val edges = LinkedHashSet<CallEdge>()
             val references = LinkedHashSet<String>(rawReferencesByMethod[methodKey].orEmpty())
             referencesByMethod[methodKey] = references
-            val visited = mutableSetOf<Triple<String, String, String>>()
+            val visited = mutableSetOf<VisitKey>()
+
+            fun edge(
+                owner: String,
+                name: String,
+                descriptor: String,
+                virtual: Boolean,
+                kind: CallEdgeKind,
+                capturedCount: Int,
+            ): CallEdge {
+                val captured = if (capturedCount == 0) 0 else capturedCount.coerceAtMost(parseParameterDescriptors(descriptor).size)
+                return CallEdge(owner, name, descriptor, virtual, kind, captured)
+            }
 
             fun visit(
                 owner: String,
                 name: String,
                 descriptor: String,
                 virtualRaw: Boolean,
+                kind: CallEdgeKind,
+                capturedCount: Int,
             ) {
-                if (!visited.add(Triple(owner, name, descriptor))) return
+                if (!visited.add(VisitKey(owner, name, descriptor, kind, capturedCount))) return
+
+                // A candidate inside a pass-through keeps its own kind when it creates something,
+                // and otherwise takes the kind the pass-through was reached with.
+                fun visitInside(candidate: RawCandidate) {
+                    if (candidate.kind == CallEdgeKind.CREATES) {
+                        visit(candidate.owner, candidate.name, candidate.descriptor, candidate.virtualRaw, CallEdgeKind.CREATES, candidate.capturedCount)
+                    } else {
+                        visit(candidate.owner, candidate.name, candidate.descriptor, candidate.virtualRaw, kind, capturedCount)
+                    }
+                }
 
                 if (owner == internalClassName) {
                     if (name == "<clinit>") return
@@ -908,13 +1049,11 @@ object BranchSiteAnalyzer {
                     val virtual = virtualRaw && !nonVirtual
                     val declaredWithBody = access != null && access and BODYLESS_FLAGS == 0
                     if ((name to descriptor) in eligibleMethodKeys || !declaredWithBody) {
-                        edges += CallEdge(dottedClassName, name, descriptor, virtual)
+                        edges += edge(dottedClassName, name, descriptor, virtual, kind, capturedCount)
                     } else {
                         reachedPassThroughs += name to descriptor
                         references += rawReferencesByMethod[name to descriptor].orEmpty()
-                        for (candidate in rawCandidatesByMethod[name to descriptor].orEmpty()) {
-                            visit(candidate.owner, candidate.name, candidate.descriptor, candidate.virtualRaw)
-                        }
+                        rawCandidatesByMethod[name to descriptor].orEmpty().forEach(::visitInside)
                     }
                     return
                 }
@@ -925,7 +1064,7 @@ object BranchSiteAnalyzer {
                 if (isDefaultShaped(name, descriptor)) {
                     val target = methodTableFor(owner)?.let { resolveCrossClassDefaultTarget(owner, name, descriptor, it) }
                     if (target != null) {
-                        edges += CallEdge(dottedOwner, target.name, target.descriptor, target.virtual)
+                        edges += edge(dottedOwner, target.name, target.descriptor, target.virtual, kind, capturedCount)
                         references += methodTableFor(owner)?.rawReferencesByMethod?.get(name to descriptor).orEmpty()
                         return
                     }
@@ -934,7 +1073,7 @@ object BranchSiteAnalyzer {
                 val table = methodTableFor(owner)
                 val access = table?.methodAccess?.get(name to descriptor)
                 if (table == null || access == null) {
-                    edges += CallEdge(dottedOwner, name, descriptor, virtualRaw)
+                    edges += edge(dottedOwner, name, descriptor, virtualRaw, kind, capturedCount)
                     return
                 }
 
@@ -942,15 +1081,13 @@ object BranchSiteAnalyzer {
                 val isConstructorOrInitializer = name == "<init>" || name == "<clinit>"
                 if (declaredWithBody && !isConstructorOrInitializer && wouldNotBeProbedByMethodTier(access, name, table.isScalaClass)) {
                     references += table.rawReferencesByMethod[name to descriptor].orEmpty()
-                    for (candidate in table.rawCandidatesByMethod[name to descriptor].orEmpty()) {
-                        visit(candidate.owner, candidate.name, candidate.descriptor, candidate.virtualRaw)
-                    }
-                    visit(owner, "<clinit>", "()V", false)
+                    table.rawCandidatesByMethod[name to descriptor].orEmpty().forEach(::visitInside)
+                    visit(owner, "<clinit>", "()V", false, kind, 0)
                     return
                 }
 
                 val nonVirtual = access and NON_VIRTUAL_FLAGS != 0
-                edges += CallEdge(dottedOwner, name, descriptor, virtualRaw && !nonVirtual)
+                edges += edge(dottedOwner, name, descriptor, virtualRaw && !nonVirtual, kind, capturedCount)
 
                 if (isConstructorOrInitializer && table.hasEnclosingMethod) {
                     for ((bodyKey, bodyAccess) in table.methodAccess) {
@@ -959,13 +1096,13 @@ object BranchSiteAnalyzer {
                         if (bodyAccess and BODYLESS_FLAGS != 0) continue
                         if (wouldNotBeProbedByMethodTier(bodyAccess, bodyName, table.isScalaClass)) continue
                         val bodyNonVirtual = bodyAccess and NON_VIRTUAL_FLAGS != 0
-                        edges += CallEdge(dottedOwner, bodyName, bodyDescriptor, !bodyNonVirtual)
+                        edges += CallEdge(dottedOwner, bodyName, bodyDescriptor, !bodyNonVirtual, CallEdgeKind.CREATES)
                     }
                 }
             }
 
             for (candidate in rawCandidatesByMethod[methodKey].orEmpty()) {
-                visit(candidate.owner, candidate.name, candidate.descriptor, candidate.virtualRaw)
+                visit(candidate.owner, candidate.name, candidate.descriptor, candidate.virtualRaw, candidate.kind, candidate.capturedCount)
             }
             val (selfName, selfDescriptor) = methodKey
             return edges.filterNot { it.className == dottedClassName && it.methodName == selfName && it.methodDescriptor == selfDescriptor }
@@ -974,6 +1111,15 @@ object BranchSiteAnalyzer {
         val edgesByMethod = eligibleMethodKeys.associateWith(::resolveOne)
         return ResolvedCalls(edgesByMethod, referencesByMethod, reachedPassThroughs)
     }
+
+    /** One step of [resolveCallEdges]'s walk: a callee, with the kind and captured count it was reached with. */
+    private data class VisitKey(
+        val owner: String,
+        val name: String,
+        val descriptor: String,
+        val kind: CallEdgeKind,
+        val capturedCount: Int,
+    )
 
     /**
      * What [resolveCallEdges] yields: each entry point's edges and its references (raw internal

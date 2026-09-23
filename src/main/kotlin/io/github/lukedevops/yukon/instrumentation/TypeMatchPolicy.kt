@@ -226,7 +226,31 @@ object TypeMatchPolicy {
     internal fun isProbedLambdaBody(
         name: String,
         isScalaClass: Boolean,
-    ): Boolean = name.startsWith("lambda\$") || (isScalaClass && name.startsWith("\$anonfun\$") && !name.endsWith("\$adapted"))
+    ): Boolean = isJavacLambdaBodyName(name) || (isScalaClass && isScalacLambdaBodyName(name))
+
+    /**
+     * Whether [name] is one a compiler gives a lambda body the source never named. The three
+     * compiler shapes are:
+     * - javac: `lambda$<method>$N`, private and synthetic;
+     * - scalac: `$anonfun$...`, synthetic, but never the `$adapted` boxing forwarder Scala 2 emits
+     *   beside a body;
+     * - kotlinc: `<method>$lambda$N`, private static and not synthetic, with one more `$N` for each
+     *   level of nesting (`main$lambda$0$0` for a lambda inside `main$lambda$0`).
+     *
+     * The name alone proves nothing, since kotlinc's shape is not marked synthetic and a person can
+     * write a method with a `$` in its name. So [io.github.lukedevops.yukon.instrumentation.branch.BranchSiteAnalyzer]
+     * also requires an `invokedynamic` in the method's own class to name it as the implementation.
+     * A named method passed by reference passes that test and fails this one. The compiler fixtures
+     * pin each shape. See ADR 0034.
+     */
+    fun isLambdaBodyName(name: String): Boolean =
+        isJavacLambdaBodyName(name) || isScalacLambdaBodyName(name) || KOTLINC_LAMBDA_BODY_NAME.matches(name)
+
+    private fun isJavacLambdaBodyName(name: String): Boolean = name.startsWith("lambda\$")
+
+    private fun isScalacLambdaBodyName(name: String): Boolean = name.startsWith("\$anonfun\$") && !name.endsWith("\$adapted")
+
+    private val KOTLINC_LAMBDA_BODY_NAME = Regex("^.+\\\$lambda\\\$\\d+(\\\$\\d+)*$")
 
     /**
      * The declared annotation that makes [typeDescription] unsafe for ByteBuddy to redefine, or

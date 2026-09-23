@@ -5,6 +5,8 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import io.github.lukedevops.yukon.proto.CallEdge as ProtoCallEdge
+import io.github.lukedevops.yukon.proto.CallEdgeKind as ProtoCallEdgeKind
 import io.github.lukedevops.yukon.proto.DeltaBatch as ProtoDeltaBatch
 import io.github.lukedevops.yukon.proto.DependencyDiscoverySource as ProtoDependencyDiscoverySource
 import io.github.lukedevops.yukon.proto.DependencyIdentity as ProtoDependencyIdentity
@@ -713,6 +715,50 @@ class ProtoPayloadCodecTest {
     }
 
     @Test
+    fun `a declared method's lambda body flag and creation edges, and a declared class's source file, round-trip through the wire`() {
+        val baseline =
+            StaticBaseline(
+                resource = ResourceAttributes("checkout", null, "instance-1", null, "run-1"),
+                declaredClasses =
+                    listOf(
+                        DeclaredClass(
+                            className = "com.example.Foo",
+                            methods =
+                                listOf(
+                                    DeclaredMethod(
+                                        methodName = "bar",
+                                        methodDescriptor = "()I",
+                                        calls =
+                                            listOf(
+                                                CallEdge(
+                                                    "com.example.Foo",
+                                                    "bar\$lambda\$0",
+                                                    "(II)I",
+                                                    virtual = false,
+                                                    kind = CallEdgeKind.CREATES,
+                                                    capturedCount = 1,
+                                                ),
+                                            ),
+                                    ),
+                                    DeclaredMethod(methodName = "bar\$lambda\$0", methodDescriptor = "(II)I", lambdaBody = true),
+                                ),
+                            sourceFile = "Foo.kt",
+                        ),
+                        DeclaredClass(className = "com.example.NoSource", methods = listOf(DeclaredMethod("baz", "()V"))),
+                    ),
+                scannedAt = 1000L,
+            )
+
+        val bytes = ProtoPayloadCodec.encode(baseline)
+        val decoded = ProtoPayloadCodec.decodeStaticBaseline(bytes)
+
+        assertEquals(baseline, decoded)
+        assertEquals(listOf(false, true), decoded.declaredClasses.first().methods.map { it.lambdaBody })
+        assertEquals(listOf("Foo.kt", null), decoded.declaredClasses.map { it.sourceFile })
+        assertEquals(listOf("Foo.kt", ""), ProtoStaticBaseline.parseFrom(bytes).declaredClassesList.map { it.sourceFile })
+    }
+
+    @Test
     fun `encodes and decodes a static baseline's statically-unsafe and unreadable classes`() {
         val baseline =
             StaticBaseline(
@@ -1026,9 +1072,9 @@ class ProtoPayloadCodecTest {
                                 ),
                         ),
                     ),
-                classSupertypes =
+                classLocations =
                     listOf(
-                        ClassSupertypes(classId = 0, superClassName = "com.example.Base", interfaceNames = listOf("com.example.Marker")),
+                        ClassLocation(classId = 0, superClassName = "com.example.Base", interfaceNames = listOf("com.example.Marker")),
                     ),
             )
 
@@ -1041,22 +1087,145 @@ class ProtoPayloadCodecTest {
                 .single()
                 .calls.size,
         )
-        assertEquals("com.example.Base", decoded.classSupertypes.single().superClassName)
+        assertEquals("com.example.Base", decoded.classLocations.single().superClassName)
     }
 
     @Test
-    fun `a class supertypes record with no superclass round-trips super class name as null, not empty string`() {
+    fun `a class location record with no superclass round-trips super class name as null, not empty string`() {
         val manifest =
             ProbeManifest(
                 resource = ResourceAttributes("checkout", null, "", null, "run-1"),
                 probes = emptyList(),
-                classSupertypes = listOf(ClassSupertypes(classId = 0, superClassName = null, interfaceNames = emptyList())),
+                classLocations = listOf(ClassLocation(classId = 0, superClassName = null, interfaceNames = emptyList())),
             )
 
         val decoded = ProtoPayloadCodec.decodeProbeManifest(ProtoPayloadCodec.encode(manifest))
 
         assertEquals(manifest, decoded)
-        assertEquals(null, decoded.classSupertypes.single().superClassName)
+        assertEquals(null, decoded.classLocations.single().superClassName)
+    }
+
+    private fun methodProbe(
+        calls: List<CallEdge> = emptyList(),
+        lambdaBody: Boolean = false,
+    ): ProbeLocation =
+        ProbeLocation(
+            classId = 0,
+            probeIndex = 0,
+            kind = ProbeKind.METHOD,
+            className = "com.example.Foo",
+            methodName = "bar",
+            methodDescriptor = "()V",
+            line = 10,
+            branchIndex = null,
+            calls = calls,
+            lambdaBody = lambdaBody,
+        )
+
+    @Test
+    fun `a call edge's kind and captured count round-trip through the wire`() {
+        val manifest =
+            ProbeManifest(
+                resource = ResourceAttributes("checkout", null, "", null, "run-1"),
+                probes =
+                    listOf(
+                        methodProbe(
+                            calls =
+                                listOf(
+                                    CallEdge("com.example.Foo", "bar\$lambda\$0", "(JI)I", virtual = false, kind = CallEdgeKind.CREATES, capturedCount = 1),
+                                    CallEdge("com.example.Foo", "name", "()Ljava/lang/String;", virtual = true, kind = CallEdgeKind.CREATES),
+                                    CallEdge("com.example.Baz", "qux", "()I", virtual = true),
+                                ),
+                        ),
+                    ),
+            )
+
+        val bytes = ProtoPayloadCodec.encode(manifest)
+        val wireCalls = ProtoProbeManifest.parseFrom(bytes).probesList.single().callsList
+
+        assertEquals(manifest, ProtoPayloadCodec.decodeProbeManifest(bytes))
+        assertEquals(listOf(ProtoCallEdgeKind.CREATES, ProtoCallEdgeKind.CREATES, ProtoCallEdgeKind.CALL), wireCalls.map { it.kind })
+        assertEquals(listOf(1, 0, 0), wireCalls.map { it.capturedCount })
+    }
+
+    @Test
+    fun `a call edge with no kind or captured count on the wire decodes as a CALL with nothing captured`() {
+        val wireManifest =
+            ProtoProbeManifest
+                .newBuilder()
+                .setResource(ProtoResourceAttributes.newBuilder().setServiceName("checkout").setRunId("run-1"))
+                .addProbes(
+                    ProtoProbeLocation
+                        .newBuilder()
+                        .setKind(ProtoProbeKind.METHOD)
+                        .setClassName("com.example.Foo")
+                        .setMethodName("bar")
+                        .setMethodDescriptor("()V")
+                        .addCalls(ProtoCallEdge.newBuilder().setClassName("com.example.Baz").setMethodName("qux").setMethodDescriptor("()I")),
+                ).build()
+
+        val edge = ProtoPayloadCodec.decodeProbeManifest(wireManifest.toByteArray()).probes.single().calls.single()
+
+        assertEquals(CallEdgeKind.CALL, edge.kind)
+        assertEquals(0, edge.capturedCount)
+    }
+
+    @Test
+    fun `an unrecognized call edge kind on the wire is rejected`() {
+        val wireManifest =
+            ProtoProbeManifest
+                .newBuilder()
+                .setResource(ProtoResourceAttributes.newBuilder().setServiceName("checkout").setRunId("run-1"))
+                .addProbes(
+                    ProtoProbeLocation
+                        .newBuilder()
+                        .setKind(ProtoProbeKind.METHOD)
+                        .setClassName("com.example.Foo")
+                        .setMethodName("bar")
+                        .setMethodDescriptor("()V")
+                        .addCalls(ProtoCallEdge.newBuilder().setClassName("com.example.Baz").setMethodName("qux").setKindValue(99)),
+                ).build()
+
+        assertFailsWith<IllegalArgumentException> {
+            ProtoPayloadCodec.decodeProbeManifest(wireManifest.toByteArray())
+        }
+    }
+
+    @Test
+    fun `a probe location's lambda body flag round-trips through the wire`() {
+        val manifest =
+            ProbeManifest(
+                resource = ResourceAttributes("checkout", null, "", null, "run-1"),
+                probes = listOf(methodProbe(lambdaBody = true), methodProbe(lambdaBody = false).copy(probeIndex = 1, methodName = "baz")),
+            )
+
+        val decoded = ProtoPayloadCodec.decodeProbeManifest(ProtoPayloadCodec.encode(manifest))
+
+        assertEquals(manifest, decoded)
+        assertEquals(listOf(true, false), decoded.probes.map { it.lambdaBody })
+    }
+
+    @Test
+    fun `a class location's source file round-trips through the wire, empty as null`() {
+        val manifest =
+            ProbeManifest(
+                resource = ResourceAttributes("checkout", null, "", null, "run-1"),
+                probes = emptyList(),
+                classLocations =
+                    listOf(
+                        ClassLocation(classId = 0, superClassName = "java.lang.Object", interfaceNames = emptyList(), sourceFile = "Foo.kt"),
+                        ClassLocation(classId = 1, superClassName = "java.lang.Object", interfaceNames = emptyList(), sourceFile = "<generated>"),
+                        ClassLocation(classId = 2, superClassName = "java.lang.Object", interfaceNames = emptyList(), sourceFile = null),
+                    ),
+            )
+
+        val bytes = ProtoPayloadCodec.encode(manifest)
+
+        assertEquals(manifest, ProtoPayloadCodec.decodeProbeManifest(bytes))
+        assertEquals(
+            listOf("Foo.kt", "<generated>", ""),
+            ProtoProbeManifest.parseFrom(bytes).classLocationsList.map { it.sourceFile },
+        )
     }
 
     @Test
@@ -1087,7 +1256,7 @@ class ProtoPayloadCodecTest {
                 .calls
                 .isEmpty(),
         )
-        assertTrue(decoded.classSupertypes.isEmpty())
+        assertTrue(decoded.classLocations.isEmpty())
         assertEquals(manifest, decoded)
     }
 

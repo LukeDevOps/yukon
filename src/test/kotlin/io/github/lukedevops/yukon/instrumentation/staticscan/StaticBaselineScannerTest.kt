@@ -2,6 +2,7 @@ package io.github.lukedevops.yukon.instrumentation.staticscan
 
 import io.github.lukedevops.yukon.config.AgentConfig
 import io.github.lukedevops.yukon.export.CallEdge
+import io.github.lukedevops.yukon.export.CallEdgeKind
 import io.github.lukedevops.yukon.export.GeneratedBy
 import io.github.lukedevops.yukon.export.ProbeKind
 import io.github.lukedevops.yukon.export.ResourceAttributes
@@ -379,6 +380,49 @@ class StaticBaselineScannerTest {
     }
 
     @Test
+    fun `declares a javac lambda body as one, and a method reference's target and its creator as not`() {
+        val root = directoryRoot("com/example/target/LambdaTarget.class" to lambdaTargetBytes)
+
+        val declared =
+            StaticBaselineScanner(listOf("com.example.target"))
+                .scan(listOf(root))
+                .declaredClasses
+                .single { it.className == "com.example.target.LambdaTarget" }
+
+        assertTrue(declared.methods.single { it.methodName == "lambda\$classifyViaLambda\$0" }.lambdaBody)
+        assertFalse(declared.methods.single { it.methodName == "ship" }.lambdaBody)
+        assertFalse(declared.methods.single { it.methodName == "classifyViaLambda" }.lambdaBody)
+        assertEquals("LambdaTarget.java", declared.sourceFile)
+    }
+
+    @Test
+    fun `declares kotlinc lambda bodies, nested ones included, with the class's source file`() {
+        val root =
+            directoryRoot(
+                "com/example/target/CreationEdgeTarget.class" to classBytes("kotlin/test/com/example/target/CreationEdgeTarget.class"),
+            )
+
+        val declared =
+            StaticBaselineScanner(listOf("com.example.target"))
+                .scan(listOf(root))
+                .declaredClasses
+                .single { it.className == "com.example.target.CreationEdgeTarget" }
+
+        assertEquals(
+            setOf(
+                "plain\$lambda\$0",
+                "capturing\$lambda\$0",
+                "capturingThis\$lambda\$0",
+                "nested\$lambda\$0",
+                "nested\$lambda\$0\$0",
+                "withDefault\$lambda\$0",
+            ),
+            declared.methods.filter { it.lambdaBody }.map { it.methodName }.toSet(),
+        )
+        assertEquals("CreationEdgeTarget.kt", declared.sourceFile)
+    }
+
+    @Test
     fun `declares clinit for a fixture that has one, and not for one that does not`() {
         val root =
             directoryRoot(
@@ -599,7 +643,7 @@ class StaticBaselineScannerTest {
             assertEquals(emptyList(), declared.methods.single { it.methodName == "callsJdkMethod" }.calls)
             assertEquals(emptyList(), declared.methods.single { it.methodName == "callsKotlinStdlib" }.calls)
 
-            val supertypes = manifest.classSupertypes.single { it.classId == methodProbes.first().classId }
+            val supertypes = manifest.classLocations.single { it.classId == methodProbes.first().classId }
             assertEquals(supertypes.superClassName, declared.superClassName)
             assertEquals(supertypes.interfaceNames, declared.interfaceNames)
         } finally {
@@ -688,6 +732,7 @@ class StaticBaselineScannerTest {
                         "invoke",
                         "()Ljava/lang/Integer;",
                         virtual = false,
+                        kind = CallEdgeKind.CREATES,
                     ),
                 ),
                 declared.methods.single { it.methodName == "viaReference" }.calls,

@@ -1,7 +1,7 @@
 package io.github.lukedevops.yukon.registry
 
 import io.github.lukedevops.yukon.export.ClassReferences
-import io.github.lukedevops.yukon.export.ClassSupertypes
+import io.github.lukedevops.yukon.export.ClassLocation
 import io.github.lukedevops.yukon.export.DeltaBatch
 import io.github.lukedevops.yukon.export.ProbeDelta
 import io.github.lukedevops.yukon.export.ProbeLocation
@@ -76,7 +76,7 @@ import java.util.concurrent.atomic.AtomicLong
  * as described in the design notes for the export payloads.
  *
  * @property confirmsDefinitions Switches the whole confirmation mechanism on: [computeManifestDeltas]
- * and [manifest] withhold a class's probe locations and its [ClassSupertypes] and [ClassReferences] records until the
+ * and [manifest] withhold a class's probe locations and its [ClassLocation] and [ClassReferences] records until the
  * class is confirmed defined, by a probe count above zero or a name [confirmFrom] is told the JVM
  * has loaded, and [confirmFrom] itself does the tracking. False leaves all of it inert, so a
  * caller that wires a sweep to a registry that does not withhold cannot be told a class's probes
@@ -103,6 +103,7 @@ open class ProbeRegistry(
         val interfaceNames: List<String>,
         val classLoaderRef: WeakReference<ClassLoader>?,
         val classReferences: List<String>,
+        val sourceFile: String?,
     ) {
         /** The last cumulative count successfully delivered to the collector, per probe. */
         var lastSent: LongArray = LongArray(counts.size)
@@ -181,11 +182,15 @@ open class ProbeRegistry(
      * layoutHash, classLoader) returns the same array instance.
      *
      * [superClassName] and [interfaceNames] are the class's supertypes, dotted, read from its
-     * class header. They travel with the class on the manifest as a [ClassSupertypes] record so a
+     * class header. They travel with the class on the manifest in its [ClassLocation] record so a
      * collector can widen a virtual [io.github.lukedevops.yukon.export.CallEdge] to every override
      * it knows about. See ADR 0024. They play no part in the registry key or the probe-layout
      * hash: a class's supertypes changing what a call resolves to at the collector never changes
      * which array slot a probe hit increments.
+     *
+     * [sourceFile] is the class file's `SourceFile` attribute as it appears, or null when it has
+     * none. It travels in the same [ClassLocation] record and, like the supertypes, plays no part
+     * in the key or the hash. See ADR 0034.
      *
      * [classReferences] are the class's own out-of-scope references outside any probed method,
      * dotted (ADR 0030). They travel as one [ClassReferences] record, staged, withheld and committed
@@ -203,6 +208,7 @@ open class ProbeRegistry(
         superClassName: String? = null,
         interfaceNames: List<String> = emptyList(),
         classReferences: List<String> = emptyList(),
+        sourceFile: String? = null,
     ): LongArray {
         val key = RegistryKey(className, layoutHash, System.identityHashCode(classLoader))
         val entry =
@@ -216,6 +222,7 @@ open class ProbeRegistry(
                     interfaceNames = interfaceNames,
                     classLoaderRef = weakClassLoaderRef(classLoader),
                     classReferences = classReferences,
+                    sourceFile = sourceFile,
                 )
             }
         return entry.counts
@@ -573,6 +580,7 @@ open class ProbeRegistry(
                         generatedBy = meta.generatedBy,
                         referencedClasses = meta.referencedClasses,
                         branchKey = meta.branchKey,
+                        lambdaBody = meta.lambdaBody,
                     )
                 }
             }
@@ -580,7 +588,7 @@ open class ProbeRegistry(
             skippedByClassName.map { (className, entry) ->
                 SkippedClass(className, entry.reason, entry.skippedAt)
             }
-        val supertypes = published.map { entry -> ClassSupertypes(entry.classId, entry.superClassName, entry.interfaceNames) }
+        val classLocations = published.map(::classLocationOf)
         val classReferences = published.mapNotNull(::classReferencesOf)
         val unreported =
             unreportedByClassName.map { (className, entry) ->
@@ -590,11 +598,15 @@ open class ProbeRegistry(
             resource,
             locations,
             skipped,
-            classSupertypes = supertypes,
+            classLocations = classLocations,
             unreportedClasses = unreported,
             classReferences = classReferences,
         )
     }
+
+    /** [entry]'s [ClassLocation] record. */
+    private fun classLocationOf(entry: ClassEntry): ClassLocation =
+        ClassLocation(entry.classId, entry.superClassName, entry.interfaceNames, entry.sourceFile)
 
     /** [entry]'s [ClassReferences] record, or null when it has no class-level references. */
     private fun classReferencesOf(entry: ClassEntry): ClassReferences? =
@@ -625,7 +637,7 @@ open class ProbeRegistry(
      * Like [computeManifestDelta], but splits the not-yet-sent classes into chunks of at most
      * [maxEntriesPerChunk] entries each. A skipped class counts as one entry. A registered class
      * counts as its probe locations, plus its probes' total call-edge and referenced-class count,
-     * plus one for its own [ClassSupertypes] record, plus the names in its [ClassReferences]
+     * plus one for its own [ClassLocation] record, plus the names in its [ClassReferences]
      * record, since all of it is staged and committed together. The first
      * manifest after a busy startup can otherwise carry every probe in the app in one POST.
      *
@@ -640,7 +652,7 @@ open class ProbeRegistry(
         val chunks = mutableListOf<ManifestSnapshot>()
         var locations = mutableListOf<ProbeLocation>()
         var skipped = mutableListOf<SkippedClass>()
-        var supertypes = mutableListOf<ClassSupertypes>()
+        var classLocations = mutableListOf<ClassLocation>()
         var classReferences = mutableListOf<ClassReferences>()
         var stagedEntries = mutableListOf<Any>()
         var stagedSkipped = mutableListOf<Any>()
@@ -661,7 +673,7 @@ open class ProbeRegistry(
                         resource,
                         locations,
                         skipped,
-                        classSupertypes = supertypes,
+                        classLocations = classLocations,
                         unreportedClasses = unreported,
                         classReferences = classReferences,
                     ),
@@ -671,7 +683,7 @@ open class ProbeRegistry(
                 )
             locations = mutableListOf()
             skipped = mutableListOf()
-            supertypes = mutableListOf()
+            classLocations = mutableListOf()
             classReferences = mutableListOf()
             stagedEntries = mutableListOf()
             stagedSkipped = mutableListOf()
@@ -683,7 +695,7 @@ open class ProbeRegistry(
             if (entry.manifestIncluded) continue
             if (confirmsDefinitions && !isConfirmed(entry)) continue
             // A class's weight is its probe count, plus its total call-edge and referenced-class
-            // count, plus one for its own ClassSupertypes record, plus its class-level references:
+            // count, plus one for its own ClassLocation record, plus its class-level references:
             // all of it is staged and committed together, so a class with many edges or references
             // seals a chunk earlier than one without.
             val weight =
@@ -712,9 +724,10 @@ open class ProbeRegistry(
                         generatedBy = meta.generatedBy,
                         referencedClasses = meta.referencedClasses,
                         branchKey = meta.branchKey,
+                        lambdaBody = meta.lambdaBody,
                     )
             }
-            supertypes += ClassSupertypes(entry.classId, entry.superClassName, entry.interfaceNames)
+            classLocations += classLocationOf(entry)
             classReferencesOf(entry)?.let { classReferences += it }
             chunkWeight += weight
         }

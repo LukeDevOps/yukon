@@ -16,7 +16,7 @@ A lambda body reaches the collector under the compiler's name: `main$lambda$0` f
 
   A `CREATES` edge reaches its target for every rule a `CALL` does, since a created body can only run after its creator ran. `kind` changes how the edge is named and drawn, never what it reaches. `virtual` is unrelated and stays as it is.
 - `CallEdge` gains `captured_count`: on a `CREATES` edge from an `invokedynamic`, the number of the target descriptor's leading parameters that are captured values rather than the functional interface's own parameters. It is read from the call site's `invokedType`. A receiver bound by a reference to an instance method is not counted, since it is not in the target's parameter list. On every other edge it is 0.
-- `ProbeLocation` and `DeclaredMethod` gain `lambda_body`. It is true for a method when an `invokedynamic` in its own class names it as the implementation and its name is one a compiler gives a body the source never named:
+- `ProbeLocation` and `DeclaredMethod` gain `lambda_body`. It is true for a method when an `invokedynamic` in its own class names it as the implementation, directly or through a same-class pass-through such as the `$adapted` forwarder scalac puts in front of a body that takes or returns a primitive, and its name is one a compiler gives a body the source never named:
   - javac: `lambda$…`;
   - scalac: `$anonfun$…`, except the `$adapted` forwarders;
   - kotlinc: `…$lambda$N`.
@@ -51,6 +51,7 @@ A lambda body reaches the collector under the compiler's name: `main$lambda$0` f
 
 - A body that a new compiler names in a shape the rule does not know reaches the collector unflagged. It still has its `CREATES` edge and its source file, so it shows under its raw name, created in its method, at its file and line. The compiler fixtures are where the new shape is found and added.
 - `lambda_body` is only ever true on a method that has a probe, so the collector never needs it on a pass-through.
+- A Kotlin reference to a Kotlin function type (`::f`) compiles to a `FunctionReferenceImpl` class under kotlinc 2.2, not to an `invokedynamic`, so it is a body class. Only a SAM conversion such as `IntUnaryOperator(::twice)` gives an `invokedynamic` to the named method.
 - A nested lambda's `CREATES` edge comes from the lambda it is written in, not from the outermost named method. That is the fact the bytecode states. Walking the chain up to a named method is the collector's job.
 - The `CREATES` edges of a body class come from the method holding the `new` or the `getstatic`, as ADR 0024 already records. A body class created in two places has two creators.
 - A body class whose shape the rules do not know, such as one extending a new Kotlin runtime base class, still has `EnclosingMethod`, so it reports `ANONYMOUS_CLASS`. That label is loose but true, and the missing fixture shows the gap.

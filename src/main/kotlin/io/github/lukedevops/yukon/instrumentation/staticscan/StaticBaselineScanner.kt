@@ -261,7 +261,14 @@ class StaticBaselineScanner(
                 return
             }
             buckets.declared +=
-                DeclaredClass(className, scanned.methods, scanned.superClassName, scanned.interfaceNames, scanned.classReferences)
+                DeclaredClass(
+                    className,
+                    scanned.methods,
+                    scanned.superClassName,
+                    scanned.interfaceNames,
+                    scanned.classReferences,
+                    scanned.sourceFile,
+                )
         } catch (e: Exception) {
             // Covers a corrupt class file, or a failure resolving a supporting type (e.g. an
             // annotation's own definition) while describing this one. Either way, this class
@@ -270,12 +277,13 @@ class StaticBaselineScanner(
         }
     }
 
-    /** [DeclaredMethod]s for one class, plus the supertypes and class-level references read from the same analysis pass. */
+    /** [DeclaredMethod]s for one class, plus the supertypes, class-level references and source file read from the same analysis pass. */
     private class ScannedMethods(
         val methods: List<DeclaredMethod>,
         val superClassName: String?,
         val interfaceNames: List<String>,
         val classReferences: List<String>,
+        val sourceFile: String?,
     )
 
     /**
@@ -284,15 +292,16 @@ class StaticBaselineScanner(
      * attribute ([ScalaClassDetector]), and the same bytes are also used to detect inline
      * functions with the same LocalVariableTable rule [BranchSiteAnalyzer] uses at transform time,
      * merged into each declared method, to detect a `<clinit>` of the class's own, to read its
-     * in-scope call edges and its out-of-scope references, and to read its superclass and
-     * interfaces. References are listed as the analyser records them, JDK names included;
+     * in-scope call edges, its out-of-scope references and its lambda bodies, and to read its
+     * superclass, interfaces and source file. References are listed as the analyser records them, JDK names included;
      * [BaselineReferenceFilter] drops those before the baseline is sent.
      *
      * A class whose bytes cannot be resolved here is not itself unreadable: its [TypeDescription]
      * already resolved successfully through [pool][TypePool], so it is still declared, just
      * treated as a non-Scala class, with every method's [DeclaredMethod.inline] and
-     * [DeclaredMethod.calls] and references left empty, [DeclaredClass.superClassName] left null, no
-     * `<clinit>` entry added, and [DeclaredClass.interfaceNames] left empty. This can only happen
+     * [DeclaredMethod.calls] and references left empty, no method marked as a lambda body,
+     * [DeclaredClass.superClassName] and [DeclaredClass.sourceFile] left null, no `<clinit>` entry
+     * added, and [DeclaredClass.interfaceNames] left empty. This can only happen
      * if the two disagree about what is readable, which no locator this scanner builds does.
      *
      * A `<clinit>` entry is appended after every other declared method, mirroring
@@ -339,6 +348,7 @@ class StaticBaselineScanner(
                     analysis.callsOf(it.internalName, it.descriptor),
                     analysis.generatedBy(it.internalName, it.descriptor),
                     analysis.referencesOf(it.internalName, it.descriptor),
+                    analysis.isLambdaBody(it.internalName, it.descriptor),
                 )
             }
         val typeInitializer =
@@ -359,6 +369,7 @@ class StaticBaselineScanner(
             analysis.superClassName,
             analysis.interfaceNames,
             analysis.classReferences,
+            analysis.sourceFile,
         )
     }
 

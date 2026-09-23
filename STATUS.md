@@ -20,7 +20,7 @@ Two things fall out of it when it happens. The poms need licence metadata,
 which nothing generates today. And a published testkit fixes its own API, so
 the query surface is worth a look before it is frozen rather than after.
 
-### Naming hidden code: decided, not started
+### Naming hidden code: A1 in the working tree
 
 ADR 0034, with server ADR 0028. A lambda body reaches the server under
 the compiler's name (`main$lambda$0`), and nothing says what it is or
@@ -37,6 +37,13 @@ which file holds it. The agent will send what the bytecode knows:
 
 Order: proto and BSR, then the agent with compiler fixtures for the
 Kotlin name rule, then the server, then the UI, then `runDemoStack`.
+
+A1, in the working tree and not committed: the proto, `kind`,
+`captured_count`, `lambda_body`, `source_file` and the `ClassLocation`
+rename, through the analyser, registry, baseline, codec, testkit and
+stub collector. A2 is `body_kind` and `source_name`. `lambda_body`
+also follows scalac's `$adapted` forwarder to the body it calls, which
+the ADR's wording does not yet say.
 
 Open, and not part of this: an endpoint whose handler is an
 `invokedynamic` lambda (`/checkout` in the demo) still has no handler

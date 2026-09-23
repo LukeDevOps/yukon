@@ -191,6 +191,7 @@ class YukonInstrumentation(
         val classReferences: List<String>,
         /** Every referenced class kept, dotted, with where it was found; see [ReferencedClassLocator.Found]. */
         val externalClasses: Map<String, String?>,
+        val sourceFile: String?,
     )
 
     /**
@@ -247,6 +248,7 @@ class YukonInstrumentation(
                 superClassName = pending.superClassName,
                 interfaceNames = pending.interfaceNames,
                 classReferences = pending.classReferences,
+                sourceFile = pending.sourceFile,
             )
             for ((className, location) in pending.externalClasses) externalClassRegistry.record(className, location)
         }
@@ -405,6 +407,7 @@ class YukonInstrumentation(
                         calls = analysis.callsOf(it.internalName, it.descriptor),
                         generatedBy = analysis.generatedBy(it.internalName, it.descriptor),
                         referencedClasses = references.keep(analysis.referencesOf(it.internalName, it.descriptor)),
+                        lambdaBody = analysis.isLambdaBody(it.internalName, it.descriptor),
                     )
                 }
             }
@@ -530,6 +533,7 @@ class YukonInstrumentation(
                 analysis.interfaceNames,
                 references.keep(analysis.classReferences),
                 references.kept(),
+                analysis.sourceFile,
             ),
         )
         if (staticBaselineMismatchDetector.shouldWarnAbout(typeDescription.name)) {

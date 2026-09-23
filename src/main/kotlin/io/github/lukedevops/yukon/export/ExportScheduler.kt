@@ -448,7 +448,7 @@ class ExportScheduler(
         var size =
             manifest.probes.size + manifest.probes.sumOf { it.calls.size + it.referencedClasses.size } +
                 manifest.skippedClasses.size + manifest.endpoints.size + manifest.disabledEndpointModules.size +
-                manifest.classSupertypes.size + manifest.classReferences.sumOf { it.referencedClasses.size } +
+                manifest.classLocations.size + manifest.classReferences.sumOf { it.referencedClasses.size } +
                 manifest.unreportedClasses.size + manifest.dependencies.size + manifest.externalClasses.size
         val riders = mutableListOf<Rider<ProbeManifest>>()
     }

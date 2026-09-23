@@ -177,7 +177,7 @@ class BaselineReferenceFilterTest {
         val exporter = RecordingExporter()
         val second = DeclaredClass("com.acme.Second", listOf(DeclaredMethod("m", "()V")))
         val scan = scanReferencingEverything().let { it.copy(declaredClasses = it.declaredClasses + second) }
-        // "App" weighs 1 method + 1 supertypes record + 3 kept references on the method + 3 on the
+        // "App" weighs 1 method + 1 class record + 3 kept references on the method + 3 on the
         // class = 8, and "Second" weighs 2. Unfiltered, "App" alone would weigh 16.
         val publisher =
             StaticBaselinePublisher(

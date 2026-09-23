@@ -39,6 +39,9 @@ import io.github.lukedevops.yukon.export.ProbeKind
  * [branchKey] is set only for a [ProbeKind.BRANCH] probe: an opaque lowercase hex token naming
  * this outcome across builds and instances, compared only for equality. Null when the agent
  * cannot name the outcome safely. See ADR 0031.
+ *
+ * [lambdaBody] is set only for a [ProbeKind.METHOD] probe whose method is a lambda body. See
+ * [io.github.lukedevops.yukon.export.ProbeLocation.lambdaBody] and ADR 0034.
  */
 data class ProbeMeta(
     val kind: ProbeKind,
@@ -56,4 +59,5 @@ data class ProbeMeta(
     val generatedBy: GeneratedBy = GeneratedBy.NONE,
     val referencedClasses: List<String> = emptyList(),
     val branchKey: String? = null,
+    val lambdaBody: Boolean = false,
 )

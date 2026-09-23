@@ -44,7 +44,7 @@ class StaticBaselineChunkerTest {
 
         val chunks = StaticBaselineChunker.chunk(result, resource, scannedAt = 42L, maxEntriesPerChunk = 7)
 
-        // Each class weighs its method count plus one for its own supertypes record: A and B
+        // Each class weighs its method count plus one for its own class record: A and B
         // weigh 4 each, C weighs 2. A (4) alone, since B (4) would push it past 7; then B and C
         // together at exactly 6.
         assertEquals(listOf(listOf("A"), listOf("B", "C")), chunks.map { c -> c.declaredClasses.map { it.className } })
@@ -92,7 +92,7 @@ class StaticBaselineChunkerTest {
     fun `a class with many call edges seals a chunk earlier than one with none, and every chunk holds whole classes`() {
         val result =
             StaticScanResult(
-                // "Heavy" weighs 1 method + 3 edges + 1 supertypes record = 5, "Light" weighs
+                // "Heavy" weighs 1 method + 3 edges + 1 class record = 5, "Light" weighs
                 // 1 method + 0 edges + 1 = 2. A cap of 4 must not let both land in one chunk.
                 declaredClasses = listOf(declaredWithEdges("Heavy", edgesPerMethod = 3), declaredWithEdges("Light", edgesPerMethod = 0)),
                 staticallyUnsafeClasses = emptyList(),
@@ -118,7 +118,7 @@ class StaticBaselineChunkerTest {
 
     @Test
     fun `method and class references add to a class's weight, so references alone can seal a chunk`() {
-        // Each class weighs 1 method + 1 supertypes record = 2 without references. "First" adds
+        // Each class weighs 1 method + 1 class record = 2 without references. "First" adds
         // 2 method references and 1 class reference for 5, so a cap of 6 cannot also hold "Second".
         val first =
             DeclaredClass(

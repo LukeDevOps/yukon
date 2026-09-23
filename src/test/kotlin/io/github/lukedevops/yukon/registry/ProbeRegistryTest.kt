@@ -580,7 +580,7 @@ class ProbeRegistryTest {
                 maxEntriesPerChunk = 5,
             )
 
-        // Each of Foo and Bar weighs 3 probes + 0 edges + 1 for its own supertypes record = 4.
+        // Each of Foo and Bar weighs 3 probes + 0 edges + 1 for its own class location record = 4.
         // Foo (4) fills the first chunk on its own, since Bar (4) would push it past 5. Bar and
         // the skipped class (1) then fit together in the second, exactly at the cap.
         assertEquals(2, chunks.size)
@@ -590,7 +590,7 @@ class ProbeRegistryTest {
         )
         assertEquals(listOf("com.example.Skipped"), chunks.flatMap { it.manifest.skippedClasses.map { s -> s.className } })
         chunks.forEach {
-            assertTrue(it.manifest.probes.size + it.manifest.skippedClasses.size + it.manifest.classSupertypes.size <= 5)
+            assertTrue(it.manifest.probes.size + it.manifest.skippedClasses.size + it.manifest.classLocations.size <= 5)
         }
     }
 
@@ -687,7 +687,7 @@ class ProbeRegistryTest {
     }
 
     @Test
-    fun `manifest and computeManifestDelta carry a METHOD probe's call edges and the class's supertypes record`() {
+    fun `manifest and computeManifestDelta carry a METHOD probe's call edges and the class's class location record`() {
         val registry = ProbeRegistry()
         val calls = listOf(CallEdge("com.example.Bar", "baz", "()V", virtual = true))
         registry.register(
@@ -703,7 +703,7 @@ class ProbeRegistryTest {
             registry
                 .manifest(
                     ResourceAttributes("checkout", "1.0.0", "instance-1", null, "run-1"),
-                ).classSupertypes
+                ).classLocations
                 .single()
         val deltaSnapshot = registry.computeManifestDelta(ResourceAttributes("checkout", "1.0.0", "instance-1", null, "run-1"))
 
@@ -716,7 +716,39 @@ class ProbeRegistryTest {
         )
         assertEquals("com.example.Base", manifestSupertypes.superClassName)
         assertEquals(listOf("com.example.Marker"), manifestSupertypes.interfaceNames)
-        assertEquals(manifestSupertypes, deltaSnapshot.manifest.classSupertypes.single())
+        assertEquals(manifestSupertypes, deltaSnapshot.manifest.classLocations.single())
+    }
+
+    @Test
+    fun `manifest and computeManifestDelta carry a probe's lambda body flag and the class's source file`() {
+        val registry = ProbeRegistry()
+        registry.register(
+            "com.example.Foo",
+            layoutHash = 1L,
+            probes =
+                listOf(
+                    ProbeMeta(ProbeKind.METHOD, "main", "()V", line = 1),
+                    ProbeMeta(ProbeKind.METHOD, "main\$lambda\$0", "()V", line = 2, lambdaBody = true),
+                ),
+            superClassName = "java.lang.Object",
+            sourceFile = "Foo.kt",
+        )
+        registry.register("com.example.NoSource", layoutHash = 1L, probes = listOf(ProbeMeta(ProbeKind.METHOD, "run", "()V", line = 1)))
+        val resource = ResourceAttributes("checkout", "1.0.0", "instance-1", null, "run-1")
+
+        val manifest = registry.manifest(resource)
+        val delta = registry.computeManifestDelta(resource).manifest
+
+        for (sent in listOf(manifest, delta)) {
+            assertEquals(
+                listOf(false, true),
+                sent.probes.filter { it.className == "com.example.Foo" }.sortedBy { it.probeIndex }.map { it.lambdaBody },
+            )
+            val classIds = sent.probes.associate { it.className to it.classId }
+            val sourceFiles = sent.classLocations.associate { it.classId to it.sourceFile }
+            assertEquals("Foo.kt", sourceFiles[classIds.getValue("com.example.Foo")])
+            assertEquals(null, sourceFiles[classIds.getValue("com.example.NoSource")])
+        }
     }
 
     @Test
@@ -754,7 +786,7 @@ class ProbeRegistryTest {
         )
         registry.register("com.example.Light", layoutHash = 1L, probes = methodProbes(1))
 
-        // Heavy weighs 1 probe + 5 edges + 1 supertypes record = 7, already past a cap of 6, so it
+        // Heavy weighs 1 probe + 5 edges + 1 class location record = 7, already past a cap of 6, so it
         // seals its own chunk; Light (1 + 0 + 1 = 2) starts a second chunk. entriesByKey is a
         // ConcurrentHashMap, so which chunk lands first is not guaranteed; only that the two
         // classes never land in the same chunk.
@@ -775,17 +807,17 @@ class ProbeRegistryTest {
     }
 
     @Test
-    fun `advanceManifestBaseline marks a class's supertypes record as included together with its probes`() {
+    fun `advanceManifestBaseline marks a class's class location record as included together with its probes`() {
         val registry = ProbeRegistry()
         registry.register("com.example.Foo", layoutHash = 1L, probes = methodProbes(1), superClassName = "com.example.Base")
 
         val snapshot = registry.computeManifestDelta(ResourceAttributes("checkout", null, "instance-1", null, "run-1"))
-        assertEquals(1, snapshot.manifest.classSupertypes.size)
+        assertEquals(1, snapshot.manifest.classLocations.size)
         registry.advanceManifestBaseline(snapshot)
 
         val retry = registry.computeManifestDelta(ResourceAttributes("checkout", null, "instance-1", null, "run-1"))
         assertTrue(retry.manifest.probes.isEmpty())
-        assertTrue(retry.manifest.classSupertypes.isEmpty())
+        assertTrue(retry.manifest.classLocations.isEmpty())
     }
 
     @Test
@@ -803,7 +835,7 @@ class ProbeRegistryTest {
             "com.example.First",
             registry
                 .manifest(ResourceAttributes("checkout", null, "instance-1", null, "run-1"))
-                .classSupertypes
+                .classLocations
                 .single()
                 .superClassName,
         )
@@ -1061,11 +1093,11 @@ class ProbeRegistryTest {
         val manifest = registry.manifest(ResourceAttributes("checkout", null, "instance-1", null, "run-1"))
 
         assertEquals(listOf("com.example.Published"), manifest.probes.map { it.className })
-        assertEquals(1, manifest.classSupertypes.size, "a withheld class must not leave a supertypes record behind")
+        assertEquals(1, manifest.classLocations.size, "a withheld class must not leave a class location record behind")
     }
 
     @Test
-    fun `a withheld class contributes neither probe locations nor a supertypes record, and does not count toward chunk weight`() {
+    fun `a withheld class contributes neither probe locations nor a class location record, and does not count toward chunk weight`() {
         val registry = ProbeRegistry(confirmsDefinitions = true)
         registry.register("com.example.Withheld", layoutHash = 1L, probes = methodProbes(1))
         val published = registry.register("com.example.Published", layoutHash = 1L, probes = methodProbes(1))
@@ -1077,8 +1109,8 @@ class ProbeRegistryTest {
         assertEquals("com.example.Published", publishedProbe.className)
         assertEquals(
             listOf(publishedProbe.classId),
-            delta.classSupertypes.map { it.classId },
-            "the withheld class's own ClassSupertypes record must not appear either",
+            delta.classLocations.map { it.classId },
+            "the withheld class's own ClassLocation record must not appear either",
         )
     }
 
@@ -1173,7 +1205,7 @@ class ProbeRegistryTest {
         )
         registry.register("com.example.Light", layoutHash = 1L, probes = methodProbes(1))
 
-        // Heavy weighs 1 probe + 2 method references + 1 supertypes record + 2 class references = 6;
+        // Heavy weighs 1 probe + 2 method references + 1 class location record + 2 class references = 6;
         // Light weighs 2. Without the references they would share a chunk under a cap of 6.
         val chunks =
             registry.computeManifestDeltas(

@@ -99,7 +99,7 @@ private data class SupertypesInfo(
     val interfaceNames: List<String>,
 )
 
-/** Scopes a class_id's supertypes record to the run that reported it, for the same reason as [InstanceProbeKey]. */
+/** Scopes a class_id's class location record to the run that reported it, for the same reason as [InstanceProbeKey]. */
 private data class InstanceClassIdKey(
     val run: Run,
     val classId: Int,
@@ -153,7 +153,7 @@ private val skippedClasses = ConcurrentHashMap<InstanceClassKey, SkippedInfo>()
 // Call edges (ADR 0024), stored per METHOD probe rather than only counted at receipt, since a
 // later chunk's cluster logic needs the actual callees, not just how many arrived.
 private val manifestCallEdges = ConcurrentHashMap<InstanceProbeKey, List<CallEdgeInfo>>()
-private val classSupertypes = ConcurrentHashMap<InstanceClassIdKey, SupertypesInfo>()
+private val supertypesByClassId = ConcurrentHashMap<InstanceClassIdKey, SupertypesInfo>()
 
 // hits_total is cumulative from process start, not the count since the last flush. Merging with
 // max() is what makes this safe against a re-delivered or reordered batch: applying the same or
@@ -182,7 +182,7 @@ private val runsThatEndedCleanly = Collections.newSetFromMap(ConcurrentHashMap<R
 private val staticallyDeclaredClasses = ConcurrentHashMap<String, List<DeclaredMethodInfo>>()
 
 // A declared class's superclass and interfaces, read the same way as a loaded class's
-// ClassSupertypes record. See ADR 0024.
+// ClassLocation record. See ADR 0024.
 private val staticallyDeclaredSupertypes = ConcurrentHashMap<String, SupertypesInfo>()
 private val staticallyUnsafeClasses = ConcurrentHashMap<String, String>()
 private val staticallyUnreadableClasses = ConcurrentHashMap<String, String>()
@@ -406,9 +406,9 @@ private fun handleManifest(exchange: HttpExchange) {
         skippedClasses[InstanceClassKey(run, skipped.className)] = SkippedInfo(skipped.reason, skipped.skippedAt)
         dynamicallyKnownClassNames += skipped.className
     }
-    for (supertypes in manifest.classSupertypesList) {
-        classSupertypes[InstanceClassIdKey(run, supertypes.classId)] =
-            SupertypesInfo(supertypes.superClassName.ifEmpty { null }, supertypes.interfaceNamesList)
+    for (classLocation in manifest.classLocationsList) {
+        supertypesByClassId[InstanceClassIdKey(run, classLocation.classId)] =
+            SupertypesInfo(classLocation.superClassName.ifEmpty { null }, classLocation.interfaceNamesList)
     }
     for (endpoint in manifest.endpointsList) {
         manifestEndpoints[InstanceEndpointKey(run, endpoint.endpointId)] =
@@ -433,7 +433,7 @@ private fun handleManifest(exchange: HttpExchange) {
             "(known total: ${skippedClasses.size}), ${manifest.endpointsList.size} endpoints " +
             "(known total: ${manifestEndpoints.size}) and ${manifest.disabledEndpointModulesList.size} disabled endpoint modules, " +
             "$callEdgeCount call edges (known total: ${manifestCallEdges.values.sumOf { it.size }}) and " +
-            "${manifest.classSupertypesList.size} class supertypes records (known total: ${classSupertypes.size}), " +
+            "${manifest.classLocationsList.size} class location records (known total: ${supertypesByClassId.size}), " +
             "${manifest.dependenciesList.size} dependencies (known total: ${dependencyLocations.size}) and " +
             "${manifest.externalClassesList.size} external classes (known total: ${externalClasses.size})",
     )
@@ -916,7 +916,7 @@ private fun buildClusterNodes(declaredClasses: Map<String, List<DeclaredMethodIn
 private fun buildSupertypesByClassName(declaredSupertypes: Map<String, SupertypesInfo>): Map<String, SupertypesInfo> {
     val result = mutableMapOf<String, SupertypesInfo>()
     for ((key, info) in manifestProbes) {
-        val supertypes = classSupertypes[InstanceClassIdKey(key.run, key.classId)] ?: continue
+        val supertypes = supertypesByClassId[InstanceClassIdKey(key.run, key.classId)] ?: continue
         result.putIfAbsent(info.className, supertypes)
     }
     for ((className, supertypes) in declaredSupertypes) {

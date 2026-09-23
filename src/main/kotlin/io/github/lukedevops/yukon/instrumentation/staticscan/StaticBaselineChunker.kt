@@ -12,7 +12,7 @@ import io.github.lukedevops.yukon.export.UnreadableClass
  * classpath never produces a single POST the collector might refuse.
  *
  * Size is measured in entries: a declared class counts as its number of methods, plus the total
- * number of call edges across those methods, plus one for its own supertypes record, plus one per
+ * number of call edges across those methods, plus one for its own class record, plus one per
  * referenced class on its methods and on the class itself, mirroring the weighting
  * [io.github.lukedevops.yukon.registry.ProbeRegistry] gives a manifest class for the same reason
  * (see ADR 0024 and ADR 0030); every unsafe, unreadable, or unprobed class counts as one.
@@ -47,7 +47,7 @@ object StaticBaselineChunker {
 
         result.declaredClasses.forEach { c ->
             // A class's weight is its method count, plus its methods' total call-edge count, plus
-            // one for its own supertypes record, plus every reference on its methods and on the
+            // one for its own class record, plus every reference on its methods and on the
             // class: all are staged together, so a class with many edges or references seals a
             // chunk earlier than one without. See ADR 0024 and ADR 0030.
             val references = c.methods.sumOf { it.referencedClasses.size } + c.referencedClasses.size

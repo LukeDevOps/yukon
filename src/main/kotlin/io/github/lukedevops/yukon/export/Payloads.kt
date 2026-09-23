@@ -141,6 +141,12 @@ data class DeltaBatch(
  * [branchKey] is set only for a [ProbeKind.BRANCH] probe: an opaque lowercase hex token naming
  * this outcome across builds and instances, compared only for equality. Null when the agent
  * cannot name the outcome safely. See ADR 0031.
+ *
+ * [lambdaBody] is set only for a [ProbeKind.METHOD] probe. It is true when an `invokedynamic` in
+ * the method's own class names it as the `LambdaMetafactory` implementation, directly or through
+ * the boxing forwarder scalac puts in between, and its name is one a compiler gives a body the
+ * source never named. A named method passed by reference is not a lambda body. See
+ * [io.github.lukedevops.yukon.instrumentation.TypeMatchPolicy.isLambdaBodyName] and ADR 0034.
  */
 data class ProbeLocation(
     val classId: Int,
@@ -161,6 +167,7 @@ data class ProbeLocation(
     val generatedBy: GeneratedBy = GeneratedBy.NONE,
     val referencedClasses: List<String> = emptyList(),
     val branchKey: String? = null,
+    val lambdaBody: Boolean = false,
 )
 
 /**
@@ -184,6 +191,25 @@ data class SkippedClass(
 )
 
 /**
+ * What a [CallEdge] records. A collector reaches the target of either kind the same way; the kind
+ * only changes how the edge is named and drawn. See ADR 0034.
+ */
+enum class CallEdgeKind {
+    /** The caller runs the callee: an invoke instruction, a `new`, or a static field use that runs the owner's initializer. */
+    CALL,
+
+    /**
+     * The caller hands a body to someone else to run, so the body can only run after the caller
+     * ran. It is the edge to the implementation method of a `LambdaMetafactory` `invokedynamic`,
+     * whether a lambda body or a named method passed by reference. It is also the edge to each
+     * probed method of a body class the caller creates with `new` or reads with `getstatic
+     * INSTANCE`. The constructor edge of that `new`, and the initializer edge of that `getstatic`,
+     * stay [CALL] edges, since the caller runs them itself.
+     */
+    CREATES,
+}
+
+/**
  * One caller method's static reference to one callee method, read from the caller's bytecode at
  * transform time. See ADR 0024.
  *
@@ -194,25 +220,45 @@ data class SkippedClass(
  * or final target is reported as non-virtual even when the raw instruction is `invokevirtual`,
  * since such a target can never be overridden. A collector widens a virtual edge to every override
  * it knows about; a non-virtual one names its one real target exactly.
+ *
+ * [kind] says whether the caller runs the callee or hands it off; see [CallEdgeKind]. An edge that
+ * takes the place of a pass-through keeps the kind of the edge it replaces, and an edge from inside
+ * a [CallEdgeKind.CREATES] target is a [CallEdgeKind.CREATES] edge too, since it can only run once
+ * the created body runs.
+ *
+ * [capturedCount] is set only on a [CallEdgeKind.CREATES] edge from an `invokedynamic`: how many
+ * of the target descriptor's leading parameters take values captured at the call site rather than
+ * the functional interface's own arguments. It is read from the call site's `invokedType`. A
+ * receiver bound by a reference to an instance method is not counted, since it is not in the
+ * target's parameter list. 0 on every other edge. See ADR 0034.
  */
 data class CallEdge(
     val className: String,
     val methodName: String,
     val methodDescriptor: String,
     val virtual: Boolean,
+    val kind: CallEdgeKind = CallEdgeKind.CALL,
+    val capturedCount: Int = 0,
 )
 
 /**
- * A class's superclass and direct interfaces, sent once per class alongside its probes so a
- * collector can widen a [CallEdge.virtual] call to every type that overrides or inherits its
- * callee. [superClassName] is null only for `java.lang.Object` itself, which this agent never
- * instruments; an interface's own [superClassName] is `java.lang.Object`, the same as any other
- * type, since that is what the class file's own super_class entry names.
+ * What a loaded class's own header says about it, sent once per class alongside its probes.
+ *
+ * [superClassName] and [interfaceNames] let a collector widen a [CallEdge.virtual] call to every
+ * type that overrides or inherits its callee. [superClassName] is null only for `java.lang.Object`
+ * itself, which this agent never instruments; an interface's own [superClassName] is
+ * `java.lang.Object`, the same as any other type, since that is what the class file's own
+ * super_class entry names. See ADR 0024.
+ *
+ * [sourceFile] is the class file's `SourceFile` attribute exactly as it appears, such as
+ * `DemoServerMain.kt`: a file name, never a path. Null when the class has none. The agent does not
+ * clean it, so a value such as `<generated>` is sent as it is. See ADR 0034.
  */
-data class ClassSupertypes(
+data class ClassLocation(
     val classId: Int,
     val superClassName: String?,
     val interfaceNames: List<String>,
+    val sourceFile: String? = null,
 )
 
 /**
@@ -236,7 +282,7 @@ data class ProbeManifest(
     val skippedClasses: List<SkippedClass> = emptyList(),
     val endpoints: List<EndpointLocation> = emptyList(),
     val disabledEndpointModules: List<DisabledEndpointModule> = emptyList(),
-    val classSupertypes: List<ClassSupertypes> = emptyList(),
+    val classLocations: List<ClassLocation> = emptyList(),
     val unreportedClasses: List<UnreportedClass> = emptyList(),
     val dependencies: List<DependencyLocation> = emptyList(),
     val classReferences: List<ClassReferences> = emptyList(),
@@ -257,6 +303,9 @@ data class ProbeManifest(
  * [GeneratedBy] and ADR 0026. Always [GeneratedBy.NONE] for the class's own `<clinit>` entry.
  *
  * [referencedClasses] follows the same rule as [ProbeLocation.referencedClasses]. See ADR 0030.
+ *
+ * [lambdaBody] follows the same rule as [ProbeLocation.lambdaBody]. Always false for the class's
+ * own `<clinit>` entry. See ADR 0034.
  */
 data class DeclaredMethod(
     val methodName: String,
@@ -265,10 +314,11 @@ data class DeclaredMethod(
     val calls: List<CallEdge> = emptyList(),
     val generatedBy: GeneratedBy = GeneratedBy.NONE,
     val referencedClasses: List<String> = emptyList(),
+    val lambdaBody: Boolean = false,
 )
 
 /**
- * [superClassName] and [interfaceNames] are the same fields [ClassSupertypes] carries for a
+ * [superClassName] and [interfaceNames] are the same fields [ClassLocation] carries for a
  * loaded class. Both are null and empty, respectively, only when the class's bytes could not be
  * read to analyse them; a class read successfully always has a superclass, since
  * `java.lang.Object` itself is never instrumented. See ADR 0024.
@@ -278,6 +328,9 @@ data class DeclaredMethod(
  * else not held by a probed method. Method-level references travel on
  * [DeclaredMethod.referencedClasses]. The same listing rule as [ProbeLocation.referencedClasses]
  * applies. See ADR 0030.
+ *
+ * [sourceFile] is the same field [ClassLocation] carries for a loaded class, read the same way.
+ * Null when the class has none, or when its bytes could not be read. See ADR 0034.
  */
 data class DeclaredClass(
     val className: String,
@@ -285,6 +338,7 @@ data class DeclaredClass(
     val superClassName: String? = null,
     val interfaceNames: List<String> = emptyList(),
     val referencedClasses: List<String> = emptyList(),
+    val sourceFile: String? = null,
 )
 
 /**

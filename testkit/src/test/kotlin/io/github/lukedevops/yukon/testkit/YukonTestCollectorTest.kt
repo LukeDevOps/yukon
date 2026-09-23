@@ -1,7 +1,7 @@
 package io.github.lukedevops.yukon.testkit
 
 import io.github.lukedevops.yukon.export.CallEdge
-import io.github.lukedevops.yukon.export.ClassSupertypes
+import io.github.lukedevops.yukon.export.ClassLocation
 import io.github.lukedevops.yukon.export.DeclaredClass
 import io.github.lukedevops.yukon.export.DeclaredMethod
 import io.github.lukedevops.yukon.export.DeltaBatch
@@ -1430,7 +1430,7 @@ class YukonTestCollectorTest {
     }
 
     @Test
-    fun `a virtual edge widens through classSupertypes to a never-hit override, a non-virtual edge does not`() {
+    fun `a virtual edge widens through classLocations to a never-hit override, a non-virtual edge does not`() {
         fun manifestWith(virtual: Boolean) =
             ProbeManifest(
                 ResourceAttributes("svc", null, "i-1", null, "run-1"),
@@ -1449,7 +1449,7 @@ class YukonTestCollectorTest {
                         // anywhere, so widening has to start at the owner named in the edge.
                         methodProbe(3, 0, "com.acme.StripeSvc", "charge", "()V", 20),
                     ),
-                classSupertypes = listOf(ClassSupertypes(3, "java.lang.Object", listOf("com.acme.Svc"))),
+                classLocations = listOf(ClassLocation(3, "java.lang.Object", listOf("com.acme.Svc"))),
             )
 
         run {
@@ -1503,11 +1503,11 @@ class YukonTestCollectorTest {
                         methodProbe(4, 0, "com.acme.Right", "m", "()V", 15),
                         methodProbe(5, 0, "com.acme.LeftChild", "m", "()V", 30),
                     ),
-                classSupertypes =
+                classLocations =
                     listOf(
-                        ClassSupertypes(3, "com.acme.Base", emptyList()),
-                        ClassSupertypes(4, "com.acme.Base", emptyList()),
-                        ClassSupertypes(5, "com.acme.Left", emptyList()),
+                        ClassLocation(3, "com.acme.Base", emptyList()),
+                        ClassLocation(4, "com.acme.Base", emptyList()),
+                        ClassLocation(5, "com.acme.Left", emptyList()),
                     ),
             ),
         )
@@ -1598,7 +1598,7 @@ class YukonTestCollectorTest {
                         methodProbe(2, 0, "com.acme.Base", "inherited", "()V", 9),
                         methodProbe(3, 0, "com.acme.Sub", "<init>", "()V", 15),
                     ),
-                classSupertypes = listOf(ClassSupertypes(3, "com.acme.Base", emptyList())),
+                classLocations = listOf(ClassLocation(3, "com.acme.Base", emptyList())),
             ),
         )
         exporter.exportDeltaBatch(
