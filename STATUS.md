@@ -48,12 +48,12 @@ seam, and the three `HttpServer` advices read it back. A miss stays
 null. The members were checked on JDK 21, 22, 25, 26 and 27, and CI
 runs the suite on 21 and 25.
 
-A1 landed on 2026-09-23: the hook, the seam,
+A1 landed on 2026-09-23 (`365cbe7`): the hook, the seam,
 `EndpointModule.handlerInterfaces`, the `HttpServer` switch and the CI
 matrix. `runDemo` names `/checkout` as `DemoServerMainKt#handleCheckout`
 and `/__shutdown` as `DemoServerMainKt#main$lambda$0`.
 
-A2 landed on 2026-09-23: the forwarder table. The analyser records a
+A2 landed on 2026-09-23 (`da06d7a`): the forwarder table. The analyser records a
 pass-through a handler can be reported as, only for a handler interface
 and only when the call-edge walk reaches one concrete target: scalac's
 `$adapted` forwarder named by an `invokedynamic`, and the `handle` of a
