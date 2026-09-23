@@ -227,13 +227,13 @@ unset case for deciding which jars are dependencies.
 
 Grilled and settled on 2026-09-23 as an amendment to ADR 0026; `CONTEXT.md`'s
 "generated method" was reworded. The question was the branch sites inside a
-generated method: `YukonInstrumentation.kt`'s branch `ProbeMeta` passes no
-`generatedBy`, so a data class's `equals` is marked while its jumps read as
-never-hit code the adopter wrote (why `demo-spring`'s `TaxRate` is a plain
-class). They are marked, not dropped: their counts are evidence the way the
-method's are, and marking keeps the slot layout. Every consumer already reads
-the mark whatever the probe kind (the server's `judgeableProbePredicate`, the
-testkit's `neverHit`, the stub's partition), so no consumer logic changes.
+generated method: the branch `ProbeMeta` passed no `generatedBy`, so a data
+class's `equals` was marked while its jumps read as never-hit code the adopter
+wrote, which is why `demo-spring`'s `TaxRate` had been a plain class. They are
+marked, not dropped: their counts are evidence the way the method's are, and
+marking keeps the slot layout. Every consumer already read the mark whatever
+the probe kind (the server's `judgeableProbePredicate`, the testkit's
+`neverHit`, the stub's partition), so no consumer logic changed.
 
 Checking the shapes with `javap` on Kotlin 2.2.21 found two places ADR 0026
 already hid code the adopter wrote, method probes included:
@@ -242,11 +242,11 @@ already hid code the adopter wrote, method probes included:
   interface default method's real body lives in `$DefaultImpls` and the
   interface method is abstract. Every `$DefaultImpls` method was marked, so
   every such body was hidden. Only a forwarder (load arguments, one
-  `invokestatic` on the interface, return) is marked now.
+  `invokestatic` on the interface, return) is marked.
 - A hand-written `equals`, `hashCode` or `toString` on a data class was marked
   with the generated ones. kotlinc emits the generated ones with no
   line-number table and the adopter's with body lines; only one with no table
-  is marked now. Stripped debug info keeps today's behaviour.
+  is marked. Stripped debug info leaves all three marked.
 
 Only a data class's `equals` and `hashCode` hold branch sites among generated
 methods: enum and record methods have none, and `copy$default` is synthetic.
