@@ -126,7 +126,9 @@ mapping travels on the manifest.
 Chunk 5 (`references_recorded`, the stub's dependency report, the Spring demo)
 has landed. `ProbeManifest.references_recorded` is set on every manifest when
 the include rules are set, so a collector can tell an instance that records
-nothing from one that references nothing; the collector judges each dependency
+nothing from one that references nothing (since ADR 0033 a running agent
+always has include rules, so it is always true; the field stays on the wire
+for the collectors that read it); the collector judges each dependency
 only by the recording instances that list it. `runSpringDemo` reports 5
 unloaded (commons-lang3 among them), 26 unreferenced (spring-webmvc and the
 rest of the framework), jackson-databind unreached from the never-loaded
@@ -345,7 +347,7 @@ entity class itself, adding `$$_hibernate_` methods to a class the adopter
 wrote. Whether those methods are synthetic, and so already out of the method
 tier, has not been looked at.
 
-### Stable branch identity: landed on the agent side
+### Stable branch identity: landed in both repos
 
 `branch_index` is a class-wide ordinal. Sites are numbered in bytecode order
 across every method of the class (`YukonInstrumentation.kt`, `BranchSite.kt`),
@@ -659,7 +661,9 @@ keeps out of the agent, so composing one is an adopter's own call.
 ### Deliberate v1 boundaries
 
 Not gaps, and not on anyone's list: static attach only (ADR 0013), the
-static scan not opening `BOOT-INF/lib` nested dependency jars, and the
-classpath blind spot for app-server, OSGi and plugin-loaded deployments.
+static scan not opening `BOOT-INF/lib` nested dependency jars, the
+classpath blind spot for app-server, OSGi and plugin-loaded deployments, and
+include rules being required, with no `includePackages=*` to ask for every
+class (ADR 0033).
 Each has its own section in `CLAUDE.md` with the reasoning and what it would
 take to change.
