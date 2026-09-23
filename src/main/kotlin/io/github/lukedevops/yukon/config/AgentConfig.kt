@@ -29,7 +29,11 @@ data class AgentConfig(
      */
     val authToken: String?,
     val flushInterval: Duration,
-    /** Only types whose name starts with one of these prefixes are instrumented. Empty means every type is. */
+    /**
+     * Only types under one of these prefixes are instrumented. Required: when empty,
+     * [io.github.lukedevops.yukon.Agent] refuses to start, logs one ERROR and instruments and exports
+     * nothing. See ADR 0033.
+     */
     val instrumentedPackagePrefixes: List<String>,
     /**
      * A type under one of these prefixes is never instrumented, even if [instrumentedPackagePrefixes]
@@ -107,13 +111,6 @@ data class AgentConfig(
             fun resolve(key: String): String? = resolveOption(key, options, systemProperties, env)
 
             val prefixes = parsePackagePrefixes(resolve("includePackages"))
-            if (prefixes.isEmpty()) {
-                log.log(
-                    Level.WARNING,
-                    "yukon: includePackages is not set, so every class outside the JDK will be instrumented, third-party " +
-                        "libraries included; set includePackages to your application's own packages",
-                )
-            }
             val excludedPrefixes = parsePackagePrefixes(resolve("excludePackages"))
             val endpoint = parseEndpoint(resolve("endpoint"))
             val authToken = resolve("authToken")

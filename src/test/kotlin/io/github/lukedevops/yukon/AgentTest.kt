@@ -55,6 +55,59 @@ class AgentTest {
         assertTrue(newThreadNames.none { it.startsWith("yukon-") }, "unexpected new yukon- threads: $newThreadNames")
     }
 
+    /**
+     * An [Instrumentation] that records the name of every method called on it and otherwise does
+     * nothing. Installing a transformer, a bootstrap search path entry or a module read edge all go
+     * through it, so an empty record after a call means the call installed nothing.
+     */
+    private fun recordingInstrumentation(calls: MutableList<String>): Instrumentation =
+        Proxy.newProxyInstance(
+            Instrumentation::class.java.classLoader,
+            arrayOf(Instrumentation::class.java),
+        ) { _, method, _ ->
+            calls += method.name
+            when (method.returnType) {
+                java.lang.Boolean.TYPE -> false
+                else -> null
+            }
+        } as Instrumentation
+
+    @Test
+    fun `no include rules refuses to start, installs nothing and starts no yukon threads`() {
+        for (args in listOf(null, "", "includePackages=", "includePackages=;", "includePackages= ; ", "excludePackages=com.acme")) {
+            val calls = mutableListOf<String>()
+            val before = currentThreadNames()
+
+            val running = Agent.start(args, recordingInstrumentation(calls))
+
+            assertNull(running, "args '$args' must be refused")
+            assertEquals(emptyList(), calls, "args '$args' must not touch Instrumentation")
+            val newThreadNames = currentThreadNames() - before
+            assertTrue(newThreadNames.none { it.startsWith("yukon-") }, "args '$args' started yukon- threads: $newThreadNames")
+        }
+    }
+
+    @Test
+    fun `premain with no include rules returns quietly`() {
+        val calls = mutableListOf<String>()
+
+        Agent.premain(null, recordingInstrumentation(calls))
+
+        assertEquals(emptyList(), calls)
+    }
+
+    @Test
+    fun `enabled=false with no include rules still returns null and installs nothing`() {
+        val calls = mutableListOf<String>()
+        val before = currentThreadNames()
+
+        val running = Agent.start("enabled=false", recordingInstrumentation(calls))
+
+        assertNull(running)
+        assertEquals(emptyList(), calls)
+        assertTrue((currentThreadNames() - before).none { it.startsWith("yukon-") })
+    }
+
     @Test
     fun `enabled (the default) starts the export scheduler`() {
         val instrumentation = ByteBuddyAgent.install()

@@ -1,6 +1,8 @@
 package io.github.lukedevops.yukon
 
 import io.github.lukedevops.yukon.config.AgentConfig
+import io.github.lukedevops.yukon.config.IncludeRulesRefusal
+import io.github.lukedevops.yukon.config.MainClassSuggestion
 import io.github.lukedevops.yukon.dependencies.DependencyResolver
 import io.github.lukedevops.yukon.dependencies.JarClassifier
 import io.github.lukedevops.yukon.dependencies.ListedDependency
@@ -91,8 +93,21 @@ object Agent {
     }
 
     /**
-     * Returns what was started, or null if the agent did not start: either [AgentConfig.enabled]
-     * is false, or the bootstrap holder could not be installed. `internal` rather than `private`
+     * The `includePackages` value to suggest in the refusal, from this JVM's `sun.java.command`.
+     * Null when there is nothing to suggest or the property cannot be read.
+     */
+    private fun suggestionForThisJvm(): MainClassSuggestion? =
+        try {
+            MainClassSuggestion.fromCommand(System.getProperty("sun.java.command"))
+        } catch (e: Exception) {
+            null
+        }
+
+    /**
+     * Returns what was started, or null if the agent did not start: [AgentConfig.enabled] is
+     * false, [AgentConfig.instrumentedPackagePrefixes] is empty (ADR 0033), or the bootstrap holder
+     * could not be installed. Both configuration checks run before anything is constructed, so a
+     * refused start leaves no thread, transformer or registry behind. `internal` rather than `private`
      * so a test can drive this directly with a real [Instrumentation] and stop what it started,
      * without going through [premain]'s `void` contract.
      */
@@ -103,6 +118,10 @@ object Agent {
         val config = AgentConfig.parse(agentArgs)
         if (!config.enabled) {
             log.log(Level.INFO, "yukon: disabled by configuration, nothing will be instrumented or exported")
+            return null
+        }
+        if (config.instrumentedPackagePrefixes.isEmpty()) {
+            log.log(Level.ERROR, IncludeRulesRefusal.message(suggestionForThisJvm()))
             return null
         }
 

@@ -224,6 +224,17 @@ Landing order, one Opus chunk and one commit each:
    testkit's startup-timeout message names `includePackages`; the testkit KDoc
    and README attach examples set it, and the README lists it as required.
 
+Progress:
+
+- Chunk 1 landed: `Agent.start` refuses right after the `enabled` check, and
+  `MainClassSuggestion` resolves the main class. Review added two cases the
+  brief missed: a `.war` is read like a jar, and `java -m com.acme.shop`, which
+  puts the bare module name in `sun.java.command`, resolves through the boot
+  layer to the module's declared main class instead of reading the module
+  name as a class. Both checked on JDK 22, the boot layer from a real
+  `premain`. A launch of the scratch Hibernate program and of a `-jar` with no
+  include rules logged the ERROR with the right suggestion and wove nothing.
+
 ### Generated methods: branches marked, two over-marks closed: landed in both repos
 
 Grilled and settled on 2026-09-23 as an amendment to ADR 0026; `CONTEXT.md`'s
