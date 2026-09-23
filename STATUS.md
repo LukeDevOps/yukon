@@ -36,7 +36,7 @@ Checked end to end on 2026-09-23 with `runDemoStack`: `main$lambda$0`
 `DemoServerMain.kt:48`, `main` creates `handleCheckout`, and
 `handleCheckout` creates `respond` through `val send = ::respond`.
 
-### Naming a hidden handler: in flight
+### Naming a hidden handler: landed in both repos
 
 ADR 0035. An endpoint whose handler reaches the framework through an
 `invokedynamic`, such as `/checkout` (`::handleCheckout`) and
@@ -65,8 +65,13 @@ walk and its dispatch advice. A `$sam$` wrapper keeps its own name,
 since it only calls the function value it holds. No wire or collector
 change in either chunk.
 
-Next is server chunk S1 in `yukon-server`: showing `created_in` for
-endpoint handlers.
+`yukon-server` followed on 2026-09-24 (`37f690b`): `/endpoints` rows
+carry the handler's `created_in`, lambda-body flag and captured count,
+so its endpoints table reads `/__shutdown`'s handler as "lambda in
+`main`". Checked end to end on 2026-09-24 with `runDemoStack` against
+the rebuilt compose stack: `/checkout` joins `handleCheckout`,
+`/__shutdown` joins `main$lambda$0`, and neither handler is an entry
+root on the graph.
 
 ### Run id on every payload: landed in all three repos
 
