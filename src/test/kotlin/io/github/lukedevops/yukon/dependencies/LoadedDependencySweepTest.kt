@@ -26,6 +26,9 @@ class LoadedDependencySweepTest {
 
     private val instrumentation = ByteBuddyAgent.install()
 
+    /** The adopter's own package, which neither fixture jar holds, so both are dependencies. */
+    private val includes = listOf("com.acme")
+
     @Test
     fun `classes loaded from a listed jar and from a jar the listing never saw are counted per dependency`() {
         val listedJar =
@@ -40,15 +43,15 @@ class LoadedDependencySweepTest {
             )
         val lateJar = TestJars.write(dir.resolve("late-2.0.jar"), listOf(pom("org.late", "late", "2.0"), loadableClassEntry("org.late.A")))
         val registry = DependencyRegistry()
-        Agent.runDependencyListing(StartupClasspathLister(emptyList(), emptyList(), listedJar.toString())::list, registry)
+        Agent.runDependencyListing(StartupClasspathLister(includes, emptyList(), listedJar.toString())::list, registry)
         val loader = URLClassLoader(arrayOf(listedJar.toUri().toURL(), lateJar.toUri().toURL()), null)
         val loaded = listOf("org.listed.One", "org.listed.Two", "org.late.A").map { Class.forName(it, true, loader) }
         val sweep =
             LoadedClassSweep(
                 instrumentation,
                 ProbeRegistry(),
-                AgentConfig.parse(null),
-                LoadedDependencyCounter(registry, emptyList(), emptyList()),
+                AgentConfig.parse("includePackages=com.acme"),
+                LoadedDependencyCounter(registry, includes, emptyList()),
             )
 
         sweep.run(runForwardPass = false)

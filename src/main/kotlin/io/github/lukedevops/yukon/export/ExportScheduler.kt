@@ -423,8 +423,9 @@ class ExportScheduler(
 
     /**
      * Whether this instance records references, stamped on every manifest it sends: true exactly
-     * when include rules are set, since with every class in scope nothing is out of scope to
-     * reference. See ADR 0030.
+     * when include rules are set. The agent refuses to start without them (ADR 0033), so a running
+     * agent always sends true; with an empty list nothing is instrumented and nothing is recorded,
+     * and false says so. See ADR 0030.
      */
     private val referencesRecorded: Boolean
         get() = config.instrumentedPackagePrefixes.isNotEmpty()

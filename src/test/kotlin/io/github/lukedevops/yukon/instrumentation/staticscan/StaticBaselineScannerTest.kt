@@ -24,6 +24,13 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class StaticBaselineScannerTest {
+    /**
+     * Include prefixes that cover the names a multi-release jar's versioned entries and its module
+     * descriptor would read as if taken for classes (`META-INF.versions.9.com.example...`,
+     * `module-info`), alongside the fixture's own package.
+     */
+    private val phantomCoveringPrefixes = listOf("META-INF", "module-info", "com.example.target")
+
     private fun classBytes(path: String): ByteArray = File("build/classes/$path").readBytes()
 
     private val sampleTargetBytes = classBytes("java/test/com/example/target/SampleTarget.class")
@@ -162,8 +169,9 @@ class StaticBaselineScannerTest {
                 "META-INF/versions/9/com/example/target/SampleTarget.class" to sampleTargetBytes,
                 "module-info.class" to moduleInfoBytes("com.example"),
             )
-        // Empty includePackages: the prefix pre-filter cannot save the scan from a phantom name here.
-        val scanner = StaticBaselineScanner(emptyList())
+        // Include prefixes covering the phantom names, so the prefix pre-filter cannot save the
+        // scan from one here.
+        val scanner = StaticBaselineScanner(phantomCoveringPrefixes)
 
         val result = scanner.scan(listOf(jar))
 
@@ -177,8 +185,8 @@ class StaticBaselineScannerTest {
                 "BOOT-INF/classes/com/example/target/SampleTarget.class" to sampleTargetBytes,
                 "BOOT-INF/classes/META-INF/versions/9/com/example/target/SampleTarget.class" to sampleTargetBytes,
             )
-        // Empty includePackages, as above: only the entry check itself can keep the phantom out.
-        val scanner = StaticBaselineScanner(emptyList())
+        // Prefixes covering the phantom name, as above: only the entry check itself can keep it out.
+        val scanner = StaticBaselineScanner(phantomCoveringPrefixes)
 
         val result = scanner.scan(listOf(jar))
 
@@ -476,14 +484,14 @@ class StaticBaselineScannerTest {
     }
 
     @Test
-    fun `excludes the agent's own package even when includePackages is empty`() {
+    fun `excludes the agent's own package even when includePackages covers it`() {
         val agentClassBytes = classBytes("kotlin/main/io/github/lukedevops/yukon/Agent.class")
         val root =
             directoryRoot(
                 "com/example/target/SampleTarget.class" to sampleTargetBytes,
                 "io/github/lukedevops/yukon/Agent.class" to agentClassBytes,
             )
-        val scanner = StaticBaselineScanner(emptyList())
+        val scanner = StaticBaselineScanner(listOf("com.example.target", "io.github.lukedevops"))
 
         val result = scanner.scan(listOf(root))
 
@@ -760,14 +768,17 @@ class StaticBaselineScannerTest {
     }
 
     @Test
-    fun `with no include rules every class is in scope, so no reference is declared`() {
-        val root = directoryRoot("com/example/target/ReferenceTarget.class" to referenceTargetBytes)
+    fun `with no include rules nothing is in scope, so no class is declared`() {
+        val root =
+            directoryRoot(
+                "com/example/target/ReferenceTarget.class" to referenceTargetBytes,
+                "com/example/target/SampleTarget.class" to sampleTargetBytes,
+            )
         val scanner = StaticBaselineScanner(emptyList())
 
-        val declared = scanner.scan(listOf(root)).declaredClasses.single { it.className == "com.example.target.ReferenceTarget" }
+        val result = scanner.scan(listOf(root))
 
-        assertTrue(declared.referencedClasses.isEmpty())
-        assertTrue(declared.methods.all { it.referencedClasses.isEmpty() })
+        assertEquals(emptySet(), result.allClassNames())
     }
 
     @Test

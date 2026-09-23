@@ -24,7 +24,7 @@ import java.util.logging.Logger as JulLogger
  */
 class LoadedClassSweepTest {
     private val instrumentation: Instrumentation = ByteBuddyAgent.install()
-    private val defaultConfig = AgentConfig.parse(null)
+    private val scopedConfig = AgentConfig.parse("includePackages=com.example")
 
     private fun oneMethodProbe(): List<ProbeMeta> = listOf(ProbeMeta(ProbeKind.METHOD, "m", "()V", line = 1))
 
@@ -62,13 +62,14 @@ class LoadedClassSweepTest {
 
     @Test
     fun `confirmFrom sees every loaded class's name, not the forward direction's filtered candidates`() {
-        // java.lang.String's classloader is null, so isCandidate rejects it outright: it is on the
-        // bootstrap loader, the same gate that turns away the entire JDK for the forward
-        // direction. Registering it here proves the confirmation pass reconciles against the raw
-        // loaded set rather than that same filtered list.
+        // java.lang.String's classloader is null, so isCandidate rejects it outright even with
+        // java.lang under the include rules: it is on the bootstrap loader, the same gate that
+        // turns away the entire JDK for the forward direction. Registering it here proves the
+        // confirmation pass reconciles against the raw loaded set rather than that same filtered
+        // list.
         val registry = ProbeRegistry(confirmsDefinitions = true)
         registry.register("java.lang.String", layoutHash = 1L, probes = oneMethodProbe())
-        val sweep = LoadedClassSweep(instrumentation, registry, defaultConfig)
+        val sweep = LoadedClassSweep(instrumentation, registry, AgentConfig.parse("includePackages=java.lang;com.example"))
 
         sweep.run(runForwardPass = true)
 
@@ -84,7 +85,7 @@ class LoadedClassSweepTest {
     fun `a registered class the JVM has loaded is confirmed by a sweep`() {
         val registry = ProbeRegistry(confirmsDefinitions = true)
         registry.register(LoadedClassSweepTest::class.java.name, layoutHash = 1L, probes = oneMethodProbe())
-        val sweep = LoadedClassSweep(instrumentation, registry, defaultConfig)
+        val sweep = LoadedClassSweep(instrumentation, registry, scopedConfig)
 
         sweep.run(runForwardPass = false)
 
@@ -95,7 +96,7 @@ class LoadedClassSweepTest {
     fun `one WARNING is logged per class newly withheld for good, and none again for the same class`() {
         val registry = ProbeRegistry(confirmsDefinitions = true)
         registry.register("com.example.never.Loaded", layoutHash = 1L, probes = oneMethodProbe())
-        val sweep = LoadedClassSweep(instrumentation, registry, defaultConfig)
+        val sweep = LoadedClassSweep(instrumentation, registry, scopedConfig)
 
         val records =
             captureLogRecords(LoadedClassSweep::class.java.name) {
@@ -113,7 +114,7 @@ class LoadedClassSweepTest {
     fun `the shutdown summary is logged only on the final flush and only when a class was withheld`() {
         val registry = ProbeRegistry(confirmsDefinitions = true)
         registry.register("com.example.never.Loaded", layoutHash = 1L, probes = oneMethodProbe())
-        val sweep = LoadedClassSweep(instrumentation, registry, defaultConfig)
+        val sweep = LoadedClassSweep(instrumentation, registry, scopedConfig)
 
         val beforeFinal =
             captureLogRecords(LoadedClassSweep::class.java.name) {
@@ -137,7 +138,7 @@ class LoadedClassSweepTest {
     @Test
     fun `the shutdown summary is not logged when no class was withheld`() {
         val registry = ProbeRegistry(confirmsDefinitions = true)
-        val sweep = LoadedClassSweep(instrumentation, registry, defaultConfig)
+        val sweep = LoadedClassSweep(instrumentation, registry, scopedConfig)
 
         val records = captureLogRecords(LoadedClassSweep::class.java.name) { sweep.run(runForwardPass = false, final = true) }
 

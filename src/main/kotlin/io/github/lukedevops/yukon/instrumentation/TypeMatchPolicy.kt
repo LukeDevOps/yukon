@@ -33,8 +33,11 @@ object TypeMatchPolicy {
      * [typeNameMatcher], usable before a [TypeDescription] exists at all (the class-bytes capture,
      * the static scanner's pre-filter).
      *
-     * An empty include list means everything outside the agent's own package. Exclusion always
-     * wins: a class matched by both lists is not included.
+     * An empty include list matches nothing, whatever the exclude list holds. The agent refuses to
+     * start without include rules (ADR 0033), and giving the empty list the same meaning here means
+     * no other path into this policy (a test harness, the testkit, an embedding of the agent) can
+     * reach "instrument everything" by accident. Exclusion always wins: a class matched by both
+     * lists is not included, and the agent's own package is never included.
      */
     fun isIncluded(
         className: String,
@@ -42,8 +45,7 @@ object TypeMatchPolicy {
         excludedPackagePrefixes: List<String>,
     ): Boolean {
         if (className.startsWith(AGENT_PACKAGE_PREFIX)) return false
-        val matchedByIncludes = instrumentedPackagePrefixes.isEmpty() || instrumentedPackagePrefixes.any { isUnderPrefix(className, it) }
-        if (!matchedByIncludes) return false
+        if (instrumentedPackagePrefixes.none { isUnderPrefix(className, it) }) return false
         return excludedPackagePrefixes.none { isUnderPrefix(className, it) }
     }
 

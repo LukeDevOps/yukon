@@ -198,7 +198,7 @@ Landing order as built, one chunk and one commit each:
 8. `yukon-server`: `GET /api/v1/services/{s}/dependencies` with a status
    filter, and a `dependencies` block on `report`.
 
-### The agent refuses to start without include rules: in progress
+### The agent refuses to start without include rules: landed
 
 Grilled and settled on 2026-09-23; ADR 0033 holds the decision, and ADR 0030's
 consequences were amended. With `includePackages` parsing to no prefixes
@@ -234,6 +234,17 @@ Progress:
   name as a class. Both checked on JDK 22, the boot layer from a real
   `premain`. A launch of the scratch Hibernate program and of a `-jar` with no
   include rules logged the ERROR with the right suggestion and wove nothing.
+- Chunk 2 landed: an empty include list matches nothing in
+  `TypeMatchPolicy.isIncluded`, traced through every caller (live matcher,
+  class-bytes capture, static scanner, sweep, `JarClassifier`, the analyser's
+  three scope checks); `JarClassifier` lost its unset branch with nothing
+  observable changing, pinned by a new `JarClassifierTest`. Three tests that
+  relied on the old default set explicit prefixes that keep them testing the
+  same gate, and two that only made sense for it were rewritten to pin the new
+  meaning. The testkit's timeout message and KDoc example, and the README's
+  attach example and options table, name `includePackages` as required.
+  `runDemo` reports as before. No change in `yukon-collector` or
+  `yukon-server`: `references_recorded` keeps its meaning.
 
 ### Generated methods: branches marked, two over-marks closed: landed in both repos
 

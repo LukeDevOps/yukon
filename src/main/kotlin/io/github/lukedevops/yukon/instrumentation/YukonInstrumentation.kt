@@ -75,9 +75,9 @@ private fun bindingFor(
         )
 
 /**
- * Wires method-entry probes into every type matched by [AgentConfig.instrumentedPackagePrefixes].
- * If that list is empty, every type outside the agent's own package is matched, less the
- * bootstrap and platform loaders' classes that ByteBuddy's `AgentBuilder` ignores by default.
+ * Wires method-entry probes into every type matched by [AgentConfig.instrumentedPackagePrefixes],
+ * less the bootstrap and platform loaders' classes that ByteBuddy's `AgentBuilder` ignores by
+ * default. An empty list matches nothing; the agent refuses to start with one (ADR 0033).
  *
  * Each matched type is registered with [ProbeRegistry] once, after its rewrite succeeds; see
  * [TransformResultListener]. It gets its own

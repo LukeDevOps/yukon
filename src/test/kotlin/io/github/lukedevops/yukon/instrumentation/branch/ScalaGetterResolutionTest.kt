@@ -423,8 +423,8 @@ class ScalaGetterResolutionTest {
             })
 
         assertTrue(analysis.unresolvedScalaGetterSites.size > 1, "Cc has more than one constructor default, so more than one getter asks")
-        // The call-edge pass asks the same lookup about other owners (java.lang.Object here, since
-        // the include list is empty); only the companion's own count is under test.
+        // Other passes may ask the same lookup about other owners; only the companion's own count
+        // is under test.
         assertEquals(1, asked["com/example/scalatarget/Cc"], "asked $asked")
     }
 

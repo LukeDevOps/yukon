@@ -41,10 +41,8 @@ data class ListedDependency(
  * Boot's launcher puts on the classpath (see [nestedJarNames]), each streamed from the outer jar
  * with nothing extracted to disk.
  *
- * With [includes] set, a jar holding any class the include rules admit is the adopter's own and
- * not a dependency. With [includes] empty, every class is in scope, so every jar is a dependency
- * and only directories and a fat jar's own classes are the adopter's. [JarClassifier] holds these
- * rules, shared with the sweep's discovery at load.
+ * A jar holding any class the include rules admit is the adopter's own and not a dependency.
+ * [JarClassifier] holds these rules, shared with the sweep's discovery at load.
  *
  * Two jars with one identity key ([DependencyRegistry.identityKey]) are one dependency, and the
  * first found keeps its location and class count. A jar that cannot be read is skipped with one

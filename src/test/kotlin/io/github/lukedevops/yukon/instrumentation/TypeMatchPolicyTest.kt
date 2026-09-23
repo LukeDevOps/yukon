@@ -40,9 +40,38 @@ class TypeMatchPolicyTest {
     }
 
     @Test
-    fun `the agent's own package is excluded even with no prefixes at all`() {
+    fun `the agent's own package is excluded even when an include prefix covers it`() {
+        assertFalse(TypeMatchPolicy.isIncluded("io.github.lukedevops.yukon.Agent", listOf("io.github.lukedevops"), emptyList()))
         assertFalse(TypeMatchPolicy.isIncluded("io.github.lukedevops.yukon.Agent", emptyList(), emptyList()))
-        assertTrue(TypeMatchPolicy.isIncluded("com.anything.Else", emptyList(), emptyList()))
+    }
+
+    @Test
+    fun `an empty include list includes nothing`() {
+        assertFalse(TypeMatchPolicy.isIncluded("com.example.Foo", emptyList(), emptyList()))
+        assertFalse(TypeMatchPolicy.isIncluded("com.sun.net.httpserver.HttpServer", emptyList(), emptyList()))
+    }
+
+    @Test
+    fun `an empty include list includes nothing when excludes are set`() {
+        val excludes = listOf("com.example.internal")
+
+        assertFalse(TypeMatchPolicy.isIncluded("com.example.Foo", emptyList(), excludes))
+        assertFalse(TypeMatchPolicy.isIncluded("com.sun.net.httpserver.HttpServer", emptyList(), excludes))
+    }
+
+    @Test
+    fun `the type matcher matches nothing for an empty include list`() {
+        val pool =
+            TypePool.Default.of(
+                ClassFileLocator.Compound(
+                    ClassFileLocator.ForFolder(File("build/classes/java/test")),
+                    ClassFileLocator.ForClassLoader.ofSystemLoader(),
+                ),
+            )
+        val sampleTarget: TypeDescription = pool.describe("com.example.target.SampleTarget").resolve()
+
+        assertFalse(TypeMatchPolicy.typeNameMatcher(emptyList(), emptyList()).matches(sampleTarget))
+        assertFalse(TypeMatchPolicy.typeNameMatcher(emptyList(), listOf("com.other")).matches(sampleTarget))
     }
 
     @Test

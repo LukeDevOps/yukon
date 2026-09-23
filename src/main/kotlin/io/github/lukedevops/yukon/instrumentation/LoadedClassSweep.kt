@@ -129,12 +129,12 @@ open class LoadedClassSweep(
      * Whether a loaded class is one the agent would have instrumented, had it been offered it.
      *
      * ByteBuddy applies its own ignore matcher before any `.type(...)` matcher runs, and a class
-     * it ignores reaches no transform callback and no registry bucket. That gate is what supplies
-     * "every class outside the JDK" in the agent's own description of an empty include list, so a
-     * sweep that only replicated the type matcher would call the whole JDK a blind spot the moment
-     * `includePackages` was left at its default. The first three checks here are that gate: a class
-     * on the bootstrap or platform loader, and one named under ByteBuddy's own package or the
-     * reflection internals, is ignored rather than instrumented.
+     * it ignores reaches no transform callback and no registry bucket. An include prefix can reach
+     * into the JDK's own packages (`includePackages=com` covers `com.sun.*`), and a sweep that only
+     * replicated the type matcher would then call every such JDK class a blind spot, since the gate
+     * turned it away before the type matcher ever saw it. The first three checks here are that
+     * gate: a class on the bootstrap or platform loader, and one named under ByteBuddy's own
+     * package or the reflection internals, is ignored rather than instrumented.
      *
      * The rest mirror `TypeMatchPolicy`: the synthetic flag, the name rules, the
      * runtime-generated proxy names, and the coroutine-continuation check, which needs only the

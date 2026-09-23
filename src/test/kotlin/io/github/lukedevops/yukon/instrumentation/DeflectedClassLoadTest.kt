@@ -162,14 +162,14 @@ class DeflectedClassLoadTest {
     }
 
     @Test
-    fun `a sweep with no includePackages does not name the JDK`() {
-        // The default configuration. ByteBuddy ignores the bootstrap and platform loaders before
-        // any type matcher runs, so those classes reach no transformer by design and are not a
-        // blind spot. A sweep that only replicated the type matcher would report every one of
-        // them.
+    fun `a sweep whose include prefixes cover the JDK does not name the JDK`() {
+        // Include prefixes reaching into the JDK's own packages, ByteBuddy's, and the test
+        // runner's, whose lambdas are hidden classes on the application loader. ByteBuddy ignores
+        // the bootstrap and platform loaders and its own classes before any type matcher runs, so
+        // those classes reach no transformer by design and are not a blind spot. A sweep that
+        // only replicated the type matcher would report every one of them.
         val registry = ProbeRegistry()
-        val config = AgentConfig.parse(null)
-        assertTrue(config.instrumentedPackagePrefixes.isEmpty(), "this test is about the default, so it must be the default")
+        val config = AgentConfig.parse("includePackages=java;jdk;sun;com.sun;net.bytebuddy;org.junit;org.gradle")
 
         LoadedClassSweep(instrumentation, registry, config).run(runForwardPass = true)
 

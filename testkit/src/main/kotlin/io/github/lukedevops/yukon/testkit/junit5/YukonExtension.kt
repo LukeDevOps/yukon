@@ -19,7 +19,7 @@ import java.util.concurrent.TimeoutException
  *
  * ```kotlin
  * tasks.test {
- *     jvmArgs("-javaagent:/path/to/yukon-agent.jar=endpoint=http://localhost:4319,flushIntervalSeconds=1")
+ *     jvmArgs("-javaagent:/path/to/yukon-agent.jar=endpoint=http://localhost:4319,flushIntervalSeconds=1,includePackages=com.acme")
  * }
  * ```
  *
@@ -38,9 +38,10 @@ import java.util.concurrent.TimeoutException
  * ```
  *
  * The collector binds to the port named by the `yukon.testkit.port` system property, defaulting
- * to 4319, the agent's own default `endpoint` port, so a bare `-javaagent` flag with no explicit
- * `endpoint` option works without further wiring. [beforeAll] waits for the agent's first
- * liveness heartbeat once per test JVM, with a timeout named by the
+ * to 4319, the agent's own default `endpoint` port, so a `-javaagent` flag with no explicit
+ * `endpoint` option works without further wiring. The agent always needs `includePackages`:
+ * without it the agent refuses to start and no heartbeat ever arrives (ADR 0033). [beforeAll]
+ * waits for the agent's first liveness heartbeat once per test JVM, with a timeout named by the
  * `yukon.testkit.startupTimeoutSeconds` system property, defaulting to 15 seconds.
  */
 class YukonExtension :
@@ -154,8 +155,11 @@ class YukonExtension :
             timeoutSeconds: Long,
         ): String =
             "yukon-testkit: no delta batch arrived from the agent within ${timeoutSeconds}s. Add " +
-                "\"-javaagent:<path to yukon-agent.jar>=endpoint=${collector.endpoint},flushIntervalSeconds=1\" " +
-                "to the test task's JVM arguments. The agent's default flush interval is 60 seconds, longer " +
-                "than this timeout, which is the most likely cause if the flag is already present."
+                "\"-javaagent:<path to yukon-agent.jar>=endpoint=${collector.endpoint},flushIntervalSeconds=1," +
+                "includePackages=<your package>\" to the test task's JVM arguments. Without includePackages " +
+                "the agent refuses to start and sends nothing; its ERROR line on the test JVM's standard " +
+                "error names a package to use when it can find one. The agent's default flush interval is " +
+                "60 seconds, longer than this timeout, which is the most likely cause if the flag is already " +
+                "present with includePackages set."
     }
 }

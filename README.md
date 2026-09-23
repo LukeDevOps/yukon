@@ -31,7 +31,7 @@ the target application's classpath.
 ## Attach it to an app
 
 ```
--javaagent:/path/to/yukon-<version>.jar=serviceName=my-service,endpoint=http://localhost:4319
+-javaagent:/path/to/yukon-<version>.jar=serviceName=my-service,endpoint=http://localhost:4319,includePackages=com.acme.myservice
 ```
 
 Options (comma-separated `key=value`, `includePackages`/`excludePackages` use
@@ -48,7 +48,7 @@ described below):
 | `endpoint` | `http://localhost:4319` | Collector base URL. |
 | `authToken` | *(none)* | Bearer token sent to the collector as `Authorization: Bearer <token>`. Prefer setting it through `YUKON_AUTH_TOKEN` rather than this option: agent arguments are visible to every user on the host via `ps`, and an environment variable is not. |
 | `flushIntervalSeconds` | `60` | How often deltas/manifest updates are sent. |
-| `includePackages` | *(all)* | Only instrument types whose name starts with one of these prefixes, `;`-separated. |
+| `includePackages` | *(required)* | Only instrument types whose name starts with one of these prefixes, `;`-separated. Without it the agent logs an ERROR and stays disabled for the life of the JVM: nothing is instrumented and nothing is exported. The ERROR suggests the main class's package when it can find one. |
 | `excludePackages` | *(none)* | Never instrument types whose name starts with one of these prefixes, `;`-separated, even if `includePackages` also matches them. Exclusion always wins. |
 | `staticBaselineEnabled` | `false` | Scan the classpath once at startup (async, off the critical path) for classes under `includePackages` that never load at all. Off by default: unlike every other option here, a full classpath walk has a cost that scales with the classpath's size. |
 | `enabled` | `true` | Set to `false` to turn the agent off entirely: nothing is instrumented and nothing is exported. Meant to be set from `YUKON_ENABLED` so a deployment can disable the agent without rebuilding the image that bakes in `-javaagent`. |

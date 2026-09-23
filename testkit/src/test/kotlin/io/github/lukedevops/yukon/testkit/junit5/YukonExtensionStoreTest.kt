@@ -54,6 +54,23 @@ class YukonExtensionStoreTest {
         assertTrue(stored.values.none { it is AutoCloseable }, "stored ${stored.values.map { it?.javaClass?.name }}")
     }
 
+    /**
+     * An agent attached without `includePackages` refuses to start and sends no heartbeat
+     * (ADR 0033), so the timeout names that option beside the flag and the flush interval.
+     */
+    @Test
+    fun `a startup timeout names includePackages, the javaagent flag and the flush interval`() {
+        // No agent is attached to this JVM, so the heartbeat wait times out after one second.
+        val failure = assertFailsWith<IllegalStateException> { YukonExtension().beforeAll(fakeContext()) }
+        val message = failure.message.orEmpty()
+
+        assertTrue("includePackages=<your package>" in message, message)
+        assertTrue("refuses to start" in message, message)
+        assertTrue("-javaagent:" in message, message)
+        assertTrue("flushIntervalSeconds=1" in message, message)
+        assertTrue("default flush interval is 60 seconds" in message, message)
+    }
+
     @Test
     fun `a port property that is not a number fails naming the property`() {
         System.setProperty("yukon.testkit.port", "not-a-port")

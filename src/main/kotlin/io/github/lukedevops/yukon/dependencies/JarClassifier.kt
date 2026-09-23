@@ -22,8 +22,7 @@ import java.util.jar.Manifest
  * build of the agent carries no `Premain-Class`: the plain demo puts one on its `-cp` beside the
  * shaded agent jar, and it read as a dependency of the application it was measuring.
  *
- * With [includes] set, a jar holding any class [TypeMatchPolicy.isIncluded] admits is the
- * adopter's own. With [includes] empty, no jar is.
+ * A jar holding any class [TypeMatchPolicy.isIncluded] admits is the adopter's own.
  */
 internal class JarClassifier(
     private val includes: List<String>,
@@ -87,16 +86,14 @@ internal class JarClassifier(
     }
 
     /**
-     * With [includes] set, whether [contents] holds a class the include rules admit, logging one
-     * INFO line when it also holds classes they do not: the shaded single-jar shape, where
-     * bundled libraries are reported as the adopter's own rather than as a dependency. With
-     * [includes] empty, never.
+     * Whether [contents] holds a class the include rules admit, logging one INFO line when it also
+     * holds classes they do not: the shaded single-jar shape, where bundled libraries are reported
+     * as the adopter's own rather than as a dependency.
      */
     private fun isAdoptersOwn(
         contents: JarContents,
         displayName: String,
     ): Boolean {
-        if (includes.isEmpty()) return false
         val outside = contents.classNames.count { !TypeMatchPolicy.isIncluded(it, includes, excludes) }
         if (outside == contents.classNames.size) return false
         if (outside > 0) {

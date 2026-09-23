@@ -282,12 +282,19 @@ class ReferenceAnalyzerTest {
     }
 
     @Test
-    fun `with no include rules everything is in scope, so every list is empty`() {
-        val analysis = analyze(target, includes = emptyList(), filter = { _, _ -> true })
+    fun `with no include rules nothing is in scope, so every reference recorded under include rules is recorded too`() {
+        val scoped = analyze(target, filter = { _, _ -> true })
+        val unscoped = analyze(target, includes = emptyList(), filter = { _, _ -> true })
         val methodKeys = readMethodKeys(lookup("com/example/target/ReferenceTarget")!!)
 
-        assertTrue(methodKeys.all { (name, descriptor) -> analysis.referencesOf(name, descriptor).isEmpty() })
-        assertEquals(emptyList(), analysis.classReferences)
+        assertTrue(scoped.classReferences.isNotEmpty(), "the fixture names library classes outside any method")
+        for ((name, descriptor) in methodKeys) {
+            assertTrue(
+                unscoped.referencesOf(name, descriptor).containsAll(scoped.referencesOf(name, descriptor)),
+                "$name$descriptor",
+            )
+        }
+        assertTrue(unscoped.classReferences.containsAll(scoped.classReferences))
     }
 
     @Test
