@@ -45,7 +45,7 @@ The jumps kotlinc adds to a suspend function or suspend lambda for its state mac
 _Avoid_: coroutine noise, state-machine branches
 
 **Generated method**:
-A method the compiler emits from a declaration rather than from a body the adopter wrote: an enum's `values` and `valueOf`, a data class's `componentN`, `copy`, `equals`, `hashCode` and `toString`, a `$DefaultImpls` method. Probed and marked with what generated it; never reported as never hit.
+A method the compiler emits from a declaration rather than from a body the adopter wrote: an enum's `values` and `valueOf`, a data class's `componentN`, `copy`, and the `equals`, `hashCode` and `toString` it did not override by hand, a `$DefaultImpls` method that only forwards to the interface's own default method. Probed and marked with what generated it, and so are the branch sites inside it; never reported as never hit. A `$DefaultImpls` method holding the interface method's real body, or an override the adopter wrote, is ordinary code.
 _Avoid_: synthetic method (a JVM flag; these are not synthetic), compiler method
 
 **Runtime-generated class**:

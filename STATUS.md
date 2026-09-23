@@ -223,40 +223,49 @@ mostly per class (ADR 0030).
 ADR 0030 does not depend on the answer. Its origin rule already covers the
 unset case for deciding which jars are dependencies.
 
-### A branch inside a generated method is judged as the adopter's own
+### Generated methods: branches marked, two over-marks closed
 
-`YukonInstrumentation.kt:411` builds a branch `ProbeMeta` with no
-`generatedBy`, while the method and omission probes around it pass
-`analysis.generatedBy(...)`. So a data class's `equals` is marked and left out
-of the judged set, and the conditionals inside that same `equals` are reported
-as never-hit code the adopter wrote. Seen in the demo: one `data class` in
-`demo-spring` printed six such rows, which is why `TaxRate` is a plain class
-rather than the `data class` it would otherwise be.
+Grilled and settled on 2026-09-23 as an amendment to ADR 0026; `CONTEXT.md`'s
+"generated method" was reworded. The question was the branch sites inside a
+generated method: `YukonInstrumentation.kt`'s branch `ProbeMeta` passes no
+`generatedBy`, so a data class's `equals` is marked while its jumps read as
+never-hit code the adopter wrote (why `demo-spring`'s `TaxRate` is a plain
+class). They are marked, not dropped: their counts are evidence the way the
+method's are, and marking keeps the slot layout. Every consumer already reads
+the mark whatever the probe kind (the server's `judgeableProbePredicate`, the
+testkit's `neverHit`, the stub's partition), so no consumer logic changes.
 
-Not simply an oversight, and not settled either. `yukon.proto` documents the
-behaviour ("A BRANCH probe never carries this; see `GeneratedBy`"), so it was
-known, but neither ADR 0026 nor the `GeneratedBy` comment it points to gives a
-reason, and ADR 0026 never mentions branches at all. Both ADRs in the area
-argue the other way: ADR 0026 calls a never-hit `component3` a false finding
-because the compiler emits it regardless of what the adopter does, and that is
-exactly as true of a jump inside `equals`.
+Checking the shapes with `javap` on Kotlin 2.2.21 found two places ADR 0026
+already hid code the adopter wrote, method probes included:
 
-So the first move is to decide between two answers, not to write the line:
+- Under `-jvm-default=disable`, the default up to language version 2.1, an
+  interface default method's real body lives in `$DefaultImpls` and the
+  interface method is abstract. Every `$DefaultImpls` method was marked, so
+  every such body was hidden. Only a forwarder (load arguments, one
+  `invokestatic` on the interface, return) is marked now.
+- A hand-written `equals`, `hashCode` or `toString` on a data class was marked
+  with the generated ones. kotlinc emits the generated ones with no
+  line-number table and the adopter's with body lines; only one with no table
+  is marked now. Stripped debug info keeps today's behaviour.
 
-- Mark them, passing `analysis.generatedBy(site.methodName,
-  site.methodDescriptor)` into the branch `ProbeMeta`. No schema change
-  (`ProbeLocation.generated_by` is field 16 already) and no consumer change:
-  `StubCollectorMain.kt:405` partitions never-hit on the mark without looking
-  at the probe's kind, and the testkit reads it the same way. The proto comment
-  and ADR 0026 need amending, and `yukon-server` wants a look to confirm its
-  own filter is kind-blind too.
-- Drop them at the analyser, which is what ADR 0025 does for every other branch
-  the adopter did not write, and cheaper at runtime. It costs a slot-layout
-  change and the hit evidence ADR 0026 kept its methods for, and the two ADRs
-  would then disagree about the same class's methods and its jumps.
+Only a data class's `equals` and `hashCode` hold branch sites among generated
+methods: enum and record methods have none, and `copy$default` is synthetic.
+The static scanner calls the same analyser, so `DeclaredMethod` follows both
+refinements with no scanner change.
 
-Either way the proof is the demo: turn `TaxRate` back into a `data class` and
-the report must stay at four never-hit rows.
+Landing order, one Opus chunk and one commit each:
+
+1. `$DefaultImpls` forwarders only, with fixtures compiled under `disable` and
+   the default mode.
+2. Data-class `equals`, `hashCode` and `toString` marked only with no line
+   table, with a hand-written-`equals` fixture.
+3. Branch probes carry their method's mark; the `ProbeLocation.generated_by`
+   proto comment and the testkit's `ProbeRef` KDoc follow; an integration test
+   asserts `DATA_CLASS` on the branches of a generated `equals` and `NONE` on
+   an ordinary method's; `TaxRate` goes back to a `data class` and the Spring
+   demo's report stays at four never-hit rows.
+4. `yukon-server`: the `read.go` comments that say a BRANCH probe never
+   carries the mark. No logic change.
 
 ### Generators other than Spring are not recognised
 
