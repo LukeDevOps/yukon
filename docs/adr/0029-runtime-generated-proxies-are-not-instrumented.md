@@ -69,10 +69,28 @@ fire. `demo-spring`'s `PricingConfiguration` is fully hit with the rule in place
   `$$FastClassBySpringCGLIB$$`). Both were read out of `SpringNamingPolicy` and `DefaultNamingPolicy`
   in spring-core 5.3.39, 6.2.19 and 7.0.9, not recalled. `endpoints-spring-webmvc` supports 5.3, so
   both spellings have to be covered.
-- Only Spring is covered, because only Spring has been confirmed against its own source and run
-  end to end here. Hibernate's `$HibernateProxy$`, ByteBuddy's own `$ByteBuddy$`, javassist's
-  `_$$_jvst` and JDK dynamic proxies produce the same shape and are not covered; `STATUS.md` carries
-  them, to be added when a corpus or an adopter shows one. The cost of a missing marker is the noise
-  above, which is visible and loud, not a silent wrong claim.
+- Spring and Hibernate are covered, because only those two have been confirmed against their own
+  source and run end to end here. ByteBuddy's own `$ByteBuddy$`, javassist's `_$$_jvst` and JDK
+  dynamic proxies produce the same shape and are not covered; `STATUS.md` carries them, to be added
+  when a corpus or an adopter shows one. The cost of a missing marker is the noise above, which is
+  visible and loud, not a silent wrong claim.
+- Hibernate (added 2026-09-23) generates four kinds of class beside an entity: the lazy-loading
+  proxy, the basic proxy, the instantiator and the access optimizer (with, in 6.6 and later, the
+  optimizer's bridge). 6.6 and 7.4 name the first three `<Entity>$HibernateProxy`,
+  `$HibernateBasicProxy` and `$HibernateInstantiator` with nothing after them, through
+  `ByteBuddyState.FixedNamingStrategy`; the optimizer and its bridge carry `encodeName`'s hex digit
+  and property names straight after the suffix, or ByteBuddy's `$<random>` when that would pass
+  the JVM's name limit. 5.6 used `SuffixingRandom` for all four, `<Entity>$HibernateProxy$<random>`,
+  with a second `$` under `hibernate.bytecode.enforce_legacy_proxy_classnames`. All of it was read
+  out of hibernate-core 5.6.15, 6.6.58 and 7.4.10 and ByteBuddy 1.18.12's `NamingStrategy`. The
+  `$HibernateProxy$` marker this ADR first guessed would have missed every 6.x and 7.x proxy.
+  A scratch program driving 7.4.10's own generators under the agent confirmed all four kinds reach
+  the transformer and were woven before the rule and are not after.
+- Hibernate's suffixes are matched as a whole `$`-separated part of the name after the first, not
+  as a substring the way Spring's markers are. Spring's `$$SpringCGLIB$$` is not something a person
+  names a class, but `Util$HibernateProxyUnwrapper` is, and an over-match hides the adopter's real
+  code, which is the worse direction to fail in. The access optimizer is the one prefix match,
+  since its encoded tail is open-ended: the part must be the suffix alone, or the suffix (or
+  `...Bridge`) followed by a lower-case hex digit.
 - An adopter who genuinely wants a generated class instrumented has no way to ask for it. Nobody has
   wanted one.

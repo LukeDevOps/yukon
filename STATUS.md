@@ -169,8 +169,6 @@ sweep-reported class as loaded; the stub and the testkit differ from it only
 in the "never loaded" mark on a site, never in a status.
 
 Open, recorded rather than started:
-- A web UI page for dependency usage in `yukon-server` (and its `types.ts`
-  mirror), tracked in that repo's STATUS.md.
 - `absentReferences()` in the testkit has no settle gate, and
   `dependency()`'s gate assumes one delta batch per flush.
 - The Boot 2 `jar:file:<outer>!/<entry>!/` code-source form is pinned only by
@@ -295,29 +293,32 @@ Progress:
   `read.go` and the README say a branch probe carries its method's mark. No
   logic change and no bindings bump, since the proto changed only in comments.
 
-### Generators other than Spring are not recognised
+### Generators other than Spring and Hibernate are not recognised
 
 ADR 0029 turns away a runtime-generated class by the markers its generator puts
-in the name, and `TypeMatchPolicy.RUNTIME_GENERATED_NAME_MARKERS` holds only
-Spring's two spellings, the only ones confirmed against their own source and
-run end to end here. Hibernate's `$HibernateProxy$`, ByteBuddy's own
+in the name. Spring's CGLIB and Hibernate are covered, the only two confirmed
+against their own source and run end to end here. ByteBuddy's own
 `$ByteBuddy$`, javassist's `_$$_jvst` and JDK dynamic proxies (`$Proxy` in a
 non-public interface's package) produce the same shape and are not covered.
 
-Each is one entry in that list, one test beside the Spring ones in
-`TypeMatchPolicyTest`, and an edit to ADR 0029's consequence bullet saying only
-Spring is covered. `LoadedClassSweep` needs nothing: it calls
-`TypeMatchPolicy.isRuntimeGenerated`, so it follows the list. What gates the
-work is the project's own rule of confirming a library's naming against that
-library rather than recalling it, and none of these four is a dependency of
-this repo, so each needs its jar fetched and read the way spring-core's
-`SpringNamingPolicy` was.
+Each is a rule in `TypeMatchPolicy.isRuntimeGenerated`, a test beside the
+others in `TypeMatchPolicyTest`, and an edit to ADR 0029's consequences.
+`LoadedClassSweep` follows the rule with no change of its own. What gates the
+work is confirming a library's naming against that library rather than
+recalling it: none of the three is a dependency of this repo.
 
-Hibernate is the one worth doing first: an entity package full of
-`$HibernateProxy$` classes is the exact shape that took `demo-spring`'s report
-to 81% dead. Its name comes from ByteBuddy's `NamingStrategy.SuffixingRandom`,
-which builds `<prefix>$<suffix>$<random>`, so confirming it means finding where
-Hibernate passes that suffix, not just grepping for the string.
+Hibernate landed on 2026-09-23. Its guessed marker, `$HibernateProxy$`, was
+wrong for 6.6 and 7.4, which name the proxy `<Entity>$HibernateProxy` with
+nothing after it; ADR 0029 lists the four kinds of class and each version's
+spelling. The suffixes are matched as whole `$`-separated parts of the name,
+not as substrings, so an adopter's `Util$HibernateProxyUnwrapper` is kept. A
+scratch program driving hibernate-core 7.4.10's own generators under the agent
+showed all four kinds woven before the rule and none after.
+
+Not covered, and not checked: Hibernate's bytecode enhancement rewrites the
+entity class itself, adding `$$_hibernate_` methods to a class the adopter
+wrote. Whether those methods are synthetic, and so already out of the method
+tier, has not been looked at.
 
 ### Stable branch identity: landed on the agent side
 
@@ -385,11 +386,11 @@ Progress:
   inside the condition: an edit to its true arm keeps the outer key and
   an edit to its false arm changes it, as the Consequences say.
 
-Open, all on the server side and tracked in `yukon-server`'s STATUS.md
-under "Service-wide dates": bump its Go bindings to the BSR commit that
-carries field 18, give keyed branch outcomes service rows, and revisit
-`known_for_days` for the keyless ones. The deletion manifest's branch level
-waits on that server work, not on anything here.
+The server work this unblocked landed on 2026-09-22 (`yukon-server`
+`4ee1026`, its ADR 0025, BSR `15053c3b6627`): a keyed branch outcome gets a
+service row and groups by its key across builds, and a keyless one stays capped,
+with never-hit under `known_for_days` and stale-hit reporting what they hide as
+`capped_hidden`. Nothing here is open.
 
 Two things a fresh cloud session needs for this repo's build. Maven Central
 has answered 429 through the sandbox proxy, and a session-local Gradle init

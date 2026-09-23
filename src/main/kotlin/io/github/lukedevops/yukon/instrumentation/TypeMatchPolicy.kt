@@ -82,6 +82,43 @@ object TypeMatchPolicy {
     private val RUNTIME_GENERATED_NAME_MARKERS = listOf("\$\$SpringCGLIB\$\$", "BySpringCGLIB\$\$")
 
     /**
+     * The suffixes Hibernate appends, after a `$`, to the name of an entity or embeddable when it
+     * generates a class beside it: the lazy-loading proxy, the basic proxy and the instantiator.
+     * 6.6 and 7.4 append each with nothing after it; 5.6 appended ByteBuddy's `$<random>`, and
+     * one more `$` for the two proxies under `hibernate.bytecode.enforce_legacy_proxy_classnames`.
+     * Read out of `ByteBuddyProxyHelper`, `BasicProxyFactoryImpl` and `BytecodeProviderImpl` in
+     * hibernate-core 5.6.15, 6.6.58 and 7.4.10.
+     */
+    private val HIBERNATE_GENERATED_SUFFIXES = setOf("HibernateProxy", "HibernateBasicProxy", "HibernateInstantiator")
+
+    /**
+     * The one Hibernate suffix with more after it in the same part of the name. The access
+     * optimizer, and in 6.6 and 7.4 its bridge (`HibernateAccessOptimizerBridge`), carry
+     * `encodeName`'s output: per property, a hex digit for how it is read and written, then the
+     * property's name. An entity with no properties, or 5.6's and the over-long fallback's
+     * `$<random>`, leaves nothing after the suffix.
+     */
+    private const val HIBERNATE_ACCESS_OPTIMIZER = "HibernateAccessOptimizer"
+
+    /**
+     * Whether [className] is a class Hibernate generated beside an entity. Each marker is matched
+     * as a whole `$`-separated part of the name after the first, never as a substring, so a class
+     * the adopter wrote with the same words in its name is never turned away: a nested
+     * `Util$HibernateProxyUnwrapper`, or a top-level class called `HibernateProxy`.
+     */
+    private fun isHibernateGenerated(className: String): Boolean =
+        "\$Hibernate" in className &&
+            className.substringAfterLast('.').split('$').drop(1).any { part ->
+                part in HIBERNATE_GENERATED_SUFFIXES || isHibernateAccessOptimizer(part)
+            }
+
+    private fun isHibernateAccessOptimizer(part: String): Boolean {
+        if (!part.startsWith(HIBERNATE_ACCESS_OPTIMIZER)) return false
+        val encoded = part.removePrefix(HIBERNATE_ACCESS_OPTIMIZER).removePrefix("Bridge")
+        return encoded.isEmpty() || encoded[0] in '0'..'9' || encoded[0] in 'a'..'f'
+    }
+
+    /**
      * Whether [className] names a class a framework generated at runtime, which this agent leaves
      * alone: it holds no code the adopter wrote, so a never-hit finding about it names nothing
      * anyone can delete. The class it proxies is instrumented normally and is where the real
@@ -103,8 +140,12 @@ object TypeMatchPolicy {
      * too, which ADR 0026 keeps and labels rather than drops. A bare `$$` test is no good either:
      * kotlinc puts `$$` in the name of a class it generates for a lambda passed to an inlined
      * function, and that class holds the adopter's body. See ADR 0029.
+     *
+     * Two generators are recognised: Spring's CGLIB, by a marker anywhere in the name, and
+     * Hibernate, by a suffix that makes up a whole part of the name.
      */
-    fun isRuntimeGenerated(className: String): Boolean = RUNTIME_GENERATED_NAME_MARKERS.any { it in className }
+    fun isRuntimeGenerated(className: String): Boolean =
+        RUNTIME_GENERATED_NAME_MARKERS.any { it in className } || isHibernateGenerated(className)
 
     /**
      * A dotted suffix of a suspend function's own continuation class's direct superclass. Matched

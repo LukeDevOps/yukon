@@ -338,6 +338,71 @@ class TypeMatchPolicyTest {
     }
 
     /**
+     * Every class Hibernate generates next to an entity, in each spelling it has used. 6.6 and 7.4
+     * name a proxy, basic proxy and instantiator with a fixed suffix and nothing after it
+     * (`ByteBuddyProxyHelper.buildProxy`, `BasicProxyFactoryImpl`, `BytecodeProviderImpl`, all
+     * through `ByteBuddyState.FixedNamingStrategy`), and an access optimizer or its bridge with the
+     * suffix followed by `encodeName`'s hex digit and property names, or by ByteBuddy's
+     * `SuffixingRandom` `$<random>` when that name would pass 64K. 5.6 used `SuffixingRandom` for
+     * all four, and `hibernate.bytecode.enforce_legacy_proxy_classnames` adds a second `$` to the
+     * two proxy suffixes. Read out of hibernate-core 5.6.15, 6.6.58 and 7.4.10, and ByteBuddy
+     * 1.18.12's `NamingStrategy`.
+     */
+    @Test
+    fun `a Hibernate generated class name is rejected by the type matcher`() {
+        for (
+        name in
+        listOf(
+            "com.example.target.Order\$HibernateProxy",
+            "com.example.target.Order\$HibernateBasicProxy",
+            "com.example.target.Order\$HibernateInstantiator",
+            "com.example.target.Order\$HibernateAccessOptimizer",
+            "com.example.target.Order\$HibernateAccessOptimizer9id5total",
+            "com.example.target.Order\$HibernateAccessOptimizer\$Ab3dEf9h",
+            "com.example.target.Order\$HibernateAccessOptimizerBridge9id",
+            "com.example.target.Order\$HibernateProxy\$Ab3dEf9h",
+            "com.example.target.Order\$HibernateProxy\$\$Ab3dEf9h",
+            "com.example.target.Order\$HibernateBasicProxy\$\$Ab3dEf9h",
+            "com.example.target.Order\$HibernateInstantiator\$Ab3dEf9h",
+            "com.example.target.Outer\$Order\$HibernateProxy",
+        )
+        ) {
+            assertTrue(TypeMatchPolicy.isRuntimeGenerated(name), name)
+            val bytes = classWithSuperclass(name.replace('.', '/'), "java/lang/Object")
+            val pool = TypePool.Default.of(ClassFileLocator.Simple.of(name, bytes))
+
+            assertFalse(
+                TypeMatchPolicy.typeNameMatcher(listOf("com.example"), emptyList()).matches(pool.describe(name).resolve()),
+                name,
+            )
+        }
+    }
+
+    /**
+     * Hibernate's markers are matched as whole `$`-separated parts of the name, never as
+     * substrings, since a class the adopter wrote can carry the same words. A top-level class
+     * named `HibernateProxy` is the adopter's too: Hibernate always appends its suffix to an
+     * existing class name.
+     */
+    @Test
+    fun `an adopter class named like a Hibernate suffix is not mistaken for a generated class`() {
+        for (
+        name in
+        listOf(
+            "com.example.target.HibernateProxy",
+            "com.example.target.HibernateAccessOptimizer",
+            "com.example.target.Util\$HibernateProxyUnwrapper",
+            "com.example.target.Util\$HibernateInstantiatorConfig",
+            "com.example.target.Util\$HibernateAccessOptimizerSettings",
+            "com.example.target.Util\$HibernateAccessOptimizerBridgeSettings",
+            "com.example.target.Util\$MyHibernateProxy",
+        )
+        ) {
+            assertFalse(TypeMatchPolicy.isRuntimeGenerated(name), name)
+        }
+    }
+
+    /**
      * Why the rule names its markers rather than turning away any `$$` in a class name: kotlinc
      * puts `$$` in the name of the class it generates for a lambda passed to an inlined stdlib
      * function, and that class holds the adopter's own body.
