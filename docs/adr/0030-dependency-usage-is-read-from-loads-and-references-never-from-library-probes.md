@@ -103,16 +103,19 @@ referenced class that no loader can find is an *absent reference* and is reporte
 
 ## Consequences
 
-- A jar holding any in-scope class is the adopter's own and is not a dependency. With `includePackages`
-  unset every class is in scope, so origin decides instead: classpath directories, `BOOT-INF/classes`
-  and `WEB-INF/classes` are the adopter's and every jar is a dependency. A shaded single-jar
-  application therefore reports no dependencies, and the agent logs one INFO line saying so.
+- A jar holding any in-scope class is the adopter's own and is not a dependency. A shaded
+  single-jar application therefore reports no dependencies, and the agent logs one INFO line saying
+  so. This ADR first gave an unset `includePackages` its own rule, where origin decided (classpath
+  directories, `BOOT-INF/classes` and `WEB-INF/classes` the adopter's, every jar a dependency);
+  ADR 0033 made the agent refuse to start without include rules, and that rule was removed.
 - A jar whose manifest carries `Premain-Class` or `Launcher-Agent-Class` is never a dependency, so
   Yukon's own jar, an OpenTelemetry agent or a profiler never reads as unreferenced.
 - Unreferenced and unreached are claimed only for instances whose include rules are set, since with
   every class in scope library-to-library references would count as the adopter's. Every manifest
   carries `references_recorded`, true exactly when the include rules are set, so a collector can
-  tell an instance that references nothing from one that records nothing. They are split only
+  tell an instance that references nothing from one that records nothing. Since ADR 0033 a running agent
+  always has include rules, so the field is always true; it stays on the wire for the collectors
+  that read it. They are split only
   with a complete static baseline from each such instance: a reference inside a class that never
   loaded is visible only to the baseline, and without it a collector would call that dependency
   unreferenced when it is unreached. Without the baseline the two merge into "no live reference",
