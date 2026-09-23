@@ -16,6 +16,8 @@ import io.github.lukedevops.yukon.instrumentation.branch.BranchKeys
 import io.github.lukedevops.yukon.instrumentation.branch.BranchProbeAsmVisitorWrapper
 import io.github.lukedevops.yukon.instrumentation.branch.BranchSite
 import io.github.lukedevops.yukon.instrumentation.branch.BranchSiteAnalyzer
+import io.github.lukedevops.yukon.instrumentation.branch.HandlerForwarder
+import io.github.lukedevops.yukon.instrumentation.endpoints.HandlerForwarders
 import io.github.lukedevops.yukon.instrumentation.staticscan.StaticBaselineMismatchDetector
 import io.github.lukedevops.yukon.registry.ExternalClassRegistry
 import io.github.lukedevops.yukon.registry.ProbeMeta
@@ -111,6 +113,11 @@ class YukonInstrumentation(
     private val branchDropCounts: BranchDropCounts = BranchDropCounts(),
     /** Where each out-of-scope class a transformed class references was found; see ADR 0030. */
     private val externalClassRegistry: ExternalClassRegistry = ExternalClassRegistry(),
+    /**
+     * The forwarder table, and the handler interfaces the analysis looks for (ADR 0035). A class's
+     * entries are written when its probes are, in [TransformResultListener].
+     */
+    private val handlerForwarders: HandlerForwarders = HandlerForwarders(),
 ) {
     private val log = System.getLogger(YukonInstrumentation::class.java.name)
     private val referencedClassLocator = ReferencedClassLocator()
@@ -195,6 +202,7 @@ class YukonInstrumentation(
         val sourceFile: String?,
         val bodyKind: BodyKind,
         val sourceName: String?,
+        val handlerForwarders: List<HandlerForwarder>,
     )
 
     /**
@@ -232,6 +240,12 @@ class YukonInstrumentation(
      * looks it up. This covers the range ByteBuddy can see; a failure past `getBytes()`, such as
      * the verifier rejecting the woven class, still leaves probes nothing will increment.
      * Endpoints are declared on their own path and do not go through this listener.
+     *
+     * The class's forwarder table entries (ADR 0035) are written here too, so a transform that
+     * failed writes none. They do not wait for the class to be confirmed defined (ADR 0028). That
+     * confirmation comes at a later flush, and by then the handler the entry names has been
+     * registered. An entry for a class that was never defined does no harm: the table is never
+     * sent, and no handler of that class can exist to be looked up.
      */
     private inner class TransformResultListener : AgentBuilder.Listener.Adapter() {
         override fun onTransformation(
@@ -256,6 +270,7 @@ class YukonInstrumentation(
                 sourceName = pending.sourceName,
             )
             for ((className, location) in pending.externalClasses) externalClassRegistry.record(className, location)
+            pending.handlerForwarders.forEach(handlerForwarders::record)
         }
 
         override fun onError(
@@ -541,6 +556,7 @@ class YukonInstrumentation(
                 analysis.sourceFile,
                 analysis.bodyKind,
                 analysis.sourceName,
+                analysis.handlerForwarders,
             ),
         )
         if (staticBaselineMismatchDetector.shouldWarnAbout(typeDescription.name)) {
@@ -685,6 +701,7 @@ class YukonInstrumentation(
             config.instrumentedPackagePrefixes,
             config.excludedPackagePrefixes,
             tableCacheFor(classLoader),
+            handlerForwarders.handlerInterfaces,
         ) { name, descriptor -> (name to descriptor) in eligible }
     }
 

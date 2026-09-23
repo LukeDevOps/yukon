@@ -28,12 +28,14 @@ import java.util.WeakHashMap
  *
  * When any module names a handler interface, [install] also installs a [LambdaFactoryHook], so a
  * handler written as a lambda or a method reference can be named (ADR 0035). [lambdaFactoryShape]
- * is what that hook checks the JDK against.
+ * is what that hook checks the JDK against. [handlerForwarders] is the forwarder table the method
+ * tier fills, which turns a reported pass-through into the method it forwards to.
  */
 class EndpointInstrumentation(
     private val registry: EndpointRegistry,
     private val modules: List<EndpointModule>,
     lambdaFactoryShape: LambdaFactoryShape = LambdaFactoryShape.JDK,
+    private val handlerForwarders: HandlerForwarders = HandlerForwarders(),
 ) {
     private val log = System.getLogger(EndpointInstrumentation::class.java.name)
     private val agentClassLoader = EndpointInstrumentation::class.java.classLoader
@@ -75,7 +77,7 @@ class EndpointInstrumentation(
      */
     fun install(instrumentation: Instrumentation): ResettableClassFileTransformer {
         BootstrapHolder.install(instrumentation)
-        YukonEndpoints.install(RegistryResolver(registry, modules, pendingDeclarations))
+        YukonEndpoints.install(RegistryResolver(registry, modules, pendingDeclarations, handlerForwarders))
         addSeamReadEdges(instrumentation)
 
         if (modules.isEmpty()) {

@@ -111,8 +111,12 @@ _Avoid_: route probe, request counter
 A small integer the registry assigns to an endpoint the first time it is seen. Unique within one run only, like a class ID.
 
 **Handler**:
-The method or object the framework invokes for an endpoint. Recorded on the endpoint as a label naming a manifest method where the framework exposes one, or a class name where only the object is known.
+The method or object the framework invokes for an endpoint. Recorded on the endpoint as a label naming a manifest method where the framework exposes one, or a class name where only the object is known. A handler the framework reports as a pass-through is recorded as the one probed method it forwards to, through the forwarder table.
 _Avoid_: controller, action
+
+**Forwarder table**:
+The agent's own map from a pass-through a framework can report as a handler to the one probed method it forwards to, such as scalac's `$adapted` forwarder or a kotlinc reference class's `handle`. The method tier's analysis fills it, only for handler interfaces, and it is never sent.
+_Avoid_: alias table, handler map
 
 **Discovery source**:
 How the agent learned of an endpoint: registration (the framework declared it) or dispatch (a request matched an endpoint no registration had declared).

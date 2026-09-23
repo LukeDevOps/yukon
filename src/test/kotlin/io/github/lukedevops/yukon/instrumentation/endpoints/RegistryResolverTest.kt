@@ -2,9 +2,11 @@ package io.github.lukedevops.yukon.instrumentation.endpoints
 
 import io.github.lukedevops.yukon.bootstrap.YukonEndpoints
 import io.github.lukedevops.yukon.instrumentation.BootstrapHolder
+import io.github.lukedevops.yukon.instrumentation.branch.HandlerForwarder
 import io.github.lukedevops.yukon.instrumentation.endpoints.api.AdviceBinder
 import io.github.lukedevops.yukon.instrumentation.endpoints.api.EndpointModule
 import io.github.lukedevops.yukon.registry.EndpointRegistry
+import io.github.lukedevops.yukon.registry.HandlerRef
 import net.bytebuddy.agent.ByteBuddyAgent
 import net.bytebuddy.description.type.TypeDescription
 import net.bytebuddy.dynamic.DynamicType
@@ -16,7 +18,68 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
+private const val HANDLE = "(Lcom/sun/net/httpserver/HttpExchange;)V"
+
 class RegistryResolverTest {
+    private fun forwardersToHandleOrder(): HandlerForwarders {
+        val forwarders = HandlerForwarders()
+        forwarders.record(HandlerForwarder("com.example.Ref", "handle", HANDLE, "com.example.HandlersKt", "handleOrder", HANDLE))
+        return forwarders
+    }
+
+    private fun joinOf(
+        registry: EndpointRegistry,
+        template: String,
+    ): HandlerRef {
+        val endpoint = registry.endpoints().single { it.verbatimTemplate == template }
+        return HandlerRef(endpoint.handlerClass!!, endpoint.handlerMethod, endpoint.handlerDescriptor)
+    }
+
+    @Test
+    fun `a reported pass-through is replaced by the method it forwards to, on register, attachHandler and dispatch`() {
+        val registry = EndpointRegistry()
+        val resolver = RegistryResolver(registry, emptyList(), PendingDeclarations(), forwardersToHandleOrder())
+        val target = HandlerRef("com.example.HandlersKt", "handleOrder", HANDLE)
+
+        resolver.register("k1", "fake", "GET", "/registered", null, "com.example.Ref", "handle", HANDLE)
+        val attached = resolver.register("k2", "fake", "GET", "/attached", null, null, null, null)!!
+        resolver.attachHandler(attached, "com.example.Ref", "handle", HANDLE)
+        // The dispatch path hands over the class first and the method after, as FindContextAdvice does.
+        val dispatched = resolver.recordDispatch("k3", "fake", "GET", "/dispatched", null, "com.example.Ref")
+        resolver.attachHandler(dispatched, "com.example.Ref", "handle", HANDLE)
+
+        assertEquals(target, joinOf(registry, "/registered"))
+        assertEquals(target, joinOf(registry, "/attached"))
+        assertEquals(target, joinOf(registry, "/dispatched"))
+    }
+
+    @Test
+    fun `a staged registration is collapsed too`() {
+        val registry = EndpointRegistry()
+        val pending = PendingDeclarations()
+        val resolver = RegistryResolver(registry, emptyList(), pending, forwardersToHandleOrder())
+
+        pending.begin()
+        resolver.register("k1", "fake", "GET", "/staged", null, "com.example.Ref", "handle", HANDLE)
+        pending.commit()
+
+        assertEquals(HandlerRef("com.example.HandlersKt", "handleOrder", HANDLE), joinOf(registry, "/staged"))
+    }
+
+    @Test
+    fun `a handler not in the table, or reported without a descriptor, is left as reported`() {
+        val registry = EndpointRegistry()
+        val resolver = RegistryResolver(registry, emptyList(), PendingDeclarations(), forwardersToHandleOrder())
+
+        resolver.register("k1", "fake", "GET", "/other", null, "com.example.Other", "handle", HANDLE)
+        resolver.register("k2", "fake", "GET", "/no-descriptor", null, "com.example.Ref", "handle", null)
+        resolver.recordDispatch("k3", "fake", "GET", "/class-only", null, "com.example.Ref")
+
+        assertEquals(HandlerRef("com.example.Other", "handle", HANDLE), joinOf(registry, "/other"))
+        assertEquals(HandlerRef("com.example.Ref", "handle", null), joinOf(registry, "/no-descriptor"))
+        assertEquals(HandlerRef("com.example.Ref"), joinOf(registry, "/class-only"))
+    }
+
     @Test
     fun `attachHandler with a null handler class does not erase a previously attached join`() {
         BootstrapHolder.install(ByteBuddyAgent.install())

@@ -545,7 +545,7 @@ class CallEdgeAnalyzerTest {
                 includePackages,
                 emptyList(),
                 cache,
-                filter,
+                methodFilter = filter,
             )
         val readsAfterFirst = counts.toMap()
         val second =
@@ -555,7 +555,7 @@ class CallEdgeAnalyzerTest {
                 includePackages,
                 emptyList(),
                 cache,
-                filter,
+                methodFilter = filter,
             )
 
         assertTrue(readsAfterFirst.isNotEmpty(), "the fixture references other in-scope classes, so the first analysis must read some")
@@ -570,9 +570,23 @@ class CallEdgeAnalyzerTest {
         val cache = BranchSiteAnalyzer.CrossClassTableCache(maxEntries = 1)
         val filter: (String, String) -> Boolean = { _, _ -> true }
 
-        BranchSiteAnalyzer.analyze(readTargetBytes("CallEdgeTarget"), countingLookup(counts), includePackages, emptyList(), cache, filter)
+        BranchSiteAnalyzer.analyze(
+            readTargetBytes("CallEdgeTarget"),
+            countingLookup(counts),
+            includePackages,
+            emptyList(),
+            cache,
+            methodFilter = filter,
+        )
         val distinctOwners = counts.size
-        BranchSiteAnalyzer.analyze(readTargetBytes("CallEdgeTarget"), countingLookup(counts), includePackages, emptyList(), cache, filter)
+        BranchSiteAnalyzer.analyze(
+            readTargetBytes("CallEdgeTarget"),
+            countingLookup(counts),
+            includePackages,
+            emptyList(),
+            cache,
+            methodFilter = filter,
+        )
 
         assertTrue(distinctOwners > 1, "the fixture must reference more than one class for eviction to matter")
         assertTrue(counts.values.sum() > distinctOwners, "with room for one table, a second analysis must read again")

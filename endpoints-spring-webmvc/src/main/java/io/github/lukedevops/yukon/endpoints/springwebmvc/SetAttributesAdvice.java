@@ -24,9 +24,11 @@ import org.springframework.web.util.pattern.PathPattern;
  * <p>The handler join names the method functional routing actually invokes: a {@code
  * HandlerFunction} whose class is not hidden reports {@code handle} and the class that declares
  * it, read through {@code getMethod("handle", ServerRequest.class)} since every implementation
- * must override that method publicly to satisfy the interface. A hidden class, generated for a
- * Kotlin SAM-converted lambda (or a Java lambda) through {@code invokedynamic}, has no stable name
- * across runs, so its class, method, and descriptor are all reported as null instead. A route the
+ * must override that method publicly to satisfy the interface. A hidden class, spun for a Java or
+ * Kotlin lambda or method reference through {@code invokedynamic}, has no stable name across runs.
+ * For one of those, the join names the method the lambda calls, as {@link
+ * YukonEndpoints#lambdaImplementation} recorded it when the JDK spun the class (ADR 0035). When
+ * nothing was recorded, the class, method, and descriptor are all null. A route the
  * declare walk registered already carries this join from registration, so the reflection here
  * runs only for a route discovered at dispatch, never on the per-request path, which stays one
  * attribute read and a lookup.
@@ -70,7 +72,14 @@ public class SetAttributesAdvice {
                 String handlerMethod = null;
                 String handlerDescriptor = null;
                 Class<?> handlerType = handlerFunction.getClass();
-                if (!handlerType.isHidden()) {
+                if (handlerType.isHidden()) {
+                    YukonEndpoints.LambdaImplementation implementation = YukonEndpoints.lambdaImplementation(handlerType);
+                    if (implementation != null) {
+                        handlerClass = implementation.className;
+                        handlerMethod = implementation.methodName;
+                        handlerDescriptor = implementation.descriptor;
+                    }
+                } else {
                     try {
                         Method method = handlerType.getMethod("handle", ServerRequest.class);
                         handlerClass = method.getDeclaringClass().getName();

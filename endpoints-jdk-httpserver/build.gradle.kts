@@ -35,6 +35,10 @@ dependencies {
     testImplementation(project(":"))
     testImplementation(kotlin("test"))
 
+    // Handlers compiled with class-based SAM conversion, for PassThroughHandlerNamingTest. Its
+    // classes load only when that test first calls them, after it has installed the method tier.
+    testImplementation(project(":fixtures-kotlin-class-sam"))
+
     // Lets JdkHttpServerModuleTest self-attach with ByteBuddyAgent.install() and weave real
     // advice into the JDK's own HttpServer classes, the same way EndpointInstrumentationTest does
     // for its fixture framework.

@@ -15,11 +15,17 @@ import java.util.concurrent.ConcurrentHashMap
  *
  * [modules], indexed by [EndpointModule.name], is who [declare] routes a framework object to: the
  * module that owns a framework is the only code that knows how to walk one of its objects.
+ *
+ * A handler join that names a method passes through [handlerForwarders] on its way in, from
+ * [register] and [attachHandler], so a pass-through becomes the method it forwards to (ADR 0035).
+ * A dispatch path reports its method through [attachHandler]. A join that names only a class, as
+ * [recordDispatch] takes, is left as reported, since the table is keyed by method.
  */
 class RegistryResolver(
     private val registry: EndpointRegistry,
     modules: List<EndpointModule> = emptyList(),
     private val pendingDeclarations: PendingDeclarations,
+    private val handlerForwarders: HandlerForwarders = HandlerForwarders(),
 ) : YukonEndpoints.Resolver {
     private val log = System.getLogger(RegistryResolver::class.java.name)
     private val modulesByName = modules.associateBy { it.name }
@@ -53,7 +59,7 @@ class RegistryResolver(
                 verb = verb,
                 verbatimTemplate = verbatimTemplate,
                 contextPath = contextPath,
-                handler = handlerClass?.let { HandlerRef(it, handlerMethod, handlerDescriptor) },
+                handler = handlerRef(handlerClass, handlerMethod, handlerDescriptor),
             )
             Unit
         }
@@ -64,9 +70,15 @@ class RegistryResolver(
             verb = verb,
             verbatimTemplate = verbatimTemplate,
             contextPath = contextPath,
-            handler = handlerClass?.let { HandlerRef(it, handlerMethod, handlerDescriptor) },
+            handler = handlerRef(handlerClass, handlerMethod, handlerDescriptor),
         )
     }
+
+    private fun handlerRef(
+        handlerClass: String?,
+        handlerMethod: String?,
+        handlerDescriptor: String?,
+    ): HandlerRef? = handlerClass?.let { handlerForwarders.collapse(HandlerRef(it, handlerMethod, handlerDescriptor)) }
 
     override fun recordDispatch(
         key: Any,
@@ -130,8 +142,8 @@ class RegistryResolver(
         handlerMethod: String?,
         handlerDescriptor: String?,
     ) {
-        if (handlerClass == null) return
-        registry.attachHandler(entry as EndpointRegistry.EndpointEntry, HandlerRef(handlerClass, handlerMethod, handlerDescriptor))
+        val handler = handlerRef(handlerClass, handlerMethod, handlerDescriptor) ?: return
+        registry.attachHandler(entry as EndpointRegistry.EndpointEntry, handler)
     }
 
     override fun disableModule(

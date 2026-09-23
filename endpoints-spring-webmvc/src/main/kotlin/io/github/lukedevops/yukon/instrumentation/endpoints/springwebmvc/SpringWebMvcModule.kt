@@ -24,6 +24,7 @@ private const val REQUEST_PREDICATE = "org.springframework.web.servlet.function.
 private const val ROUTER_FUNCTIONS_VISITOR = "org.springframework.web.servlet.function.RouterFunctions\$Visitor"
 private const val REQUEST_PREDICATES_VISITOR = "org.springframework.web.servlet.function.RequestPredicates\$Visitor"
 private const val SERVER_REQUEST = "org.springframework.web.servlet.function.ServerRequest"
+private const val HANDLER_FUNCTION = "org.springframework.web.servlet.function.HandlerFunction"
 
 /** `HandlerFunction.handle`'s descriptor, the same on every supported Spring version. */
 private const val HANDLE_DESCRIPTOR =
@@ -62,6 +63,12 @@ class SpringWebMvcModule : EndpointModule {
 
     private val log = System.getLogger(SpringWebMvcModule::class.java.name)
     private val noPathPredicateLogged = AtomicBoolean(false)
+
+    /**
+     * A functional route's handler passed as a lambda or a method reference is a `HandlerFunction`
+     * lambda. The name is the same in Spring 5.3, 6.2 and 7.0.
+     */
+    override val handlerInterfaces: Set<String> = setOf(HANDLER_FUNCTION)
 
     override fun typeMatcher(): ElementMatcher<in TypeDescription> =
         namedOneOf(HANDLER_METHOD_MAPPING, REQUEST_MAPPING_HANDLER_MAPPING, URL_HANDLER_MAPPING, ROUTER_FUNCTION_MAPPING)
@@ -245,14 +252,18 @@ class SpringWebMvcModule : EndpointModule {
     /**
      * The handler join for a functional route's `HandlerFunction`: the `handle` method Spring
      * invokes and the class that declares it, so a handler inheriting `handle` from a base class
-     * joins to the probe on that base. A hidden class, generated for a SAM-converted lambda, has no
-     * stable name and gets no join at all; a class the reflection cannot see `handle` on is
-     * reported by name alone. `ServerRequest` is resolved through the handler's own loader rather
-     * than named here, so this module never links against Spring.
+     * joins to the probe on that base. A hidden class, spun for a lambda or a method reference,
+     * joins to the method the lambda calls, as [YukonEndpoints.lambdaImplementation] recorded it
+     * (ADR 0035). When nothing was recorded it gets no join. A class the reflection cannot see
+     * `handle` on is reported by name alone. `ServerRequest` is resolved through the handler's own
+     * loader rather than named here, so this module never links against Spring.
      */
     private fun handlerJoin(handlerFunction: Any): HandlerJoin? {
         val type = handlerFunction.javaClass
-        if (type.isHidden) return null
+        if (type.isHidden) {
+            val implementation = YukonEndpoints.lambdaImplementation(type) ?: return null
+            return HandlerJoin(implementation.className, implementation.methodName, implementation.descriptor)
+        }
         return try {
             val serverRequest = Class.forName(SERVER_REQUEST, false, type.classLoader)
             val handle = type.getMethod("handle", serverRequest)

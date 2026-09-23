@@ -28,7 +28,9 @@ interface EndpointModule {
      * example `"com.sun.net.httpserver.HttpHandler"`. A handler written as a lambda or a method
      * reference is a hidden class. When any module names an interface here, the agent watches the
      * JDK's lambda factory and records which method each lambda class for that interface calls.
-     * The module's advice reads it back through `YukonEndpoints.lambdaImplementation`. See ADR 0035.
+     * The module's advice reads it back through `YukonEndpoints.lambdaImplementation`. The method
+     * tier also keeps a forwarder table for these interfaces, so a handler reported as a
+     * pass-through joins to the method it forwards to. See ADR 0035.
      *
      * The lambda factory reports the interface the lambda was written for. A lambda for a
      * subinterface is recorded only when the subinterface is named here too.

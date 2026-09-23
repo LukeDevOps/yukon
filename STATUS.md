@@ -51,11 +51,22 @@ runs the suite on 21 and 25.
 A1 landed on 2026-09-23: the hook, the seam,
 `EndpointModule.handlerInterfaces`, the `HttpServer` switch and the CI
 matrix. `runDemo` names `/checkout` as `DemoServerMainKt#handleCheckout`
-and `/__shutdown` as `DemoServerMainKt#main$lambda$0`. A2 is next: collapsing pass-throughs a
-lambda can point at (scalac's `$adapted` forwarders, kotlinc's
-reference classes, `$sam$` wrappers) through a forwarder table the
-analyser keeps, and Spring's `HandlerFunction` as a handler interface.
-No wire or collector change in either chunk.
+and `/__shutdown` as `DemoServerMainKt#main$lambda$0`.
+
+A2 landed on 2026-09-23: the forwarder table. The analyser records a
+pass-through a handler can be reported as, only for a handler interface
+and only when the call-edge walk reaches one concrete target: scalac's
+`$adapted` forwarder named by an `invokedynamic`, and the `handle` of a
+kotlinc reference class under class-based SAM conversion, written when
+its creator is analysed. `RegistryResolver` applies the table on
+`register` and `attachHandler`. Spring's functional module names
+`HandlerFunction` and asks the seam for a hidden handler in its declare
+walk and its dispatch advice. A `$sam$` wrapper keeps its own name,
+since it only calls the function value it holds. No wire or collector
+change in either chunk.
+
+Next is server chunk S1 in `yukon-server`: showing `created_in` for
+endpoint handlers.
 
 ### Run id on every payload: landed in all three repos
 

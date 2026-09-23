@@ -33,6 +33,7 @@ evaluationDependsOn(":bootstrap")
 evaluationDependsOn(":fixtures-scala3")
 evaluationDependsOn(":fixtures-scala2")
 evaluationDependsOn(":fixtures-kotlin-jvm-default-disable")
+evaluationDependsOn(":fixtures-kotlin-class-sam")
 
 dependencies {
     // Compile-time only: at runtime the holder class comes from the target JVM's bootstrap
@@ -336,13 +337,14 @@ tasks.shadowJar {
 }
 
 // Scala default-getter resolution (ADR 0023) is proven against real scalac output, compiled by
-// the two Scala fixture modules below, and `$DefaultImpls` marking (ADR 0026) against kotlinc
-// output under -jvm-default=disable, compiled by the third. None is a test dependency, only a
-// task dependency: putting one on the test classpath would let JUnit discovery load these
-// classes before install() wires up instrumentation, defeating the fixture's purpose (see
-// FixtureClassLoader). The output directory and runtime classpath are read lazily through
-// providers, resolved only when the test task actually runs, so configuring this project never
-// forces a fixture project to evaluate its dependencies.
+// the two Scala fixture modules below, `$DefaultImpls` marking (ADR 0026) against kotlinc
+// output under -jvm-default=disable, compiled by the third, and the forwarder table (ADR 0035)
+// against kotlinc output under class-based SAM conversion, compiled by the fourth. None is a
+// test dependency, only a task dependency: putting one on the test classpath would let JUnit
+// discovery load these classes before install() wires up instrumentation, defeating the
+// fixture's purpose (see FixtureClassLoader). The output directory and runtime classpath are
+// read lazily through providers, resolved only when the test task actually runs, so configuring
+// this project never forces a fixture project to evaluate its dependencies.
 val scala3FixtureClassesDir = project(":fixtures-scala3").layout.buildDirectory.dir("classes/scala/main")
 val scala3FixtureRuntimeClasspath = project(":fixtures-scala3").configurations.named("runtimeClasspath")
 val scala2FixtureClassesDir = project(":fixtures-scala2").layout.buildDirectory.dir("classes/scala/main")
@@ -351,11 +353,17 @@ val jvmDefaultDisableFixtureClassesDir =
     project(":fixtures-kotlin-jvm-default-disable").layout.buildDirectory.dir("classes/kotlin/main")
 val jvmDefaultDisableFixtureRuntimeClasspath =
     project(":fixtures-kotlin-jvm-default-disable").configurations.named("runtimeClasspath")
+val classSamFixtureClassesDir = project(":fixtures-kotlin-class-sam").layout.buildDirectory.dir("classes/kotlin/main")
 
 tasks.test {
     useJUnitPlatform()
     jvmArgs("-Djdk.attach.allowAttachSelf=true")
-    dependsOn(":fixtures-scala3:classes", ":fixtures-scala2:classes", ":fixtures-kotlin-jvm-default-disable:classes")
+    dependsOn(
+        ":fixtures-scala3:classes",
+        ":fixtures-scala2:classes",
+        ":fixtures-kotlin-jvm-default-disable:classes",
+        ":fixtures-kotlin-class-sam:classes",
+    )
     // ShadedBodyKindRuleTest runs the analyser from the shaded jar, since relocation rewrites
     // string constants in the agent's own classes and only the shaded copy shows the effect.
     dependsOn(tasks.shadowJar)
@@ -375,6 +383,7 @@ tasks.test {
             "yukon.fixtures.jvmdefaultdisable.classpath",
             jvmDefaultDisableFixtureRuntimeClasspath.get().asPath,
         )
+        systemProperty("yukon.fixtures.classsam.dir", classSamFixtureClassesDir.get().asFile.absolutePath)
     }
 }
 

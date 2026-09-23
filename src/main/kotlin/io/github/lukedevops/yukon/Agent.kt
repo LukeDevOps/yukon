@@ -19,6 +19,7 @@ import io.github.lukedevops.yukon.instrumentation.YukonInstrumentation
 import io.github.lukedevops.yukon.instrumentation.branch.BranchDropCounts
 import io.github.lukedevops.yukon.instrumentation.endpoints.EndpointInstrumentation
 import io.github.lukedevops.yukon.instrumentation.endpoints.EndpointModules
+import io.github.lukedevops.yukon.instrumentation.endpoints.HandlerForwarders
 import io.github.lukedevops.yukon.instrumentation.endpoints.api.EndpointModule
 import io.github.lukedevops.yukon.instrumentation.staticscan.BaselineReferenceFilter
 import io.github.lukedevops.yukon.instrumentation.staticscan.StaticBaselineMismatchDetector
@@ -137,6 +138,11 @@ object Agent {
         val staticBaselineMismatchDetector = StaticBaselineMismatchDetector()
         val branchDropCounts = BranchDropCounts()
 
+        // Found before the method tier installs: its analysis writes the forwarder table, and only
+        // for the handler interfaces these modules name (ADR 0035).
+        val endpointModules = if (config.endpointsEnabled) discoverEndpointModules(config) else null
+        val handlerForwarders = HandlerForwarders(endpointModules.orEmpty().flatMapTo(sortedSetOf()) { it.handlerInterfaces })
+
         val yukonInstrumentation =
             YukonInstrumentation(
                 config,
@@ -144,6 +150,7 @@ object Agent {
                 staticBaselineMismatchDetector,
                 branchDropCounts = branchDropCounts,
                 externalClassRegistry = externalClassRegistry,
+                handlerForwarders = handlerForwarders,
             )
         val transformer =
             try {
@@ -157,10 +164,9 @@ object Agent {
 
         var endpointInstrumentation: EndpointInstrumentation? = null
         var endpointTransformer: ResettableClassFileTransformer? = null
-        if (config.endpointsEnabled) {
+        if (endpointModules != null) {
             try {
-                val modules = filterEndpointModules(EndpointModules.discover(), config.otelBridgeEnabled)
-                val instance = EndpointInstrumentation(endpointRegistry, modules)
+                val instance = EndpointInstrumentation(endpointRegistry, endpointModules, handlerForwarders = handlerForwarders)
                 endpointTransformer = instance.install(instrumentation)
                 endpointInstrumentation = instance
             } catch (e: Throwable) {
@@ -168,7 +174,7 @@ object Agent {
                 // installed successfully above; it only means this JVM reports no endpoints.
                 log.log(Level.ERROR, "yukon: endpoint instrumentation failed to install, continuing without endpoint tracking", e)
             }
-        } else {
+        } else if (!config.endpointsEnabled) {
             log.log(Level.INFO, "yukon: endpointsEnabled=false, no framework's endpoints will be instrumented")
         }
 
@@ -216,6 +222,18 @@ object Agent {
             resource,
         )
     }
+
+    /**
+     * The endpoint modules this JVM runs, or null when discovery failed. A failure here is logged
+     * the same way a failed endpoint install is, and the method tier still installs.
+     */
+    private fun discoverEndpointModules(config: AgentConfig): List<EndpointModule>? =
+        try {
+            filterEndpointModules(EndpointModules.discover(), config.otelBridgeEnabled)
+        } catch (e: Throwable) {
+            log.log(Level.ERROR, "yukon: endpoint instrumentation failed to install, continuing without endpoint tracking", e)
+            null
+        }
 
     /**
      * Drops the route bridge module, named `"otel"`, from [modules] unless [otelBridgeEnabled]

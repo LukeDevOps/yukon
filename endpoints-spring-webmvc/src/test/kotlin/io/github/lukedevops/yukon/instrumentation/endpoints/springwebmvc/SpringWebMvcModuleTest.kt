@@ -1,6 +1,7 @@
 package io.github.lukedevops.yukon.instrumentation.endpoints.springwebmvc
 
 import io.github.lukedevops.yukon.export.EndpointDiscoverySource
+import io.github.lukedevops.yukon.export.EndpointLocation
 import io.github.lukedevops.yukon.instrumentation.endpoints.EndpointInstrumentation
 import io.github.lukedevops.yukon.registry.EndpointRegistry
 import net.bytebuddy.agent.ByteBuddyAgent
@@ -9,6 +10,7 @@ import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
 import org.springframework.test.web.servlet.setup.MockMvcBuilders
 import org.springframework.web.servlet.function.HandlerFunction
+import org.springframework.web.servlet.function.RequestPredicate
 import org.springframework.web.servlet.function.RequestPredicates.GET
 import org.springframework.web.servlet.function.RequestPredicates.POST
 import org.springframework.web.servlet.function.RequestPredicates.method
@@ -27,6 +29,15 @@ import kotlin.test.assertTrue
 
 private const val HANDLE_DESCRIPTOR =
     "(Lorg/springframework/web/servlet/function/ServerRequest;)Lorg/springframework/web/servlet/function/ServerResponse;"
+
+/** A functional route's handler, passed by reference. */
+fun referencedHandler(request: ServerRequest): ServerResponse = ServerResponse.ok().build()
+
+/**
+ * A handler lambda spun before the lambda factory hook installs. It is its own function so the
+ * lambda class is spun on the call before the test installs anything.
+ */
+private fun spunBeforeHook(): HandlerFunction<ServerResponse> = HandlerFunction { ServerResponse.ok().build() }
 
 /**
  * Proves [SpringWebMvcModule] end to end against a real `DispatcherServlet`, driven through
@@ -189,25 +200,23 @@ class SpringWebMvcModuleTest {
      * trailing-lambda literal (`HandlerFunction { ... }`) compile to a hidden class, the same as
      * a genuine Java lambda, not the named class this project's `CLAUDE.md` describes for a
      * Kotlin function-type lambda; confirmed empirically while writing this test. handlerA and
-     * handlerC are therefore written as Kotlin object expressions instead, which always compile
-     * to a real named class, so both the named-class join and the hidden-class no-join path are
-     * proven here from Kotlin alone, without needing a Java source set.
+     * handlerC are therefore written as Kotlin object expressions, which always compile to a real
+     * named class. The hidden ones join to the method their lambda calls, through the lambda
+     * factory hook (ADR 0035), and one spun before the hook installs gets no join.
      */
     @Test
     fun `functional routes are declared through RouterFunction and counted at dispatch`() {
+        val early = spunBeforeHook()
         val instrumentation = ByteBuddyAgent.install()
         val registry = EndpointRegistry()
         val endpointInstrumentation = EndpointInstrumentation(registry, listOf(SpringWebMvcModule()))
         val transformer = endpointInstrumentation.install(instrumentation)
 
         try {
-            // handlerA and handlerC are Kotlin object expressions, not SAM-converted lambdas:
-            // Kotlin's default indy-based SAM conversion for a Java functional interface such as
-            // HandlerFunction produces a hidden class, the same as a Java lambda, not the named
-            // class CLAUDE.md's "Join" design describes for a genuine Kotlin lambda. An object
-            // expression always compiles to a real named class, so these two exercise the
-            // non-hidden join path; handlerB, handlerD and handlerE stay plain SAM lambdas and
-            // exercise the hidden-class, no-join path instead.
+            // handlerA and handlerC are Kotlin object expressions, which always compile to a real
+            // named class, so these two exercise the non-hidden join path. handlerB, handlerD,
+            // handlerE and handlerF are SAM-converted lambdas and byReference a SAM-converted
+            // reference, each a hidden class named through the lambda factory hook.
             val handlerA =
                 object : HandlerFunction<ServerResponse> {
                     override fun handle(request: ServerRequest): ServerResponse = ServerResponse.ok().build()
@@ -219,6 +228,8 @@ class SpringWebMvcModuleTest {
                 }
             val handlerD = HandlerFunction<ServerResponse> { ServerResponse.ok().build() }
             val handlerE = HandlerFunction<ServerResponse> { ServerResponse.ok().build() }
+            val handlerF = HandlerFunction<ServerResponse> { ServerResponse.ok().build() }
+            val byReference = HandlerFunction(::referencedHandler)
 
             val routerFunction =
                 route(GET("/fn/{id}"), handlerA)
@@ -228,6 +239,10 @@ class SpringWebMvcModuleTest {
                         route(GET("/items"), handlerC)
                             .andRoute(GET("/items/{id}").or(GET("/things/{id}")), handlerD),
                     ).andRoute(method(HttpMethod.GET).and(param("custom", "1")), handlerE)
+                    .andRoute(GET("/by-reference"), byReference)
+                    .andRoute(GET("/early"), early)
+                    // A predicate the walk cannot read keeps this route undeclared, so it is found at dispatch.
+                    .andRoute(path("/discovered").and(RequestPredicate { true }), handlerF)
 
             val context = buildFunctionalWebApplicationContext(routerFunction)
             val mockMvc = MockMvcBuilders.webAppContextSetup(context).build()
@@ -235,7 +250,15 @@ class SpringWebMvcModuleTest {
             val declared = registry.endpoints()
             val declaredByIdentity = declared.associateBy { "${it.verb} ${it.routeTemplate}" }
             assertEquals(
-                setOf("GET /fn/{id}", "POST /fn", "GET /api/items", "GET /api/items/{id}", "GET /api/things/{id}"),
+                setOf(
+                    "GET /fn/{id}",
+                    "POST /fn",
+                    "GET /api/items",
+                    "GET /api/items/{id}",
+                    "GET /api/things/{id}",
+                    "GET /by-reference",
+                    "GET /early",
+                ),
                 declaredByIdentity.keys,
             )
             for (endpoint in declared) {
@@ -245,10 +268,16 @@ class SpringWebMvcModuleTest {
             assertFalse(handlerA.javaClass.isHidden, "handlerA is an object expression and must not be a hidden class")
             assertTrue(handlerB.javaClass.isHidden, "handlerB is a SAM-converted lambda and must be a hidden class")
             assertEquals(handlerA.javaClass.name, declaredByIdentity.getValue("GET /fn/{id}").handlerClass)
-            assertNull(declaredByIdentity.getValue("POST /fn").handlerClass, "a hidden-class handler must get no join")
+            assertJoinsLambdaBody(declaredByIdentity.getValue("POST /fn"))
             assertEquals(handlerC.javaClass.name, declaredByIdentity.getValue("GET /api/items").handlerClass)
-            assertNull(declaredByIdentity.getValue("GET /api/items/{id}").handlerClass, "a hidden-class handler must get no join")
-            assertNull(declaredByIdentity.getValue("GET /api/things/{id}").handlerClass, "a hidden-class handler must get no join")
+            assertJoinsLambdaBody(declaredByIdentity.getValue("GET /api/items/{id}"))
+            assertJoinsLambdaBody(declaredByIdentity.getValue("GET /api/things/{id}"))
+            val referenced = declaredByIdentity.getValue("GET /by-reference")
+            assertEquals("${javaClass.name}Kt", referenced.handlerClass, "a reference joins to the function it names")
+            assertEquals("referencedHandler", referenced.handlerMethod)
+            assertEquals(HANDLE_DESCRIPTOR, referenced.handlerDescriptor)
+            assertTrue(early.javaClass.isHidden)
+            assertNull(declaredByIdentity.getValue("GET /early").handlerClass, "a lambda spun before the hook was not recorded")
 
             mockMvc.perform(get("/fn/1"))
             mockMvc.perform(get("/fn/1"))
@@ -256,6 +285,8 @@ class SpringWebMvcModuleTest {
             mockMvc.perform(get("/api/items"))
             mockMvc.perform(get("/api/things/9"))
             mockMvc.perform(get("/anything").param("custom", "1"))
+            mockMvc.perform(get("/discovered"))
+            mockMvc.perform(get("/early"))
 
             val afterDispatch = registry.endpoints().associateBy { "${it.verb} ${it.routeTemplate}" }
             val deltasById = registry.computeDeltas(maxPerBatch = 20).flatMap { it.deltas }.associateBy { it.endpointId }
@@ -277,14 +308,14 @@ class SpringWebMvcModuleTest {
             assertEquals("handle", itemsById.handlerMethod)
             assertEquals(HANDLE_DESCRIPTOR, itemsById.handlerDescriptor)
 
-            // handlerB and handlerD are hidden SAM-converted lambdas, so a dispatch through them must still
-            // attach no join: YukonEndpoints.attachHandler is a no-op for a null handler class.
-            val fnPostById = afterDispatch.getValue("POST /fn")
-            assertNull(fnPostById.handlerClass, "a hidden-class handler must get no join even after dispatch")
-            assertNull(fnPostById.handlerMethod)
-            val thingsById = afterDispatch.getValue("GET /api/things/{id}")
-            assertNull(thingsById.handlerClass, "a hidden-class handler must get no join even after dispatch")
-            assertNull(thingsById.handlerMethod)
+            // handlerB and handlerD keep the join their registration recorded after a dispatch.
+            assertJoinsLambdaBody(afterDispatch.getValue("POST /fn"))
+            assertJoinsLambdaBody(afterDispatch.getValue("GET /api/things/{id}"))
+            // The dispatch advice names a hidden handler the same way for a route it discovers.
+            val discovered = afterDispatch.getValue("GET /discovered")
+            assertEquals(EndpointDiscoverySource.DISPATCH, discovered.discoverySource)
+            assertJoinsLambdaBody(discovered)
+            assertNull(afterDispatch.getValue("GET /early").handlerClass, "a dispatch adds no join a registration did not have")
 
             // Observed: the param-only route has no path predicate anywhere in its tree, so
             // nothing ever sets RouterFunctions.MATCHING_PATTERN_ATTRIBUTE on the request, even
@@ -294,12 +325,27 @@ class SpringWebMvcModuleTest {
             // this module on both sides: never declared (registerRoute already skips a predicate
             // with no path), and never discovered at dispatch either, unlike the annotation-mapped
             // side's unconstrained mapping (HandleMatchAdvice's "* /any" case), which always has a
-            // pattern to key off of. registry.endpoints() is unchanged by this dispatch.
-            assertEquals(declaredByIdentity.keys, registry.endpoints().associateBy { "${it.verb} ${it.routeTemplate}" }.keys)
+            // pattern to key off of. The one endpoint dispatch adds is /discovered.
+            assertEquals(
+                declaredByIdentity.keys + "GET /discovered",
+                registry.endpoints().associateBy { "${it.verb} ${it.routeTemplate}" }.keys,
+            )
 
             assertTrue(registry.disabledModules().isEmpty())
         } finally {
             endpointInstrumentation.uninstall(instrumentation, transformer)
         }
+    }
+
+    /**
+     * Asserts that [endpoint] joins to a lambda body kotlinc wrote in this test class, with
+     * `HandlerFunction.handle`'s descriptor, since none of these lambdas captures anything.
+     */
+    private fun assertJoinsLambdaBody(endpoint: EndpointLocation) {
+        val route = "${endpoint.verb} ${endpoint.routeTemplate}"
+        assertEquals(javaClass.name, endpoint.handlerClass, "$route: handler class")
+        val method = assertNotNull(endpoint.handlerMethod, "$route: handler method")
+        assertTrue("\$lambda\$" in method, "$route: $method should be a lambda body")
+        assertEquals(HANDLE_DESCRIPTOR, endpoint.handlerDescriptor, "$route: handler descriptor")
     }
 }

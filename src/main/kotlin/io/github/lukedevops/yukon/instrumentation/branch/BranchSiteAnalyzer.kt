@@ -101,6 +101,12 @@ object BranchSiteAnalyzer {
         val bodyKind: BodyKind = BodyKind.NONE,
         /** The source name of a [BodyKind.LOCAL_CLASS], and null for every other kind. See ADR 0034. */
         val sourceName: String? = null,
+        /**
+         * The forwarder table's entries this class yields (ADR 0035): each pass-through that a
+         * framework can report as a handler for one of [analyze]'s handler interfaces, with the
+         * one probed method it forwards to. Empty when no handler interface was given.
+         */
+        val handlerForwarders: List<HandlerForwarder> = emptyList(),
     ) {
         /**
          * Whether the method is a lambda body: [methodFilter][analyze] accepted it, an
@@ -222,6 +228,10 @@ object BranchSiteAnalyzer {
      * [kind] is [CallEdgeKind.CREATES] only for such an `invokedynamic`, and [capturedCount] is
      * then its [capturedCount]; every other candidate is a [CallEdgeKind.CALL] with nothing
      * captured. See ADR 0034.
+     *
+     * [functionalInterface] is the internal name of the interface such an `invokedynamic` makes a
+     * lambda for, the return type of its `invokedType`, and null for every other candidate. The
+     * forwarder table keys on it (ADR 0035).
      */
     internal data class RawCandidate(
         val owner: String,
@@ -230,6 +240,7 @@ object BranchSiteAnalyzer {
         val virtualRaw: Boolean,
         val kind: CallEdgeKind = CallEdgeKind.CALL,
         val capturedCount: Int = 0,
+        val functionalInterface: String? = null,
     )
 
     /** One resolved cross-class `$default` target: see [resolveCrossClassDefaultTarget]. */
@@ -392,6 +403,7 @@ object BranchSiteAnalyzer {
             virtualRaw,
             CallEdgeKind.CREATES,
             capturedCount(invokedDescriptor, implementationHandle.tag),
+            returnTypeOf(invokedDescriptor).removePrefix("L").removeSuffix(";"),
         )
     }
 
@@ -452,6 +464,9 @@ object BranchSiteAnalyzer {
      * [resolveScalaGetterSites]). It defaults to always returning null, which leaves such a getter
      * unresolved instead of failing analysis. A caller must catch and swallow its own lookup
      * failures; this function treats a thrown exception the same as a null result.
+     *
+     * [handlerInterfaces] names, by `Class.getName()`, the functional interfaces a framework takes
+     * a handler as. The analysis yields [Analysis.handlerForwarders] only for those.
      */
     fun analyze(
         classBytes: ByteArray,
@@ -459,6 +474,7 @@ object BranchSiteAnalyzer {
         includePackages: List<String> = emptyList(),
         excludePackages: List<String> = emptyList(),
         tableCache: CrossClassTableCache? = null,
+        handlerInterfaces: Set<String> = emptySet(),
         methodFilter: (name: String, descriptor: String) -> Boolean,
     ): Analysis {
         val sites = mutableListOf<BranchSite>()
@@ -677,6 +693,7 @@ object BranchSiteAnalyzer {
                 excludePackages = excludePackages,
                 tableCache = tableCache,
                 rawReferencesByMethod = rawReferencesByMethod,
+                handlerInterfaces = handlerInterfaces,
             )
         val references =
             placeReferences(
@@ -716,6 +733,7 @@ object BranchSiteAnalyzer {
             sourceFile,
             bodyClass.kind,
             bodyClass.sourceName,
+            resolvedCalls.handlerForwarders,
         )
     }
 
@@ -997,6 +1015,9 @@ object BranchSiteAnalyzer {
      * their own references in their own class's analysis. A body class the agent never probes has no
      * analysis of its own, so each of its methods the walk passes through adds its references like any other
      * pass-through.
+     *
+     * With [handlerInterfaces] given, the same walk also finds the forwarder table's entries. See
+     * [findHandlerForwarders] and ADR 0035.
      */
     private fun resolveCallEdges(
         internalClassName: String,
@@ -1008,6 +1029,7 @@ object BranchSiteAnalyzer {
         excludePackages: List<String>,
         tableCache: CrossClassTableCache? = null,
         rawReferencesByMethod: Map<Pair<String, String>, Set<String>> = emptyMap(),
+        handlerInterfaces: Set<String> = emptySet(),
     ): ResolvedCalls {
         val crossClassMethodTables = mutableMapOf<String, MethodTable?>()
 
@@ -1044,11 +1066,16 @@ object BranchSiteAnalyzer {
 
         val reachedPassThroughs = mutableSetOf<Pair<String, String>>()
         val referencesByMethod = mutableMapOf<Pair<String, String>, Set<String>>()
+        val reachedUnprobedBodyClasses = LinkedHashSet<String>()
 
-        fun resolveOne(methodKey: Pair<String, String>): List<CallEdge> {
+        // Walks candidates by the rules above. The references and same-class pass-throughs the
+        // walk passes through go into the two sets it is given.
+        fun walk(
+            candidates: List<RawCandidate>,
+            references: MutableSet<String>,
+            passThroughs: MutableSet<Pair<String, String>>,
+        ): Set<CallEdge> {
             val edges = LinkedHashSet<CallEdge>()
-            val references = LinkedHashSet<String>(rawReferencesByMethod[methodKey].orEmpty())
-            referencesByMethod[methodKey] = references
             val visited = mutableSetOf<VisitKey>()
 
             fun edge(
@@ -1092,7 +1119,7 @@ object BranchSiteAnalyzer {
                     if ((name to descriptor) in eligibleMethodKeys || !declaredWithBody) {
                         edges += edge(dottedClassName, name, descriptor, virtual, kind, capturedCount)
                     } else {
-                        reachedPassThroughs += name to descriptor
+                        passThroughs += name to descriptor
                         references += rawReferencesByMethod[name to descriptor].orEmpty()
                         rawCandidatesByMethod[name to descriptor].orEmpty().forEach(::visitInside)
                     }
@@ -1124,6 +1151,7 @@ object BranchSiteAnalyzer {
                     references += table.rawReferencesByMethod[name to descriptor].orEmpty()
                     table.rawCandidatesByMethod[name to descriptor].orEmpty().forEach(::visitInside)
                     if (isConstructorOrInitializer) {
+                        reachedUnprobedBodyClasses += owner
                         for ((bodyKey, bodyAccess) in table.methodAccess) {
                             val (bodyName, bodyDescriptor) = bodyKey
                             if (bodyName == "<init>" || bodyName == "<clinit>" || bodyAccess and BODYLESS_FLAGS != 0) continue
@@ -1154,15 +1182,122 @@ object BranchSiteAnalyzer {
                 }
             }
 
-            for (candidate in rawCandidatesByMethod[methodKey].orEmpty()) {
+            for (candidate in candidates) {
                 visit(candidate.owner, candidate.name, candidate.descriptor, candidate.virtualRaw, candidate.kind, candidate.capturedCount)
             }
+            return edges
+        }
+
+        fun resolveOne(methodKey: Pair<String, String>): List<CallEdge> {
+            val references = LinkedHashSet<String>(rawReferencesByMethod[methodKey].orEmpty())
+            referencesByMethod[methodKey] = references
+            val edges = walk(rawCandidatesByMethod[methodKey].orEmpty(), references, reachedPassThroughs)
             val (selfName, selfDescriptor) = methodKey
             return edges.filterNot { it.className == dottedClassName && it.methodName == selfName && it.methodDescriptor == selfDescriptor }
         }
 
         val edgesByMethod = eligibleMethodKeys.associateWith(::resolveOne)
-        return ResolvedCalls(edgesByMethod, referencesByMethod, reachedPassThroughs)
+        val handlerForwarders =
+            if (handlerInterfaces.isEmpty()) {
+                emptyList()
+            } else {
+                findHandlerForwarders(
+                    internalClassName,
+                    methodAccess,
+                    rawCandidatesByMethod,
+                    eligibleMethodKeys,
+                    reachedUnprobedBodyClasses,
+                    handlerInterfaces,
+                    ::methodTableFor,
+                ) { candidates -> walk(candidates, LinkedHashSet(), mutableSetOf()) }
+            }
+        return ResolvedCalls(edgesByMethod, referencesByMethod, reachedPassThroughs, handlerForwarders)
+    }
+
+    /**
+     * The forwarder table's entries for one class (ADR 0035). Two kinds of pass-through qualify:
+     * - a method of this class that an `invokedynamic` here names as the implementation of a
+     *   lambda for one of [handlerInterfaces], when it is a pass-through. scalac names its
+     *   `$adapted` boxing forwarder this way.
+     * - a method of a body class the agent does not probe, which [reachedUnprobedBodyClasses]
+     *   holds, when that class implements one of [handlerInterfaces]. kotlinc makes such a class
+     *   for a reference passed as a Java functional interface under class-based SAM conversion.
+     *   The type matcher never analyses it, so its entry is written here, where its creator is
+     *   analysed.
+     *
+     * [walk] resolves a pass-through's own candidates by the same rules [resolveCallEdges] applies
+     * to an entry point. An entry is written only when the `CALL` edges it yields name exactly one
+     * method, not counting the pass-through itself or a `<clinit>`. A `<clinit>` edge stands for the
+     * class being initialised, not for a call. No entry is written when that one method has no body
+     * (abstract or native), as far as its owner's bytes show. Then the reported name stands.
+     */
+    private fun findHandlerForwarders(
+        internalClassName: String,
+        methodAccess: Map<Pair<String, String>, Int>,
+        rawCandidatesByMethod: Map<Pair<String, String>, List<RawCandidate>>,
+        eligibleMethodKeys: Set<Pair<String, String>>,
+        reachedUnprobedBodyClasses: Set<String>,
+        handlerInterfaces: Set<String>,
+        methodTableFor: (String) -> MethodTable?,
+        walk: (List<RawCandidate>) -> Set<CallEdge>,
+    ): List<HandlerForwarder> {
+        val dottedClassName = internalClassName.replace('/', '.')
+
+        fun isHandlerInterface(internalName: String?): Boolean = internalName != null && internalName.replace('/', '.') in handlerInterfaces
+
+        fun hasNoBody(edge: CallEdge): Boolean {
+            val key = edge.methodName to edge.methodDescriptor
+            val access =
+                if (edge.className == dottedClassName) {
+                    methodAccess[key]
+                } else {
+                    methodTableFor(edge.className.replace('.', '/'))?.methodAccess?.get(key)
+                }
+            return access != null && access and BODYLESS_FLAGS != 0
+        }
+
+        fun forwarder(
+            ownerInternalName: String,
+            key: Pair<String, String>,
+            candidates: List<RawCandidate>,
+        ): HandlerForwarder? {
+            val owner = ownerInternalName.replace('/', '.')
+            val (name, descriptor) = key
+            val targets =
+                walk(candidates)
+                    .asSequence()
+                    .filter { it.kind == CallEdgeKind.CALL && it.methodName != "<clinit>" }
+                    .filterNot { it.className == owner && it.methodName == name && it.methodDescriptor == descriptor }
+                    .distinctBy { Triple(it.className, it.methodName, it.methodDescriptor) }
+                    .toList()
+            val target = targets.singleOrNull() ?: return null
+            if (hasNoBody(target)) return null
+            return HandlerForwarder(owner, name, descriptor, target.className, target.methodName, target.methodDescriptor)
+        }
+
+        val forwarders = mutableListOf<HandlerForwarder>()
+        val implementations =
+            rawCandidatesByMethod.values
+                .asSequence()
+                .flatten()
+                .filter { it.kind == CallEdgeKind.CREATES && it.owner == internalClassName && isHandlerInterface(it.functionalInterface) }
+                .map { it.name to it.descriptor }
+                .distinct()
+        for (key in implementations) {
+            val access = methodAccess[key] ?: continue
+            if (key in eligibleMethodKeys || access and BODYLESS_FLAGS != 0) continue
+            forwarder(internalClassName, key, rawCandidatesByMethod[key].orEmpty())?.let { forwarders += it }
+        }
+        // A snapshot: the walk below can reach further body classes and add them to this set.
+        for (bodyClass in reachedUnprobedBodyClasses.toList()) {
+            val table = methodTableFor(bodyClass) ?: continue
+            if (table.interfaceInternalNames.none(::isHandlerInterface)) continue
+            for ((key, access) in table.methodAccess) {
+                if (key.first == "<init>" || key.first == "<clinit>" || access and BODYLESS_FLAGS != 0) continue
+                forwarder(bodyClass, key, table.rawCandidatesByMethod[key].orEmpty())?.let { forwarders += it }
+            }
+        }
+        return forwarders
     }
 
     /** One step of [resolveCallEdges]'s walk: a callee, with the kind and captured count it was reached with. */
@@ -1176,13 +1311,14 @@ object BranchSiteAnalyzer {
 
     /**
      * What [resolveCallEdges] yields: each entry point's edges and its references (raw internal
-     * names, the entry point's own and every pass-through's it reaches), and the same-class
-     * pass-throughs some entry point reached.
+     * names, the entry point's own and every pass-through's it reaches), the same-class
+     * pass-throughs some entry point reached, and the forwarder table's entries.
      */
     private class ResolvedCalls(
         val edgesByMethod: Map<Pair<String, String>, List<CallEdge>>,
         val referencesByMethod: Map<Pair<String, String>, Set<String>>,
         val reachedPassThroughs: Set<Pair<String, String>>,
+        val handlerForwarders: List<HandlerForwarder>,
     )
 
     /**
@@ -2440,7 +2576,8 @@ object BranchSiteAnalyzer {
      * [TypeMatchPolicy.methodMatcher] applies to a loaded class. [hasEnclosingMethod] is true only
      * for a body class: the JVM attaches an `EnclosingMethod` attribute to an anonymous or local
      * class, and kotlinc attaches the same attribute to a function reference, a suspend lambda, and
-     * an object expression. See ADR 0024's body-class rule.
+     * an object expression. See ADR 0024's body-class rule. [interfaceInternalNames] says whether a
+     * body class implements a handler interface, which the forwarder table needs (ADR 0035).
      */
     internal class MethodTable(
         val classAccess: Int,
@@ -2453,6 +2590,7 @@ object BranchSiteAnalyzer {
         val rawReferencesByMethod: Map<Pair<String, String>, Set<String>> = emptyMap(),
         val internalName: String = "",
         val superInternalName: String? = null,
+        val interfaceInternalNames: List<String> = emptyList(),
     ) {
         /**
          * A body class the type matcher turns away by [TypeMatchPolicy.isTurnedAwayByShape], so
@@ -2481,6 +2619,7 @@ object BranchSiteAnalyzer {
         var classAccess = 0
         var internalName = ""
         var superInternalName: String? = null
+        var interfaceInternalNames: List<String> = emptyList()
         var hasEnclosingMethod = false
         val methodAccess = mutableMapOf<Pair<String, String>, Int>()
         val localNames = mutableMapOf<Pair<String, String>, MutableMap<Int, String>>()
@@ -2501,6 +2640,7 @@ object BranchSiteAnalyzer {
                     classAccess = access
                     internalName = name
                     superInternalName = superName
+                    interfaceInternalNames = interfaces?.toList() ?: emptyList()
                 }
 
                 override fun visitOuterClass(
@@ -2558,6 +2698,7 @@ object BranchSiteAnalyzer {
             rawReferencesByMethod,
             internalName,
             superInternalName,
+            interfaceInternalNames,
         )
     }
 }
