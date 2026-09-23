@@ -28,8 +28,12 @@ which file holds it. The agent will send what the bytecode knows:
 - `CallEdge.kind`, where `CREATES` covers `invokedynamic` targets and
   body-class methods, with `captured_count` beside it;
 - `lambda_body` on methods;
-- `source_file` and `body_class` on classes. `ClassSupertypes` becomes
-  `ClassLocation`, and `DeclaredClass` gains the same two fields.
+- `source_file`, `body_kind` and `source_name` on classes.
+  `ClassSupertypes` becomes `ClassLocation`, and `DeclaredClass` gains
+  the same three fields. `body_kind` tells an anonymous class, an object
+  expression, a local class, a lambda compiled to a class and a
+  reference apart, from `InnerClasses`, `kotlin.Metadata` and the Kotlin
+  runtime base classes.
 
 Order: proto and BSR, then the agent with compiler fixtures for the
 Kotlin name rule, then the server, then the UI, then `runDemoStack`.
