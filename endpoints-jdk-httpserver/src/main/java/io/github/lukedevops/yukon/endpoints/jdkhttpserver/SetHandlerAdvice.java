@@ -13,10 +13,12 @@ import net.bytebuddy.asm.Advice;
  * {@code createContext(String)} overload.
  *
  * <p>The handler join follows the same rule {@link CreateContextAdvice} applies: a non-hidden
- * handler class reports the {@code handle} method and the class that declares it, and a hidden
- * class (a Java or Kotlin SAM lambda) reports null for all three fields. A null class is still
- * safe to attach: {@link YukonEndpoints#attachHandler} is a no-op for a null class, so it can never
- * erase a real join a later {@code setHandler} call replaces with a lambda.
+ * handler class reports the {@code handle} method and the class that declares it. A hidden class
+ * (a Java or Kotlin lambda or method reference) reports the method its lambda calls, as {@link
+ * YukonEndpoints#lambdaImplementation} recorded it, or null for all three fields when nothing was
+ * recorded. A null class is still safe to attach: {@link YukonEndpoints#attachHandler} is a no-op
+ * for a null class, so it can never erase a real join a later {@code setHandler} call replaces
+ * with a lambda that has no recorded method.
  */
 public class SetHandlerAdvice {
     private static final String MODULE = "jdk-httpserver";
@@ -32,7 +34,14 @@ public class SetHandlerAdvice {
             String handlerMethod = null;
             String handlerDescriptor = null;
             Class<?> handlerType = handler.getClass();
-            if (!handlerType.isHidden()) {
+            if (handlerType.isHidden()) {
+                YukonEndpoints.LambdaImplementation implementation = YukonEndpoints.lambdaImplementation(handlerType);
+                if (implementation != null) {
+                    handlerClass = implementation.className;
+                    handlerMethod = implementation.methodName;
+                    handlerDescriptor = implementation.descriptor;
+                }
+            } else {
                 try {
                     Method method = handlerType.getMethod("handle", HttpExchange.class);
                     handlerClass = method.getDeclaringClass().getName();

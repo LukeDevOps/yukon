@@ -17,7 +17,9 @@ import net.bytebuddy.asm.Advice;
  *
  * <p>A context discovered this way resolves its handler join the same way {@link
  * CreateContextAdvice} does: a non-hidden handler class reports {@code handle} and the class that
- * declares it, a hidden class reports null for all three fields. {@code recordDispatch} only
+ * declares it. A hidden class reports the method its lambda calls, as {@link
+ * YukonEndpoints#lambdaImplementation} recorded it, or null for all three fields when nothing was
+ * recorded. {@code recordDispatch} only
  * takes a class, so the method and descriptor are attached separately, through {@link
  * YukonEndpoints#attachHandler}, once {@code recordDispatch} has resolved an entry.
  */
@@ -37,7 +39,14 @@ public class FindContextAdvice {
                 String handlerDescriptor = null;
                 if (handler != null) {
                     Class<?> handlerType = handler.getClass();
-                    if (!handlerType.isHidden()) {
+                    if (handlerType.isHidden()) {
+                        YukonEndpoints.LambdaImplementation implementation = YukonEndpoints.lambdaImplementation(handlerType);
+                        if (implementation != null) {
+                            handlerClass = implementation.className;
+                            handlerMethod = implementation.methodName;
+                            handlerDescriptor = implementation.descriptor;
+                        }
+                    } else {
                         try {
                             Method method = handlerType.getMethod("handle", HttpExchange.class);
                             handlerClass = method.getDeclaringClass().getName();

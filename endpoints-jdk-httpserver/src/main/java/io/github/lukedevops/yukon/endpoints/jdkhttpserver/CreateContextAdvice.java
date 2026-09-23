@@ -17,9 +17,13 @@ import net.bytebuddy.asm.Advice;
  * <p>When a handler is present and its class is not hidden ({@link Class#isHidden()} false), the
  * handler join names the method the framework actually invokes, {@code handle}, and the class that
  * declares it, which is the handler's own class for an override and a shared base class for a
- * subclass that inherits {@code handle}. A hidden class, generated for a Java or Kotlin SAM lambda
- * through {@code invokedynamic}, has no stable name across runs, so its class, method, and
- * descriptor are all reported as null instead.
+ * subclass that inherits {@code handle}. A hidden class, spun for a Java or Kotlin lambda or
+ * method reference through {@code invokedynamic}, has no stable name across runs. For one of
+ * those, the join names the method the lambda calls, as {@link
+ * YukonEndpoints#lambdaImplementation} recorded it when the JDK spun the class (ADR 0035). Its
+ * descriptor is that method's own, so it includes any captured values. When nothing was recorded,
+ * the class, method, and descriptor are all null. That happens for a class spun before the hook
+ * was installed, on a JVM where the hook is off, or for a class another spinner made.
  *
  * <p>The handler-class lookup is inlined here rather than shared with {@link SetHandlerAdvice} and
  * {@link FindContextAdvice} through a helper class: {@code ServerImpl} loads on the bootstrap
@@ -41,7 +45,14 @@ public class CreateContextAdvice {
             String handlerDescriptor = null;
             if (handler != null) {
                 Class<?> handlerType = handler.getClass();
-                if (!handlerType.isHidden()) {
+                if (handlerType.isHidden()) {
+                    YukonEndpoints.LambdaImplementation implementation = YukonEndpoints.lambdaImplementation(handlerType);
+                    if (implementation != null) {
+                        handlerClass = implementation.className;
+                        handlerMethod = implementation.methodName;
+                        handlerDescriptor = implementation.descriptor;
+                    }
+                } else {
                     try {
                         Method method = handlerType.getMethod("handle", HttpExchange.class);
                         handlerClass = method.getDeclaringClass().getName();

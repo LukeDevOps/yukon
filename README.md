@@ -110,10 +110,11 @@ UNREACHED CLUSTER: root io.github.lukedevops.demo.server.PromoHandler#handle (un
 
 `/checkout` is registered the other way, as a function reference that
 Kotlin converts to the `HttpHandler` interface through `invokedynamic`.
-That handler is a hidden class with no stable name, so its endpoint
-carries no handler join and the two shapes sit side by side in the
-endpoint report: `* /promo` names `PromoHandler#handle`, `* /checkout`
-names nothing.
+That handler is a hidden class with no stable name. The agent records
+which method it calls as the JDK spins it (ADR 0035), so the two shapes
+sit side by side in the endpoint report: `* /promo` names
+`PromoHandler#handle`, and `* /checkout` names
+`DemoServerMainKt#handleCheckout`.
 
 Three smaller clusters follow it, each reached from the checkout handler
 under the branch the demo never takes: `LegacyDiscountCalculator`'s

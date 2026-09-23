@@ -12,9 +12,11 @@ import kotlin.test.assertFailsWith
 /**
  * Pins what an [EndpointModule] that implements only the two required members inherits.
  *
- * Both defaults exist so that the common module needs no boilerplate, and both are load-bearing:
+ * Each default exists so that the common module needs no boilerplate, and each is load-bearing:
  * `bootModulesNeedingSeamRead` returning an empty set is what stops
- * `EndpointInstrumentation` adding a read edge for a module that instruments no JDK module, and
+ * `EndpointInstrumentation` adding a read edge for a module that instruments no JDK module,
+ * `handlerInterfaces` returning an empty set is what keeps the lambda factory hook out of a JVM
+ * whose modules never take a handler lambda, and
  * `declare` doing nothing is what lets every framework whose routes are readable from a
  * registration hook's own arguments ignore the seam's declare path entirely. A default that
  * silently changed to something else would be a behaviour change in every module that leans on it,
@@ -38,6 +40,11 @@ class EndpointModuleDefaultsTest {
     @Test
     fun `a module that names no boot module needs no read edge to the seam`() {
         assertEquals(emptySet(), MinimalModule().bootModulesNeedingSeamRead)
+    }
+
+    @Test
+    fun `a module that names no handler interface asks for no lambda to be recorded`() {
+        assertEquals(emptySet(), MinimalModule().handlerInterfaces)
     }
 
     @Test

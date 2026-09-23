@@ -25,13 +25,19 @@ import java.util.WeakHashMap
  * an endpoint module's classes out of the annotation-legality validation that
  * `REBASE`/`REDEFINE` runs, the one [YukonInstrumentation] otherwise has to work around class by
  * class for `@file:JvmName`-style classes.
+ *
+ * When any module names a handler interface, [install] also installs a [LambdaFactoryHook], so a
+ * handler written as a lambda or a method reference can be named (ADR 0035). [lambdaFactoryShape]
+ * is what that hook checks the JDK against.
  */
 class EndpointInstrumentation(
     private val registry: EndpointRegistry,
     private val modules: List<EndpointModule>,
+    lambdaFactoryShape: LambdaFactoryShape = LambdaFactoryShape.JDK,
 ) {
     private val log = System.getLogger(EndpointInstrumentation::class.java.name)
     private val agentClassLoader = EndpointInstrumentation::class.java.classLoader
+    private val lambdaFactoryHook = LambdaFactoryHook(lambdaFactoryShape)
 
     /** Endpoints a module declared during a transform, held until that transform produces bytes. */
     private val pendingDeclarations = PendingDeclarations()
@@ -64,7 +70,8 @@ class EndpointInstrumentation(
      * Installs the bootstrap holder (idempotent if [io.github.lukedevops.yukon.instrumentation.YukonInstrumentation]
      * already installed it), points the endpoint seam at this registry, adds a module read edge
      * from every boot module a module declares needing one, then installs one `AgentBuilder`
-     * covering every discovered module's type matcher and advice.
+     * covering every discovered module's type matcher and advice. Last, it installs the lambda
+     * factory hook for every handler interface a module names, if there is one.
      */
     fun install(instrumentation: Instrumentation): ResettableClassFileTransformer {
         BootstrapHolder.install(instrumentation)
@@ -124,14 +131,22 @@ class EndpointInstrumentation(
                 }
         }
 
-        return builder.installOn(instrumentation)
+        val transformer = builder.installOn(instrumentation)
+
+        val handlerInterfaces = modules.flatMapTo(sortedSetOf()) { it.handlerInterfaces }
+        if (handlerInterfaces.isNotEmpty()) {
+            lambdaFactoryHook.install(instrumentation, handlerInterfaces)
+        }
+        return transformer
     }
 
+    /** Removes the endpoint advice transformer, and the lambda factory hook if this instance installed one. */
     fun uninstall(
         instrumentation: Instrumentation,
         transformer: ResettableClassFileTransformer,
     ) {
         transformer.reset(instrumentation, AgentBuilder.RedefinitionStrategy.DISABLED)
+        lambdaFactoryHook.uninstall(instrumentation)
     }
 
     /**

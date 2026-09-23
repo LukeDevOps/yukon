@@ -1,9 +1,15 @@
 package io.github.lukedevops.yukon.bootstrap;
 
 import java.lang.System.Logger.Level;
+import java.lang.invoke.MethodHandleInfo;
+import java.lang.reflect.Modifier;
 import java.util.ArrayDeque;
+import java.util.Collections;
 import java.util.Deque;
+import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
+import java.util.WeakHashMap;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -28,6 +34,12 @@ import java.util.concurrent.ConcurrentHashMap;
  * resolver is in hand. The buffer is bounded, since an adopter who never installs an agent at all
  * (a dependency pulled in by mistake, a misconfigured attach) must not leak memory for the life of
  * the process.
+ *
+ * <p>The seam also remembers which method each handler lambda calls (ADR 0035). A handler written
+ * as a lambda or a method reference reaches a framework as a hidden class, whose name is not
+ * stable and joins to nothing. Advice on the JDK's lambda factory calls {@link #recordLambdaClass}
+ * as each such class is spun, and the framework advice calls {@link #lambdaImplementation} to get
+ * the method back.
  */
 public final class YukonEndpoints {
 
@@ -58,6 +70,23 @@ public final class YukonEndpoints {
         void attachHandler(Object entry, String handlerClass, String handlerMethod, String handlerDescriptor);
 
         void disableModule(String module, String reason);
+    }
+
+    /**
+     * The method a lambda class calls: its owner's {@link Class#getName()}, its name, and its JVM
+     * descriptor. The descriptor is the method's own, so it starts with any values the lambda
+     * captured.
+     */
+    public static final class LambdaImplementation {
+        public final String className;
+        public final String methodName;
+        public final String descriptor;
+
+        LambdaImplementation(String className, String methodName, String descriptor) {
+            this.className = className;
+            this.methodName = methodName;
+            this.descriptor = descriptor;
+        }
     }
 
     private enum RecordKind {
@@ -174,6 +203,10 @@ public final class YukonEndpoints {
     private static volatile boolean anyDisabled;
     private static final Set<String> FAILURE_LOGGED = ConcurrentHashMap.newKeySet();
     private static final Set<String> DELEGATE_FAILURE_LOGGED = ConcurrentHashMap.newKeySet();
+
+    private static volatile Set<String> handlerInterfaces = Collections.emptySet();
+    private static final Map<Class<?>, LambdaImplementation> LAMBDA_IMPLEMENTATIONS = new WeakHashMap<>();
+    private static volatile boolean lambdaFailureLogged;
 
     private YukonEndpoints() {
     }
@@ -368,6 +401,59 @@ public final class YukonEndpoints {
             current.disableModule(module, reason);
         } catch (Throwable t) {
             logDelegateFailure(module, "disableModule", t);
+        }
+    }
+
+    /**
+     * Sets the functional interfaces whose lambda classes {@link #recordLambdaClass} keeps, by
+     * {@link Class#getName()}. An empty set turns recording off. The set replaces any earlier one.
+     */
+    public static void installHandlerInterfaces(Set<String> interfaceNames) {
+        handlerInterfaces = interfaceNames == null || interfaceNames.isEmpty()
+                ? Collections.<String>emptySet()
+                : Collections.unmodifiableSet(new HashSet<>(interfaceNames));
+    }
+
+    /**
+     * Remembers the method a lambda class calls, when the lambda is for a handler interface.
+     *
+     * <p>The advice on the JDK's lambda factory calls this for every lambda class the JVM spins.
+     * A class for any other interface costs one set lookup and is not kept. A method whose owner
+     * is itself hidden is not kept either, since its name would join to nothing. An abstract method
+     * is not kept, since the method that runs depends on the receiver. Entries are held
+     * weakly by the lambda class, so an unloaded lambda class drops out. This never throws.
+     */
+    public static void recordLambdaClass(Class<?> lambdaClass, Class<?> interfaceClass, MethodHandleInfo implementation) {
+        // This runs inside the JDK's lambda factory. A lambda or method reference anywhere on this
+        // path would ask that factory for a class while it is still building one, and could recurse
+        // without end. Keep this method and everything it calls free of both.
+        try {
+            if (lambdaClass == null || interfaceClass == null || implementation == null) return;
+            if (!handlerInterfaces.contains(interfaceClass.getName())) return;
+            Class<?> owner = implementation.getDeclaringClass();
+            if (owner.isHidden()) return;
+            if (Modifier.isAbstract(implementation.getModifiers())) return;
+            LambdaImplementation found = new LambdaImplementation(
+                    owner.getName(), implementation.getName(), implementation.getMethodType().toMethodDescriptorString());
+            synchronized (LAMBDA_IMPLEMENTATIONS) {
+                LAMBDA_IMPLEMENTATIONS.put(lambdaClass, found);
+            }
+        } catch (Throwable t) {
+            if (!lambdaFailureLogged) {
+                lambdaFailureLogged = true;
+                LOG.log(Level.WARNING, "yukon: could not record a handler lambda's method: " + t);
+            }
+        }
+    }
+
+    /**
+     * Returns the method {@code lambdaClass} calls, as {@link #recordLambdaClass} recorded it, or
+     * null when nothing was recorded for it. A miss is never filled in with a guess.
+     */
+    public static LambdaImplementation lambdaImplementation(Class<?> lambdaClass) {
+        if (lambdaClass == null) return null;
+        synchronized (LAMBDA_IMPLEMENTATIONS) {
+            return LAMBDA_IMPLEMENTATIONS.get(lambdaClass);
         }
     }
 

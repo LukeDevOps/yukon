@@ -4,6 +4,7 @@ import io.github.lukedevops.yukon.instrumentation.endpoints.api.AdviceBinder
 import net.bytebuddy.ByteBuddy
 import net.bytebuddy.description.type.TypeDescription
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
@@ -41,6 +42,11 @@ class JdkHttpServerModuleMatcherTest {
             )
 
         assertSame(builder, returned, "an unmatched type must be handed back unvisited")
+    }
+
+    @Test
+    fun `the module asks for HttpHandler lambdas to be recorded, and for no other interface`() {
+        assertEquals(setOf("com.sun.net.httpserver.HttpHandler"), JdkHttpServerModule().handlerInterfaces)
     }
 
     /** A type no name in this module's matcher matches. */

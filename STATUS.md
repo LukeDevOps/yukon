@@ -36,12 +36,26 @@ Checked end to end on 2026-09-23 with `runDemoStack`: `main$lambda$0`
 `DemoServerMain.kt:48`, `main` creates `handleCheckout`, and
 `handleCheckout` creates `respond` through `val send = ::respond`.
 
-Open, and not part of this: an endpoint whose handler reaches the
-framework through an `invokedynamic`, such as `/checkout`
-(`::handleCheckout`) and `/__shutdown` (a lambda) in the demo, still
-has no handler name. The question is whether the registration advice
-can map the handler instance's hidden class to its implementation
-method.
+### Naming a hidden handler: in flight
+
+ADR 0035. An endpoint whose handler reaches the framework through an
+`invokedynamic`, such as `/checkout` (`::handleCheckout`) and
+`/__shutdown` (a lambda) in the demo, gets its handler name from the
+JDK's lambda factory. Advice on `spinInnerClass()`, installed by
+retransformation after a reflective shape check, records the method
+each `HttpHandler` lambda class calls in a weak map in the bootstrap
+seam, and the three `HttpServer` advices read it back. A miss stays
+null. The members were checked on JDK 21, 22, 25, 26 and 27, and CI
+runs the suite on 21 and 25.
+
+A1 landed on 2026-09-23: the hook, the seam,
+`EndpointModule.handlerInterfaces`, the `HttpServer` switch and the CI
+matrix. `runDemo` names `/checkout` as `DemoServerMainKt#handleCheckout`
+and `/__shutdown` as `DemoServerMainKt#main$lambda$0`. A2 is next: collapsing pass-throughs a
+lambda can point at (scalac's `$adapted` forwarders, kotlinc's
+reference classes, `$sam$` wrappers) through a forwarder table the
+analyser keeps, and Spring's `HandlerFunction` as a handler interface.
+No wire or collector change in either chunk.
 
 ### Run id on every payload: landed in all three repos
 

@@ -14,6 +14,21 @@ repositories {
     mavenCentral()
 }
 
+// `-Pyukon.testJdk=25` runs every project's tests on that JDK. Compilation keeps the JDK 21
+// toolchain; only the JVM that runs the tests changes. CI sets it so a JDK that renames an
+// internal the agent reads, such as the lambda factory members in ADR 0035, fails a test.
+val testJdk = providers.gradleProperty("yukon.testJdk")
+allprojects {
+    plugins.withType<JavaBasePlugin> {
+        val toolchains = extensions.getByType<JavaToolchainService>()
+        tasks.withType<Test>().configureEach {
+            if (testJdk.isPresent) {
+                javaLauncher.set(toolchains.launcherFor { languageVersion.set(JavaLanguageVersion.of(testJdk.get())) })
+            }
+        }
+    }
+}
+
 evaluationDependsOn(":bootstrap")
 evaluationDependsOn(":fixtures-scala3")
 evaluationDependsOn(":fixtures-scala2")
@@ -167,7 +182,8 @@ val verifyAgentJar by tasks.registering {
             // classloader has to resolve, and from a bootstrap-loaded target, or an isolating
             // container loader, that resolution fails with NoClassDefFoundError and the module
             // disables itself at the first request. Each class under this package must therefore
-            // reference no agent class except itself and the bootstrap seam, call no method on
+            // reference no agent class except itself and the bootstrap seam (with its nested
+            // classes, which load from the same bootstrap jar), call no method on
             // itself (a private helper is a real call at the woven site), carry no synthetic
             // member (a lambda, a switch over an enum, or an assert compiles to one), and never
             // mention the relocated Kotlin stdlib. Passes trivially while the package is empty.
@@ -184,6 +200,7 @@ val verifyAgentJar by tasks.registering {
                             it.startsWith("io/github/lukedevops/yukon/") &&
                                 it != shape.name &&
                                 it != "io/github/lukedevops/yukon/bootstrap/YukonEndpoints" &&
+                                !it.startsWith("io/github/lukedevops/yukon/bootstrap/YukonEndpoints$") &&
                                 !it.startsWith("io/github/lukedevops/yukon/shaded/bytebuddy/")
                         }
                     if (foreignAgentClasses.isNotEmpty()) problems += "references agent classes $foreignAgentClasses"

@@ -15,7 +15,6 @@ import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 private const val HANDLE_DESCRIPTOR = "(Lcom/sun/net/httpserver/HttpExchange;)V"
@@ -46,7 +45,8 @@ private class OverridingHandler : HttpHandler {
  * [net.bytebuddy.agent.builder.AgentBuilder] transformer only weaves advice into a class as it
  * loads, not into one already loaded. Every reference to `HttpServer` and its context type is
  * therefore kept inside this one test method rather than a field or a companion object, so
- * nothing else in this test class can trigger that load first.
+ * nothing else in this test class can trigger that load first. Another test class in this module
+ * would load those classes too, so the module's `forkEvery = 1` runs each class in its own JVM.
  */
 class JdkHttpServerModuleTest {
     @Test
@@ -96,18 +96,20 @@ class JdkHttpServerModuleTest {
                 assertEquals(EndpointDiscoverySource.REGISTRATION, endpoint.discoverySource)
             }
 
-            // A hidden class (a Java or Kotlin SAM lambda) has no stable name across runs, so it gets no join at
-            // all, whether attached at creation or later through setHandler.
+            // A hidden class (a Kotlin SAM lambda here) joins to the lambda body the lambda factory named for it,
+            // whether attached at creation or later through setHandler. Each lambda calls the member `respond`,
+            // so kotlinc passes `this` as the body's first parameter. HiddenHandlerNamingTest covers the other shapes.
+            val lambdaBodyDescriptor = "(L${javaClass.name.replace('.', '/')};Lcom/sun/net/httpserver/HttpExchange;)V"
             val checkout = byIdentity.getValue("* /checkout")
-            assertNull(checkout.handlerClass, "a hidden lambda handler must get no join")
-            assertNull(checkout.handlerMethod)
-            assertNull(checkout.handlerDescriptor)
+            assertJoinsDeclaredMethod(checkout, javaClass, "registration_and_dispatch", lambdaBodyDescriptor)
             val promo = byIdentity.getValue("* /promo")
-            assertNull(promo.handlerClass, "a hidden lambda handler must get no join")
+            assertJoinsDeclaredMethod(promo, javaClass, "registration_and_dispatch", lambdaBodyDescriptor)
             val lateHidden = byIdentity.getValue("* /late-hidden")
-            assertNull(lateHidden.handlerClass, "a hidden lambda attached through setHandler must get no join")
-            assertNull(lateHidden.handlerMethod)
-            assertNull(lateHidden.handlerDescriptor)
+            assertJoinsDeclaredMethod(lateHidden, javaClass, "registration_and_dispatch", lambdaBodyDescriptor)
+            assertTrue(
+                setOf(checkout.handlerMethod, promo.handlerMethod, lateHidden.handlerMethod).size == 3,
+                "three lambdas, three bodies",
+            )
 
             // A non-hidden handler class that overrides `handle` on itself reports its own class.
             val overriding = byIdentity.getValue("* /overriding")

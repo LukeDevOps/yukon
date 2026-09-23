@@ -23,6 +23,18 @@ interface EndpointModule {
      */
     val bootModulesNeedingSeamRead: Set<String> get() = emptySet()
 
+    /**
+     * Functional interfaces, by `Class.getName()`, that this framework takes a handler as, for
+     * example `"com.sun.net.httpserver.HttpHandler"`. A handler written as a lambda or a method
+     * reference is a hidden class. When any module names an interface here, the agent watches the
+     * JDK's lambda factory and records which method each lambda class for that interface calls.
+     * The module's advice reads it back through `YukonEndpoints.lambdaImplementation`. See ADR 0035.
+     *
+     * The lambda factory reports the interface the lambda was written for. A lambda for a
+     * subinterface is recorded only when the subinterface is named here too.
+     */
+    val handlerInterfaces: Set<String> get() = emptySet()
+
     /** Which types this module instruments. */
     fun typeMatcher(): ElementMatcher<in TypeDescription>
 

@@ -16,6 +16,10 @@ dependencies {
     // build.gradle.kts for the full rationale).
     compileOnly(project(":bootstrap"))
 
+    // Lets HiddenHandlerNamingTest call the seam directly. Compile-only for the same reason as
+    // above: at runtime the test must reach the one copy BootstrapHolder puts on the bootstrap loader.
+    testCompileOnly(project(":bootstrap"))
+
     // :endpoints-api depends on byte-buddy as `implementation`, which is never transitive, so it
     // does not put ByteBuddy on this module's own compile classpath. Needed here directly for
     // net.bytebuddy.asm.Advice (the Java advice classes) and for the EndpointModule types
@@ -50,4 +54,8 @@ java {
 tasks.test {
     useJUnitPlatform()
     jvmArgs("-Djdk.attach.allowAttachSelf=true")
+    // Each integration test here must install its endpoint advice before the JDK's ServerImpl first
+    // loads, and the lambda factory hook changes java.lang.invoke for the whole JVM. One JVM per
+    // test class keeps each class's setup from leaking into the next.
+    forkEvery = 1
 }

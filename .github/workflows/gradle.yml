@@ -7,21 +7,37 @@ on:
 
 jobs:
   build:
+    name: build (tests on JDK ${{ matrix.test-jdk }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 21 is the toolchain everything compiles with. 25 is the newest LTS: the agent reads JDK
+        # internals (the lambda factory in ADR 0035), and a rename there has to fail a test.
+        test-jdk: [21, 25]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 21
+          # The last version listed becomes JAVA_HOME and runs Gradle. Each version is also
+          # exported as JAVA_HOME_<version>_X64, which is how Gradle finds it as a toolchain.
+          java-version: |
+            ${{ matrix.test-jdk }}
+            21
       - uses: gradle/actions/setup-gradle@v4
-      # `build` runs every module's tests, shadowJar, and verifyAgentJar.
-      - run: ./gradlew build --no-daemon
+      # `build` runs every module's tests, shadowJar, and verifyAgentJar. yukon.testJdk picks the
+      # JVM the tests run on; compilation stays on the JDK 21 toolchain.
+      - run: >-
+          ./gradlew build --no-daemon
+          -Pyukon.testJdk=${{ matrix.test-jdk }}
+          -Porg.gradle.java.installations.fromEnv=JAVA_HOME_21_X64,JAVA_HOME_${{ matrix.test-jdk }}_X64
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: test-reports
+          name: test-reports-jdk${{ matrix.test-jdk }}
           path: |
             build/reports/tests/
             demo/build/reports/tests/
             testkit/build/reports/tests/
+            endpoints-*/build/reports/tests/
