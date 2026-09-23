@@ -22,10 +22,10 @@ enum ProbeKind {
 // values/valueOf/getEntries, a data class's componentN/copy and whichever of
 // equals/hashCode/toString the adopter did not override (the generated ones have no line-number
 // table), a $DefaultImpls method that only forwards to the interface's own default method, or a
-// Java record's equals/hashCode/toString. A collector leaves a generated probe out of never-hit,
-// stale-hit, and the call graph by default, since the compiler will emit the method again
-// regardless of what the adopter does; its hit count is still evidence, so the probe itself is kept
-// rather than dropped. See ADR 0026.
+// Java record's equals/hashCode/toString. A branch probe carries the mark of the method it sits
+// in. A collector leaves a generated probe out of never-hit, stale-hit, and the call graph by
+// default, since the compiler will emit the method again regardless of what the adopter does; its
+// hit count is still evidence, so the probe itself is kept rather than dropped. See ADR 0026.
 enum GeneratedBy {
   GENERATED_BY_NONE = 0;
   ENUM = 1;
@@ -124,10 +124,11 @@ message ProbeLocation {
   // from an inline function's body into this probe's own method, whose origin class is in scope.
   // Dotted, and empty when the probe is the class's own code.
   string inlined_from_class_name = 15;
-  // Set for a METHOD probe, and for an OPTIONAL_ARGUMENT probe as its target's own mark, so a
-  // collector abstains from never-supplied and always-supplied on a generated target (a data
-  // class's copy) the way it abstains on an inline one. GENERATED_BY_NONE (the default) for an
-  // ordinary method the adopter wrote. A BRANCH probe never carries this; see GeneratedBy.
+  // Set for a METHOD probe, for a BRANCH probe as the mark of the method it sits in, and for an
+  // OPTIONAL_ARGUMENT probe as its target's own mark, so a collector leaves a generated method's
+  // conditionals out of never-hit with the method, and abstains from never-supplied and
+  // always-supplied on a generated target (a data class's copy) the way it abstains on an inline
+  // one. GENERATED_BY_NONE (the default) for an ordinary method the adopter wrote; see GeneratedBy.
   GeneratedBy generated_by = 16;
   // Set only for a METHOD probe: the out-of-scope classes this method's own bytecode references,
   // dotted. A reference is wider than a call edge: runtime-visible annotations, casts and type

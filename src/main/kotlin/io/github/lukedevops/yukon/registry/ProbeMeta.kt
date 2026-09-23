@@ -28,8 +28,9 @@ import io.github.lukedevops.yukon.export.ProbeKind
  * whose origin class is in scope. Dotted, or null when the probe is the class's own code. See
  * ADR 0025.
  *
- * [generatedBy] is set for a [ProbeKind.METHOD] probe, and for a [ProbeKind.OPTIONAL_ARGUMENT]
- * probe as its target's mark; a branch probe never carries it. See [GeneratedBy] and ADR 0026.
+ * [generatedBy] is set for a [ProbeKind.METHOD] probe, for a [ProbeKind.BRANCH] probe as the
+ * mark of the method it sits in, and for a [ProbeKind.OPTIONAL_ARGUMENT] probe as its target's
+ * mark. See [GeneratedBy] and ADR 0026.
  *
  * [referencedClasses] is populated only for a [ProbeKind.METHOD] probe: the out-of-scope classes
  * that method's bytecode references, dotted, with JDK classes and classes read from a classpath

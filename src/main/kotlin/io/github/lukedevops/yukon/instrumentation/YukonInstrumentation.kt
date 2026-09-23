@@ -413,7 +413,8 @@ class YukonInstrumentation(
         // Only a kept site gets a slot in the array: BranchProbeAsmVisitorWrapper allocates one
         // per kept site, in the same siteIndex order, and branchSlotCapacity below is sized to
         // match. A branch inside an inline method's body is just as invisible to a Kotlin caller
-        // as the method probe itself, so it inherits the same flag.
+        // as the method probe itself, so it inherits the same flag, and a branch inside a
+        // generated method carries that method's mark (ADR 0026).
         var branchOrdinal = 0
         val branchProbes = mutableListOf<ProbeMeta>()
         val branchKeys = BranchKeys.compute(branchSites, typeDescription.name)
@@ -430,6 +431,7 @@ class YukonInstrumentation(
                             inline = analysis.isInline(site.methodName, site.methodDescriptor),
                             inlinedFromClassName = site.inlinedFromClassName,
                             branchKey = branchKeys[site.siteIndex to offset],
+                            generatedBy = analysis.generatedBy(site.methodName, site.methodDescriptor),
                         )
                 }
             }

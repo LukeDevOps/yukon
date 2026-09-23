@@ -227,7 +227,7 @@ class GeneratedMethodMarkingTest {
     }
 
     @Test
-    fun `a branch inside a generated equals method carries GENERATED_BY_NONE, since generatedBy is set only on METHOD probes`() {
+    fun `every branch probe inside a data class's generated equals carries DATA_CLASS`() {
         val registry = ProbeRegistry()
         val config = AgentConfig.parse("includePackages=com.example.target")
         install(registry, config)
@@ -240,6 +240,44 @@ class GeneratedMethodMarkingTest {
                 .probes
                 .filter { it.className == "com.example.target.GeneratedPoint" && it.methodName == "equals" && it.kind == ProbeKind.BRANCH }
         assert(branchProbes.isNotEmpty()) { "equals is expected to compile to at least one conditional jump" }
+        branchProbes.forEach { assertEquals(GeneratedBy.DATA_CLASS, it.generatedBy) }
+    }
+
+    @Test
+    fun `every branch probe inside a data class's hand-written equals carries NONE`() {
+        val registry = ProbeRegistry()
+        val config = AgentConfig.parse("includePackages=com.example.target")
+        install(registry, config)
+
+        Class.forName("com.example.target.GeneratedPointCustomEquals", true, fixtureLoader())
+
+        val branchProbes =
+            registry
+                .manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
+                .probes
+                .filter {
+                    it.className == "com.example.target.GeneratedPointCustomEquals" &&
+                        it.methodName == "equals" &&
+                        it.kind == ProbeKind.BRANCH
+                }
+        assertEquals(4, branchProbes.size, "the instanceof test and the x comparison are two two-outcome sites")
+        branchProbes.forEach { assertEquals(GeneratedBy.NONE, it.generatedBy) }
+    }
+
+    @Test
+    fun `a branch probe inside an ordinary method of a data class carries NONE beside the generated methods`() {
+        val registry = ProbeRegistry()
+        val config = AgentConfig.parse("includePackages=com.example.target")
+        install(registry, config)
+
+        Class.forName("com.example.target.GeneratedPoint", true, fixtureLoader())
+
+        val branchProbes =
+            registry
+                .manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
+                .probes
+                .filter { it.className == "com.example.target.GeneratedPoint" && it.methodName == "custom" && it.kind == ProbeKind.BRANCH }
+        assertEquals(2, branchProbes.size, "custom's one if is a two-outcome site")
         branchProbes.forEach { assertEquals(GeneratedBy.NONE, it.generatedBy) }
     }
 

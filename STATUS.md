@@ -284,6 +284,13 @@ Progress:
   `GeneratedPointCustomEquals` fixture holds a hand-written `equals` with two
   conditional sites for chunk 3. Stripped debug info leaves all three marked,
   pinned by a test.
+- Chunk 3 landed: the branch `ProbeMeta` passes `analysis.generatedBy(...)`
+  like the probes beside it; the mark is outside the layout hash and the slot
+  order. `TaxRate` is a `data class` again. `runSpringDemo` measured three
+  ways: before, 22 probes and 4 never hit; `data class` without the mark, 34
+  and 10, the six extra rows all `TaxRate#equals` branches at line -1; with
+  it, 34 and the same 4, with 11 generated and not judged. A single-`Double`
+  data class's `hashCode` has no branch site, so only `equals` showed.
 
 ### Generators other than Spring are not recognised
 

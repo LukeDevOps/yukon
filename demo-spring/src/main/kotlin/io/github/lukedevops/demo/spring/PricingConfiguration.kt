@@ -20,12 +20,8 @@ class PricingConfiguration {
     fun priceFormatter(): PriceFormatter = PriceFormatter(taxRate())
 }
 
-/**
- * The rate [PriceFormatter] charges. Deliberately not a `data class`: the branch probes inside a
- * generated `equals` are not marked as generated (see `STATUS.md`), so one here would fill this
- * demo's report with never-hit rows for conditionals nobody wrote.
- */
-class TaxRate(
+/** The rate [PriceFormatter] charges. */
+data class TaxRate(
     val fraction: Double,
 )
 

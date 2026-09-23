@@ -23,12 +23,13 @@ enum class ProbeKind { METHOD, BRANCH, OPTIONAL_ARGUMENT }
  * and whichever of `equals`/`hashCode`/`toString` the adopter did not override (the generated ones
  * have no line-number table), a `$DefaultImpls` method that only forwards to the interface's own
  * default method, or a Java record's `equals`/`hashCode`/`toString`. Set on a [ProbeKind.METHOD]
- * probe and a [DeclaredMethod], and on a [ProbeKind.OPTIONAL_ARGUMENT] probe as its target's own
- * mark; a branch probe never carries this. A collector leaves a generated probe out of never-hit,
- * stale-hit, the call graph and the two optional-parameter findings by default: the compiler will
- * emit the method again regardless of what the adopter does, so a zero hit count is not a finding
- * the adopter can act on. The hit count itself is still kept and counted, since a call to a
- * generated method, such as `copy`, is still evidence of use. See ADR 0026.
+ * probe and a [DeclaredMethod], on a [ProbeKind.BRANCH] probe as the mark of the method it sits in,
+ * and on a [ProbeKind.OPTIONAL_ARGUMENT] probe as its target's own mark. A collector leaves a
+ * generated probe out of never-hit, stale-hit, the call graph and the two optional-parameter
+ * findings by default: the compiler will emit the method again regardless of what the adopter
+ * does, so a zero hit count is not a finding the adopter can act on. The hit count itself is still
+ * kept and counted, since a call to a generated method, such as `copy`, is still evidence of use.
+ * See ADR 0026.
  */
 enum class GeneratedBy { NONE, ENUM, DATA_CLASS, DEFAULT_IMPLS, RECORD }
 
@@ -123,8 +124,9 @@ data class DeltaBatch(
  * whose origin class is in scope. Dotted, or null when the probe is the class's own code. See
  * ADR 0025.
  *
- * [generatedBy] is set for a [ProbeKind.METHOD] probe, and for a [ProbeKind.OPTIONAL_ARGUMENT]
- * probe as its target's mark; a branch probe never carries it. See [GeneratedBy] and ADR 0026.
+ * [generatedBy] is set for a [ProbeKind.METHOD] probe, for a [ProbeKind.BRANCH] probe as the
+ * mark of the method it sits in, and for a [ProbeKind.OPTIONAL_ARGUMENT] probe as its target's
+ * mark. See [GeneratedBy] and ADR 0026.
  *
  * [referencedClasses] is set only for a [ProbeKind.METHOD] probe: the out-of-scope classes this
  * method's own bytecode references, dotted. A reference is wider than a call edge, since

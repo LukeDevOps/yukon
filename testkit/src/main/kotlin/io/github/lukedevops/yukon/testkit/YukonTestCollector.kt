@@ -1567,7 +1567,8 @@ class YukonTestCollector private constructor(
  * [serviceInstanceId] names the instance whose scan declared it rather than one that loaded it.
  * See ADR 0024. [inlinedFromClassName] is set only for a [ProbeKind.BRANCH] probe that is a kept
  * inlined copy, dotted; see ADR 0025. [generatedBy] is set when [kind] is [ProbeKind.METHOD],
- * and for an [ProbeKind.OPTIONAL_ARGUMENT] probe as its target's mark; see ADR 0026.
+ * for a [ProbeKind.BRANCH] probe as the mark of the method it sits in, and for an
+ * [ProbeKind.OPTIONAL_ARGUMENT] probe as its target's mark; see ADR 0026.
  * [branchKey] is set only for a [ProbeKind.BRANCH] probe: an opaque lowercase hex token naming
  * this outcome across builds and instances, null when the agent could not name it safely. See
  * ADR 0031.

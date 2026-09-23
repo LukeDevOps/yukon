@@ -1,11 +1,14 @@
 package com.example.target
 
-/** A data class with one hand-written method beside its generated members. See ADR 0026. */
+/**
+ * A data class with one hand-written method, holding a conditional, beside its generated members.
+ * See ADR 0026.
+ */
 data class GeneratedPoint(
     val x: Int,
     val y: String,
 ) {
-    fun custom(): Int = x
+    fun custom(): Int = if (x > 0) x else -x
 }
 
 /**
