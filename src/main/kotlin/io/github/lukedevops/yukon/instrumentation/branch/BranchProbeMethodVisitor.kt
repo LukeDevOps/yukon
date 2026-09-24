@@ -39,12 +39,18 @@ import net.bytebuddy.jar.asm.Opcodes
  * site's ordinal is still counted here, in step with [BranchSiteAnalyzer], but it is emitted
  * unchanged with no call to [allocateSlots]: a dropped site never asked for a slot in the first
  * place, so it never counts against the mismatch check [BranchProbeAsmVisitorWrapper] runs.
+ *
+ * [throwingDefaultOrdinals] names, in the same numbering, the switches whose default only throws
+ * an exception the compiler added (see ADR 0038). Such a switch asks for one slot per case and
+ * none for its default, and its default edge, fillers included, goes straight to the original
+ * default with no probe.
  */
 class BranchProbeMethodVisitor(
     methodVisitor: MethodVisitor,
     private val ownerInternalName: String,
     private val probeIndexBase: Int,
     private val droppedOrdinals: Set<Int> = emptySet(),
+    private val throwingDefaultOrdinals: Set<Int> = emptySet(),
     private val allocateSlots: (outcomeCount: Int) -> Int,
 ) : MethodVisitor(Opcodes.ASM9, methodVisitor) {
     private var nextOrdinal = 0
@@ -86,16 +92,18 @@ class BranchProbeMethodVisitor(
         dflt: Label,
         vararg labels: Label,
     ) {
-        if (nextOrdinal++ in droppedOrdinals) {
+        val ordinal = nextOrdinal++
+        if (ordinal in droppedOrdinals) {
             super.visitTableSwitchInsn(min, max, dflt, *labels)
             return
         }
-        val slot = allocateSlots(BranchSiteAnalyzer.switchOutcomeCount(dflt, labels))
+        val probesDefault = ordinal !in throwingDefaultOrdinals
+        val slot = allocateSlots(slotCount(dflt, labels, probesDefault))
         if (slot == NO_SLOT) {
             super.visitTableSwitchInsn(min, max, dflt, *labels)
             return
         }
-        val edges = SwitchEdges(dflt, labels)
+        val edges = SwitchEdges(dflt, labels, probesDefault)
         super.visitTableSwitchInsn(min, max, edges.newDefault, *edges.newLabels)
         emitSwitchEdges(slot, edges)
     }
@@ -105,30 +113,41 @@ class BranchProbeMethodVisitor(
         keys: IntArray,
         labels: Array<out Label>,
     ) {
-        if (nextOrdinal++ in droppedOrdinals) {
+        val ordinal = nextOrdinal++
+        if (ordinal in droppedOrdinals) {
             super.visitLookupSwitchInsn(dflt, keys, labels)
             return
         }
-        val slot = allocateSlots(BranchSiteAnalyzer.switchOutcomeCount(dflt, labels))
+        val probesDefault = ordinal !in throwingDefaultOrdinals
+        val slot = allocateSlots(slotCount(dflt, labels, probesDefault))
         if (slot == NO_SLOT) {
             super.visitLookupSwitchInsn(dflt, keys, labels)
             return
         }
-        val edges = SwitchEdges(dflt, labels)
+        val edges = SwitchEdges(dflt, labels, probesDefault)
         super.visitLookupSwitchInsn(edges.newDefault, keys, edges.newLabels)
         emitSwitchEdges(slot, edges)
     }
 
+    private fun slotCount(
+        dflt: Label,
+        labels: Array<out Label>,
+        probesDefault: Boolean,
+    ): Int = BranchSiteAnalyzer.switchOutcomeCount(dflt, labels) - if (probesDefault) 0 else 1
+
     /**
      * The private edges for one switch. Every case entry that already jumps to the default label
      * (a `TABLESWITCH` filler for a gap in the case values) is routed to the new default edge, so
-     * it counts as the default outcome it is rather than as a case of its own.
+     * it counts as the default outcome it is rather than as a case of its own. When
+     * [probesDefault] is false, the new default edge is the original default label itself, so the
+     * default and its fillers pass through with no probe.
      */
     private class SwitchEdges(
         val originalDefault: Label,
         originalLabels: Array<out Label>,
+        val probesDefault: Boolean,
     ) {
-        val newDefault = Label()
+        val newDefault = if (probesDefault) Label() else originalDefault
         val newLabels: Array<Label> = Array(originalLabels.size) { i -> if (originalLabels[i] === originalDefault) newDefault else Label() }
         val caseIndices: List<Int> = originalLabels.indices.filter { originalLabels[it] !== originalDefault }
         val caseTargets: List<Label> = caseIndices.map { originalLabels[it] }
@@ -145,6 +164,7 @@ class BranchProbeMethodVisitor(
             emitProbeIncrement(base + i)
             super.visitJumpInsn(Opcodes.GOTO, edges.caseTargets[i])
         }
+        if (!edges.probesDefault) return
         super.visitLabel(edges.newDefault)
         emitProbeIncrement(base + edges.caseEdges.size)
         super.visitJumpInsn(Opcodes.GOTO, edges.originalDefault)

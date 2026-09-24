@@ -114,6 +114,12 @@ object BranchSiteAnalyzer {
         val className: String = "",
         /** What [GuardAnalysis] found for each kept site, by site index. See ADR 0037. */
         private val siteGuards: Map<Int, SiteGuards> = emptyMap(),
+        /**
+         * Per method, the per-method ordinals of its kept switches whose default only throws, in
+         * the same numbering as [droppedOrdinalsByMethod]. [BranchProbeAsmVisitorWrapper] sends
+         * such a default straight to its target with no probe. See ADR 0038.
+         */
+        private val throwingDefaultOrdinalsByMethod: Map<Pair<String, String>, Set<Int>> = emptyMap(),
     ) {
         /**
          * Each kept site of [sites], in site index order, with its outcomes numbered, given roles
@@ -187,6 +193,12 @@ object BranchSiteAnalyzer {
             name: String,
             descriptor: String,
         ): Set<Int> = droppedOrdinalsByMethod[name to descriptor] ?: emptySet()
+
+        /** The ordinals of [name]/[descriptor]'s switches whose default only throws; see [throwingDefaultOrdinalsByMethod]. */
+        fun throwingDefaultOrdinalsOf(
+            name: String,
+            descriptor: String,
+        ): Set<Int> = throwingDefaultOrdinalsByMethod[name to descriptor] ?: emptySet()
 
         /**
          * What compiled this method into existence, from bytecode shape alone, per ADR 0026.
@@ -515,9 +527,11 @@ object BranchSiteAnalyzer {
     /**
      * [lookup] resolves another class's bytes by internal name, for a constructor default getter
      * whose target lives on a different class from the getter itself (see
-     * [resolveScalaGetterSites]). It defaults to always returning null, which leaves such a getter
-     * unresolved instead of failing analysis. A caller must catch and swallow its own lookup
-     * failures; this function treats a thrown exception the same as a null result.
+     * [resolveScalaGetterSites]), and for the map class an enum switch reads its case labels from
+     * (see [SwitchLowering] and ADR 0038). It defaults to always returning null, which leaves such
+     * a getter unresolved and such a switch as plain sites instead of failing analysis. A caller
+     * must catch and swallow its own lookup failures; this function treats a thrown exception the
+     * same as a null result.
      *
      * [handlerInterfaces] names, by `Class.getName()`, the functional interfaces a framework takes
      * a handler as. The analysis yields [Analysis.handlerForwarders] only for those.
@@ -738,7 +752,16 @@ object BranchSiteAnalyzer {
                 isScalaClass -> SourceLanguage.SCALA
                 else -> SourceLanguage.JAVA
             }
-        attachConditionFingerprints(sites, classBytes, language, enumTest(internalClassName, classAccess, lookup))
+        val throwingDefaultOrdinalsByMethod = mutableMapOf<Pair<String, String>, MutableSet<Int>>()
+        attachConditionFingerprints(
+            sites,
+            classBytes,
+            language,
+            enumTest(internalClassName, classAccess, lookup),
+            EnumSwitchMappings(lookup),
+            droppedOrdinalsByMethod,
+            throwingDefaultOrdinalsByMethod,
+        )
         val guardsByMethod = analyzeGuards(sites, instructionsByMethod, sourceFile, smap, includePackages, excludePackages)
 
         val defaultSites = resolveDefaultSites(internalClassName, classAccess, methodAccess, localNames, defaultCandidates)
@@ -816,6 +839,7 @@ object BranchSiteAnalyzer {
             guardsByMethod.values
                 .flatMap { it.sites.entries }
                 .associate { it.key to it.value },
+            throwingDefaultOrdinalsByMethod,
         )
     }
 
@@ -915,16 +939,25 @@ object BranchSiteAnalyzer {
      * fingerprint. A dropped site gets none, since nothing about it reaches the wire. A condition
      * the writer fails on is left empty. [isEnum] is what the writer asks when it reads an
      * `if_acmp` in Kotlin. See ADR 0037.
+     *
+     * Then each switch lowering [SwitchLowering] reads is applied, when none of its sites was
+     * already dropped for another reason: its own jumps become [BranchDropReason.SWITCH_LOWERING]
+     * and join [droppedOrdinalsByMethod], and the rebuilt site takes its case labels, subject and
+     * fingerprint. A rebuilt site whose default only throws joins
+     * [throwingDefaultOrdinalsByMethod]. [enumMappings] reads the enum map arrays. See ADR 0038.
      */
     private fun attachConditionFingerprints(
         sites: MutableList<BranchSite>,
         classBytes: ByteArray,
         language: SourceLanguage,
         isEnum: (internalName: String) -> Boolean,
+        enumMappings: EnumSwitchMappings,
+        droppedOrdinalsByMethod: MutableMap<Pair<String, String>, MutableSet<Int>>,
+        throwingDefaultOrdinalsByMethod: MutableMap<Pair<String, String>, MutableSet<Int>>,
     ) {
         val fingerprintsByMethod =
             try {
-                ConditionFingerprinter.analyze(classBytes, language, isEnum)
+                ConditionFingerprinter.analyze(classBytes, language, isEnum, enumMappings)
             } catch (_: Exception) {
                 return
             }
@@ -943,6 +976,29 @@ object BranchSiteAnalyzer {
                         caseKeys = result.caseKeys[ordinal],
                         condition = if (site.dropReason == null) conditionOf(result, ordinal) else emptyList(),
                     )
+            }
+            for (lowered in result.loweredSwitches) {
+                val ordinals = lowered.loweringOrdinals + listOfNotNull(lowered.rebuiltOrdinal) + lowered.caseConditions.keys
+                if (ordinals.any { sites[siteIndices[it]].dropReason != null }) continue
+                for (ordinal in lowered.loweringOrdinals) {
+                    val position = siteIndices[ordinal]
+                    sites[position] = sites[position].copy(dropReason = BranchDropReason.SWITCH_LOWERING, condition = emptyList())
+                    droppedOrdinalsByMethod.getOrPut(methodKey) { mutableSetOf() } += ordinal
+                }
+                for ((ordinal, condition) in lowered.caseConditions) {
+                    val position = siteIndices[ordinal]
+                    sites[position] = sites[position].copy(condition = condition)
+                }
+                val rebuilt = lowered.rebuiltOrdinal ?: continue
+                val position = siteIndices[rebuilt]
+                sites[position] =
+                    sites[position].copy(
+                        conditionFingerprint = lowered.fingerprint,
+                        condition = lowered.condition,
+                        caseLabels = lowered.caseLabels,
+                        throwingDefault = lowered.throwingDefault,
+                    )
+                if (lowered.throwingDefault) throwingDefaultOrdinalsByMethod.getOrPut(methodKey) { mutableSetOf() } += rebuilt
             }
         }
     }

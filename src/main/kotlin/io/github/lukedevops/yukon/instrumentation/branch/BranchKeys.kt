@@ -53,6 +53,7 @@ object BranchKeys {
         val keys = mutableMapOf<Pair<Int, Int>, String>()
         for (nameable in nameableSites(sites)) {
             nameable.outcomeTokens.forEachIndexed { offset, outcomeToken ->
+                if (outcomeToken == null) return@forEachIndexed
                 keys[nameable.site.siteIndex to offset] =
                     digest(DERIVATION_TAG, className, nameable.site, nameable.fingerprint, outcomeToken)
             }
@@ -77,7 +78,7 @@ object BranchKeys {
     private class NameableSite(
         val site: BranchSite,
         val fingerprint: String,
-        val outcomeTokens: List<String>,
+        val outcomeTokens: List<String?>,
     )
 
     /**
@@ -110,8 +111,21 @@ object BranchKeys {
      * matching the taken and fall-through edges [BranchProbeMethodVisitor] emits. A switch's
      * `caseKeys` must carry exactly one entry per case outcome, with the default last; a switch
      * whose `caseKeys` is null or the wrong size gets no token for any of its outcomes.
+     *
+     * A rebuilt switch's case is named by its label, as `label:<kind>:<text>`, so adding, removing
+     * or reordering a case leaves every other case's token alone. Two cases with one label, such
+     * as two class patterns of one type, get no token. See ADR 0038.
      */
-    private fun outcomeTokensOf(site: BranchSite): List<String>? {
+    private fun outcomeTokensOf(site: BranchSite): List<String?>? {
+        val labels = site.caseLabels
+        if (labels != null) {
+            if (labels.size != site.outcomeCount - 1) return null
+            val tokens = labels.map { "label:${it.kind}:${it.text}" }
+            val counts = tokens.groupingBy { it }.eachCount()
+            val caseTokens = tokens.map { token -> token.takeIf { counts.getValue(it) == 1 } }
+            if (site.throwingDefault && caseTokens.all { it == null }) return null
+            return caseTokens + "default"
+        }
         val caseKeys = site.caseKeys
         if (caseKeys == null) {
             if (site.outcomeCount != 2) return null

@@ -11,8 +11,8 @@ import io.github.lukedevops.yukon.export.ConditionPart
  * shared state, because both walk the same method set in the same order and apply the same
  * tracking rules.
  *
- * [outcomeCount] is the number of distinct probe slots this site owns. A conditional jump owns 2
- * (taken, not-taken). A switch owns the case count plus one slot for the default.
+ * [outcomeCount] is the number of outcomes this site numbers. A conditional jump has 2 (taken,
+ * not-taken). A switch has the case count plus one for the default.
  *
  * [dropReason] is set when the site gets no probe at all; see [BranchDropReason] and ADR 0025.
  * [line] and [inlinedFromClassName] describe an inlined copy: a site inside code kotlinc copied
@@ -36,6 +36,12 @@ import io.github.lukedevops.yukon.export.ConditionPart
  * [condition] is the expression the site tests, written by [ConditionWriter] from the same window
  * as [conditionFingerprint]. It is empty for a dropped site and for a site the writer could not
  * write. See ADR 0037.
+ *
+ * [caseLabels] is set only for a switch [SwitchLowering] rebuilt from a string or enum lowering:
+ * one label per case outcome, in the same order as [caseKeys], each the constant, literal or type
+ * the source names. [throwingDefault] is true when that switch's default only throws an exception
+ * the compiler added. The default then keeps its branch index but gets no probe, and the site does
+ * not list it. See ADR 0038.
  */
 data class BranchSite(
     val methodName: String,
@@ -49,4 +55,15 @@ data class BranchSite(
     val caseKeys: List<Int>? = null,
     val isSwitch: Boolean = false,
     val condition: List<ConditionPart> = emptyList(),
-)
+    val caseLabels: List<ConditionPart>? = null,
+    val throwingDefault: Boolean = false,
+) {
+    /** How many probe slots the site takes: every outcome, less a throwing default. Zero for a dropped site. */
+    val probedOutcomeCount: Int
+        get() =
+            when {
+                dropReason != null -> 0
+                throwingDefault -> outcomeCount - 1
+                else -> outcomeCount
+            }
+}

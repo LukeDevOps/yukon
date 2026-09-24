@@ -125,6 +125,32 @@ needs the callee's Kotlin metadata, which the agent does not parse. A Scala
 | spring-webmvc | 48.645 | 51.362 ± 0.662 | +6% |
 | ktor-server-core | 39.825 | 44.429 ± 0.453 | +12% |
 
+Chunk 5 landed: `SwitchLowering` recognises javac's and kotlinc's enum
+mapping switches, javac's string index switch and javac's `SwitchBootstraps`
+pattern switches, and rebuilds each as one site named by its constants,
+literals or types, with the lowering's own jumps dropped as `SWITCH_LOWERING`.
+kotlinc's and scalac's string matches have no index switch, so only their hash
+switch and null check are dropped, and each `equals` check stays a site that
+reads `status != "Aa"`. A throwing default (`MatchException`,
+`IncompatibleClassChangeError`, `NoWhenBranchMatchedException`) keeps its
+branch index but gets no slot, no probe and no graph node. A case's key comes
+from its label, so it survives a case being added and javac renumbering its
+`$SwitchMap$` holder from `$1` to `$2`, pinned by compiling two fixture
+versions. ADR 0038 was brought in line with what the `javap` evidence showed:
+the two rules by shape, `null` as a label, cases in instruction order, and the
+rule-two keys moving when kotlinc swaps `ifeq` and `ifne`.
+
+| Corpus | Chunk 4 ms | Chunk 5 ms | Change |
+|---|---|---|---|
+| demo | 8.267 | 8.288 ± 0.117 | none |
+| demo-spring | 0.137 | 0.137 ± 0.001 | none |
+| scala | 1.188 | 1.578 ± 0.025 | 72 classes, up from 58: +7% per class |
+| spring-webmvc | 51.362 | 50.880 ± 0.649 | noise |
+| ktor-server-core | 44.429 | 42.794 ± 0.207 | noise |
+
+The agent side of the landing order is done. Across chunks 2 to 5 the
+analysis costs 11 to 43 percent more per class than the baseline.
+
 Left for later, in `yukon-server`'s STATUS: folding a dead method's branches
 into its row, rooting clusters at a never-taken outcome, telling
 real-but-uninteresting outcomes apart, and redaction at the server's ingest.

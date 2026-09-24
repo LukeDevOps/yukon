@@ -357,7 +357,7 @@ internal object GuardAnalysis {
             val firstNode = graph.firstOutcomeNode[position]
             val guarded = mutableListOf<List<LineRange>>()
             val partlyGuarded = mutableListOf<List<LineRange>>()
-            for (offset in 0 until site.outcomeCount) {
+            for (offset in 0 until site.probedOutcomeCount) {
                 val (whole, part) = lines.guardedBy(firstNode + offset, dominance)
                 guarded += whole
                 partlyGuarded += part
@@ -392,7 +392,7 @@ internal object GuardAnalysis {
             for ((position, site) in sites.withIndex()) {
                 if (site.dropReason == null) {
                     firstOutcomeNode[position] = nodeCount
-                    nodeCount += site.outcomeCount
+                    nodeCount += site.probedOutcomeCount
                 }
             }
             outcomeBranchIndexes = IntArray(nodeCount - realCount)
@@ -439,7 +439,8 @@ internal object GuardAnalysis {
          * A tracked site's successors. A kept conditional's taken edge and fall-through edge, and
          * a kept switch's case edges and default edge, each go through the outcome node of the
          * same offset [KeptBranchSite] numbers it with. A dropped site's edges go straight to
-         * their targets.
+         * their targets, and so does a throwing default's edge (ADR 0038), since it has no outcome
+         * to be a guard.
          */
         private fun siteSuccessors(
             instructions: MethodInstructions,
@@ -468,13 +469,15 @@ internal object GuardAnalysis {
                     val cases = (1 until targets.size).filterNot { caseDefaults[it - 1] }.map { targets[it] }
                     (cases + targets[0]).toIntArray()
                 }
-            for (offset in 0 until site.outcomeCount) {
+            for (offset in 0 until site.probedOutcomeCount) {
                 val node = firstNode + offset
                 outcomeBranchIndexes[node - realCount] = firstBranchIndex + offset
                 val target = outcomeTargets.getOrElse(offset) { -1 }
                 edges[node] = if (target >= 0) intArrayOf(target) else NO_SUCCESSORS
             }
-            return IntArray(site.outcomeCount) { firstNode + it }
+            val outcomeNodes = IntArray(site.probedOutcomeCount) { firstNode + it }
+            if (!site.throwingDefault) return outcomeNodes
+            return validDistinct(outcomeNodes + targets[0])
         }
     }
 

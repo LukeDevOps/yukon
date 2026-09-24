@@ -830,6 +830,79 @@ class ProtoPayloadCodecTest {
     }
 
     @Test
+    fun `a rebuilt switch's case labels round-trip through the manifest and the baseline, with no case key and no default`() {
+        val site =
+            BranchSite(
+                siteIndex = 4,
+                siteKey = "0123456789abcdef0123456789abcdef",
+                line = 40,
+                outcomes =
+                    listOf(
+                        BranchOutcome(10, BranchRole.CASE, caseLabel = listOf(ConditionPart(ConditionPartKind.STRING_LITERAL, "open"))),
+                        BranchOutcome(11, BranchRole.CASE, caseLabel = listOf(ConditionPart(ConditionPartKind.CODE, "RED"))),
+                        BranchOutcome(12, BranchRole.CASE, caseLabel = listOf(ConditionPart(ConditionPartKind.CODE, "null"))),
+                    ),
+                condition = listOf(ConditionPart(ConditionPartKind.CODE, "status")),
+            )
+        val manifest =
+            ProbeManifest(
+                resource = ResourceAttributes("checkout", "1.0.0", "", null, "run-1"),
+                probes =
+                    listOf(
+                        ProbeLocation(
+                            classId = 0,
+                            probeIndex = 0,
+                            kind = ProbeKind.METHOD,
+                            className = "com.example.Foo",
+                            methodName = "bar",
+                            methodDescriptor = "(Ljava/lang/String;)I",
+                            line = 40,
+                            branchIndex = null,
+                            branchSites = listOf(site),
+                        ),
+                    ),
+            )
+        val baseline =
+            StaticBaseline(
+                resource = ResourceAttributes("checkout", null, "instance-1", null, "run-1"),
+                declaredClasses =
+                    listOf(
+                        DeclaredClass(
+                            className = "com.example.Foo",
+                            methods =
+                                listOf(
+                                    DeclaredMethod(
+                                        methodName = "bar",
+                                        methodDescriptor = "(Ljava/lang/String;)I",
+                                        branchSites = listOf(site),
+                                    ),
+                                ),
+                        ),
+                    ),
+                scannedAt = 1000L,
+            )
+
+        val bytes = ProtoPayloadCodec.encode(manifest)
+
+        assertEquals(manifest, ProtoPayloadCodec.decodeProbeManifest(bytes))
+        assertEquals(baseline, ProtoPayloadCodec.decodeStaticBaseline(ProtoPayloadCodec.encode(baseline)))
+        val wireOutcomes =
+            ProtoProbeManifest
+                .parseFrom(bytes)
+                .probesList
+                .single()
+                .branchSitesList
+                .single()
+                .outcomesList
+        assertTrue(wireOutcomes.none { it.hasCaseKey() }, "a labelled case sends no case key")
+        assertEquals(
+            listOf(ProtoConditionPartKind.STRING_LITERAL, ProtoConditionPartKind.CODE, ProtoConditionPartKind.CODE),
+            wireOutcomes.map { it.caseLabelList.single().kind },
+        )
+        assertEquals("open", wireOutcomes[0].caseLabelList.single().text, "a string label goes out unquoted, as a literal part")
+    }
+
+    @Test
     fun `an unspecified condition part kind on the wire is rejected`() {
         val wire =
             ProtoProbeManifest

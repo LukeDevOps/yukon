@@ -152,8 +152,8 @@ message ProbeLocation {
   bool lambda_body = 19;
   // Set only for a METHOD probe: the method's kept branch sites, in site_index order, each with its
   // outcomes listed inside it. A dropped site (coroutine machinery, an inlined copy from
-  // out-of-scope code) is not listed, and a type initializer's METHOD probe lists none. See ADR
-  // 0037.
+  // out-of-scope code, the jumps a compiler adds to lower a string or enum switch) is not listed,
+  // and a type initializer's METHOD probe lists none. See ADRs 0037 and 0038.
   repeated BranchSite branch_sites = 20;
   // Set only for a BRANCH probe: the site_index of the site this outcome belongs to, which the
   // METHOD probe of the same method lists in branch_sites. This probe's branch_index picks its
@@ -180,7 +180,7 @@ message BranchOutcome {
   int32 branch_index = 1;
   BranchRole role = 2;
   // Set only for CASE: the case key value as the switch instruction names it. Unset for a CASE
-  // when the agent could not read the switch's case keys.
+  // when the agent could not read the switch's case keys, and for a CASE with a case_label.
   optional int32 case_key = 3;
   // The lines that run only through this outcome: every instruction the method places on each
   // line is dominated by this outcome's edge in the method's control-flow graph, exception edges
@@ -193,6 +193,11 @@ message BranchOutcome {
   // way, such as a line that holds a whole `?: return` expression. Named the same way as
   // guarded_lines. See ADR 0037.
   repeated LineRange partly_guarded_lines = 5;
+  // Set only for a CASE of a switch the agent read back from a string or enum lowering: the label
+  // the source names, as one part. An enum constant, a class pattern's type, an integer or `null`
+  // is one CODE part, and a string is one STRING_LITERAL part, so collector redaction covers it.
+  // Such a CASE has no case_key. See ADR 0038.
+  repeated ConditionPart case_label = 6;
 }
 
 // A run of consecutive source lines in one file, both ends inclusive. See ADR 0037.
@@ -219,12 +224,15 @@ message BranchSite {
   // copy.
   int32 line = 3;
   // A conditional lists TAKEN then FALL_THROUGH. A switch lists one CASE per case entry, in the
-  // order the switch instruction names them, then DEFAULT last.
+  // order the switch instruction names them, then DEFAULT last. A switch read back from a string or
+  // enum lowering lists no DEFAULT when its default only throws an exception the compiler added.
+  // See ADR 0038.
   repeated BranchOutcome outcomes = 4;
   // The branch_index of the innermost kept outcome that dominates this site's jump or switch, or
-  // unset when nothing in the method stands between its entry and the site. Coroutine machinery
-  // and out-of-scope inlined copies have no outcomes of their own here, so a guard looks through
-  // them to the next kept outcome. See ADR 0037.
+  // unset when nothing in the method stands between its entry and the site. Coroutine machinery,
+  // out-of-scope inlined copies and the jumps of a string or enum switch's lowering have no
+  // outcomes of their own here, so a guard looks through them to the next kept outcome. See ADRs
+  // 0037 and 0038.
   optional int32 guard = 5;
   // The expression the site tests, in the class's source language, as the fall-through side reads
   // it: the jump's own test negated. A switch's condition is its subject. Adjacent parts render

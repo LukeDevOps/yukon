@@ -33,17 +33,40 @@ object ConditionFingerprinter {
         val fingerprints: List<String?>,
         val caseKeys: List<List<Int>?>,
         val conditionOf: (ordinal: Int) -> List<ConditionPart> = { emptyList() },
+        val loweredSwitches: List<LoweredSwitch> = emptyList(),
+    )
+
+    /**
+     * One switch [SwitchLowering] read back to its source cases, by site ordinal. See ADR 0038.
+     *
+     * [loweringOrdinals] are the sites the lowering added, which get no probe. [rebuiltOrdinal] is
+     * the site whose cases are the source's cases, or null when the lowering has none. For that
+     * site, [caseLabels] holds one label per case outcome in outcome order, [throwingDefault] says
+     * whether its default only throws, [fingerprint] covers its subject's window with no map class
+     * or temporary in it, and [condition] is its subject. [caseConditions] holds the condition of
+     * each string case check that stays a plain site, by ordinal.
+     */
+    class LoweredSwitch(
+        val loweringOrdinals: List<Int>,
+        val rebuiltOrdinal: Int?,
+        val caseLabels: List<ConditionPart>,
+        val throwingDefault: Boolean,
+        val fingerprint: String?,
+        val condition: List<ConditionPart>,
+        val caseConditions: Map<Int, List<ConditionPart>>,
     )
 
     /**
      * [language] is the class's source language, which decides how [MethodResult.conditionOf]
      * writes a condition. [isEnum] tells whether a class, by internal name, is an enum, and
-     * answers false when it cannot tell.
+     * answers false when it cannot tell. [enumMappings] reads the enum map arrays another class
+     * declares, for [MethodResult.loweredSwitches].
      */
     fun analyze(
         classBytes: ByteArray,
         language: SourceLanguage = SourceLanguage.JAVA,
         isEnum: (internalName: String) -> Boolean = { false },
+        enumMappings: EnumSwitchMappings = EnumSwitchMappings { null },
     ): Map<Pair<String, String>, MethodResult> {
         val results = mutableMapOf<Pair<String, String>, MethodResult>()
         val classVisitor =
@@ -68,7 +91,7 @@ object ConditionFingerprinter {
                     signature: String?,
                     exceptions: Array<out String>?,
                 ): MethodVisitor =
-                    ConditionFingerprintMethodVisitor(language, ownerInternalName, isEnum) { result ->
+                    ConditionFingerprintMethodVisitor(language, ownerInternalName, isEnum, enumMappings) { result ->
                         results[name to descriptor] = result
                     }
             }
@@ -180,6 +203,7 @@ object ConditionFingerprinter {
         private val language: SourceLanguage,
         private val ownerInternalName: String,
         private val isEnum: (internalName: String) -> Boolean,
+        private val enumMappings: EnumSwitchMappings,
         private val onResult: (MethodResult) -> Unit,
     ) : MethodVisitor(Opcodes.ASM9) {
         private val insns = mutableListOf<Insn>()
@@ -340,6 +364,9 @@ object ConditionFingerprinter {
 
             val siteInstructionIndexes = mutableListOf<Int>()
             val windowStarts = mutableListOf<Int?>()
+            val zeroPointAt = IntArray(insns.size)
+            val depthAt = IntArray(insns.size)
+            var hasSwitch = false
 
             for (i in insns.indices) {
                 val marksHere = labelsAt[i]
@@ -358,8 +385,11 @@ object ConditionFingerprinter {
                 } else if (depth == 0) {
                     zeroPoint = i
                 }
+                zeroPointAt[i] = zeroPoint ?: -1
+                depthAt[i] = depth ?: -1
 
                 val insn = insns[i]
+                if (insn is Insn.TableSwitch || insn is Insn.LookupSwitch) hasSwitch = true
                 if (isTrackedSite(insn)) {
                     fingerprints += windowFingerprint(zeroPoint, i, ::localNameAt)
                     caseKeys += caseKeysOf(insn)
@@ -395,16 +425,91 @@ object ConditionFingerprinter {
                     },
                     windowStartOf = { windowStartBySite[it] },
                 )
+            val loweredSwitches =
+                if (hasSwitch) {
+                    loweredSwitches(view, instructionIndexOfLabel, zeroPointAt, depthAt, siteInstructionIndexes, ::localNameAt)
+                } else {
+                    emptyList()
+                }
             onResult(
-                MethodResult(fingerprints, caseKeys) { ordinal ->
-                    val start = windowStarts.getOrNull(ordinal)
-                    if (start == null) {
+                MethodResult(
+                    fingerprints,
+                    caseKeys,
+                    conditionOf = { ordinal ->
+                        val start = windowStarts.getOrNull(ordinal)
+                        if (start == null) {
+                            emptyList()
+                        } else {
+                            ConditionWriter.write(view, start, siteInstructionIndexes[ordinal], language, ownerInternalName, isEnum)
+                        }
+                    },
+                    loweredSwitches = loweredSwitches,
+                ),
+            )
+        }
+
+        /**
+         * The switches [SwitchLowering] reads in this method, by site ordinal. A switch whose
+         * lowering names an instruction that is not a tracked site is left out. A rebuilt site's
+         * fingerprint is its [SwitchLowering.Reading.kindToken] followed by the subject's window,
+         * with any enum map read replaced by a token naming the enum class. It is null when no
+         * point before the subject is known to leave the stack empty. See ADR 0038.
+         */
+        private fun loweredSwitches(
+            view: MethodInstructionsView,
+            indexOfLabel: Map<Label, Int>,
+            zeroPointAt: IntArray,
+            depthAt: IntArray,
+            siteInstructionIndexes: List<Int>,
+            localNameAt: (varIndex: Int, instructionIndex: Int) -> String?,
+        ): List<LoweredSwitch> {
+            val readings = SwitchLowering.read(insns, indexOfLabel, depthAt, enumMappings)
+            if (readings.isEmpty()) return emptyList()
+            val ordinalOf = HashMap<Int, Int>()
+            siteInstructionIndexes.forEachIndexed { ordinal, index -> ordinalOf[index] = ordinal }
+            return readings.mapNotNull { reading ->
+                val windowStart = zeroPointAt[reading.subjectEnd].takeIf { it >= 0 }
+                val fingerprint =
+                    windowStart?.let { start ->
+                        (start until reading.subjectEnd).joinToString(";", prefix = "${reading.kindToken};") { i ->
+                            val insn = insns[i]
+                            if (reading.enumClass != null && SwitchLowering.isEnumMapRead(insn)) {
+                                "ENUM-MAP ${reading.enumClass}"
+                            } else {
+                                tokenFor(insn, i, localNameAt)
+                            }
+                        }
+                    }
+                val condition =
+                    if (windowStart == null || reading.rebuilt == null) {
                         emptyList()
                     } else {
-                        ConditionWriter.write(view, start, siteInstructionIndexes[ordinal], language, ownerInternalName, isEnum)
+                        ConditionWriter.writeValue(view, windowStart, reading.subjectEnd, language, ownerInternalName)
                     }
-                },
-            )
+                val caseConditions =
+                    reading.caseChecks.associate { check ->
+                        val ordinal = ordinalOf[check.jump] ?: return@mapNotNull null
+                        ordinal to
+                            ConditionWriter.writeLiteralEquality(
+                                view,
+                                windowStart ?: reading.subjectEnd,
+                                reading.subjectEnd,
+                                check.literal,
+                                check.fallsThroughWhenEqual,
+                                language,
+                                ownerInternalName,
+                            )
+                    }
+                LoweredSwitch(
+                    loweringOrdinals = reading.lowering.map { ordinalOf[it] ?: return@mapNotNull null },
+                    rebuiltOrdinal = reading.rebuilt?.let { ordinalOf[it] ?: return@mapNotNull null },
+                    caseLabels = reading.caseLabels,
+                    throwingDefault = reading.throwingDefault,
+                    fingerprint = fingerprint,
+                    condition = condition,
+                    caseConditions = caseConditions,
+                )
+            }
         }
 
         /** Whether [insn] is a site [BranchSiteAnalyzer] tracks: a [ConditionalJump] or any switch. */

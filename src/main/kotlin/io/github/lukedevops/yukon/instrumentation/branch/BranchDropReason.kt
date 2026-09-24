@@ -18,4 +18,12 @@ enum class BranchDropReason {
      * or the preamble's re-entry tests. See ADR 0025.
      */
     COROUTINE_MACHINERY,
+
+    /**
+     * The site is one of the jumps a compiler adds when it lowers a `switch`, `when` or `match`
+     * over a string or an enum: a switch on `hashCode()`, an `equals` check that only picks a case
+     * index, or a null check on the subject. The source's own cases are read from the lowering
+     * instead. See ADR 0038.
+     */
+    SWITCH_LOWERING,
 }

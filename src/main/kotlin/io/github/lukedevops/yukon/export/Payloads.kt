@@ -215,6 +215,11 @@ data class LineRange(
  * dominates some of those instructions and not all. A line inside an in-scope inlined copy is
  * named at its origin line in the origin's own file, and a line copied from out-of-scope code is
  * left out. Both lists are empty when the outcome guards nothing. See ADR 0037.
+ *
+ * [caseLabel] is set only for a [BranchRole.CASE] of a switch the agent read back from a string or
+ * enum lowering: the label the source names, as one part. An enum constant, a class pattern, an
+ * integer or `null` is one [ConditionPartKind.CODE] part, and a string is one
+ * [ConditionPartKind.STRING_LITERAL] part. Such a case has no [caseKey]. See ADR 0038.
  */
 data class BranchOutcome(
     val branchIndex: Int,
@@ -222,6 +227,7 @@ data class BranchOutcome(
     val caseKey: Int? = null,
     val guardedLines: List<LineRange> = emptyList(),
     val partlyGuardedLines: List<LineRange> = emptyList(),
+    val caseLabel: List<ConditionPart> = emptyList(),
 )
 
 /**
@@ -239,7 +245,8 @@ data class BranchOutcome(
  *
  * [outcomes] lists a conditional's [BranchRole.TAKEN] then [BranchRole.FALL_THROUGH] outcome, or a
  * switch's [BranchRole.CASE] outcomes in the order its instruction names them, then
- * [BranchRole.DEFAULT] last.
+ * [BranchRole.DEFAULT] last. A switch read back from a lowering lists no default when its default
+ * only throws an exception the compiler added (ADR 0038).
  *
  * [guard] is the [BranchOutcome.branchIndex] of the innermost kept outcome that dominates this
  * site's jump or switch, or null when nothing in the method stands between its entry and the site.
@@ -259,10 +266,12 @@ data class BranchSite(
 ) {
     /**
      * What this site adds to a manifest or baseline chunk's weight: one entry for the site, one per
-     * outcome, one per line range in either of an outcome's lists and one per condition part. The
-     * chunkers count entries to keep each payload under the collector's size limit.
+     * outcome, one per line range in either of an outcome's lists, one per case label part and one
+     * per condition part. The chunkers count entries to keep each payload under the collector's
+     * size limit.
      */
-    val chunkWeight: Int get() = 1 + condition.size + outcomes.sumOf { 1 + it.guardedLines.size + it.partlyGuardedLines.size }
+    val chunkWeight: Int
+        get() = 1 + condition.size + outcomes.sumOf { 1 + it.guardedLines.size + it.partlyGuardedLines.size + it.caseLabel.size }
 }
 
 /** What one [ConditionPart] holds. See ADR 0037. */

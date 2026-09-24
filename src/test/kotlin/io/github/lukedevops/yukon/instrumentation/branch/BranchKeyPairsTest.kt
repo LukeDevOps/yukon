@@ -1,5 +1,6 @@
 package io.github.lukedevops.yukon.instrumentation.branch
 
+import com.example.target.keypairs.fixtureLookup
 import com.example.target.keypairs.javaFixtureBytes
 import com.example.target.keypairs.keyedBuildsOf
 import com.example.target.keypairs.kotlinFixtureBytes
@@ -170,6 +171,56 @@ class BranchKeyPairsTest {
         assertEquals(v1.keyOf("classify", outcome = 2), v2.keyOf("classify", outcome = 2))
         assertEquals(v1.keyOf("classify", outcome = 3), v2.keyOf("classify", outcome = 4), "default unchanged, moved to the last offset")
         assertNotNull(v2.keyOf("classify", outcome = 3), "the new case 4 gets a key of its own")
+    }
+
+    // -- A case added to a string or enum switch read back to its source cases (ADR 0038) ---------
+
+    @Test
+    fun `a case added to a javac enum switch keeps every other case's key, though the map class moved from $1 to $2`() {
+        val (v1, v2) = keyedBuildsOf("SwitchLabelsJavaV1", "SwitchLabelsJavaV2", bytesOf = ::javaFixtureBytes, lookup = ::fixtureLookup)
+        val before = v1.keysByLabel("enumSwitch")
+        val after = v2.keysByLabel("enumSwitch")
+
+        assertEquals(listOf("RED", "BLUE", "default"), before.keys.toList())
+        assertEquals(setOf("GREEN", "RED", "BLUE", "default"), after.keys)
+        for (label in before.keys) assertEquals(assertNotNull(before[label]), after[label], "$label keeps its key")
+        assertNotNull(after["GREEN"])
+        assertEquals(assertNotNull(v1.siteKeyOf("enumSwitch")), v2.siteKeyOf("enumSwitch"))
+    }
+
+    @Test
+    fun `a case added to a javac string switch keeps every other case's key`() {
+        val (v1, v2) = keyedBuildsOf("SwitchLabelsJavaV1", "SwitchLabelsJavaV2", bytesOf = ::javaFixtureBytes, lookup = ::fixtureLookup)
+        val before = v1.keysByLabel("stringSwitch")
+        val after = v2.keysByLabel("stringSwitch")
+
+        assertEquals(listOf("open", "closed", "default"), before.keys.toList())
+        for (label in before.keys) assertEquals(assertNotNull(before[label]), after[label], "$label keeps its key")
+        assertNotNull(after["new"])
+        assertEquals(assertNotNull(v1.siteKeyOf("stringSwitch")), v2.siteKeyOf("stringSwitch"))
+    }
+
+    @Test
+    fun `a case added to a javac pattern switch keeps every other case's key`() {
+        val (v1, v2) = keyedBuildsOf("SwitchLabelsJavaV1", "SwitchLabelsJavaV2", bytesOf = ::javaFixtureBytes, lookup = ::fixtureLookup)
+        val before = v1.keysByLabel("typeSwitch")
+        val after = v2.keysByLabel("typeSwitch")
+
+        assertEquals(listOf("String", "Long", "default"), before.keys.toList())
+        for (label in before.keys) assertEquals(assertNotNull(before[label]), after[label], "$label keeps its key")
+        assertNotNull(after["Integer"])
+    }
+
+    @Test
+    fun `a case added to a kotlinc enum when keeps every other case's key, though every map value moved`() {
+        val (v1, v2) = keyedBuildsOf("SwitchLabelsKotlinV1", "SwitchLabelsKotlinV2", lookup = ::fixtureLookup)
+        val before = v1.keysByLabel("enumWhen")
+        val after = v2.keysByLabel("enumWhen")
+
+        assertEquals(listOf("RED", "BLUE", "default"), before.keys.toList())
+        assertEquals(listOf("GREEN", "RED", "BLUE", "default"), after.keys.toList())
+        for (label in before.keys) assertEquals(assertNotNull(before[label]), after[label], "$label keeps its key")
+        assertEquals(assertNotNull(v1.siteKeyOf("enumWhen")), v2.siteKeyOf("enumWhen"))
     }
 
     // -- A Kotlin inline function called twice in one method ---------------------------------------

@@ -590,7 +590,7 @@ private fun printNeverHitReport() {
 /**
  * A never-hit outcome as a person reads it: its site's condition, the result that never happened,
  * and the code that runs only through the outcome. A site with no condition is named by its line.
- * See ADR 0037.
+ * A case of a switch read back to its source cases is named by its label. See ADRs 0037 and 0038.
  */
 private fun describeNeverHitOutcome(
     site: BranchSite,
@@ -601,11 +601,29 @@ private fun describeNeverHitOutcome(
     val subject = condition ?: "the branch at line ${site.line}"
     val result =
         when (outcome.role) {
-            BranchRole.FALL_THROUGH -> if (condition != null) "$condition was never true" else "$subject never fell through"
-            BranchRole.TAKEN -> if (condition != null) "$condition was never false" else "$subject never jumped"
-            BranchRole.CASE -> if (outcome.hasCaseKey()) "$subject was never ${outcome.caseKey}" else "a case of $subject never ran"
-            BranchRole.DEFAULT -> "$subject never reached its default"
-            else -> "$subject had an outcome that never ran"
+            BranchRole.FALL_THROUGH -> {
+                if (condition != null) "$condition was never true" else "$subject never fell through"
+            }
+
+            BranchRole.TAKEN -> {
+                if (condition != null) "$condition was never false" else "$subject never jumped"
+            }
+
+            BranchRole.CASE -> {
+                when {
+                    outcome.caseLabelCount > 0 -> "$subject was never `${renderCondition(outcome.caseLabelList)}`"
+                    outcome.hasCaseKey() -> "$subject was never ${outcome.caseKey}"
+                    else -> "a case of $subject never ran"
+                }
+            }
+
+            BranchRole.DEFAULT -> {
+                "$subject never reached its default"
+            }
+
+            else -> {
+                "$subject had an outcome that never ran"
+            }
         }
     val guarded =
         when {

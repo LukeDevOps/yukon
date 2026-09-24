@@ -297,6 +297,7 @@ object ProtoPayloadCodec {
                 .setRole(toProto(outcome.role))
                 .addAllGuardedLines(outcome.guardedLines.map { toProto(it) })
                 .addAllPartlyGuardedLines(outcome.partlyGuardedLines.map { toProto(it) })
+                .addAllCaseLabel(outcome.caseLabel.map { toProto(it) })
         outcome.caseKey?.let { builder.caseKey = it }
         return builder.build()
     }
@@ -308,6 +309,7 @@ object ProtoPayloadCodec {
             caseKey = if (outcome.hasCaseKey()) outcome.caseKey else null,
             guardedLines = outcome.guardedLinesList.map { fromProto(it) },
             partlyGuardedLines = outcome.partlyGuardedLinesList.map { fromProto(it) },
+            caseLabel = outcome.caseLabelList.map { fromProto(it) },
         )
 
     private fun toProto(range: LineRange): ProtoLineRange =

@@ -861,6 +861,58 @@ class StaticBaselineScannerTest {
     }
 
     @Test
+    fun `declares each switch read back to its source cases exactly as the manifest carries it for the loaded class`() {
+        val kotlinClasses = listOf("SwitchTarget", "SwitchTarget\$WhenMappings", "Tint")
+        val javaClasses =
+            listOf(
+                "SwitchJavaTarget",
+                "SwitchJavaTarget\$1",
+                "SwitchColor",
+                "SwitchJavaTarget\$Shape",
+                "SwitchJavaTarget\$Circle",
+                "SwitchJavaTarget\$Square",
+            )
+        val root =
+            directoryRoot(
+                *(
+                    kotlinClasses.map { "com/example/target/$it.class" to classBytes("kotlin/test/com/example/target/$it.class") } +
+                        javaClasses.map { "com/example/target/$it.class" to classBytes("java/test/com/example/target/$it.class") }
+                ).toTypedArray(),
+            )
+        val result = StaticBaselineScanner(listOf("com.example.target")).scan(listOf(root))
+
+        val registry = ProbeRegistry()
+        val instrumentation = ByteBuddyAgent.install()
+        val yukon = YukonInstrumentation(AgentConfig.parse("includePackages=com.example.target"), registry)
+        val transformer = yukon.install(instrumentation)
+        try {
+            val loader =
+                FixtureClassLoader(
+                    arrayOf(File("build/classes/kotlin/test").toURI().toURL(), File("build/classes/java/test").toURI().toURL()),
+                    javaClass.classLoader,
+                )
+            listOf("SwitchTarget", "SwitchJavaTarget").forEach { Class.forName("com.example.target.$it", true, loader) }
+
+            val manifest = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
+            var labelledSites = 0
+            for (className in listOf("com.example.target.SwitchTarget", "com.example.target.SwitchJavaTarget")) {
+                val declared = result.declaredClasses.single { it.className == className }
+                val methodProbes = manifest.probes.filter { it.className == className && it.kind == ProbeKind.METHOD }
+                assertEquals(declared.methods.size, methodProbes.size, "$className declares one entry per METHOD probe")
+                for (probe in methodProbes) {
+                    val declaredMethod =
+                        declared.methods.single { it.methodName == probe.methodName && it.methodDescriptor == probe.methodDescriptor }
+                    assertEquals(probe.branchSites, declaredMethod.branchSites, "sites of $className#${probe.methodName}")
+                    labelledSites += probe.branchSites.count { site -> site.outcomes.any { it.caseLabel.isNotEmpty() } }
+                }
+            }
+            assertEquals(15, labelledSites, "every rebuilt switch in both fixtures is labelled in both")
+        } finally {
+            yukon.uninstall(instrumentation, transformer)
+        }
+    }
+
+    @Test
     fun `declares StaticUseTarget's static field use edges the same way the manifest carries them for the loaded class`() {
         val root = callEdgeFixtureRoot()
         val scanner = StaticBaselineScanner(listOf("com.example.target", "com.example.other"))

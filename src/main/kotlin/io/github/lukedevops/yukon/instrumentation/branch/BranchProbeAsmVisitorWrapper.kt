@@ -35,13 +35,15 @@ import net.bytebuddy.pool.TypePool
  *
  * [droppedOrdinalsByMethod] names each method's dropped sites by their per-method encounter
  * ordinal (see ADR 0025); a method absent from it, or every method when the default is left in
- * place, has nothing dropped.
+ * place, has nothing dropped. [throwingDefaultOrdinalsByMethod] names, in the same numbering, each
+ * method's switches whose default only throws and gets no probe (see ADR 0038).
  */
 class BranchProbeAsmVisitorWrapper(
     private val eligibleMethods: (name: String, descriptor: String) -> Boolean,
     private val probeIndexBase: Int,
     private val branchSlotCapacity: Int = Int.MAX_VALUE,
     private val droppedOrdinalsByMethod: (name: String, descriptor: String) -> Set<Int> = { _, _ -> emptySet() },
+    private val throwingDefaultOrdinalsByMethod: (name: String, descriptor: String) -> Set<Int> = { _, _ -> emptySet() },
 ) : AsmVisitorWrapper {
     override fun mergeWriter(flags: Int): Int = flags or ClassWriter.COMPUTE_FRAMES
 
@@ -76,6 +78,7 @@ class BranchProbeAsmVisitorWrapper(
                     ownerInternalName,
                     probeIndexBase,
                     droppedOrdinalsByMethod(name, descriptor),
+                    throwingDefaultOrdinalsByMethod(name, descriptor),
                 ) { outcomeCount ->
                     slotsWanted += outcomeCount
                     if (nextSlot + outcomeCount > branchSlotCapacity) return@BranchProbeMethodVisitor BranchProbeMethodVisitor.NO_SLOT

@@ -533,7 +533,7 @@ class YukonInstrumentation(
                 methods.map { it.internalName + it.descriptor } +
                     branchSites
                         .filter { it.dropReason == null }
-                        .map { "${it.methodName}${it.methodDescriptor}#branch${it.siteIndex}x${it.outcomeCount}" } +
+                        .map { "${it.methodName}${it.methodDescriptor}#branch${it.siteIndex}x${it.probedOutcomeCount}" } +
                     defaultSites.map { "${it.defaultName}${it.defaultDescriptor}#optional${it.optionalBits}" } +
                     (if (analysis.hasTypeInitializer) listOf("<clinit>()V#typeinit") else emptyList()),
             )
@@ -596,6 +596,7 @@ class YukonInstrumentation(
                         probeIndexBase = methodProbes.size,
                         branchSlotCapacity = branchProbes.size,
                         droppedOrdinalsByMethod = analysis::droppedOrdinalsOf,
+                        throwingDefaultOrdinalsByMethod = analysis::throwingDefaultOrdinalsOf,
                     ),
                 )
         }
@@ -663,10 +664,12 @@ class YukonInstrumentation(
         val total = dropsByReason.values.sum()
         val inlinedOutOfScope = dropsByReason[BranchDropReason.INLINED_OUT_OF_SCOPE] ?: 0
         val coroutineMachinery = dropsByReason[BranchDropReason.COROUTINE_MACHINERY] ?: 0
+        val switchLowering = dropsByReason[BranchDropReason.SWITCH_LOWERING] ?: 0
         log.log(
             Level.DEBUG,
             "yukon: $typeName left $total branch sites without a probe: " +
-                "$inlinedOutOfScope inlined from out-of-scope code, $coroutineMachinery coroutine machinery",
+                "$inlinedOutOfScope inlined from out-of-scope code, $coroutineMachinery coroutine machinery, " +
+                "$switchLowering switch lowering",
         )
     }
 

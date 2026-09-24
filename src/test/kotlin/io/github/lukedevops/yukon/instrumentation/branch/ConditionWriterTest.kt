@@ -344,7 +344,10 @@ class ConditionWriterTest {
 
     @Test
     fun `a window that is only an unknown value gives no condition`() {
-        assertEquals(emptyList(), java("patternSwitch"))
+        val result = ConditionFingerprinter.analyze(javaBytes("ConditionJavaTarget")).getValue("patternSwitch" to "(Ljava/lang/Object;)I")
+
+        assertEquals(emptyList(), result.conditionOf(0), "the typeSwitch index alone is unknown")
+        assertEquals(listOf(code("o")), java("patternSwitch"), "the analyser reads the subject past the lowering, per ADR 0038")
     }
 
     @Test

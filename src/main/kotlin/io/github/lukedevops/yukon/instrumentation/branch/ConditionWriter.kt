@@ -100,6 +100,55 @@ internal object ConditionWriter {
         return Renderer(language).render(expression)
     }
 
+    /**
+     * The value on top of the operand stack just before instruction [end], walked from
+     * [windowStart], as parts. It is empty when the walk fails or the value is only a
+     * placeholder. [SwitchLowering] writes a lowered switch's subject with it. See ADR 0038.
+     */
+    fun writeValue(
+        method: MethodInstructionsView,
+        windowStart: Int,
+        end: Int,
+        language: SourceLanguage,
+        ownerInternalName: String,
+    ): List<ConditionPart> {
+        val value = valueBefore(method, windowStart, end, language, ownerInternalName) ?: return emptyList()
+        if (isOnlyPlaceholder(value)) return emptyList()
+        return Renderer(language).render(value)
+    }
+
+    /**
+     * `subject == "literal"` when [equal] is true, and `subject != "literal"` when it is false.
+     * The subject is the value [writeValue] reads, or a placeholder when it cannot be read.
+     * [SwitchLowering] writes each string case check it keeps as a plain site with this. See ADR
+     * 0038.
+     */
+    fun writeLiteralEquality(
+        method: MethodInstructionsView,
+        windowStart: Int,
+        end: Int,
+        literal: String,
+        equal: Boolean,
+        language: SourceLanguage,
+        ownerInternalName: String,
+    ): List<ConditionPart> {
+        val value = valueBefore(method, windowStart, end, language, ownerInternalName) ?: Expr.Hole(STRING)
+        return Renderer(language).render(Expr.Binary(if (equal) Op.EQ else Op.NE, value, Expr.Str(literal), "Z"))
+    }
+
+    private fun valueBefore(
+        method: MethodInstructionsView,
+        windowStart: Int,
+        end: Int,
+        language: SourceLanguage,
+        ownerInternalName: String,
+    ): Expr? =
+        try {
+            Evaluator(method, windowStart, Names(language), ownerInternalName).stackBefore(end)?.lastOrNull()
+        } catch (_: Unwritable) {
+            null
+        }
+
     private fun readSite(
         method: MethodInstructionsView,
         windowStart: Int,
@@ -494,6 +543,7 @@ internal object ConditionWriter {
 
     private val NULL = Expr.Atom("null", "Ljava/lang/Object;")
     private val INT_LIKE = setOf("I", "S", "B", "C")
+    private const val STRING = "Ljava/lang/String;"
 
     /** How names read in the class's source language. */
     private class Names(
