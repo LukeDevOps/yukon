@@ -249,7 +249,7 @@ Landing order as built, one chunk and one commit each:
 8. `yukon-server`: `GET /api/v1/services/{s}/dependencies` with a status
    filter, and a `dependencies` block on `report`.
 
-### Dependency delivery order: in progress
+### Dependency delivery order: landed in both repos
 
 The testkit's `dependency()` gate counted two delta batches after the listing's
 manifest, which assumes one batch per flush; a flush over 20,000 deltas sends
@@ -297,6 +297,9 @@ thread outside the query lock, so a query woken between the two could read a
 used jar as unreferenced. The store writes mappings first, entries next and
 the flag last. `dependency()` judges on the instances whose entry has arrived;
 with several instances, `awaitDependenciesListed` first covers the rest.
+
+Chunk 3 has landed in `yukon-collector` (`74d7a9b`): bindings bumped to BSR commit
+`084ba94b`, `LogSink` logs the flag, and the relay round-trip test carries it.
 
 Recorded, not planned: `yukon-server` still answers with an empty list for an
 instance whose listing has not arrived; gating on the flag is its follow-up.
