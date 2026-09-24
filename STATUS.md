@@ -151,6 +151,14 @@ rule-two keys moving when kotlinc swaps `ifeq` and `ifne`.
 The agent side of the landing order is done. Across chunks 2 to 5 the
 analysis costs 11 to 43 percent more per class than the baseline.
 
+Chunk 6 landed in `yukon-collector` (`a09f9cd`): a `Redaction`
+processor replaces `STRING_LITERAL` parts a blocked pattern matches, or all
+of them, and clears unknown fields while it is on. The collector's bindings
+moved to `v1.36.12-20260924225937-af331e73c211.2`, generated from `b2618cd`.
+The review kept one deviation and recorded it in collector ADR 0001: an
+unreadable `YUKON_COLLECTOR_REDACT_ALL_LITERALS` stops startup instead of
+reading as false.
+
 Left for later, in `yukon-server`'s STATUS: folding a dead method's branches
 into its row, rooting clusters at a never-taken outcome, telling
 real-but-uninteresting outcomes apart, and redaction at the server's ingest.
