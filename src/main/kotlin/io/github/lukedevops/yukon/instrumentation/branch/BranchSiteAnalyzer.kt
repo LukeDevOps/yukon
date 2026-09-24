@@ -3,10 +3,12 @@ package io.github.lukedevops.yukon.instrumentation.branch
 import io.github.lukedevops.yukon.export.BodyKind
 import io.github.lukedevops.yukon.export.CallEdge
 import io.github.lukedevops.yukon.export.CallEdgeKind
+import io.github.lukedevops.yukon.export.ConditionPart
 import io.github.lukedevops.yukon.export.GeneratedBy
 import io.github.lukedevops.yukon.instrumentation.ScalaClassDetector
 import io.github.lukedevops.yukon.instrumentation.TypeMatchPolicy
 import net.bytebuddy.jar.asm.AnnotationVisitor
+import net.bytebuddy.jar.asm.Attribute
 import net.bytebuddy.jar.asm.ClassReader
 import net.bytebuddy.jar.asm.ClassVisitor
 import net.bytebuddy.jar.asm.FieldVisitor
@@ -535,6 +537,7 @@ object BranchSiteAnalyzer {
         var nextSiteIndex = 0
         var hasLineNumbers = false
         var isKotlinClass = false
+        var isScalaClass = false
 
         var internalClassName = ""
         var sourceFile: String? = null
@@ -619,6 +622,10 @@ object BranchSiteAnalyzer {
                     descriptor: String,
                     visible: Boolean,
                 ): AnnotationVisitor? = classReferenceCollector.annotation(descriptor, visible)
+
+                override fun visitAttribute(attribute: Attribute) {
+                    if (ScalaClassDetector.isScalaAttribute(attribute)) isScalaClass = true
+                }
 
                 override fun visitField(
                     access: Int,
@@ -725,7 +732,13 @@ object BranchSiteAnalyzer {
 
         ClassReader(classBytes).accept(classVisitor, ClassReader.SKIP_FRAMES)
 
-        attachConditionFingerprints(sites, classBytes)
+        val language =
+            when {
+                isKotlinClass -> SourceLanguage.KOTLIN
+                isScalaClass -> SourceLanguage.SCALA
+                else -> SourceLanguage.JAVA
+            }
+        attachConditionFingerprints(sites, classBytes, language, enumTest(internalClassName, classAccess, lookup))
         val guardsByMethod = analyzeGuards(sites, instructionsByMethod, sourceFile, smap, includePackages, excludePackages)
 
         val defaultSites = resolveDefaultSites(internalClassName, classAccess, methodAccess, localNames, defaultCandidates)
@@ -897,14 +910,21 @@ object BranchSiteAnalyzer {
      * whether they get dropped. A method whose fingerprint count does not match its site count is
      * left with no fingerprints at all, and a class this pass cannot read leaves every site as it
      * was. This never throws: a fingerprinting failure costs fingerprints, not the analysis.
+     *
+     * Each kept site also gets its condition, written in [language] from the same window as its
+     * fingerprint. A dropped site gets none, since nothing about it reaches the wire. A condition
+     * the writer fails on is left empty. [isEnum] is what the writer asks when it reads an
+     * `if_acmp` in Kotlin. See ADR 0037.
      */
     private fun attachConditionFingerprints(
         sites: MutableList<BranchSite>,
         classBytes: ByteArray,
+        language: SourceLanguage,
+        isEnum: (internalName: String) -> Boolean,
     ) {
         val fingerprintsByMethod =
             try {
-                ConditionFingerprinter.analyze(classBytes)
+                ConditionFingerprinter.analyze(classBytes, language, isEnum)
             } catch (_: Exception) {
                 return
             }
@@ -916,14 +936,55 @@ object BranchSiteAnalyzer {
             val result = fingerprintsByMethod[methodKey] ?: continue
             if (result.fingerprints.size != siteIndices.size) continue
             siteIndices.forEachIndexed { ordinal, siteListIndex ->
+                val site = sites[siteListIndex]
                 sites[siteListIndex] =
-                    sites[siteListIndex].copy(
+                    site.copy(
                         conditionFingerprint = result.fingerprints[ordinal],
                         caseKeys = result.caseKeys[ordinal],
+                        condition = if (site.dropReason == null) conditionOf(result, ordinal) else emptyList(),
                     )
             }
         }
     }
+
+    /**
+     * Whether a class, by internal name, carries `ACC_ENUM`. The class being analysed answers from
+     * its own [ownAccess]. Any other class is read through [lookup] and never loaded, and only its
+     * access flags are parsed. A class the lookup cannot read, or throws on, counts as not an
+     * enum. Each answer is kept for the rest of this analysis.
+     */
+    private fun enumTest(
+        ownInternalName: String,
+        ownAccess: Int,
+        lookup: (internalName: String) -> ByteArray?,
+    ): (String) -> Boolean {
+        val answers = HashMap<String, Boolean>()
+        return { internalName ->
+            answers.getOrPut(internalName) {
+                val access =
+                    if (internalName == ownInternalName) {
+                        ownAccess
+                    } else {
+                        try {
+                            lookup(internalName)?.let { ClassReader(it).access }
+                        } catch (_: Exception) {
+                            null
+                        }
+                    }
+                access != null && access and Opcodes.ACC_ENUM != 0
+            }
+        }
+    }
+
+    private fun conditionOf(
+        result: ConditionFingerprinter.MethodResult,
+        ordinal: Int,
+    ): List<ConditionPart> =
+        try {
+            result.conditionOf(ordinal)
+        } catch (_: Exception) {
+            emptyList()
+        }
 
     /** Where each of a class's references ends up: on a probed method, or on the class. */
     private class PlacedReferences(

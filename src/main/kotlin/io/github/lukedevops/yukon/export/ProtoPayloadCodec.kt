@@ -8,6 +8,8 @@ import io.github.lukedevops.yukon.proto.CallEdge as ProtoCallEdge
 import io.github.lukedevops.yukon.proto.CallEdgeKind as ProtoCallEdgeKind
 import io.github.lukedevops.yukon.proto.ClassLocation as ProtoClassLocation
 import io.github.lukedevops.yukon.proto.ClassReferences as ProtoClassReferences
+import io.github.lukedevops.yukon.proto.ConditionPart as ProtoConditionPart
+import io.github.lukedevops.yukon.proto.ConditionPartKind as ProtoConditionPartKind
 import io.github.lukedevops.yukon.proto.DeclaredClass as ProtoDeclaredClass
 import io.github.lukedevops.yukon.proto.DeclaredMethod as ProtoDeclaredMethod
 import io.github.lukedevops.yukon.proto.DeltaBatch as ProtoDeltaBatch
@@ -237,6 +239,7 @@ object ProtoPayloadCodec {
                 .setSiteIndex(site.siteIndex)
                 .setLine(site.line)
                 .addAllOutcomes(site.outcomes.map { toProto(it) })
+                .addAllCondition(site.condition.map { toProto(it) })
         site.siteKey?.let { builder.siteKey = it }
         site.guard?.let { builder.guard = it }
         return builder.build()
@@ -249,7 +252,42 @@ object ProtoPayloadCodec {
             line = site.line,
             outcomes = site.outcomesList.map { fromProto(it) },
             guard = if (site.hasGuard()) site.guard else null,
+            condition = site.conditionList.map { fromProto(it) },
         )
+
+    private fun toProto(part: ConditionPart): ProtoConditionPart =
+        ProtoConditionPart
+            .newBuilder()
+            .setKind(
+                when (part.kind) {
+                    ConditionPartKind.CODE -> ProtoConditionPartKind.CODE
+                    ConditionPartKind.STRING_LITERAL -> ProtoConditionPartKind.STRING_LITERAL
+                    ConditionPartKind.PLACEHOLDER -> ProtoConditionPartKind.PLACEHOLDER
+                },
+            ).setText(part.text)
+            .build()
+
+    private fun fromProto(part: ProtoConditionPart): ConditionPart {
+        val kind =
+            when (part.kind) {
+                ProtoConditionPartKind.CODE -> {
+                    ConditionPartKind.CODE
+                }
+
+                ProtoConditionPartKind.STRING_LITERAL -> {
+                    ConditionPartKind.STRING_LITERAL
+                }
+
+                ProtoConditionPartKind.PLACEHOLDER -> {
+                    ConditionPartKind.PLACEHOLDER
+                }
+
+                ProtoConditionPartKind.CONDITION_PART_KIND_UNSPECIFIED, ProtoConditionPartKind.UNRECOGNIZED -> {
+                    throw IllegalArgumentException("unrecognized condition part kind on the wire: ${part.kind}")
+                }
+            }
+        return ConditionPart(kind, part.text)
+    }
 
     private fun toProto(outcome: BranchOutcome): ProtoBranchOutcome {
         val builder =

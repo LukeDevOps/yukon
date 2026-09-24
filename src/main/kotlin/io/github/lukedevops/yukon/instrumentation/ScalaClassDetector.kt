@@ -18,13 +18,16 @@ import net.bytebuddy.jar.asm.Opcodes
 object ScalaClassDetector {
     private val SCALA_ATTRIBUTE_TYPES = setOf("Scala", "ScalaSig")
 
+    /** Whether [attribute], a class attribute ASM did not parse, is one scalac writes. */
+    fun isScalaAttribute(attribute: Attribute): Boolean = attribute.type in SCALA_ATTRIBUTE_TYPES
+
     /** Whether [classBytes] carries a `Scala` or `ScalaSig` class attribute. */
     fun isScalaClass(classBytes: ByteArray): Boolean {
         var found = false
         val visitor =
             object : ClassVisitor(Opcodes.ASM9) {
                 override fun visitAttribute(attribute: Attribute) {
-                    if (attribute.type in SCALA_ATTRIBUTE_TYPES) found = true
+                    if (isScalaAttribute(attribute)) found = true
                 }
             }
         ClassReader(classBytes).accept(visitor, ClassReader.SKIP_CODE or ClassReader.SKIP_DEBUG or ClassReader.SKIP_FRAMES)

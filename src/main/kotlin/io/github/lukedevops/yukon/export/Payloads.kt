@@ -244,6 +244,10 @@ data class BranchOutcome(
  * [guard] is the [BranchOutcome.branchIndex] of the innermost kept outcome that dominates this
  * site's jump or switch, or null when nothing in the method stands between its entry and the site.
  * A dropped site has no outcomes to be a guard, so the guard is the next kept outcome above it.
+ *
+ * [condition] is the expression the site tests, in the class's source language, as the
+ * fall-through side reads it. A switch's condition is its subject. It is empty when the agent
+ * could not write the expression in source terms.
  */
 data class BranchSite(
     val siteIndex: Int,
@@ -251,14 +255,36 @@ data class BranchSite(
     val line: Int,
     val outcomes: List<BranchOutcome>,
     val guard: Int? = null,
+    val condition: List<ConditionPart> = emptyList(),
 ) {
     /**
      * What this site adds to a manifest or baseline chunk's weight: one entry for the site, one per
-     * outcome and one per line range in either of an outcome's lists. The chunkers count entries to
-     * keep each payload under the collector's size limit.
+     * outcome, one per line range in either of an outcome's lists and one per condition part. The
+     * chunkers count entries to keep each payload under the collector's size limit.
      */
-    val chunkWeight: Int get() = 1 + outcomes.sumOf { 1 + it.guardedLines.size + it.partlyGuardedLines.size }
+    val chunkWeight: Int get() = 1 + condition.size + outcomes.sumOf { 1 + it.guardedLines.size + it.partlyGuardedLines.size }
 }
+
+/** What one [ConditionPart] holds. See ADR 0037. */
+enum class ConditionPartKind {
+    /** Source text, such as `discounted > ` or `System.getenv(`. */
+    CODE,
+
+    /**
+     * A string constant from the class's bytecode. The text is the string's value, not quoted and
+     * not escaped. A consumer quotes it for display, and a collector can redact it.
+     */
+    STRING_LITERAL,
+
+    /** One sub-expression the agent could not write in source terms. The text is empty. */
+    PLACEHOLDER,
+}
+
+/** One part of a [BranchSite.condition]. Parts render one after the other with nothing between them. See ADR 0037. */
+data class ConditionPart(
+    val kind: ConditionPartKind,
+    val text: String = "",
+)
 
 /**
  * A class the JVM has loaded that reached no manifest, neither as a probed class nor as a skipped

@@ -1,5 +1,7 @@
 package io.github.lukedevops.yukon.instrumentation.branch
 
+import io.github.lukedevops.yukon.export.ConditionPart
+
 /**
  * One tracked branch point found in a class: either a two-outcome [ConditionalJump] or a
  * `TABLESWITCH`/`LOOKUPSWITCH`.
@@ -30,6 +32,10 @@ package io.github.lukedevops.yukon.instrumentation.branch
  *
  * [isSwitch] is true for a `TABLESWITCH` or `LOOKUPSWITCH`, and false for a conditional jump. A
  * switch with one case also has two outcomes, so [outcomeCount] alone cannot tell the two apart.
+ *
+ * [condition] is the expression the site tests, written by [ConditionWriter] from the same window
+ * as [conditionFingerprint]. It is empty for a dropped site and for a site the writer could not
+ * write. See ADR 0037.
  */
 data class BranchSite(
     val methodName: String,
@@ -42,4 +48,5 @@ data class BranchSite(
     val conditionFingerprint: String? = null,
     val caseKeys: List<Int>? = null,
     val isSwitch: Boolean = false,
+    val condition: List<ConditionPart> = emptyList(),
 )

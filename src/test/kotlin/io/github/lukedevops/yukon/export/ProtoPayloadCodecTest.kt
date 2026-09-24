@@ -12,6 +12,8 @@ import io.github.lukedevops.yukon.proto.BranchSite as ProtoBranchSite
 import io.github.lukedevops.yukon.proto.CallEdge as ProtoCallEdge
 import io.github.lukedevops.yukon.proto.CallEdgeKind as ProtoCallEdgeKind
 import io.github.lukedevops.yukon.proto.ClassLocation as ProtoClassLocation
+import io.github.lukedevops.yukon.proto.ConditionPart as ProtoConditionPart
+import io.github.lukedevops.yukon.proto.ConditionPartKind as ProtoConditionPartKind
 import io.github.lukedevops.yukon.proto.DeltaBatch as ProtoDeltaBatch
 import io.github.lukedevops.yukon.proto.DependencyDiscoverySource as ProtoDependencyDiscoverySource
 import io.github.lukedevops.yukon.proto.DependencyIdentity as ProtoDependencyIdentity
@@ -755,6 +757,98 @@ class ProtoPayloadCodecTest {
         assertEquals(listOf("Foo.kt", "Helpers.kt"), taken.guardedLinesList.map { it.sourceFile })
         assertEquals(listOf(21 to 23, 4 to 4), taken.guardedLinesList.map { it.firstLine to it.lastLine })
         assertEquals("", taken.partlyGuardedLinesList.single().sourceFile)
+    }
+
+    /** A condition with code, a literal holding a quote and a newline, a placeholder, and an empty literal. */
+    private val conditionParts =
+        listOf(
+            ConditionPart(ConditionPartKind.CODE, "System.getenv("),
+            ConditionPart(ConditionPartKind.STRING_LITERAL, "say \"hi\"\nbye"),
+            ConditionPart(ConditionPartKind.CODE, ") == "),
+            ConditionPart(ConditionPartKind.PLACEHOLDER),
+            ConditionPart(ConditionPartKind.CODE, " + "),
+            ConditionPart(ConditionPartKind.STRING_LITERAL, ""),
+        )
+
+    @Test
+    fun `a site's condition parts round-trip through the manifest and the baseline, in order and by kind`() {
+        val sites = listOf(sampleBranchSites[0].copy(condition = conditionParts), sampleBranchSites[1])
+        val manifest =
+            ProbeManifest(
+                resource = ResourceAttributes("checkout", "1.0.0", "", null, "run-1"),
+                probes =
+                    listOf(
+                        ProbeLocation(
+                            classId = 0,
+                            probeIndex = 0,
+                            kind = ProbeKind.METHOD,
+                            className = "com.example.Foo",
+                            methodName = "bar",
+                            methodDescriptor = "(I)I",
+                            line = 11,
+                            branchIndex = null,
+                            branchSites = sites,
+                        ),
+                    ),
+            )
+        val baseline =
+            StaticBaseline(
+                resource = ResourceAttributes("checkout", null, "instance-1", null, "run-1"),
+                declaredClasses =
+                    listOf(
+                        DeclaredClass(
+                            className = "com.example.Foo",
+                            methods = listOf(DeclaredMethod(methodName = "bar", methodDescriptor = "(I)I", branchSites = sites)),
+                        ),
+                    ),
+                scannedAt = 1000L,
+            )
+
+        val bytes = ProtoPayloadCodec.encode(manifest)
+
+        assertEquals(manifest, ProtoPayloadCodec.decodeProbeManifest(bytes))
+        assertEquals(baseline, ProtoPayloadCodec.decodeStaticBaseline(ProtoPayloadCodec.encode(baseline)))
+        val wireSites =
+            ProtoProbeManifest
+                .parseFrom(bytes)
+                .probesList
+                .single()
+                .branchSitesList
+        assertEquals(
+            listOf(
+                ProtoConditionPartKind.CODE,
+                ProtoConditionPartKind.STRING_LITERAL,
+                ProtoConditionPartKind.CODE,
+                ProtoConditionPartKind.PLACEHOLDER,
+                ProtoConditionPartKind.CODE,
+                ProtoConditionPartKind.STRING_LITERAL,
+            ),
+            wireSites[0].conditionList.map { it.kind },
+        )
+        assertEquals("say \"hi\"\nbye", wireSites[0].conditionList[1].text, "a literal goes out unquoted and unescaped")
+        assertEquals(0, wireSites[1].conditionCount, "a site with no condition sends no parts")
+    }
+
+    @Test
+    fun `an unspecified condition part kind on the wire is rejected`() {
+        val wire =
+            ProtoProbeManifest
+                .newBuilder()
+                .setResource(ProtoResourceAttributes.newBuilder().setServiceName("checkout").setRunId("run-1"))
+                .addProbes(
+                    ProtoProbeLocation
+                        .newBuilder()
+                        .setKind(ProtoProbeKind.METHOD)
+                        .addBranchSites(
+                            ProtoBranchSite
+                                .newBuilder()
+                                .addCondition(
+                                    ProtoConditionPart.newBuilder().setKind(ProtoConditionPartKind.CONDITION_PART_KIND_UNSPECIFIED),
+                                ),
+                        ),
+                ).build()
+
+        assertFailsWith<IllegalArgumentException> { ProtoPayloadCodec.decodeProbeManifest(wire.toByteArray()) }
     }
 
     @Test

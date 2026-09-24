@@ -98,6 +98,33 @@ Benchmark after chunk 3, same settings:
 | spring-webmvc | 41.239 | 48.645 ± 0.346 | +18% |
 | ktor-server-core | 35.488 | 39.825 ± 0.170 | +12% |
 
+Chunk 4 landed: each kept site carries its condition as `CODE`,
+`STRING_LITERAL` and `PLACEHOLDER` parts, written by `ConditionWriter` from
+the fingerprinter's own window, in Kotlin, Java or Scala. The demo's stub
+collector prints `System.getenv("ENABLE_LEGACY_DISCOUNT") == "true"` was never
+true, only path to `DemoServerMain.kt:59`. Every idiom was confirmed with
+`javap` first. Facts the design did not predict, now in ADR 0037: a Kotlin
+template is written as a `+` concatenation, since a template's constant pieces
+could not stay separate literal parts for redaction; and `if_acmp` reads as
+`===` in Kotlin, since kotlinc compiles `===` and enum `==` alike, except
+between enums (checked through `ACC_ENUM` by the class lookup), where `==` is
+exact. The review made widening conversions transparent and narrowing ones
+read as `x.toInt()`, `(int) x` or `x.toInt`.
+
+Open, from chunk 4: a Kotlin extension call reads as its static facade call
+(`StringsKt.toDoubleOrNull(value)`, not `value.toDoubleOrNull()`), and a
+mapped built-in as a Java call (`this.length()`). Telling an extension apart
+needs the callee's Kotlin metadata, which the agent does not parse. A Scala
+`object` read through `MODULE$` is a placeholder until its shape is confirmed.
+
+| Corpus | Chunk 3 ms | Chunk 4 ms | Change |
+|---|---|---|---|
+| demo | 7.362 | 8.267 ± 0.204 | +12% |
+| demo-spring | 0.132 | 0.137 ± 0.002 | +4% |
+| scala | 1.026 | 1.188 ± 0.026 | +16%, two more fixture classes |
+| spring-webmvc | 48.645 | 51.362 ± 0.662 | +6% |
+| ktor-server-core | 39.825 | 44.429 ± 0.453 | +12% |
+
 Left for later, in `yukon-server`'s STATUS: folding a dead method's branches
 into its row, rooting clusters at a never-taken outcome, telling
 real-but-uninteresting outcomes apart, and redaction at the server's ingest.

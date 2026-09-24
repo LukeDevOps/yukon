@@ -226,6 +226,31 @@ message BranchSite {
   // and out-of-scope inlined copies have no outcomes of their own here, so a guard looks through
   // them to the next kept outcome. See ADR 0037.
   optional int32 guard = 5;
+  // The expression the site tests, in the class's source language, as the fall-through side reads
+  // it: the jump's own test negated. A switch's condition is its subject. Adjacent parts render
+  // one after the other with nothing between them. Empty when the agent could not write the
+  // expression in source terms. See ADR 0037.
+  repeated ConditionPart condition = 6;
+}
+
+// What one part of a condition holds. See ADR 0037.
+enum ConditionPartKind {
+  CONDITION_PART_KIND_UNSPECIFIED = 0;
+  // Source text, such as `discounted > ` or `System.getenv(`.
+  CODE = 1;
+  // A string constant from the class's bytecode. The text is the string's value, not quoted and
+  // not escaped. A consumer quotes it for display, and a collector can redact it without parsing
+  // anything.
+  STRING_LITERAL = 2;
+  // One sub-expression the agent could not write in source terms. The text is empty. A consumer
+  // shows it as `…`.
+  PLACEHOLDER = 3;
+}
+
+// One part of a BranchSite's condition. See ADR 0037.
+message ConditionPart {
+  ConditionPartKind kind = 1;
+  string text = 2;
 }
 
 // What a CallEdge records. A collector reaches the target of either kind the same way; the kind

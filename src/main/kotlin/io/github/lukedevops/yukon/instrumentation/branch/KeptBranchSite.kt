@@ -39,6 +39,7 @@ data class KeptBranchSite(
             line = site.line,
             outcomes = outcomes.map { BranchOutcome(it.branchIndex, it.role, it.caseKey, it.guardedLines, it.partlyGuardedLines) },
             guard = guard,
+            condition = site.condition,
         )
 
     companion object {

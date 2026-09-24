@@ -4,6 +4,8 @@ import io.github.lukedevops.yukon.config.AgentConfig
 import io.github.lukedevops.yukon.export.BodyKind
 import io.github.lukedevops.yukon.export.CallEdge
 import io.github.lukedevops.yukon.export.CallEdgeKind
+import io.github.lukedevops.yukon.export.ConditionPart
+import io.github.lukedevops.yukon.export.ConditionPartKind
 import io.github.lukedevops.yukon.export.GeneratedBy
 import io.github.lukedevops.yukon.export.ProbeKind
 import io.github.lukedevops.yukon.export.ResourceAttributes
@@ -801,6 +803,58 @@ class StaticBaselineScannerTest {
             }
             assertTrue(guardedEdges > 10, "enough guarded edges to mean something: $guardedEdges")
             assertTrue(guardedSites > 10, "enough sites with a guard or guarded lines to mean something: $guardedSites")
+        } finally {
+            yukon.uninstall(instrumentation, transformer)
+        }
+    }
+
+    @Test
+    fun `declares each site's condition exactly as the manifest carries it for the loaded class`() {
+        val kotlinClasses = listOf("ConditionTarget", "ConditionTargetKt")
+        val javaClasses = listOf("ConditionJavaTarget")
+        val root =
+            directoryRoot(
+                *(
+                    kotlinClasses.map { "com/example/target/$it.class" to classBytes("kotlin/test/com/example/target/$it.class") } +
+                        javaClasses.map { "com/example/target/$it.class" to classBytes("java/test/com/example/target/$it.class") }
+                ).toTypedArray(),
+            )
+        val result = StaticBaselineScanner(listOf("com.example.target")).scan(listOf(root))
+
+        val registry = ProbeRegistry()
+        val instrumentation = ByteBuddyAgent.install()
+        val yukon = YukonInstrumentation(AgentConfig.parse("includePackages=com.example.target"), registry)
+        val transformer = yukon.install(instrumentation)
+        try {
+            val kotlinLoader = FixtureClassLoader(arrayOf(File("build/classes/kotlin/test").toURI().toURL()), javaClass.classLoader)
+            val javaLoader = FixtureClassLoader(arrayOf(File("build/classes/java/test").toURI().toURL()), javaClass.classLoader)
+            kotlinClasses.forEach { Class.forName("com.example.target.$it", true, kotlinLoader) }
+            javaClasses.forEach { Class.forName("com.example.target.$it", true, javaLoader) }
+
+            val manifest = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
+            var sitesWithConditions = 0
+            for (simpleName in kotlinClasses + javaClasses) {
+                val className = "com.example.target.$simpleName"
+                val declared = result.declaredClasses.single { it.className == className }
+                val methodProbes = manifest.probes.filter { it.className == className && it.kind == ProbeKind.METHOD }
+                assertEquals(declared.methods.size, methodProbes.size, "$className declares one entry per METHOD probe")
+                for (probe in methodProbes) {
+                    val declaredMethod =
+                        declared.methods.single { it.methodName == probe.methodName && it.methodDescriptor == probe.methodDescriptor }
+                    assertEquals(probe.branchSites, declaredMethod.branchSites, "sites of $className#${probe.methodName}")
+                    sitesWithConditions += probe.branchSites.count { it.condition.isNotEmpty() }
+                }
+            }
+            assertTrue(sitesWithConditions > 40, "enough sites with a condition to mean something: $sitesWithConditions")
+            val enumCheck =
+                manifest.probes.single {
+                    it.className == "com.example.target.ConditionTarget" && it.kind == ProbeKind.METHOD && it.methodName == "enumCheck"
+                }
+            assertEquals(
+                listOf(ConditionPart(ConditionPartKind.CODE, "mode == ConditionMode.FAST")),
+                enumCheck.branchSites.single().condition,
+                "the transform reads the enum's class through the loader",
+            )
         } finally {
             yukon.uninstall(instrumentation, transformer)
         }

@@ -101,6 +101,17 @@ one way; `/promo`, never called), and a client that drives the server, all as
 separate JVM processes. On shutdown, the stub collector prints a report of
 probes that were never hit and any classes it had to skip.
 
+A never-hit branch prints as its condition, the result that never happened,
+and the lines that run only through that result. Its branch index stays in
+brackets at the end. A condition reads the way the code just after the check
+sees it, which for a plain `if` is the condition the source wrote. The demo's
+two checkout conditions print like this:
+
+```
+NEVER HIT: io.github.lukedevops.demo.server.DemoServerMainKt#handleCheckout:58 `System.getenv("ENABLE_LEGACY_DISCOUNT") == "true"` was never true, only path to DemoServerMain.kt:59 (instance b259d51a-420a-4b57-af82-e7b089691c49, class 0, probe 10) [BRANCH branch#1]
+NEVER HIT: io.github.lukedevops.demo.server.DemoServerMainKt#handleCheckout:64 `discounted > 100.0` was never true, only path to DemoServerMain.kt:65, partly to DemoServerMain.kt:78 (instance b259d51a-420a-4b57-af82-e7b089691c49, class 0, probe 12) [BRANCH branch#3]
+```
+
 The last report groups those never-hit probes into unreached clusters: a
 root that's either reached from code that does run or never called at all,
 plus every never-hit method beneath it whose only callers are also in the

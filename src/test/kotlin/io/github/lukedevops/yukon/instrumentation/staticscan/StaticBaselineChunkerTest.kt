@@ -4,6 +4,8 @@ import io.github.lukedevops.yukon.export.BranchOutcome
 import io.github.lukedevops.yukon.export.BranchRole
 import io.github.lukedevops.yukon.export.BranchSite
 import io.github.lukedevops.yukon.export.CallEdge
+import io.github.lukedevops.yukon.export.ConditionPart
+import io.github.lukedevops.yukon.export.ConditionPartKind
 import io.github.lukedevops.yukon.export.DeclaredClass
 import io.github.lukedevops.yukon.export.DeclaredMethod
 import io.github.lukedevops.yukon.export.LineRange
@@ -147,15 +149,17 @@ class StaticBaselineChunkerTest {
     }
 
     @Test
-    fun `branch sites add one for the site, one per outcome and one per line range to a class's weight`() {
+    fun `branch sites add one for the site, one per outcome, one per line range and one per condition part to a class's weight`() {
         // "First" weighs 1 method + 1 class record = 2, plus one site with two outcomes = 3, plus
-        // two guarded ranges and one partly guarded range = 3, so 8. A cap of 9 cannot also hold
-        // "Second", which weighs 2, and without the ranges the two would share a chunk.
+        // two guarded ranges and one partly guarded range = 3, plus two condition parts = 2, so
+        // 10. A cap of 11 cannot also hold "Second", which weighs 2, and without the condition
+        // parts the two would share a chunk.
         val site =
             BranchSite(
                 siteIndex = 0,
                 siteKey = null,
                 line = 1,
+                condition = listOf(ConditionPart(ConditionPartKind.CODE, "name == "), ConditionPart(ConditionPartKind.STRING_LITERAL, "x")),
                 outcomes =
                     listOf(
                         BranchOutcome(
@@ -175,7 +179,7 @@ class StaticBaselineChunkerTest {
                 StaticScanResult(listOf(first, second), emptyList(), emptyList()),
                 resource,
                 scannedAt = 1L,
-                maxEntriesPerChunk = 9,
+                maxEntriesPerChunk = 11,
             )
 
         assertEquals(listOf(listOf("First"), listOf("Second")), chunks.map { c -> c.declaredClasses.map { it.className } })

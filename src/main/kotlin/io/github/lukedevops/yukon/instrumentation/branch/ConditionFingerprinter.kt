@@ -1,5 +1,6 @@
 package io.github.lukedevops.yukon.instrumentation.branch
 
+import io.github.lukedevops.yukon.export.ConditionPart
 import net.bytebuddy.jar.asm.ClassReader
 import net.bytebuddy.jar.asm.ClassVisitor
 import net.bytebuddy.jar.asm.ConstantDynamic
@@ -22,16 +23,44 @@ import net.bytebuddy.jar.asm.Type
  * afterwards which methods it kept sites for.
  */
 object ConditionFingerprinter {
-    /** One method's ordered fingerprints and, for a switch site, its case keys. Both lists are indexed by encounter ordinal. */
+    /**
+     * One method's ordered fingerprints and, for a switch site, its case keys. Both lists are
+     * indexed by encounter ordinal. [conditionOf] writes the condition of the site at an ordinal
+     * from the same window as its fingerprint, and gives an empty list when that site has no
+     * window or [ConditionWriter] cannot write it. See ADR 0037.
+     */
     class MethodResult(
         val fingerprints: List<String?>,
         val caseKeys: List<List<Int>?>,
+        val conditionOf: (ordinal: Int) -> List<ConditionPart> = { emptyList() },
     )
 
-    fun analyze(classBytes: ByteArray): Map<Pair<String, String>, MethodResult> {
+    /**
+     * [language] is the class's source language, which decides how [MethodResult.conditionOf]
+     * writes a condition. [isEnum] tells whether a class, by internal name, is an enum, and
+     * answers false when it cannot tell.
+     */
+    fun analyze(
+        classBytes: ByteArray,
+        language: SourceLanguage = SourceLanguage.JAVA,
+        isEnum: (internalName: String) -> Boolean = { false },
+    ): Map<Pair<String, String>, MethodResult> {
         val results = mutableMapOf<Pair<String, String>, MethodResult>()
         val classVisitor =
             object : ClassVisitor(Opcodes.ASM9) {
+                private var ownerInternalName = ""
+
+                override fun visit(
+                    version: Int,
+                    access: Int,
+                    name: String,
+                    signature: String?,
+                    superName: String?,
+                    interfaces: Array<out String>?,
+                ) {
+                    ownerInternalName = name
+                }
+
                 override fun visitMethod(
                     access: Int,
                     name: String,
@@ -39,8 +68,8 @@ object ConditionFingerprinter {
                     signature: String?,
                     exceptions: Array<out String>?,
                 ): MethodVisitor =
-                    ConditionFingerprintMethodVisitor { fingerprints, caseKeys ->
-                        results[name to descriptor] = MethodResult(fingerprints, caseKeys)
+                    ConditionFingerprintMethodVisitor(language, ownerInternalName, isEnum) { result ->
+                        results[name to descriptor] = result
                     }
             }
         ClassReader(classBytes).accept(classVisitor, ClassReader.SKIP_FRAMES)
@@ -135,6 +164,7 @@ object ConditionFingerprinter {
     /** One `LocalVariableTable` entry, resolved after the whole method body has been visited. */
     private class LocalVarEntry(
         val name: String,
+        val descriptor: String,
         val index: Int,
         val start: Label,
         val end: Label,
@@ -143,10 +173,14 @@ object ConditionFingerprinter {
     /**
      * Visits one method's instructions, and in [visitEnd] resolves stack depth, local variable
      * names and the fingerprint window for each tracked site. [onResult] receives the method's
-     * fingerprints and case keys, one entry per tracked site in encounter order.
+     * fingerprints and case keys, one entry per tracked site in encounter order, and a way to
+     * write each site's condition later.
      */
     private class ConditionFingerprintMethodVisitor(
-        private val onResult: (List<String?>, List<List<Int>?>) -> Unit,
+        private val language: SourceLanguage,
+        private val ownerInternalName: String,
+        private val isEnum: (internalName: String) -> Boolean,
+        private val onResult: (MethodResult) -> Unit,
     ) : MethodVisitor(Opcodes.ASM9) {
         private val insns = mutableListOf<Insn>()
         private val labelMarks = mutableListOf<LabelMark>()
@@ -269,7 +303,7 @@ object ConditionFingerprinter {
             end: Label,
             index: Int,
         ) {
-            localVars += LocalVarEntry(name, index, start, end)
+            localVars += LocalVarEntry(name, descriptor, index, start, end)
         }
 
         override fun visitEnd() {
@@ -288,16 +322,24 @@ object ConditionFingerprinter {
             var depth: Int? = 0
             var zeroPoint: Int? = 0
 
-            fun localNameAt(
+            fun localAt(
                 varIndex: Int,
                 instructionIndex: Int,
-            ): String? =
+            ): LocalVarEntry? =
                 localVars
                     .firstOrNull { entry ->
                         entry.index == varIndex &&
                             instructionIndexOfLabel[entry.start]?.let { it <= instructionIndex } == true &&
                             instructionIndexOfLabel[entry.end]?.let { instructionIndex < it } == true
-                    }?.name
+                    }
+
+            fun localNameAt(
+                varIndex: Int,
+                instructionIndex: Int,
+            ): String? = localAt(varIndex, instructionIndex)?.name
+
+            val siteInstructionIndexes = mutableListOf<Int>()
+            val windowStarts = mutableListOf<Int?>()
 
             for (i in insns.indices) {
                 val marksHere = labelsAt[i]
@@ -321,6 +363,8 @@ object ConditionFingerprinter {
                 if (isTrackedSite(insn)) {
                     fingerprints += windowFingerprint(zeroPoint, i, ::localNameAt)
                     caseKeys += caseKeysOf(insn)
+                    siteInstructionIndexes += i
+                    windowStarts += zeroPoint
                 }
 
                 val effect = stackEffect(insn)
@@ -333,7 +377,34 @@ object ConditionFingerprinter {
                 if (hasNoFallThrough(insn)) depth = null
             }
 
-            onResult(fingerprints, caseKeys)
+            if (siteInstructionIndexes.isEmpty()) {
+                onResult(MethodResult(fingerprints, caseKeys))
+                return
+            }
+            val windowStartBySite = siteInstructionIndexes.zip(windowStarts).toMap()
+            val view =
+                MethodInstructionsView(
+                    insns = insns,
+                    labelsAt = labelsAt.mapValues { (_, marks) -> marks.map { it.label } },
+                    handlerLabels = handlerLabels,
+                    local = {
+                        varIndex,
+                        instructionIndex,
+                        ->
+                        localAt(varIndex, instructionIndex)?.let { LocalVariable(it.name, it.descriptor) }
+                    },
+                    windowStartOf = { windowStartBySite[it] },
+                )
+            onResult(
+                MethodResult(fingerprints, caseKeys) { ordinal ->
+                    val start = windowStarts.getOrNull(ordinal)
+                    if (start == null) {
+                        emptyList()
+                    } else {
+                        ConditionWriter.write(view, start, siteInstructionIndexes[ordinal], language, ownerInternalName, isEnum)
+                    }
+                },
+            )
         }
 
         /** Whether [insn] is a site [BranchSiteAnalyzer] tracks: a [ConditionalJump] or any switch. */
@@ -347,17 +418,21 @@ object ConditionFingerprinter {
         /** [BranchProbeMethodVisitor]'s case order for a switch: label-array order, skipping entries whose label is the default. */
         private fun caseKeysOf(insn: Insn): List<Int>? =
             when (insn) {
-                is Insn.TableSwitch ->
+                is Insn.TableSwitch -> {
                     insn.labels.indices
                         .filter { insn.labels[it] !== insn.dflt }
                         .map { insn.min + it }
+                }
 
-                is Insn.LookupSwitch ->
+                is Insn.LookupSwitch -> {
                     insn.labels.indices
                         .filter { insn.labels[it] !== insn.dflt }
                         .map { insn.keys[it] }
+                }
 
-                else -> null
+                else -> {
+                    null
+                }
             }
 
         /**
@@ -424,48 +499,85 @@ object ConditionFingerprinter {
     private fun plainStackEffect(opcode: Int): Int =
         when (opcode) {
             Opcodes.NOP -> 0
+
             Opcodes.ACONST_NULL -> 1
+
             in Opcodes.ICONST_M1..Opcodes.ICONST_5 -> 1
+
             Opcodes.LCONST_0, Opcodes.LCONST_1 -> 2
+
             Opcodes.FCONST_0, Opcodes.FCONST_1, Opcodes.FCONST_2 -> 1
+
             Opcodes.DCONST_0, Opcodes.DCONST_1 -> 2
+
             Opcodes.IALOAD, Opcodes.FALOAD, Opcodes.AALOAD, Opcodes.BALOAD, Opcodes.CALOAD, Opcodes.SALOAD -> -1
+
             Opcodes.LALOAD, Opcodes.DALOAD -> 0
+
             Opcodes.IASTORE, Opcodes.FASTORE, Opcodes.AASTORE, Opcodes.BASTORE, Opcodes.CASTORE, Opcodes.SASTORE -> -3
+
             Opcodes.LASTORE, Opcodes.DASTORE -> -4
+
             Opcodes.POP -> -1
+
             Opcodes.POP2 -> -2
+
             Opcodes.DUP, Opcodes.DUP_X1, Opcodes.DUP_X2 -> 1
+
             Opcodes.DUP2, Opcodes.DUP2_X1, Opcodes.DUP2_X2 -> 2
+
             Opcodes.SWAP -> 0
+
             Opcodes.IADD, Opcodes.ISUB, Opcodes.IMUL, Opcodes.IDIV, Opcodes.IREM,
             Opcodes.IAND, Opcodes.IOR, Opcodes.IXOR, Opcodes.ISHL, Opcodes.ISHR, Opcodes.IUSHR,
             Opcodes.FADD, Opcodes.FSUB, Opcodes.FMUL, Opcodes.FDIV, Opcodes.FREM,
             -> -1
+
             Opcodes.LADD, Opcodes.LSUB, Opcodes.LMUL, Opcodes.LDIV, Opcodes.LREM,
             Opcodes.LAND, Opcodes.LOR, Opcodes.LXOR,
             Opcodes.DADD, Opcodes.DSUB, Opcodes.DMUL, Opcodes.DDIV, Opcodes.DREM,
             -> -2
+
             Opcodes.LSHL, Opcodes.LSHR, Opcodes.LUSHR -> -1
+
             Opcodes.INEG, Opcodes.FNEG -> 0
+
             Opcodes.LNEG, Opcodes.DNEG -> 0
+
             Opcodes.I2L, Opcodes.I2D -> 1
+
             Opcodes.I2F, Opcodes.I2B, Opcodes.I2C, Opcodes.I2S -> 0
+
             Opcodes.L2I, Opcodes.L2F -> -1
+
             Opcodes.L2D -> 0
+
             Opcodes.F2I -> 0
+
             Opcodes.F2L, Opcodes.F2D -> 1
+
             Opcodes.D2I, Opcodes.D2F -> -1
+
             Opcodes.D2L -> 0
+
             Opcodes.LCMP -> -3
+
             Opcodes.FCMPL, Opcodes.FCMPG -> -1
+
             Opcodes.DCMPL, Opcodes.DCMPG -> -3
+
             Opcodes.IRETURN, Opcodes.FRETURN, Opcodes.ARETURN -> -1
+
             Opcodes.LRETURN, Opcodes.DRETURN -> -2
+
             Opcodes.RETURN -> 0
+
             Opcodes.ARRAYLENGTH -> 0
+
             Opcodes.ATHROW -> -1
+
             Opcodes.MONITORENTER, Opcodes.MONITOREXIT -> -1
+
             else -> 0
         }
 
@@ -525,11 +637,15 @@ object ConditionFingerprinter {
             Opcodes.IFEQ, Opcodes.IFNE, Opcodes.IFLT, Opcodes.IFGE, Opcodes.IFGT, Opcodes.IFLE,
             Opcodes.IFNULL, Opcodes.IFNONNULL,
             -> -1
+
             Opcodes.IF_ICMPEQ, Opcodes.IF_ICMPNE, Opcodes.IF_ICMPLT, Opcodes.IF_ICMPGE,
             Opcodes.IF_ICMPGT, Opcodes.IF_ICMPLE, Opcodes.IF_ACMPEQ, Opcodes.IF_ACMPNE,
             -> -2
+
             Opcodes.GOTO -> 0
+
             Opcodes.JSR -> 1
+
             else -> 0
         }
 
@@ -547,25 +663,59 @@ object ConditionFingerprinter {
         localNameAt: (varIndex: Int, instructionIndex: Int) -> String?,
     ): String =
         when (insn) {
-            is Insn.Plain -> opcodeName(insn.opcode)
-            is Insn.IntOperand -> "${opcodeName(insn.opcode)} ${insn.operand}"
+            is Insn.Plain -> {
+                opcodeName(insn.opcode)
+            }
+
+            is Insn.IntOperand -> {
+                "${opcodeName(insn.opcode)} ${insn.operand}"
+            }
+
             is Insn.Var -> {
                 val varName = localNameAt(insn.varIndex, instructionIndex)
                 if (varName == null) opcodeName(insn.opcode) else "${opcodeName(insn.opcode)} $varName"
             }
-            is Insn.TypeOp -> "${opcodeName(insn.opcode)} ${insn.type}"
-            is Insn.Field -> "${opcodeName(insn.opcode)} ${insn.owner}.${insn.name}:${insn.descriptor}"
-            is Insn.MethodCall -> "${opcodeName(insn.opcode)} ${insn.owner}.${insn.name} ${insn.descriptor}"
-            is Insn.InvokeDynamic -> invokeDynamicToken(insn)
-            is Insn.Jump -> opcodeName(insn.opcode)
-            is Insn.Ldc -> "LDC ${ldcToken(insn.value)}"
+
+            is Insn.TypeOp -> {
+                "${opcodeName(insn.opcode)} ${insn.type}"
+            }
+
+            is Insn.Field -> {
+                "${opcodeName(insn.opcode)} ${insn.owner}.${insn.name}:${insn.descriptor}"
+            }
+
+            is Insn.MethodCall -> {
+                "${opcodeName(insn.opcode)} ${insn.owner}.${insn.name} ${insn.descriptor}"
+            }
+
+            is Insn.InvokeDynamic -> {
+                invokeDynamicToken(insn)
+            }
+
+            is Insn.Jump -> {
+                opcodeName(insn.opcode)
+            }
+
+            is Insn.Ldc -> {
+                "LDC ${ldcToken(insn.value)}"
+            }
+
             is Insn.Iinc -> {
                 val varName = localNameAt(insn.varIndex, instructionIndex)
                 if (varName == null) "IINC" else "IINC $varName ${insn.increment}"
             }
-            is Insn.TableSwitch -> opcodeName(Opcodes.TABLESWITCH)
-            is Insn.LookupSwitch -> opcodeName(Opcodes.LOOKUPSWITCH)
-            is Insn.MultiANewArray -> "${opcodeName(Opcodes.MULTIANEWARRAY)} ${insn.descriptor} ${insn.numDimensions}"
+
+            is Insn.TableSwitch -> {
+                opcodeName(Opcodes.TABLESWITCH)
+            }
+
+            is Insn.LookupSwitch -> {
+                opcodeName(Opcodes.LOOKUPSWITCH)
+            }
+
+            is Insn.MultiANewArray -> {
+                "${opcodeName(Opcodes.MULTIANEWARRAY)} ${insn.descriptor} ${insn.numDimensions}"
+            }
         }
 
     /**

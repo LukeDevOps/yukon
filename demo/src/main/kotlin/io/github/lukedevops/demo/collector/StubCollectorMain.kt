@@ -3,9 +3,14 @@ package io.github.lukedevops.demo.collector
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
 import io.github.lukedevops.demo.DemoPorts
+import io.github.lukedevops.yukon.proto.BranchRole
+import io.github.lukedevops.yukon.proto.BranchSite
+import io.github.lukedevops.yukon.proto.ConditionPart
+import io.github.lukedevops.yukon.proto.ConditionPartKind
 import io.github.lukedevops.yukon.proto.DeltaBatch
 import io.github.lukedevops.yukon.proto.EndpointDiscoverySource
 import io.github.lukedevops.yukon.proto.GeneratedBy
+import io.github.lukedevops.yukon.proto.LineRange
 import io.github.lukedevops.yukon.proto.ProbeKind
 import io.github.lukedevops.yukon.proto.ProbeManifest
 import io.github.lukedevops.yukon.proto.ResourceAttributes
@@ -83,6 +88,15 @@ private data class ProbeInfo(
     val targetClassName: String? = null,
     val inlinedFromClassName: String? = null,
     val generatedBy: GeneratedBy = GeneratedBy.GENERATED_BY_NONE,
+    val siteIndex: Int? = null,
+)
+
+/** One method of one run: where a METHOD probe's branch sites are kept, for its BRANCH probes to find. See ADR 0037. */
+private data class InstanceMethodKey(
+    val run: Run,
+    val classId: Int,
+    val methodName: String,
+    val methodDescriptor: String,
 )
 
 /** One call edge read from a METHOD probe's own bytecode. See ADR 0024. */
@@ -147,6 +161,7 @@ private data class EndpointInfo(
 )
 
 private val manifestProbes = ConcurrentHashMap<InstanceProbeKey, ProbeInfo>()
+private val manifestBranchSites = ConcurrentHashMap<InstanceMethodKey, List<BranchSite>>()
 private val everHit = Collections.newSetFromMap(ConcurrentHashMap<InstanceProbeKey, Boolean>())
 private val skippedClasses = ConcurrentHashMap<InstanceClassKey, SkippedInfo>()
 
@@ -375,7 +390,12 @@ private fun handleManifest(exchange: HttpExchange) {
                 targetClassName = location.targetClassName.ifEmpty { null },
                 inlinedFromClassName = location.inlinedFromClassName.ifEmpty { null },
                 generatedBy = location.generatedBy,
+                siteIndex = if (location.hasSiteIndex()) location.siteIndex else null,
             )
+        if (location.branchSitesList.isNotEmpty()) {
+            manifestBranchSites[InstanceMethodKey(run, location.classId, location.methodName, location.methodDescriptor)] =
+                location.branchSitesList.toList()
+        }
         dynamicallyKnownClassNames += location.className
         if (location.callsList.isNotEmpty()) {
             manifestCallEdges[InstanceProbeKey(run, location.classId, location.probeIndex)] =
@@ -534,14 +554,25 @@ private fun printNeverHitReport() {
     }
     judgeable
         .mapNotNull { key -> manifestProbes[key]?.let { key to it } }
-        .sortedWith(compareBy({ it.second.className }, { it.second.methodName }, { it.second.line }))
+        .sortedWith(compareBy({ it.second.className }, { it.second.methodName }, { it.second.line }, { it.second.branchIndex ?: -1 }))
         .forEach { (key, info) ->
-            val branchSuffix = info.branchIndex?.let { " branch#$it" } ?: ""
             val inlinedFromSuffix = info.inlinedFromClassName?.let { " (inlined from $it)" } ?: ""
-            println(
-                "  NEVER HIT: ${info.className}#${info.methodName}:${info.line} " +
-                    "[${info.kind}$branchSuffix]$inlinedFromSuffix (instance ${key.run.serviceInstanceId}, class ${key.classId}, probe ${key.probeIndex})",
-            )
+            val where = "(instance ${key.run.serviceInstanceId}, class ${key.classId}, probe ${key.probeIndex})"
+            val branchIndex = info.branchIndex
+            if (branchIndex == null) {
+                println("  NEVER HIT: ${info.className}#${info.methodName}:${info.line} [${info.kind}]$inlinedFromSuffix $where")
+            } else {
+                val site =
+                    info.siteIndex?.let { siteIndex ->
+                        manifestBranchSites[InstanceMethodKey(key.run, key.classId, info.methodName, info.methodDescriptor)]
+                            ?.firstOrNull { it.siteIndex == siteIndex }
+                    }
+                val description = site?.let { describeNeverHitOutcome(it, branchIndex) } ?: "branch at line ${info.line}"
+                println(
+                    "  NEVER HIT: ${info.className}#${info.methodName}:${info.line} $description$inlinedFromSuffix $where " +
+                        "[${info.kind} branch#$branchIndex]",
+                )
+            }
         }
     // Kotlin inline functions copy their body into the caller, so their own probe reads near
     // zero however often they run: no "never hit" claim is made about them. See ADR 0022.
@@ -555,6 +586,79 @@ private fun printNeverHitReport() {
     }
     println("=====================================")
 }
+
+/**
+ * A never-hit outcome as a person reads it: its site's condition, the result that never happened,
+ * and the code that runs only through the outcome. A site with no condition is named by its line.
+ * See ADR 0037.
+ */
+private fun describeNeverHitOutcome(
+    site: BranchSite,
+    branchIndex: Int,
+): String? {
+    val outcome = site.outcomesList.firstOrNull { it.branchIndex == branchIndex } ?: return null
+    val condition = site.conditionList.takeIf { it.isNotEmpty() }?.let { "`${renderCondition(it)}`" }
+    val subject = condition ?: "the branch at line ${site.line}"
+    val result =
+        when (outcome.role) {
+            BranchRole.FALL_THROUGH -> if (condition != null) "$condition was never true" else "$subject never fell through"
+            BranchRole.TAKEN -> if (condition != null) "$condition was never false" else "$subject never jumped"
+            BranchRole.CASE -> if (outcome.hasCaseKey()) "$subject was never ${outcome.caseKey}" else "a case of $subject never ran"
+            BranchRole.DEFAULT -> "$subject never reached its default"
+            else -> "$subject had an outcome that never ran"
+        }
+    val guarded =
+        when {
+            outcome.guardedLinesList.isNotEmpty() && outcome.partlyGuardedLinesList.isNotEmpty() -> {
+                "only path to ${renderRanges(outcome.guardedLinesList)}, partly to ${renderRanges(outcome.partlyGuardedLinesList)}"
+            }
+
+            outcome.guardedLinesList.isNotEmpty() -> {
+                "only path to ${renderRanges(outcome.guardedLinesList)}"
+            }
+
+            outcome.partlyGuardedLinesList.isNotEmpty() -> {
+                "partly the path to ${renderRanges(outcome.partlyGuardedLinesList)}"
+            }
+
+            else -> {
+                "guards no code of its own"
+            }
+        }
+    return "$result, $guarded"
+}
+
+/** A condition as source text: code as it is, a string literal quoted and escaped, and a placeholder as `…`. */
+private fun renderCondition(parts: List<ConditionPart>): String =
+    parts.joinToString("") { part ->
+        when (part.kind) {
+            ConditionPartKind.STRING_LITERAL -> quote(part.text)
+            ConditionPartKind.PLACEHOLDER -> "…"
+            else -> part.text
+        }
+    }
+
+private fun quote(value: String): String =
+    buildString {
+        append('"')
+        for (c in value) {
+            when (c) {
+                '"' -> append("\\\"")
+                '\\' -> append("\\\\")
+                '\n' -> append("\\n")
+                '\r' -> append("\\r")
+                '\t' -> append("\\t")
+                else -> append(c)
+            }
+        }
+        append('"')
+    }
+
+private fun renderRanges(ranges: List<LineRange>): String =
+    ranges.joinToString(", ") { range ->
+        val lines = if (range.firstLine == range.lastLine) "${range.firstLine}" else "${range.firstLine}-${range.lastLine}"
+        if (range.sourceFile.isEmpty()) "line $lines" else "${range.sourceFile}:$lines"
+    }
 
 /**
  * Reports every optional parameter found never supplied (every caller took the default, so the

@@ -5,6 +5,8 @@ import io.github.lukedevops.yukon.export.BranchOutcome
 import io.github.lukedevops.yukon.export.BranchRole
 import io.github.lukedevops.yukon.export.BranchSite
 import io.github.lukedevops.yukon.export.CallEdge
+import io.github.lukedevops.yukon.export.ConditionPart
+import io.github.lukedevops.yukon.export.ConditionPartKind
 import io.github.lukedevops.yukon.export.LineRange
 import io.github.lukedevops.yukon.export.ProbeKind
 import io.github.lukedevops.yukon.export.ResourceAttributes
@@ -1261,12 +1263,13 @@ class ProbeRegistryTest {
     }
 
     @Test
-    fun `branch sites weigh one for the site, one per outcome and one per line range against the chunk cap`() {
+    fun `branch sites weigh one for the site, one per outcome, one per line range and one per condition part against the chunk cap`() {
         val site =
             BranchSite(
                 siteIndex = 0,
                 siteKey = null,
                 line = 1,
+                condition = listOf(ConditionPart(ConditionPartKind.CODE, "name == "), ConditionPart(ConditionPartKind.STRING_LITERAL, "x")),
                 outcomes =
                     listOf(
                         BranchOutcome(
@@ -1286,12 +1289,13 @@ class ProbeRegistryTest {
         )
         registry.register("com.example.Light", layoutHash = 1L, probes = methodProbes(1))
 
-        // Heavy weighs 1 probe + 1 class location record + 1 site + 2 outcomes + 3 line ranges = 8;
-        // Light weighs 2. Without the line ranges they would share a chunk under a cap of 9.
+        // Heavy weighs 1 probe + 1 class location record + 1 site + 2 outcomes + 3 line ranges + 2
+        // condition parts = 10; Light weighs 2. Without the condition parts they would share a chunk
+        // under a cap of 11.
         val chunks =
             registry.computeManifestDeltas(
                 ResourceAttributes("checkout", null, "instance-1", null, "run-1"),
-                maxEntriesPerChunk = 9,
+                maxEntriesPerChunk = 11,
             )
 
         assertEquals(2, chunks.size)
