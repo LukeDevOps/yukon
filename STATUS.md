@@ -166,6 +166,13 @@ DISTINCT`. The review found Postgres cannot store NUL in jsonb or text, so a
 part whose text holds NUL is stored as a placeholder instead of failing its
 payload on every retry.
 
+Chunk 8 landed in `yukon-server` (`3c1990f`): never-hit and stale-hit
+return `rows`, each a method row or a site row carrying every outcome with
+`in_finding`, and paging counts rows. A merged row's display fields come from
+the newest in-scope run. The report has `methods` and `branch_sites` in place
+of the mixed probe triple. An outcome with no site forms a site of its own
+rather than dropping out.
+
 Left for later, in `yukon-server`'s STATUS: folding a dead method's branches
 into its row, rooting clusters at a never-taken outcome, telling
 real-but-uninteresting outcomes apart, and redaction at the server's ingest.
