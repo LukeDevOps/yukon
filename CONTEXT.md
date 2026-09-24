@@ -223,6 +223,10 @@ A dependency with at least one loaded class that nothing in the adopter's code r
 A dependency the adopter's code references only from methods never hit or classes never loaded.
 _Avoid_: dead dependency (a collector's verdict, not an observation)
 
+**Dependencies listed**:
+The state an instance reaches once every dependency its startup listing found, and every reference mapping recorded before the listing ended, has reached the collector. Each dependency's entry arrives only after its first counts, so a collector can judge it as soon as the entry is there. Before this state, an empty list of dependencies or absent references means "not listed yet", not "none".
+_Avoid_: listing complete (the agent's own state, before anything is sent)
+
 ### Testkit
 
 **Settled**:

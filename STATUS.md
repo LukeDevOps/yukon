@@ -227,8 +227,6 @@ sweep-reported class as loaded; the stub and the testkit differ from it only
 in the "never loaded" mark on a site, never in a status.
 
 Open, recorded rather than started:
-- `absentReferences()` in the testkit has no settle gate, and
-  `dependency()`'s gate assumes one delta batch per flush.
 - A `byte-buddy-agent` jar sitting flat in an exploded war's `WEB-INF/lib`
   is turned away by the agent-jar rule and reads as no dependency.
 - Every Kotlin service reads kotlin-stdlib as used through `kotlin.Metadata`,
@@ -252,6 +250,34 @@ Landing order as built, one chunk and one commit each:
 7. `yukon-collector` bindings bump.
 8. `yukon-server`: `GET /api/v1/services/{s}/dependencies` with a status
    filter, and a `dependencies` block on `report`.
+
+### Dependency delivery order: in progress
+
+The testkit's `dependency()` gate counted two delta batches after the listing's
+manifest, which assumes one batch per flush; a flush over 20,000 deltas sends
+several beside its manifest, so a used jar could read as unloaded.
+`absentReferences()` had no gate and returned an empty list until the listing
+arrived. ADR 0036 settles it (2026-09-24): the agent sends a dependency's entry
+only after a confirmed delta send carries its first counts, holds a reference
+mapping until its dependency's entry is delivered, and stamps
+`ProbeManifest.dependencies_listed` once the startup listing and the mappings
+recorded before it ended are delivered. `CONTEXT.md` has the term.
+
+Landing order, one chunk and one commit each, built with `/chunked-build`:
+
+0. Wire and codec: `ProbeManifest.dependencies_listed`.
+1. Agent: counting generations in `DependencyRegistry`, delivery recorded when
+   every delta send of a flush is confirmed, entries and mappings held until
+   then, the flag, and an empty manifest to carry it when nothing else goes.
+2. Testkit and stub collector: a dependency is judged once its entry arrives;
+   list queries and `absentReferences()` throw until every instance sent the
+   flag; `awaitDependenciesListed`; the stub logs the flag.
+3. `yukon-collector`: bindings bump, `LogSink` logs the flag.
+
+Recorded, not planned: `yukon-server` still answers with an empty list for an
+instance whose listing has not arrived; gating on the flag is its follow-up.
+The testkit's `awaitSettled` counts delta batches the same way and keeps the
+split-flush weakness for hit totals.
 
 ### The agent refuses to start without include rules: landed
 
