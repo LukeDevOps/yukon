@@ -22,6 +22,7 @@ import io.github.lukedevops.yukon.proto.EndpointDiscoverySource as ProtoEndpoint
 import io.github.lukedevops.yukon.proto.EndpointLocation as ProtoEndpointLocation
 import io.github.lukedevops.yukon.proto.ExternalClass as ProtoExternalClass
 import io.github.lukedevops.yukon.proto.GeneratedBy as ProtoGeneratedBy
+import io.github.lukedevops.yukon.proto.LineRange as ProtoLineRange
 import io.github.lukedevops.yukon.proto.ProbeDelta as ProtoProbeDelta
 import io.github.lukedevops.yukon.proto.ProbeKind as ProtoProbeKind
 import io.github.lukedevops.yukon.proto.ProbeLocation as ProtoProbeLocation
@@ -237,6 +238,7 @@ object ProtoPayloadCodec {
                 .setLine(site.line)
                 .addAllOutcomes(site.outcomes.map { toProto(it) })
         site.siteKey?.let { builder.siteKey = it }
+        site.guard?.let { builder.guard = it }
         return builder.build()
     }
 
@@ -246,6 +248,7 @@ object ProtoPayloadCodec {
             siteKey = if (site.hasSiteKey()) site.siteKey else null,
             line = site.line,
             outcomes = site.outcomesList.map { fromProto(it) },
+            guard = if (site.hasGuard()) site.guard else null,
         )
 
     private fun toProto(outcome: BranchOutcome): ProtoBranchOutcome {
@@ -254,6 +257,8 @@ object ProtoPayloadCodec {
                 .newBuilder()
                 .setBranchIndex(outcome.branchIndex)
                 .setRole(toProto(outcome.role))
+                .addAllGuardedLines(outcome.guardedLines.map { toProto(it) })
+                .addAllPartlyGuardedLines(outcome.partlyGuardedLines.map { toProto(it) })
         outcome.caseKey?.let { builder.caseKey = it }
         return builder.build()
     }
@@ -263,7 +268,19 @@ object ProtoPayloadCodec {
             branchIndex = outcome.branchIndex,
             role = fromProto(outcome.role),
             caseKey = if (outcome.hasCaseKey()) outcome.caseKey else null,
+            guardedLines = outcome.guardedLinesList.map { fromProto(it) },
+            partlyGuardedLines = outcome.partlyGuardedLinesList.map { fromProto(it) },
         )
+
+    private fun toProto(range: LineRange): ProtoLineRange =
+        ProtoLineRange
+            .newBuilder()
+            .setSourceFile(range.sourceFile)
+            .setFirstLine(range.firstLine)
+            .setLastLine(range.lastLine)
+            .build()
+
+    private fun fromProto(range: ProtoLineRange): LineRange = LineRange(range.sourceFile, range.firstLine, range.lastLine)
 
     private fun toProto(role: BranchRole): ProtoBranchRole =
         when (role) {
@@ -296,16 +313,19 @@ object ProtoPayloadCodec {
             }
         }
 
-    private fun toProto(edge: CallEdge): ProtoCallEdge =
-        ProtoCallEdge
-            .newBuilder()
-            .setClassName(edge.className)
-            .setMethodName(edge.methodName)
-            .setMethodDescriptor(edge.methodDescriptor)
-            .setVirtual(edge.virtual)
-            .setKind(toProto(edge.kind))
-            .setCapturedCount(edge.capturedCount)
-            .build()
+    private fun toProto(edge: CallEdge): ProtoCallEdge {
+        val builder =
+            ProtoCallEdge
+                .newBuilder()
+                .setClassName(edge.className)
+                .setMethodName(edge.methodName)
+                .setMethodDescriptor(edge.methodDescriptor)
+                .setVirtual(edge.virtual)
+                .setKind(toProto(edge.kind))
+                .setCapturedCount(edge.capturedCount)
+        edge.guard?.let { builder.guard = it }
+        return builder.build()
+    }
 
     private fun fromProto(edge: ProtoCallEdge): CallEdge =
         CallEdge(
@@ -315,6 +335,7 @@ object ProtoPayloadCodec {
             virtual = edge.virtual,
             kind = fromProto(edge.kind),
             capturedCount = edge.capturedCount,
+            guard = if (edge.hasGuard()) edge.guard else null,
         )
 
     private fun toProto(kind: CallEdgeKind): ProtoCallEdgeKind =

@@ -6,6 +6,7 @@ import io.github.lukedevops.yukon.export.BranchSite
 import io.github.lukedevops.yukon.export.CallEdge
 import io.github.lukedevops.yukon.export.DeclaredClass
 import io.github.lukedevops.yukon.export.DeclaredMethod
+import io.github.lukedevops.yukon.export.LineRange
 import io.github.lukedevops.yukon.export.ResourceAttributes
 import io.github.lukedevops.yukon.export.StaticallyUnsafeClass
 import io.github.lukedevops.yukon.export.UnprobedClass
@@ -146,15 +147,25 @@ class StaticBaselineChunkerTest {
     }
 
     @Test
-    fun `branch sites add one for the site and one per outcome to a class's weight`() {
-        // "First" weighs 1 method + 1 class record = 2, plus one site with two outcomes = 3, so 5.
-        // A cap of 6 cannot also hold "Second", which weighs 2.
+    fun `branch sites add one for the site, one per outcome and one per line range to a class's weight`() {
+        // "First" weighs 1 method + 1 class record = 2, plus one site with two outcomes = 3, plus
+        // two guarded ranges and one partly guarded range = 3, so 8. A cap of 9 cannot also hold
+        // "Second", which weighs 2, and without the ranges the two would share a chunk.
         val site =
             BranchSite(
                 siteIndex = 0,
                 siteKey = null,
                 line = 1,
-                outcomes = listOf(BranchOutcome(0, BranchRole.TAKEN), BranchOutcome(1, BranchRole.FALL_THROUGH)),
+                outcomes =
+                    listOf(
+                        BranchOutcome(
+                            0,
+                            BranchRole.TAKEN,
+                            guardedLines = listOf(LineRange("A.kt", 2, 3), LineRange("B.kt", 7, 7)),
+                            partlyGuardedLines = listOf(LineRange("A.kt", 1, 1)),
+                        ),
+                        BranchOutcome(1, BranchRole.FALL_THROUGH),
+                    ),
             )
         val first = DeclaredClass("First", listOf(DeclaredMethod("m", "()V", branchSites = listOf(site))))
         val second = DeclaredClass("Second", listOf(DeclaredMethod("m", "()V")))
@@ -164,7 +175,7 @@ class StaticBaselineChunkerTest {
                 StaticScanResult(listOf(first, second), emptyList(), emptyList()),
                 resource,
                 scannedAt = 1L,
-                maxEntriesPerChunk = 6,
+                maxEntriesPerChunk = 9,
             )
 
         assertEquals(listOf(listOf("First"), listOf("Second")), chunks.map { c -> c.declaredClasses.map { it.className } })

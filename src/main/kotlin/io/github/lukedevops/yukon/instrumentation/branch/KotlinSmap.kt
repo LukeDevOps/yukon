@@ -28,10 +28,15 @@ internal data class SmapEntry(
     }
 }
 
-/** Where an output line's bytecode came from: [inputLine] of [originClassName], dotted. */
+/**
+ * Where an output line's bytecode came from: [inputLine] of [originClassName], dotted, in the file
+ * the `*F` entry names, [sourceFile]. [sourceFile] is a file name such as `Collections.kt`, never a
+ * path.
+ */
 data class SmapOrigin(
     val inputLine: Int,
     val originClassName: String,
+    val sourceFile: String,
 )
 
 /**
@@ -42,6 +47,7 @@ data class SmapOrigin(
 class KotlinSmap internal constructor(
     private val entries: List<SmapEntry>,
     private val fileNamesById: Map<Int, String>,
+    private val sourceFilesById: Map<Int, String> = emptyMap(),
 ) {
     /**
      * Where [outputLine] came from, or null when it is the class's own code: either no entry
@@ -54,7 +60,7 @@ class KotlinSmap internal constructor(
             val inputLine = entry.inputStartLine + index
             if (entry.fileId == 1 && inputLine == outputLine) return null
             val fileName = fileNamesById[entry.fileId] ?: return null
-            return SmapOrigin(inputLine, fileName.replace('/', '.'))
+            return SmapOrigin(inputLine, fileName.replace('/', '.'), sourceFilesById[entry.fileId] ?: fileName)
         }
         return null
     }
@@ -80,9 +86,10 @@ object KotlinSmapParser {
         i++
 
         val fileNamesById = mutableMapOf<Int, String>()
-        i = parseFileSection(lines, i, fileNamesById)
+        val sourceFilesById = mutableMapOf<Int, String>()
+        i = parseFileSection(lines, i, fileNamesById, sourceFilesById)
 
-        if (i >= lines.size || lines[i] != "*L") return KotlinSmap(emptyList(), fileNamesById)
+        if (i >= lines.size || lines[i] != "*L") return KotlinSmap(emptyList(), fileNamesById, sourceFilesById)
         i++
 
         val entries = mutableListOf<SmapEntry>()
@@ -103,7 +110,7 @@ object KotlinSmapParser {
             }
             i++
         }
-        return KotlinSmap(entries, fileNamesById)
+        return KotlinSmap(entries, fileNamesById, sourceFilesById)
     }
 
     /** The index right after a `*S Kotlin` line, or null if the SMAP has no such stratum. */
@@ -115,24 +122,32 @@ object KotlinSmapParser {
     /**
      * Reads `*F` file entries starting at [start], until the `*L` line, returning the index of
      * that line. A `+ <id> <name>` entry is followed by a path line, kotlinc's spelling of the
-     * origin class's internal name; a bare `<id> <name>` entry has no path line to skip.
+     * origin class's internal name; a bare `<id> <name>` entry has no path line to skip. Each
+     * entry's `<name>` goes into [sourceFilesById], and its path, or its name when it has no path,
+     * into [fileNamesById].
      */
     private fun parseFileSection(
         lines: List<String>,
         start: Int,
         fileNamesById: MutableMap<Int, String>,
+        sourceFilesById: MutableMap<Int, String>,
     ): Int {
         var i = start
         while (i < lines.size && lines[i] != "*L") {
             val line = lines[i]
             if (line.startsWith("+ ")) {
-                val id = line.substring(2).substringBefore(' ').toIntOrNull()
+                val entry = line.substring(2)
+                val id = entry.substringBefore(' ').toIntOrNull()
+                if (id != null) sourceFilesById[id] = entry.substringAfter(' ', "")
                 i++
                 if (id != null && i < lines.size) fileNamesById[id] = lines[i]
                 i++
             } else {
                 val id = line.substringBefore(' ').toIntOrNull()
-                if (id != null) fileNamesById[id] = line.substringAfter(' ', line)
+                if (id != null) {
+                    fileNamesById[id] = line.substringAfter(' ', line)
+                    sourceFilesById[id] = line.substringAfter(' ', line)
+                }
                 i++
             }
         }

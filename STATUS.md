@@ -75,6 +75,29 @@ counts in both, and chunk 3 extends it to line ranges. ADR 0037 was amended
 before this chunk to list outcomes inside their site, since the baseline has
 no BRANCH probes to carry them.
 
+Chunk 3 landed: `GuardAnalysis` builds each method's control-flow graph
+with one node per kept outcome, computes dominators, and gives each outcome
+its guarded and partly guarded `LineRange`s and each site and call edge its
+guard, in the manifest and the baseline alike. `InstructionRecorder` sits in
+front of the analyser's visitor, so call candidates and graph nodes share one
+instruction ordinal, pinned by `InstructionRecorderTest`. Facts the design did
+not predict: a suspend function's label switch keeps only its first case in
+the graph (recorded in ADR 0037), since the resume cases rejoin mid-method and
+would bypass every outcome; and `ExportScheduler`'s rider packing also had to
+count site weight. The review made ranges merge across lines with no code, so
+a blank line or comment no longer splits an arm. A same-file inline function
+called from both arms leaves its line partly guarded by each, which is true.
+
+Benchmark after chunk 3, same settings:
+
+| Corpus | Baseline ms | Chunk 3 ms | Change |
+|---|---|---|---|
+| demo | 5.811 | 7.362 ± 0.107 | +27% |
+| demo-spring | 0.124 | 0.132 ± 0.001 | +6% |
+| scala | 1.045 | 1.026 ± 0.013 | none |
+| spring-webmvc | 41.239 | 48.645 ± 0.346 | +18% |
+| ktor-server-core | 35.488 | 39.825 ± 0.170 | +12% |
+
 Left for later, in `yukon-server`'s STATUS: folding a dead method's branches
 into its row, rooting clusters at a never-taken outcome, telling
 real-but-uninteresting outcomes apart, and redaction at the server's ingest.

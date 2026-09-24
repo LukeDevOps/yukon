@@ -30,29 +30,39 @@ class KotlinSmapParserTest {
         val smap = KotlinSmapParser.parse(demoServerMainSmap)
 
         assertEquals(
-            SmapOrigin(78, "io.github.lukedevops.demo.server.DemoServerMainKt"),
+            SmapOrigin(78, "io.github.lukedevops.demo.server.DemoServerMainKt", "DemoServerMain.kt"),
             smap.originOf(134),
         )
         assertEquals(
-            SmapOrigin(78, "io.github.lukedevops.demo.server.DemoServerMainKt"),
+            SmapOrigin(78, "io.github.lukedevops.demo.server.DemoServerMainKt", "DemoServerMain.kt"),
             smap.originOf(135),
         )
+    }
+
+    @Test
+    fun `an origin carries its SMAP file entry's file name beside the origin class`() {
+        val smap = KotlinSmapParser.parse(demoServerMainSmap)
+
+        assertEquals("_Collections.kt", smap.originOf(136)?.sourceFile)
+        assertEquals("DemoServerMain.kt", smap.originOf(134)?.sourceFile)
+        val bare = KotlinSmapParser.parse("SMAP\nFoo.kt\nKotlin\n*S Kotlin\n*F\n1 Foo.kt\n2 Bar.kt\n*L\n1#1,10:1\n7#2:20\n*E\n")
+        assertEquals(SmapOrigin(7, "Bar.kt", "Bar.kt"), bare.originOf(20), "a bare entry has no path, so its name is both")
     }
 
     @Test
     fun `a single-line entry with no explicit repeat count maps one output line`() {
         val smap = KotlinSmapParser.parse(demoServerMainSmap)
 
-        assertEquals(SmapOrigin(1563, "kotlin.collections.CollectionsKt___CollectionsKt"), smap.originOf(136))
+        assertEquals(SmapOrigin(1563, "kotlin.collections.CollectionsKt___CollectionsKt", "_Collections.kt"), smap.originOf(136))
     }
 
     @Test
     fun `a multi-line entry maps a contiguous run of output lines to a contiguous run of input lines`() {
         val smap = KotlinSmapParser.parse(demoServerMainSmap)
 
-        assertEquals(SmapOrigin(1634, "kotlin.collections.CollectionsKt___CollectionsKt"), smap.originOf(137))
-        assertEquals(SmapOrigin(1635, "kotlin.collections.CollectionsKt___CollectionsKt"), smap.originOf(138))
-        assertEquals(SmapOrigin(1636, "kotlin.collections.CollectionsKt___CollectionsKt"), smap.originOf(139))
+        assertEquals(SmapOrigin(1634, "kotlin.collections.CollectionsKt___CollectionsKt", "_Collections.kt"), smap.originOf(137))
+        assertEquals(SmapOrigin(1635, "kotlin.collections.CollectionsKt___CollectionsKt", "_Collections.kt"), smap.originOf(138))
+        assertEquals(SmapOrigin(1636, "kotlin.collections.CollectionsKt___CollectionsKt", "_Collections.kt"), smap.originOf(139))
     }
 
     @Test
@@ -65,7 +75,7 @@ class KotlinSmapParserTest {
 
         val smap = KotlinSmapParser.parse(debug)
 
-        assertEquals(SmapOrigin(60, "com.example.BarKt"), smap.originOf(21), "file id 2 must be inherited from the entry above")
+        assertEquals(SmapOrigin(60, "com.example.BarKt", "Bar.kt"), smap.originOf(21), "file id 2 must be inherited from the entry above")
     }
 
     @Test
@@ -79,8 +89,8 @@ class KotlinSmapParserTest {
 
         val smap = KotlinSmapParser.parse(debug)
 
-        for (line in 100..102) assertEquals(SmapOrigin(10, "com.example.BarKt"), smap.originOf(line), "output line $line")
-        for (line in 103..105) assertEquals(SmapOrigin(11, "com.example.BarKt"), smap.originOf(line), "output line $line")
+        for (line in 100..102) assertEquals(SmapOrigin(10, "com.example.BarKt", "Bar.kt"), smap.originOf(line), "output line $line")
+        for (line in 103..105) assertEquals(SmapOrigin(11, "com.example.BarKt", "Bar.kt"), smap.originOf(line), "output line $line")
         assertNull(smap.originOf(106), "past the last block")
     }
 
@@ -88,7 +98,7 @@ class KotlinSmapParserTest {
     fun `kotlinc's own fake line for an inline-lambda marker resolves to its own synthetic file`() {
         val smap = KotlinSmapParser.parse(demoServerMainSmap)
 
-        assertEquals(SmapOrigin(1, "kotlin.jvm.internal.FakeKt"), smap.originOf(142))
+        assertEquals(SmapOrigin(1, "kotlin.jvm.internal.FakeKt", "fake.kt"), smap.originOf(142))
     }
 
     @Test

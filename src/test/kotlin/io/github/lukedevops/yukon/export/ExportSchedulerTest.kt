@@ -1299,6 +1299,33 @@ class ExportSchedulerTest {
     }
 
     @Test
+    fun `packing an endpoint chunk onto a class chunk counts the class's branch sites and line ranges against the cap`() {
+        val registry = ProbeRegistry()
+        val site =
+            BranchSite(
+                siteIndex = 0,
+                siteKey = null,
+                line = 1,
+                outcomes =
+                    listOf(
+                        BranchOutcome(0, BranchRole.TAKEN, guardedLines = listOf(LineRange("A.kt", 2, 2))),
+                        BranchOutcome(1, BranchRole.FALL_THROUGH, partlyGuardedLines = listOf(LineRange("A.kt", 1, 1))),
+                    ),
+            )
+        registry.register("com.example.Foo", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "m", "()V", 1, branchSites = listOf(site))))
+        val endpointRegistry = EndpointRegistry()
+        endpointRegistry.register(key = "k", framework = "fake", verb = "GET", verbatimTemplate = "/x")
+        val exporter = RecordingExporter()
+        // The class alone weighs 7 (1 probe + 1 site + 2 outcomes + 2 line ranges + 1 for its own
+        // ClassLocation record), exactly the cap, so the endpoint cannot share its chunk.
+        val scheduler = ExportScheduler(config, resource, registry, endpointRegistry, exporter, maxManifestEntriesPerChunk = 7)
+
+        scheduler.flush()
+
+        assertEquals(2, exporter.manifests.size, "the endpoint must go out in a chunk of its own")
+    }
+
+    @Test
     fun `a sweep that throws is logged and the flush still sends, on that flush and the next`() {
         val registry = ProbeRegistry()
         val exporter = RecordingExporter()

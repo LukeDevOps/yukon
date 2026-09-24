@@ -513,12 +513,16 @@ class ExportScheduler(
         var manifest: ProbeManifest,
         val probeSnapshot: ProbeRegistry.ManifestSnapshot?,
     ) {
-        // Every list the chunker weighted, call edges and references included, so packing a rider
-        // onto this one cannot overshoot the cap. A bucket missing here reads as weightless and
-        // absorbs a full chunk; edges and references nest inside each probe location or class
-        // record rather than sitting beside it, which is why they need summing rather than a list size.
+        // Every list the chunker weighted, call edges, references and branch sites included, so
+        // packing a rider onto this one cannot overshoot the cap. A bucket missing here reads as
+        // weightless and absorbs a full chunk; edges, references and sites nest inside each probe
+        // location or class record rather than sitting beside it, which is why they need summing
+        // rather than a list size.
         var size =
-            manifest.probes.size + manifest.probes.sumOf { it.calls.size + it.referencedClasses.size } +
+            manifest.probes.size +
+                manifest.probes.sumOf { probe ->
+                    probe.calls.size + probe.referencedClasses.size + probe.branchSites.sumOf { it.chunkWeight }
+                } +
                 manifest.skippedClasses.size + manifest.endpoints.size + manifest.disabledEndpointModules.size +
                 manifest.classLocations.size + manifest.classReferences.sumOf { it.referencedClasses.size } +
                 manifest.unreportedClasses.size + manifest.dependencies.size + manifest.externalClasses.size

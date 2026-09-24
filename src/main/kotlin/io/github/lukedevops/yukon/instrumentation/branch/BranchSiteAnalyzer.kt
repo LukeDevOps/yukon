@@ -110,13 +110,16 @@ object BranchSiteAnalyzer {
         val handlerForwarders: List<HandlerForwarder> = emptyList(),
         /** The class's own name, dotted, as its header names it. Empty on [EMPTY]. Every branch key and site key digests it. */
         val className: String = "",
+        /** What [GuardAnalysis] found for each kept site, by site index. See ADR 0037. */
+        private val siteGuards: Map<Int, SiteGuards> = emptyMap(),
     ) {
         /**
          * Each kept site of [sites], in site index order, with its outcomes numbered, given roles
-         * and keyed by [KeptBranchSite.of]. This is the one numbering both the manifest's BRANCH
-         * and METHOD probes and the static baseline's declared methods use. See ADR 0037.
+         * and keyed by [KeptBranchSite.of], and with its guard and guarded lines. This is the one
+         * numbering both the manifest's BRANCH and METHOD probes and the static baseline's declared
+         * methods use. See ADR 0037.
          */
-        val keptSites: List<KeptBranchSite> by lazy { KeptBranchSite.of(sites, className) }
+        val keptSites: List<KeptBranchSite> by lazy { KeptBranchSite.of(sites, className, siteGuards) }
 
         private val keptSitesByMethod by lazy { keptSites.groupBy { it.site.methodName to it.site.methodDescriptor } }
 
@@ -170,7 +173,7 @@ object BranchSiteAnalyzer {
 
         /**
          * The in-scope call edges read from this method's own bytecode, empty for any method that
-         * does not get a METHOD probe. See ADR 0024.
+         * does not get a METHOD probe. Each edge carries its guard. See ADRs 0024 and 0037.
          */
         fun callsOf(
             name: String,
@@ -253,6 +256,10 @@ object BranchSiteAnalyzer {
      * [functionalInterface] is the internal name of the interface such an `invokedynamic` makes a
      * lambda for, the return type of its `invokedType`, and null for every other candidate. The
      * forwarder table keys on it (ADR 0035).
+     *
+     * [ordinal] is the [InstructionRecorder] ordinal of the instruction that recorded the
+     * candidate, and [newOrdinal] that of the `new` an `<init>` call completes. Each is -1 when
+     * the method was not recorded or there is no such instruction. See ADR 0037.
      */
     internal data class RawCandidate(
         val owner: String,
@@ -262,6 +269,8 @@ object BranchSiteAnalyzer {
         val kind: CallEdgeKind = CallEdgeKind.CALL,
         val capturedCount: Int = 0,
         val functionalInterface: String? = null,
+        val ordinal: Int = -1,
+        val newOrdinal: Int = -1,
     )
 
     /** One resolved cross-class `$default` target: see [resolveCrossClassDefaultTarget]. */
@@ -283,13 +292,22 @@ object BranchSiteAnalyzer {
      * outside, which would make it eligible for substitution as a pass-through in its own right.
      * `GETFIELD`/`PUTFIELD` are excluded from every owner, since an instance field access implies
      * nothing beyond the constructor edge the object's creation already carries. See ADR 0024.
+     *
+     * [instructionOrdinal] gives the ordinal of the instruction being visited, from the
+     * [InstructionRecorder] in front of this visitor, or -1 when there is none. Each candidate
+     * carries it, and an `<init>` call also carries the ordinal of the latest unfinished `new` of
+     * its owner. See ADR 0037.
      */
     private open class CallCandidateMethodVisitor(
         private val ownerInternalName: String,
         private val candidatesForMethod: MutableList<RawCandidate>,
         referencesForMethod: MutableSet<String>,
+        private val instructionOrdinal: () -> Int = { -1 },
     ) : MethodVisitor(Opcodes.ASM9) {
         private val references = ReferenceCollector(referencesForMethod)
+
+        /** Each `new` not yet completed by its `<init>` call, as its type and ordinal, latest last. */
+        private val pendingNews = ArrayList<Pair<String, Int>>()
 
         override fun visitMethodInsn(
             opcode: Int,
@@ -301,7 +319,14 @@ object BranchSiteAnalyzer {
             references.internalName(owner)
             references.descriptor(descriptor)
             val virtualRaw = opcode == Opcodes.INVOKEVIRTUAL || opcode == Opcodes.INVOKEINTERFACE
-            candidatesForMethod += RawCandidate(owner, name, descriptor, virtualRaw)
+            val newOrdinal = if (opcode == Opcodes.INVOKESPECIAL && name == "<init>") takePendingNew(owner) else -1
+            candidatesForMethod +=
+                RawCandidate(owner, name, descriptor, virtualRaw, ordinal = instructionOrdinal(), newOrdinal = newOrdinal)
+        }
+
+        private fun takePendingNew(owner: String): Int {
+            val index = pendingNews.indexOfLast { it.first == owner }
+            return if (index < 0) -1 else pendingNews.removeAt(index).second
         }
 
         override fun visitInvokeDynamicInsn(
@@ -313,7 +338,9 @@ object BranchSiteAnalyzer {
             references.descriptor(descriptor)
             references.handle(bootstrapMethodHandle)
             bootstrapMethodArguments.forEach(references::constant)
-            lambdaCandidateOrNull(descriptor, bootstrapMethodHandle, bootstrapMethodArguments)?.let { candidatesForMethod += it }
+            lambdaCandidateOrNull(descriptor, bootstrapMethodHandle, bootstrapMethodArguments)?.let {
+                candidatesForMethod += it.copy(ordinal = instructionOrdinal())
+            }
         }
 
         override fun visitTypeInsn(
@@ -321,6 +348,10 @@ object BranchSiteAnalyzer {
             type: String,
         ) {
             references.internalName(type)
+            if (opcode == Opcodes.NEW) {
+                val ordinal = instructionOrdinal()
+                if (ordinal >= 0) pendingNews += type to ordinal
+            }
         }
 
         override fun visitMultiANewArrayInsn(
@@ -397,7 +428,7 @@ object BranchSiteAnalyzer {
             references.descriptor(fieldDescriptor)
             if (owner == ownerInternalName) return
             if (opcode != Opcodes.GETSTATIC && opcode != Opcodes.PUTSTATIC) return
-            candidatesForMethod += RawCandidate(owner, "<clinit>", "()V", virtualRaw = false)
+            candidatesForMethod += RawCandidate(owner, "<clinit>", "()V", virtualRaw = false, ordinal = instructionOrdinal())
         }
     }
 
@@ -522,6 +553,7 @@ object BranchSiteAnalyzer {
         val eligibleMethodKeys = mutableSetOf<Pair<String, String>>()
         val droppedOrdinalsByMethod = mutableMapOf<Pair<String, String>, MutableSet<Int>>()
         val rawReferencesByMethod = mutableMapOf<Pair<String, String>, MutableSet<String>>()
+        val instructionsByMethod = mutableMapOf<Pair<String, String>, () -> MethodInstructions>()
         val rawClassReferences = LinkedHashSet<String>()
         val classReferenceCollector = ReferenceCollector(rawClassReferences)
 
@@ -653,38 +685,48 @@ object BranchSiteAnalyzer {
                         }
                     }
 
-                    return DefaultSiteAwareMethodVisitor(
-                        name = name,
-                        descriptor = descriptor,
-                        isStatic = access and Opcodes.ACC_STATIC != 0,
-                        eligible = eligible,
-                        defaultShaped = defaultShaped,
-                        ownerInternalName = internalClassName,
-                        ownerSuperInternalName = superInternalName,
-                        localNamesForMethod = localNamesForMethod,
-                        sites = sites,
-                        firstLines = firstLines,
-                        inlineMethods = inlineMethods,
-                        onSiteIndexUsed = { nextSiteIndex++ },
-                        nextSiteIndex = { nextSiteIndex },
-                        onDefaultCandidate = { defaultCandidates += it },
-                        candidatesForMethod = candidatesForMethod,
-                        referencesForMethod = referencesForMethod,
-                        smap = { smap },
-                        includePackages = includePackages,
-                        excludePackages = excludePackages,
-                        onSiteDropped = { ordinal -> droppedOrdinalsByMethod.getOrPut(name to descriptor) { mutableSetOf() } += ordinal },
-                        onLineNumberSeen = {
-                            hasLineNumbers = true
-                            methodsWithLineNumbers += name to descriptor
-                        },
-                    )
+                    fun siteVisitor(instructionOrdinal: () -> Int) =
+                        DefaultSiteAwareMethodVisitor(
+                            name = name,
+                            descriptor = descriptor,
+                            isStatic = access and Opcodes.ACC_STATIC != 0,
+                            eligible = eligible,
+                            defaultShaped = defaultShaped,
+                            ownerInternalName = internalClassName,
+                            ownerSuperInternalName = superInternalName,
+                            localNamesForMethod = localNamesForMethod,
+                            sites = sites,
+                            firstLines = firstLines,
+                            inlineMethods = inlineMethods,
+                            onSiteIndexUsed = { nextSiteIndex++ },
+                            nextSiteIndex = { nextSiteIndex },
+                            onDefaultCandidate = { defaultCandidates += it },
+                            candidatesForMethod = candidatesForMethod,
+                            referencesForMethod = referencesForMethod,
+                            smap = { smap },
+                            includePackages = includePackages,
+                            excludePackages = excludePackages,
+                            onSiteDropped = { ordinal ->
+                                droppedOrdinalsByMethod.getOrPut(name to descriptor) { mutableSetOf() } += ordinal
+                            },
+                            onLineNumberSeen = {
+                                hasLineNumbers = true
+                                methodsWithLineNumbers += name to descriptor
+                            },
+                            instructionOrdinal = instructionOrdinal,
+                        )
+
+                    if (!eligible) return siteVisitor { -1 }
+                    return InstructionRecorder({ recorder -> siteVisitor(recorder::lastOrdinal) }) {
+                        instructionsByMethod[name to descriptor] = it
+                    }
                 }
             }
 
         ClassReader(classBytes).accept(classVisitor, ClassReader.SKIP_FRAMES)
 
         attachConditionFingerprints(sites, classBytes)
+        val guardsByMethod = analyzeGuards(sites, instructionsByMethod, sourceFile, smap, includePackages, excludePackages)
 
         val defaultSites = resolveDefaultSites(internalClassName, classAccess, methodAccess, localNames, defaultCandidates)
         val resolved = defaultSites.mapTo(mutableSetOf()) { it.defaultName to it.defaultDescriptor }
@@ -715,6 +757,8 @@ object BranchSiteAnalyzer {
                 tableCache = tableCache,
                 rawReferencesByMethod = rawReferencesByMethod,
                 handlerInterfaces = handlerInterfaces,
+                guardsByMethod = guardsByMethod,
+                isOwnClassBodyClass = hasEnclosingMethod,
             )
         val references =
             placeReferences(
@@ -756,7 +800,54 @@ object BranchSiteAnalyzer {
             bodyClass.sourceName,
             resolvedCalls.handlerForwarders,
             internalClassName.replace('/', '.'),
+            guardsByMethod.values
+                .flatMap { it.sites.entries }
+                .associate { it.key to it.value },
         )
+    }
+
+    /**
+     * Runs [GuardAnalysis] over each recorded method that has at least one kept site. A method
+     * without one has no guarded code and every guard in it is absent, so its graph is never
+     * built. Each method's tracked instructions are matched to its entries in [sites] in encounter
+     * order, the same order [DefaultSiteAwareMethodVisitor.recordSite] numbers them in.
+     *
+     * A line of the class's own code is named in [sourceFile], or with an empty file name when the
+     * class has none. A line inside an inlined copy whose origin class is in scope is named at its
+     * origin line in the origin's own file, through [smap]. A line from an out-of-scope origin is
+     * not named. See ADR 0037.
+     */
+    private fun analyzeGuards(
+        sites: List<BranchSite>,
+        instructionsByMethod: Map<Pair<String, String>, () -> MethodInstructions>,
+        sourceFile: String?,
+        smap: KotlinSmap,
+        includePackages: List<String>,
+        excludePackages: List<String>,
+    ): Map<Pair<String, String>, MethodGuards> {
+        if (sites.none { it.dropReason == null }) return emptyMap()
+        val firstBranchIndexes = KeptBranchSite.firstBranchIndexes(sites)
+        val positionsByMethod = mutableMapOf<Pair<String, String>, MutableList<Int>>()
+        sites.forEachIndexed { position, site ->
+            positionsByMethod.getOrPut(site.methodName to site.methodDescriptor) { mutableListOf() } += position
+        }
+        val ownFile = sourceFile ?: ""
+
+        fun sourceLineOf(outputLine: Int): SourceLine? {
+            val origin = smap.originOf(outputLine) ?: return SourceLine(ownFile, outputLine)
+            if (!TypeMatchPolicy.isIncluded(origin.originClassName, includePackages, excludePackages)) return null
+            return SourceLine(origin.sourceFile, origin.inputLine)
+        }
+
+        val result = mutableMapOf<Pair<String, String>, MethodGuards>()
+        for ((methodKey, positions) in positionsByMethod) {
+            if (positions.all { sites[it].dropReason != null }) continue
+            val instructions = instructionsByMethod[methodKey]?.invoke() ?: continue
+            val methodSites = positions.map { sites[it] }
+            val methodFirstIndexes = IntArray(positions.size) { firstBranchIndexes[positions[it]] }
+            GuardAnalysis.analyze(instructions, methodSites, methodFirstIndexes, ::sourceLineOf)?.let { result[methodKey] = it }
+        }
+        return result
     }
 
     /**
@@ -1040,6 +1131,15 @@ object BranchSiteAnalyzer {
      *
      * With [handlerInterfaces] given, the same walk also finds the forwarder table's entries. See
      * [findHandlerForwarders] and ADR 0035.
+     *
+     * Each edge carries the guard of the entry point's instruction that recorded its candidate,
+     * from [guardsByMethod] (ADR 0037). For an `<init>` call on a body class, that instruction is
+     * the `new` the call completes. [isOwnClassBodyClass] says whether this class is a body class
+     * itself. Every edge the walk finds below a candidate keeps that candidate's guard, so an edge
+     * that takes a pass-through's place keeps the guard of the call to the pass-through. The guard
+     * is part of the visited key and of the edge, so a callee reached under two guards gives two
+     * edges. The forwarder table's walk sets no guard, since its candidates are not an entry
+     * point's own.
      */
     private fun resolveCallEdges(
         internalClassName: String,
@@ -1052,6 +1152,8 @@ object BranchSiteAnalyzer {
         tableCache: CrossClassTableCache? = null,
         rawReferencesByMethod: Map<Pair<String, String>, Set<String>> = emptyMap(),
         handlerInterfaces: Set<String> = emptySet(),
+        guardsByMethod: Map<Pair<String, String>, MethodGuards> = emptyMap(),
+        isOwnClassBodyClass: Boolean = false,
     ): ResolvedCalls {
         val crossClassMethodTables = mutableMapOf<String, MethodTable?>()
 
@@ -1090,15 +1192,26 @@ object BranchSiteAnalyzer {
         val referencesByMethod = mutableMapOf<Pair<String, String>, Set<String>>()
         val reachedUnprobedBodyClasses = LinkedHashSet<String>()
 
+        fun isBodyClass(ownerInternalName: String): Boolean =
+            if (ownerInternalName == internalClassName) {
+                isOwnClassBodyClass
+            } else {
+                TypeMatchPolicy.isIncluded(ownerInternalName.replace('/', '.'), includePackages, excludePackages) &&
+                    methodTableFor(ownerInternalName)?.hasEnclosingMethod == true
+            }
+
         // Walks candidates by the rules above. The references and same-class pass-throughs the
-        // walk passes through go into the two sets it is given.
+        // walk passes through go into the two sets it is given. [guardOf] names each top-level
+        // candidate's guard.
         fun walk(
             candidates: List<RawCandidate>,
             references: MutableSet<String>,
             passThroughs: MutableSet<Pair<String, String>>,
+            guardOf: (RawCandidate) -> Int?,
         ): Set<CallEdge> {
             val edges = LinkedHashSet<CallEdge>()
             val visited = mutableSetOf<VisitKey>()
+            var guard: Int? = null
 
             fun edge(
                 owner: String,
@@ -1109,7 +1222,7 @@ object BranchSiteAnalyzer {
                 capturedCount: Int,
             ): CallEdge {
                 val captured = if (capturedCount == 0) 0 else capturedCount.coerceAtMost(parseParameterDescriptors(descriptor).size)
-                return CallEdge(owner, name, descriptor, virtual, kind, captured)
+                return CallEdge(owner, name, descriptor, virtual, kind, captured, guard)
             }
 
             fun visit(
@@ -1120,7 +1233,7 @@ object BranchSiteAnalyzer {
                 kind: CallEdgeKind,
                 capturedCount: Int,
             ) {
-                if (!visited.add(VisitKey(owner, name, descriptor, kind, capturedCount))) return
+                if (!visited.add(VisitKey(owner, name, descriptor, kind, capturedCount, guard))) return
 
                 // A candidate inside a pass-through keeps its own kind when it creates something,
                 // and otherwise takes the kind the pass-through was reached with.
@@ -1206,12 +1319,13 @@ object BranchSiteAnalyzer {
                         if (bodyAccess and BODYLESS_FLAGS != 0) continue
                         if (wouldNotBeProbedByMethodTier(bodyAccess, bodyName, table.isScalaClass)) continue
                         val bodyNonVirtual = bodyAccess and NON_VIRTUAL_FLAGS != 0
-                        edges += CallEdge(dottedOwner, bodyName, bodyDescriptor, !bodyNonVirtual, CallEdgeKind.CREATES)
+                        edges += CallEdge(dottedOwner, bodyName, bodyDescriptor, !bodyNonVirtual, CallEdgeKind.CREATES, guard = guard)
                     }
                 }
             }
 
             for (candidate in candidates) {
+                guard = guardOf(candidate)
                 visit(candidate.owner, candidate.name, candidate.descriptor, candidate.virtualRaw, candidate.kind, candidate.capturedCount)
             }
             return edges
@@ -1220,7 +1334,17 @@ object BranchSiteAnalyzer {
         fun resolveOne(methodKey: Pair<String, String>): List<CallEdge> {
             val references = LinkedHashSet<String>(rawReferencesByMethod[methodKey].orEmpty())
             referencesByMethod[methodKey] = references
-            val edges = walk(rawCandidatesByMethod[methodKey].orEmpty(), references, reachedPassThroughs)
+            val guards = guardsByMethod[methodKey]
+            val guardOf: (RawCandidate) -> Int? =
+                if (guards == null) {
+                    { null }
+                } else {
+                    { candidate ->
+                        val createsBody = candidate.name == "<init>" && candidate.newOrdinal >= 0 && isBodyClass(candidate.owner)
+                        guards.guardAt(if (createsBody) candidate.newOrdinal else candidate.ordinal)
+                    }
+                }
+            val edges = walk(rawCandidatesByMethod[methodKey].orEmpty(), references, reachedPassThroughs, guardOf)
             val (selfName, selfDescriptor) = methodKey
             return edges.filterNot { it.className == dottedClassName && it.methodName == selfName && it.methodDescriptor == selfDescriptor }
         }
@@ -1238,7 +1362,7 @@ object BranchSiteAnalyzer {
                     reachedUnprobedBodyClasses,
                     handlerInterfaces,
                     ::methodTableFor,
-                ) { candidates -> walk(candidates, LinkedHashSet(), mutableSetOf()) }
+                ) { candidates -> walk(candidates, LinkedHashSet(), mutableSetOf()) { null } }
             }
         return ResolvedCalls(edgesByMethod, referencesByMethod, reachedPassThroughs, handlerForwarders)
     }
@@ -1329,13 +1453,14 @@ object BranchSiteAnalyzer {
         return forwarders
     }
 
-    /** One step of [resolveCallEdges]'s walk: a callee, with the kind and captured count it was reached with. */
+    /** One step of [resolveCallEdges]'s walk: a callee, with the kind, captured count and guard it was reached with. */
     private data class VisitKey(
         val owner: String,
         val name: String,
         val descriptor: String,
         val kind: CallEdgeKind,
         val capturedCount: Int,
+        val guard: Int?,
     )
 
     /**
@@ -1594,7 +1719,8 @@ object BranchSiteAnalyzer {
         private val onSiteDropped: (ordinal: Int) -> Unit,
         /** Called once per `LineNumberTable` entry this method carries; see [BranchSiteAnalyzer.Analysis.hasLineNumbers]. */
         private val onLineNumberSeen: () -> Unit,
-    ) : CallCandidateMethodVisitor(ownerInternalName, candidatesForMethod, referencesForMethod) {
+        instructionOrdinal: () -> Int,
+    ) : CallCandidateMethodVisitor(ownerInternalName, candidatesForMethod, referencesForMethod, instructionOrdinal) {
         private var currentLine = -1
         private var lastLabel: Label? = null
         private val inlineMarkerName = "\$i\$f\$$name"

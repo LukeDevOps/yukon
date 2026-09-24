@@ -668,6 +668,95 @@ class ProtoPayloadCodecTest {
         assertEquals(baseline, decoded)
     }
 
+    /**
+     * A site with a guard of zero whose taken outcome guards lines in two files and partly guards a
+     * line of a class with no source file, beside a site with no guard.
+     */
+    private val guardedBranchSites =
+        listOf(
+            BranchSite(
+                siteIndex = 3,
+                siteKey = null,
+                line = 20,
+                outcomes =
+                    listOf(
+                        BranchOutcome(
+                            branchIndex = 9,
+                            role = BranchRole.TAKEN,
+                            guardedLines = listOf(LineRange("Foo.kt", 21, 23), LineRange("Helpers.kt", 4, 4)),
+                            partlyGuardedLines = listOf(LineRange("", 20, 20)),
+                        ),
+                        BranchOutcome(branchIndex = 10, role = BranchRole.FALL_THROUGH),
+                    ),
+                guard = 0,
+            ),
+            sampleBranchSites[0],
+        )
+
+    /** One callee under two guards, a guard of zero, and an edge with no guard. */
+    private val guardedCalls =
+        listOf(
+            CallEdge("com.example.Bar", "baz", "()V", virtual = false, guard = 9),
+            CallEdge("com.example.Bar", "baz", "()V", virtual = false, guard = 10),
+            CallEdge("com.example.Bar", "qux", "()V", virtual = true, kind = CallEdgeKind.CREATES, guard = 0),
+            CallEdge("com.example.Bar", "qux", "()V", virtual = true),
+        )
+
+    @Test
+    fun `guards and guarded line ranges round-trip through the manifest and the baseline, a zero guard included`() {
+        val manifest =
+            ProbeManifest(
+                resource = ResourceAttributes("checkout", "1.0.0", "", null, "run-1"),
+                probes =
+                    listOf(
+                        ProbeLocation(
+                            classId = 0,
+                            probeIndex = 0,
+                            kind = ProbeKind.METHOD,
+                            className = "com.example.Foo",
+                            methodName = "bar",
+                            methodDescriptor = "(I)I",
+                            line = 19,
+                            branchIndex = null,
+                            calls = guardedCalls,
+                            branchSites = guardedBranchSites,
+                        ),
+                    ),
+            )
+        val baseline =
+            StaticBaseline(
+                resource = ResourceAttributes("checkout", null, "instance-1", null, "run-1"),
+                declaredClasses =
+                    listOf(
+                        DeclaredClass(
+                            className = "com.example.Foo",
+                            methods =
+                                listOf(
+                                    DeclaredMethod(
+                                        methodName = "bar",
+                                        methodDescriptor = "(I)I",
+                                        calls = guardedCalls,
+                                        branchSites = guardedBranchSites,
+                                    ),
+                                ),
+                        ),
+                    ),
+                scannedAt = 1000L,
+            )
+
+        val bytes = ProtoPayloadCodec.encode(manifest)
+
+        assertEquals(manifest, ProtoPayloadCodec.decodeProbeManifest(bytes))
+        assertEquals(baseline, ProtoPayloadCodec.decodeStaticBaseline(ProtoPayloadCodec.encode(baseline)))
+        val wire = ProtoProbeManifest.parseFrom(bytes).probesList.single()
+        assertEquals(listOf(true, false), wire.branchSitesList.map { it.hasGuard() }, "a guard of zero is still set")
+        assertEquals(listOf(true, true, true, false), wire.callsList.map { it.hasGuard() })
+        val taken = wire.branchSitesList[0].outcomesList[0]
+        assertEquals(listOf("Foo.kt", "Helpers.kt"), taken.guardedLinesList.map { it.sourceFile })
+        assertEquals(listOf(21 to 23, 4 to 4), taken.guardedLinesList.map { it.firstLine to it.lastLine })
+        assertEquals("", taken.partlyGuardedLinesList.single().sourceFile)
+    }
+
     @Test
     fun `an unspecified branch role on the wire is rejected`() {
         val wire =

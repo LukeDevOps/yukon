@@ -195,14 +195,33 @@ enum class BranchRole {
 }
 
 /**
+ * A run of consecutive source lines in one file, both ends inclusive. [sourceFile] is a file name
+ * as the class's `SourceFile` attribute or its SMAP names it, never a path, and empty when the
+ * class has no `SourceFile`. See ADR 0037.
+ */
+data class LineRange(
+    val sourceFile: String,
+    val firstLine: Int,
+    val lastLine: Int,
+)
+
+/**
  * One outcome of a [BranchSite]. [branchIndex] is the same value the outcome's BRANCH probe carries
  * in a manifest. [caseKey] is set only for [BranchRole.CASE]: the case key value as the switch
  * instruction names it. It is null for a case when the agent could not read the switch's case keys.
+ *
+ * [guardedLines] are the lines that run only through this outcome: the outcome's edge dominates
+ * every instruction the method places on them. [partlyGuardedLines] are the lines where it
+ * dominates some of those instructions and not all. A line inside an in-scope inlined copy is
+ * named at its origin line in the origin's own file, and a line copied from out-of-scope code is
+ * left out. Both lists are empty when the outcome guards nothing. See ADR 0037.
  */
 data class BranchOutcome(
     val branchIndex: Int,
     val role: BranchRole,
     val caseKey: Int? = null,
+    val guardedLines: List<LineRange> = emptyList(),
+    val partlyGuardedLines: List<LineRange> = emptyList(),
 )
 
 /**
@@ -221,19 +240,24 @@ data class BranchOutcome(
  * [outcomes] lists a conditional's [BranchRole.TAKEN] then [BranchRole.FALL_THROUGH] outcome, or a
  * switch's [BranchRole.CASE] outcomes in the order its instruction names them, then
  * [BranchRole.DEFAULT] last.
+ *
+ * [guard] is the [BranchOutcome.branchIndex] of the innermost kept outcome that dominates this
+ * site's jump or switch, or null when nothing in the method stands between its entry and the site.
+ * A dropped site has no outcomes to be a guard, so the guard is the next kept outcome above it.
  */
 data class BranchSite(
     val siteIndex: Int,
     val siteKey: String?,
     val line: Int,
     val outcomes: List<BranchOutcome>,
+    val guard: Int? = null,
 ) {
     /**
-     * What this site adds to a manifest or baseline chunk's weight: one entry for the site and one
-     * per outcome. The chunkers count entries to keep each payload under the collector's size
-     * limit.
+     * What this site adds to a manifest or baseline chunk's weight: one entry for the site, one per
+     * outcome and one per line range in either of an outcome's lists. The chunkers count entries to
+     * keep each payload under the collector's size limit.
      */
-    val chunkWeight: Int get() = 1 + outcomes.size
+    val chunkWeight: Int get() = 1 + outcomes.sumOf { 1 + it.guardedLines.size + it.partlyGuardedLines.size }
 }
 
 /**
@@ -297,6 +321,13 @@ enum class CallEdgeKind {
  * the functional interface's own arguments. It is read from the call site's `invokedType`. A
  * receiver bound by a reference to an instance method is not counted, since it is not in the
  * target's parameter list. 0 on every other edge. See ADR 0034.
+ *
+ * [guard] is the [BranchOutcome.branchIndex] of the innermost kept outcome that dominates the
+ * instruction recording this edge, or null when nothing in the method stands between its entry and
+ * that instruction. That instruction is the invoke, the `invokedynamic`, the `new` of a body class,
+ * or the `getstatic` or `putstatic` that stands for an initializer. An edge that takes the place of
+ * a pass-through keeps the guard of the call to the pass-through. Edges are distinct by every
+ * field, so one callee reached under two guards gives two edges. See ADR 0037.
  */
 data class CallEdge(
     val className: String,
@@ -305,6 +336,7 @@ data class CallEdge(
     val virtual: Boolean,
     val kind: CallEdgeKind = CallEdgeKind.CALL,
     val capturedCount: Int = 0,
+    val guard: Int? = null,
 )
 
 /**

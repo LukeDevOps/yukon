@@ -5,6 +5,7 @@ import io.github.lukedevops.yukon.export.BranchOutcome
 import io.github.lukedevops.yukon.export.BranchRole
 import io.github.lukedevops.yukon.export.BranchSite
 import io.github.lukedevops.yukon.export.CallEdge
+import io.github.lukedevops.yukon.export.LineRange
 import io.github.lukedevops.yukon.export.ProbeKind
 import io.github.lukedevops.yukon.export.ResourceAttributes
 import java.lang.ref.WeakReference
@@ -1260,13 +1261,22 @@ class ProbeRegistryTest {
     }
 
     @Test
-    fun `branch sites weigh one for the site and one per outcome against the chunk cap`() {
+    fun `branch sites weigh one for the site, one per outcome and one per line range against the chunk cap`() {
         val site =
             BranchSite(
                 siteIndex = 0,
                 siteKey = null,
                 line = 1,
-                outcomes = listOf(BranchOutcome(0, BranchRole.TAKEN), BranchOutcome(1, BranchRole.FALL_THROUGH)),
+                outcomes =
+                    listOf(
+                        BranchOutcome(
+                            0,
+                            BranchRole.TAKEN,
+                            guardedLines = listOf(LineRange("A.kt", 2, 3), LineRange("B.kt", 7, 7)),
+                            partlyGuardedLines = listOf(LineRange("A.kt", 1, 1)),
+                        ),
+                        BranchOutcome(1, BranchRole.FALL_THROUGH),
+                    ),
             )
         val registry = ProbeRegistry()
         registry.register(
@@ -1276,12 +1286,12 @@ class ProbeRegistryTest {
         )
         registry.register("com.example.Light", layoutHash = 1L, probes = methodProbes(1))
 
-        // Heavy weighs 1 probe + 1 class location record + 1 site + 2 outcomes = 5; Light weighs 2.
-        // Without the site they would share a chunk under a cap of 6.
+        // Heavy weighs 1 probe + 1 class location record + 1 site + 2 outcomes + 3 line ranges = 8;
+        // Light weighs 2. Without the line ranges they would share a chunk under a cap of 9.
         val chunks =
             registry.computeManifestDeltas(
                 ResourceAttributes("checkout", null, "instance-1", null, "run-1"),
-                maxEntriesPerChunk = 6,
+                maxEntriesPerChunk = 9,
             )
 
         assertEquals(2, chunks.size)

@@ -182,6 +182,26 @@ message BranchOutcome {
   // Set only for CASE: the case key value as the switch instruction names it. Unset for a CASE
   // when the agent could not read the switch's case keys.
   optional int32 case_key = 3;
+  // The lines that run only through this outcome: every instruction the method places on each
+  // line is dominated by this outcome's edge in the method's control-flow graph, exception edges
+  // included. Code inside a nested site counts too. A line inside an in-scope inlined copy is
+  // named at its origin line in the origin's own source file. A line copied from out-of-scope code
+  // is not listed. Empty when the outcome guards nothing, as the skip side of an if with no else
+  // does. See ADR 0037.
+  repeated LineRange guarded_lines = 4;
+  // The lines where some instructions run only through this outcome and others are reached another
+  // way, such as a line that holds a whole `?: return` expression. Named the same way as
+  // guarded_lines. See ADR 0037.
+  repeated LineRange partly_guarded_lines = 5;
+}
+
+// A run of consecutive source lines in one file, both ends inclusive. See ADR 0037.
+message LineRange {
+  // The source file's name as its class file's SourceFile attribute or its SMAP names it, such as
+  // DemoServerMain.kt. A file name, never a path. Empty when the class has no SourceFile.
+  string source_file = 1;
+  int32 first_line = 2;
+  int32 last_line = 3;
 }
 
 // One kept conditional jump or switch in a method, with its outcomes listed inside it. A consumer
@@ -201,6 +221,11 @@ message BranchSite {
   // A conditional lists TAKEN then FALL_THROUGH. A switch lists one CASE per case entry, in the
   // order the switch instruction names them, then DEFAULT last.
   repeated BranchOutcome outcomes = 4;
+  // The branch_index of the innermost kept outcome that dominates this site's jump or switch, or
+  // unset when nothing in the method stands between its entry and the site. Coroutine machinery
+  // and out-of-scope inlined copies have no outcomes of their own here, so a guard looks through
+  // them to the next kept outcome. See ADR 0037.
+  optional int32 guard = 5;
 }
 
 // What a CallEdge records. A collector reaches the target of either kind the same way; the kind
@@ -243,6 +268,13 @@ message CallEdge {
   // instance method is not counted, since it is not in the target's parameter list. 0 on every
   // other edge, and on a CREATES edge that captures nothing.
   uint32 captured_count = 6;
+  // The branch_index of the innermost kept outcome that dominates the instruction recording this
+  // edge, or unset when nothing in the method stands between its entry and that instruction. The
+  // instruction is the invoke, the invokedynamic, the new of a body class, or the getstatic or
+  // putstatic that stands for an initializer. An edge that takes a pass-through's place keeps the
+  // guard of the call to the pass-through. A catch handler has no guard unless a kept outcome
+  // dominates its whole try. One callee reached under two guards gives two edges. See ADR 0037.
+  optional int32 guard = 7;
 }
 
 // What a loaded class's own header says about it, sent once per class alongside its probes. Its

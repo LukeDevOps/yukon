@@ -749,6 +749,64 @@ class StaticBaselineScannerTest {
     }
 
     @Test
+    fun `declares each method's guarded sites and guarded call edges exactly as the manifest carries them for the loaded class`() {
+        val kotlinClasses =
+            listOf(
+                "GuardTarget",
+                "GuardTarget\$objectInArm\$1",
+                "GuardTargetKt",
+                "GuardTargetKt\$suspendInArm\$1",
+                "GuardConfig",
+                "GuardInlineKt",
+                "CoroutineTargetKt",
+            )
+        val javaClasses = listOf("GuardSwitchTarget")
+        val root =
+            directoryRoot(
+                *(
+                    kotlinClasses.map { "com/example/target/$it.class" to classBytes("kotlin/test/com/example/target/$it.class") } +
+                        javaClasses.map { "com/example/target/$it.class" to classBytes("java/test/com/example/target/$it.class") }
+                ).toTypedArray(),
+            )
+        val result = StaticBaselineScanner(listOf("com.example.target")).scan(listOf(root))
+
+        val registry = ProbeRegistry()
+        val instrumentation = ByteBuddyAgent.install()
+        val yukon = YukonInstrumentation(AgentConfig.parse("includePackages=com.example.target"), registry)
+        val transformer = yukon.install(instrumentation)
+        try {
+            val kotlinLoader = FixtureClassLoader(arrayOf(File("build/classes/kotlin/test").toURI().toURL()), javaClass.classLoader)
+            val javaLoader = FixtureClassLoader(arrayOf(File("build/classes/java/test").toURI().toURL()), javaClass.classLoader)
+            val compared = listOf("GuardTarget", "GuardTargetKt")
+            compared.forEach { Class.forName("com.example.target.$it", true, kotlinLoader) }
+            javaClasses.forEach { Class.forName("com.example.target.$it", true, javaLoader) }
+
+            val manifest = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
+            var guardedEdges = 0
+            var guardedSites = 0
+            for (simpleName in compared + javaClasses) {
+                val className = "com.example.target.$simpleName"
+                val declared = result.declaredClasses.single { it.className == className }
+                val methodProbes = manifest.probes.filter { it.className == className && it.kind == ProbeKind.METHOD }
+                assertEquals(declared.methods.size, methodProbes.size, "$className declares one entry per METHOD probe")
+                for (probe in methodProbes) {
+                    val declaredMethod =
+                        declared.methods.single { it.methodName == probe.methodName && it.methodDescriptor == probe.methodDescriptor }
+                    assertEquals(probe.branchSites, declaredMethod.branchSites, "sites of $className#${probe.methodName}")
+                    assertEquals(probe.calls, declaredMethod.calls, "edges of $className#${probe.methodName}")
+                    guardedEdges += probe.calls.count { it.guard != null }
+                    guardedSites +=
+                        probe.branchSites.count { site -> site.guard != null || site.outcomes.any { it.guardedLines.isNotEmpty() } }
+                }
+            }
+            assertTrue(guardedEdges > 10, "enough guarded edges to mean something: $guardedEdges")
+            assertTrue(guardedSites > 10, "enough sites with a guard or guarded lines to mean something: $guardedSites")
+        } finally {
+            yukon.uninstall(instrumentation, transformer)
+        }
+    }
+
+    @Test
     fun `declares StaticUseTarget's static field use edges the same way the manifest carries them for the loaded class`() {
         val root = callEdgeFixtureRoot()
         val scanner = StaticBaselineScanner(listOf("com.example.target", "com.example.other"))
