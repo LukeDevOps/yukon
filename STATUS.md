@@ -159,6 +159,13 @@ The review kept one deviation and recorded it in collector ADR 0001: an
 unreadable `YUKON_COLLECTOR_REDACT_ALL_LITERALS` stops startup instead of
 reading as false.
 
+Chunk 7 landed in `yukon-server` (`8f28a79`): migration 0002 stores sites,
+outcomes, conditions, case labels, guarded lines and guards per run and per
+scan, and the guard joins each call edge table's key through `UNIQUE NULLS NOT
+DISTINCT`. The review found Postgres cannot store NUL in jsonb or text, so a
+part whose text holds NUL is stored as a placeholder instead of failing its
+payload on every retry.
+
 Left for later, in `yukon-server`'s STATUS: folding a dead method's branches
 into its row, rooting clusters at a never-taken outcome, telling
 real-but-uninteresting outcomes apart, and redaction at the server's ingest.
