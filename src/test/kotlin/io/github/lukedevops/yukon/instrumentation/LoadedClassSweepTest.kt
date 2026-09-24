@@ -1,8 +1,10 @@
 package io.github.lukedevops.yukon.instrumentation
 
 import io.github.lukedevops.yukon.config.AgentConfig
+import io.github.lukedevops.yukon.dependencies.LoadedDependencyCounter
 import io.github.lukedevops.yukon.export.ProbeKind
 import io.github.lukedevops.yukon.export.ResourceAttributes
+import io.github.lukedevops.yukon.registry.DependencyRegistry
 import io.github.lukedevops.yukon.registry.ProbeMeta
 import io.github.lukedevops.yukon.registry.ProbeRegistry
 import net.bytebuddy.ByteBuddy
@@ -13,6 +15,7 @@ import java.util.logging.Handler
 import java.util.logging.LogRecord
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 import java.util.logging.Level as JulLevel
 import java.util.logging.Logger as JulLogger
@@ -172,5 +175,21 @@ class LoadedClassSweepTest {
                 ).unreportedClasses
                 .map { it.className }
         assertTrue(generated.name !in unreported, "a proxy the agent leaves alone on purpose is not a blind spot: $unreported")
+    }
+
+    @Test
+    fun `the dependency count runs and marks a generation even when the confirmation pass throws`() {
+        val registry =
+            object : ProbeRegistry(confirmsDefinitions = true) {
+                override fun confirmFrom(loadedClassNames: Set<String>): List<String> =
+                    throw IllegalStateException("simulated confirm failure")
+            }
+        registry.register("com.example.Unconfirmed", layoutHash = 1L, probes = oneMethodProbe())
+        val dependencies = DependencyRegistry().apply { markListingComplete() }
+        val sweep = LoadedClassSweep(instrumentation, registry, scopedConfig, LoadedDependencyCounter(dependencies) { null })
+
+        assertFailsWith<IllegalStateException> { sweep.run(runForwardPass = true) }
+
+        assertEquals(1, dependencies.countGeneration, "a confirmation failure must not stop the dependency count")
     }
 }

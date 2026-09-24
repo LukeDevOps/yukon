@@ -25,7 +25,11 @@ class LoadedDependencyCounter internal constructor(
     constructor(registry: DependencyRegistry, includes: List<String>, excludes: List<String>) :
         this(registry, DependencyResolver(registry, JarClassifier(includes, excludes))::resolve)
 
-    /** Adds every class in [loaded] to the dependency it came from, once the listing is complete. */
+    /**
+     * Adds every class in [loaded] to the dependency it came from, once the listing is complete.
+     * Then it marks a counting generation ([DependencyRegistry.markCounted]). A jar this call
+     * registered takes that generation too. A call that throws partway marks nothing.
+     */
     fun count(loaded: Array<Class<*>>) {
         if (!registry.isListingComplete) return
         for (type in loaded) {
@@ -35,5 +39,6 @@ class LoadedDependencyCounter internal constructor(
             val dependencyId = resolve(domain) ?: continue
             registry.recordLoaded(dependencyId, type.name)
         }
+        registry.markCounted()
     }
 }

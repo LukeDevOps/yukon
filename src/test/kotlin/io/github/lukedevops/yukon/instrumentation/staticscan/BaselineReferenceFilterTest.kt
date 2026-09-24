@@ -62,7 +62,7 @@ class BaselineReferenceFilterTest {
             classNames = classNames.toList(),
         )
 
-    private fun externalRegistry(dependencies: DependencyRegistry) = ExternalClassRegistry(dependencies::isListingComplete) { null }
+    private fun externalRegistry(dependencies: DependencyRegistry) = ExternalClassRegistry(dependencies::isListingComplete, { null })
 
     private fun sent(registry: ExternalClassRegistry): List<ExternalClass> =
         registry.computeManifestEntries(100).flatMap { it.externalClasses }
@@ -125,9 +125,9 @@ class BaselineReferenceFilterTest {
         val plugin = dependencies.addListed("plugin")
         dependencies.markListingComplete()
         val external =
-            ExternalClassRegistry(dependencies::isListingComplete) { location ->
+            ExternalClassRegistry(dependencies::isListingComplete, { location ->
                 if (location == "jar:file:/plugins/plugin.jar!/") plugin else null
-            }
+            })
 
         BaselineReferenceFilter(dependencies, external).filter(scanReferencingEverything())
         external.record("org.gone.Missing", "jar:file:/plugins/plugin.jar!/")

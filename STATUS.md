@@ -275,6 +275,20 @@ Landing order, one chunk and one commit each, built with `/chunked-build`:
    flag; `awaitDependenciesListed`; the stub logs the flag.
 3. `yukon-collector`: bindings bump, `LogSink` logs the flag.
 
+Chunk 0 has landed (`c243ff3`): field 15 on `ProbeManifest`, the agent's model
+and codec. Chunk 1 has landed: counting generations in `DependencyRegistry`,
+entries and mappings held until a flush's delta sends are all confirmed, a
+second manifest send in that flush for what it releases, and the flag with an
+empty manifest to carry it. The independent review found three things the
+brief did not predict. Every sweep after the listing counts, so the delivered
+generation rises on most flushes, and the second send is keyed on an entry
+waiting to go out, not on the generation alone. The empty flag manifest runs
+only after a flush whose sends were all confirmed, so an outage never adds a
+send. And the sweep's confirmation pass could throw before the count, which
+would have held every dependency back for good; the count runs in a `finally`.
+On the plain demo the releasing flush sends three manifests: probes, then the
+dependencies and mappings, then the flag.
+
 Recorded, not planned: `yukon-server` still answers with an empty list for an
 instance whose listing has not arrived; gating on the flag is its follow-up.
 The testkit's `awaitSettled` counts delta batches the same way and keeps the

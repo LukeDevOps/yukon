@@ -134,7 +134,12 @@ object Agent {
         // jar's dependency id.
         val dependencyResolver =
             DependencyResolver(dependencyRegistry, JarClassifier(config.instrumentedPackagePrefixes, config.excludedPackagePrefixes))
-        val externalClassRegistry = ExternalClassRegistry(dependencyRegistry::isListingComplete, dependencyResolver::resolveLocation)
+        val externalClassRegistry =
+            ExternalClassRegistry(
+                dependencyRegistry::isListingComplete,
+                dependencyResolver::resolveLocation,
+                dependencyRegistry::isSendable,
+            )
         val staticBaselineMismatchDetector = StaticBaselineMismatchDetector()
         val branchDropCounts = BranchDropCounts()
 

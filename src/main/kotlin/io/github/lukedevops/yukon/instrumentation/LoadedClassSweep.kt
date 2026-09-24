@@ -41,7 +41,8 @@ open class LoadedClassSweep(
     /**
      * Runs the confirmation pass over every loaded class, unfiltered, and the unreported-class
      * pass over the same array, filtered through [isCandidate], only when [runForwardPass] is
-     * true. Every call hands the array to [dependencyCounter] as well. [final] additionally logs a
+     * true. Every call hands the array to [dependencyCounter] as well, even when either pass throws,
+     * so a failing pass never stops the dependency count (ADR 0036). [final] additionally logs a
      * one-line summary of how many classes were withheld for good, when that count is above zero.
      *
      * The confirmation pass must see every loaded name, not the forward direction's filtered
@@ -59,9 +60,12 @@ open class LoadedClassSweep(
         final: Boolean = false,
     ) {
         val loaded = instrumentation.allLoadedClasses
-        confirm(loaded)
-        if (runForwardPass) reportUnreported(loaded)
-        dependencyCounter?.count(loaded)
+        try {
+            confirm(loaded)
+            if (runForwardPass) reportUnreported(loaded)
+        } finally {
+            dependencyCounter?.count(loaded)
+        }
         if (final) logShutdownSummary()
     }
 

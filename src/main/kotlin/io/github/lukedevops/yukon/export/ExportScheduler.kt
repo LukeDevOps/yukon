@@ -61,6 +61,9 @@ class ExportScheduler(
     private val log = System.getLogger(ExportScheduler::class.java.name)
     private var executor: ScheduledExecutorService? = null
     private val branchDropsLogged = AtomicBoolean(false)
+
+    /** Set once a manifest carrying `dependenciesListed = true` was confirmed; see [sendDependenciesListedIfDue]. */
+    private val dependenciesListedSent = AtomicBoolean(false)
     private var flushesSinceSweep = SWEEP_EVERY_N_FLUSHES
 
     /** Runs the two sends of each flush side by side; see [flush]. Two threads, created once, not two per tick. */
@@ -139,7 +142,7 @@ class ExportScheduler(
      * each individual send in its own capped exponential backoff, for a
      * transient failure within one attempt.
      *
-     * The two sends run concurrently, not one after the other. Each can take
+     * The two main sends run concurrently, not one after the other. Each can take
      * a while to fail on its own (multiple retries, each with its own
      * timeout) if the collector is unreachable. Run back to back, a single
      * flush's worst case could take roughly twice one flush interval,
@@ -147,6 +150,14 @@ class ExportScheduler(
      * configured during exactly the outage it exists to report. Running
      * them side by side keeps one flush's worst case close to a single
      * send's worst case instead of the sum of both.
+     *
+     * Up to two more manifest sends follow on this thread, once both main sends have ended
+     * (ADR 0036). A second manifest send runs only when this flush's confirmed delta sends released
+     * a dependency that no manifest has carried yet. It carries that dependency and the mappings
+     * held on it, so they go out in the same flush as their counts. Then an empty manifest carries
+     * `dependenciesListed`, when the flag is due, no confirmed manifest has carried it, and every
+     * send of this flush was confirmed. Neither extra send runs during an outage, so a flush's worst
+     * case stays that of one send.
      *
      * This method runs under `scheduleAtFixedRate`, which stops calling a
      * task forever the first time it lets a throwable escape, with nothing
@@ -167,10 +178,18 @@ class ExportScheduler(
         try {
             maybeLogBranchDrops()
             maybeSweep(final)
-            val manifestSend = sendPool.submit(::sendManifestDelta)
-            val deltaSend = sendPool.submit { sendDeltaBatch(final) }
-            manifestSend.get()
-            deltaSend.get()
+            // Read after the sweep, so this flush's delta sends carry the counts of this generation.
+            val generation = dependencyRegistry.countGeneration
+            val deliveredBefore = dependencyRegistry.deliveredGeneration
+            val manifestSend = sendPool.submit<Boolean>(::sendManifestDelta)
+            val deltaSend = sendPool.submit<Boolean> { sendDeltaBatch(final, generation) }
+            val manifestConfirmed = manifestSend.get()
+            val deltaConfirmed = deltaSend.get()
+            var allConfirmed = manifestConfirmed && deltaConfirmed
+            val released =
+                dependencyRegistry.deliveredGeneration > deliveredBefore && dependencyRegistry.hasSendableUndelivered()
+            if (released) allConfirmed = sendManifestDelta() && allConfirmed
+            if (allConfirmed) sendDependenciesListedIfDue()
         } catch (t: Throwable) {
             log.log(Level.ERROR, "yukon: flush failed outside its own send guards, will retry next flush", t)
         }
@@ -257,8 +276,17 @@ class ExportScheduler(
      * Sends probe, endpoint and dependency deltas together, advancing each snapshot only once its
      * send is confirmed. A failure stops the loop: the sends already confirmed stay advanced, the
      * rest are recomputed and resent on the next flush.
+     *
+     * When every send in the loop is confirmed, the heartbeat alone included, the counts of
+     * counting [generation] have reached the collector, and this records it
+     * ([DependencyRegistry.markCountsDelivered]). A failure records nothing.
+     *
+     * Returns whether every send in the loop was confirmed.
      */
-    private fun sendDeltaBatch(final: Boolean) {
+    private fun sendDeltaBatch(
+        final: Boolean,
+        generation: Long,
+    ): Boolean {
         try {
             val probeBatches = registry.computeDeltaBatches(resource, maxDeltasPerBatch)
             val riders =
@@ -269,8 +297,11 @@ class ExportScheduler(
                 send.probeSnapshot?.let(registry::advanceBaseline)
                 send.riders.forEach { it.advance() }
             }
+            dependencyRegistry.markCountsDelivered(generation)
+            return true
         } catch (t: Throwable) {
             log.log(Level.WARNING, "yukon: delta export failed, will retry next flush", t)
+            return false
         }
     }
 
@@ -350,10 +381,16 @@ class ExportScheduler(
      * are not permanently left out just because an earlier send already
      * succeeded. The same holds for endpoints: a discovery-source upgrade
      * or a handler join learned after an earlier delivery is picked up the
-     * same way. Dependencies the listing thread registers after a flush
-     * go out on the next one.
+     * same way. A dependency, and a mapping to it, goes out only once its
+     * counts were delivered; see [DependencyRegistry.isSendable].
+     *
+     * `dependenciesListed` is read once, after the computes and before the
+     * first send, so every chunk of one call carries the same value.
+     *
+     * Returns whether every send in the loop was confirmed. A call with
+     * nothing to send returns true.
      */
-    private fun sendManifestDelta() {
+    private fun sendManifestDelta(): Boolean {
         try {
             val classChunks =
                 registry.computeManifestDeltas(resource, maxManifestEntriesPerChunk)
@@ -361,13 +398,17 @@ class ExportScheduler(
                 endpointRegistry.computeManifestEntries(maxManifestEntriesPerChunk).map(::endpointManifestRider) +
                     dependencyRegistry.computeManifestEntries(maxManifestEntriesPerChunk).map(::dependencyManifestRider) +
                     externalClassRegistry.computeManifestEntries(maxManifestEntriesPerChunk).map(::externalClassManifestRider)
-            for (send in composeManifestSends(classChunks, riders)) {
+            val listed = dependenciesListed
+            for (send in composeManifestSends(classChunks, riders, listed)) {
                 exporter.exportManifest(send.manifest)
                 send.probeSnapshot?.let(registry::advanceManifestBaseline)
                 send.riders.forEach { it.advance() }
+                if (listed) dependenciesListedSent.set(true)
             }
+            return true
         } catch (t: Throwable) {
             log.log(Level.WARNING, "yukon: manifest export failed, will retry next flush", t)
+            return false
         }
     }
 
@@ -407,18 +448,25 @@ class ExportScheduler(
     private fun composeManifestSends(
         classChunks: List<ProbeRegistry.ManifestSnapshot>,
         riders: List<Rider<ProbeManifest>>,
+        dependenciesListed: Boolean,
     ): List<ManifestSend> {
         val builders = classChunks.map { ManifestSendBuilder(it.manifest, it) }.toMutableList()
 
         for (rider in riders) {
             val target =
                 builders.firstOrNull { it.size + rider.size <= maxManifestEntriesPerChunk }
-                    ?: ManifestSendBuilder(emptyManifest(), null).also(builders::add)
+                    ?: ManifestSendBuilder(emptyManifest(dependenciesListed), null).also(builders::add)
             target.manifest = rider.attach(target.manifest)
             target.size += rider.size
             target.riders += rider
         }
-        return builders.map { ManifestSend(it.manifest.copy(referencesRecorded = referencesRecorded), it.probeSnapshot, it.riders) }
+        return builders.map {
+            ManifestSend(
+                it.manifest.copy(referencesRecorded = referencesRecorded, dependenciesListed = dependenciesListed),
+                it.probeSnapshot,
+                it.riders,
+            )
+        }
     }
 
     /**
@@ -430,12 +478,36 @@ class ExportScheduler(
     private val referencesRecorded: Boolean
         get() = config.instrumentedPackagePrefixes.isNotEmpty()
 
-    private fun emptyManifest(): ProbeManifest =
+    /**
+     * Whether a manifest built at this point may say `dependenciesListed`: every startup dependency and every
+     * mapping recorded before the listing ended has gone out on a confirmed manifest. See ADR 0036.
+     */
+    private val dependenciesListed: Boolean
+        get() = dependencyRegistry.isStartupListingDelivered && externalClassRegistry.isBacklogDelivered
+
+    private fun emptyManifest(dependenciesListed: Boolean): ProbeManifest =
         ProbeManifest(
             resource = resource,
             probes = emptyList(),
             referencesRecorded = referencesRecorded,
+            dependenciesListed = dependenciesListed,
         )
+
+    /**
+     * Sends an empty manifest carrying `dependenciesListed` when it is due and no confirmed
+     * manifest has carried it yet. Without this, an instance with nothing else to send would never
+     * tell the collector that its listing is complete. [flush] calls this only when every other
+     * send of the flush was confirmed. Guarded like the other sends; see [flush].
+     */
+    private fun sendDependenciesListedIfDue() {
+        try {
+            if (dependenciesListedSent.get() || !dependenciesListed) return
+            exporter.exportManifest(emptyManifest(dependenciesListed = true))
+            dependenciesListedSent.set(true)
+        } catch (t: Throwable) {
+            log.log(Level.WARNING, "yukon: sending dependenciesListed failed, will retry next flush", t)
+        }
+    }
 
     private class ManifestSendBuilder(
         var manifest: ProbeManifest,

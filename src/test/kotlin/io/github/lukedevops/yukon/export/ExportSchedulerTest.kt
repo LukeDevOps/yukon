@@ -1,6 +1,10 @@
 package io.github.lukedevops.yukon.export
 
+import io.github.lukedevops.yukon.Agent
 import io.github.lukedevops.yukon.config.AgentConfig
+import io.github.lukedevops.yukon.dependencies.LoadedDependencyCounter
+import io.github.lukedevops.yukon.dependencies.StartupClasspathLister
+import io.github.lukedevops.yukon.dependencies.TestJars
 import io.github.lukedevops.yukon.instrumentation.LoadedClassSweep
 import io.github.lukedevops.yukon.instrumentation.branch.BranchDropCounts
 import io.github.lukedevops.yukon.instrumentation.branch.BranchDropReason
@@ -10,11 +14,17 @@ import io.github.lukedevops.yukon.registry.ExternalClassRegistry
 import io.github.lukedevops.yukon.registry.ProbeMeta
 import io.github.lukedevops.yukon.registry.ProbeRegistry
 import net.bytebuddy.agent.ByteBuddyAgent
+import org.junit.jupiter.api.io.TempDir
 import java.lang.instrument.Instrumentation
+import java.lang.ref.Reference
+import java.net.URLClassLoader
+import java.nio.file.Path
 import java.time.Duration
+import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import java.util.logging.Handler
 import java.util.logging.LogRecord
 import kotlin.concurrent.thread
@@ -23,6 +33,7 @@ import kotlin.system.measureTimeMillis
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import java.util.logging.Level as JulLevel
 import java.util.logging.Logger as JulLogger
@@ -32,12 +43,43 @@ private class RecordingExporter : Exporter {
     var manifests = mutableListOf<ProbeManifest>()
     var staticBaselines = mutableListOf<StaticBaseline>()
 
+    /** Every confirmed delta batch and manifest, in the order the sends were confirmed. */
+    val sent: MutableList<Any> = Collections.synchronizedList(mutableListOf())
+
+    /** When set, every delta send fails and nothing is recorded for it. */
+    @Volatile
+    var failDeltaBatches = false
+
+    /** When set, the delta send with this number fails, counting every delta send attempt from 1. */
+    @Volatile
+    var failDeltaSendNumber: Int? = null
+    private val deltaSendAttempts = AtomicInteger(0)
+
+    /** Runs at the start of every delta send. It may block, or throw to fail the send. */
+    @Volatile
+    var beforeDeltaSend: (DeltaBatch) -> Unit = {}
+
+    /** Runs at the start of every manifest send. It may throw to fail the send. */
+    @Volatile
+    var beforeManifestSend: (ProbeManifest) -> Unit = {}
+
+    /** Runs after every confirmed manifest send. */
+    @Volatile
+    var afterManifestSend: (ProbeManifest) -> Unit = {}
+
     override fun exportDeltaBatch(batch: DeltaBatch) {
+        val attempt = deltaSendAttempts.incrementAndGet()
+        beforeDeltaSend(batch)
+        if (failDeltaBatches || attempt == failDeltaSendNumber) throw RuntimeException("collector unreachable")
         deltaBatches += batch
+        sent += batch
     }
 
     override fun exportManifest(manifest: ProbeManifest) {
+        beforeManifestSend(manifest)
         manifests += manifest
+        sent += manifest
+        afterManifestSend(manifest)
     }
 
     override fun exportStaticBaseline(baseline: StaticBaseline) {
@@ -62,6 +104,8 @@ private class RecordingSweep(
     instrumentation: Instrumentation,
     registry: ProbeRegistry,
     config: AgentConfig,
+    /** Runs on every call, standing in for work the real sweep does, such as counting dependencies. */
+    private val onRun: () -> Unit = {},
 ) : LoadedClassSweep(instrumentation, registry, config) {
     data class Call(
         val runForwardPass: Boolean,
@@ -75,6 +119,7 @@ private class RecordingSweep(
         final: Boolean,
     ) {
         calls += Call(runForwardPass, final)
+        onRun()
     }
 }
 
@@ -717,17 +762,24 @@ class ExportSchedulerTest {
         )
     }
 
+    private fun DependencyRegistry.registerStartup(vararg artifacts: String) {
+        for (artifact in artifacts) {
+            register(
+                listOf(DependencyIdentity("g", artifact, "1")),
+                DependencyIdentitySource.POM_PROPERTIES,
+                "/libs/$artifact.jar",
+                DependencyDiscoverySource.STARTUP_CLASSPATH,
+                classCount = 1,
+            )
+        }
+    }
+
+    /** A registry holding [artifacts], each counted with its counts delivered, so each is sendable at once. */
     private fun dependencyRegistryWith(vararg artifacts: String): DependencyRegistry =
         DependencyRegistry().apply {
-            for (artifact in artifacts) {
-                register(
-                    listOf(DependencyIdentity("g", artifact, "1")),
-                    DependencyIdentitySource.POM_PROPERTIES,
-                    "/libs/$artifact.jar",
-                    DependencyDiscoverySource.STARTUP_CLASSPATH,
-                    classCount = 1,
-                )
-            }
+            registerStartup(*artifacts)
+            markCounted()
+            markCountsDelivered(countGeneration)
         }
 
     @Test
@@ -870,7 +922,7 @@ class ExportSchedulerTest {
     }
 
     private fun externalClassRegistryWith(vararg classNames: String): ExternalClassRegistry =
-        ExternalClassRegistry({ true }) { 7 }.apply {
+        ExternalClassRegistry({ true }, { 7 }).apply {
             for (name in classNames) record(name, "jar:file:/libs/lib.jar!/")
         }
 
@@ -1263,5 +1315,284 @@ class ExportSchedulerTest {
         scheduler.flush(final = true)
 
         assertEquals(2, exporter.deltaBatches.size, "the heartbeat goes out on both flushes")
+    }
+
+    /**
+     * A scheduler over a startup listing of [artifacts], with a sweep that counts dependencies on
+     * each run the way [io.github.lukedevops.yukon.dependencies.LoadedDependencyCounter] does, and
+     * an external-class registry wired as the agent wires it. Every mapping resolves to [mappedTo].
+     */
+    private inner class ListingScenario(
+        vararg artifacts: String,
+        listingComplete: Boolean = true,
+        mappedTo: Int = 0,
+        maxDeltasPerBatch: Int = ExportScheduler.DEFAULT_MAX_DELTAS_PER_BATCH,
+        val probeRegistry: ProbeRegistry = ProbeRegistry(),
+    ) {
+        val dependencyRegistry = DependencyRegistry().apply { registerStartup(*artifacts) }
+        val externalClassRegistry =
+            ExternalClassRegistry(dependencyRegistry::isListingComplete, { mappedTo }, dependencyRegistry::isSendable)
+        val exporter = RecordingExporter()
+        val sweep =
+            RecordingSweep(ByteBuddyAgent.install(), probeRegistry, config) {
+                if (dependencyRegistry.isListingComplete) dependencyRegistry.markCounted()
+            }
+        val scheduler =
+            ExportScheduler(
+                config,
+                resource,
+                probeRegistry,
+                EndpointRegistry(),
+                exporter,
+                maxDeltasPerBatch = maxDeltasPerBatch,
+                loadedClassSweep = sweep,
+                dependencyRegistry = dependencyRegistry,
+                externalClassRegistry = externalClassRegistry,
+            )
+
+        init {
+            if (listingComplete) dependencyRegistry.markListingComplete()
+        }
+
+        /** Runs one flush and returns the manifests it sent. */
+        fun flush(final: Boolean = false): List<ProbeManifest> {
+            val before = exporter.manifests.size
+            if (final) scheduler.flushOnShutdown(Duration.ofSeconds(5)) else scheduler.flush()
+            return exporter.manifests.drop(before)
+        }
+    }
+
+    @Test
+    fun `the flush that delivers counts sends the released dependencies after its delta send is confirmed`() {
+        val scenario = ListingScenario("a")
+        scenario.probeRegistry.register("com.example.A", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "a", "()V", 1)))
+        // The delta send waits until the main manifest send has gone out, so the dependency cannot
+        // ride on it and only a later manifest send of the same flush can carry it.
+        val mainManifestSent = CountDownLatch(1)
+        scenario.exporter.afterManifestSend = { mainManifestSent.countDown() }
+        scenario.exporter.beforeDeltaSend = { assertTrue(mainManifestSent.await(5, TimeUnit.SECONDS)) }
+
+        scenario.flush()
+
+        val sent = scenario.exporter.sent.toList()
+        val delta = sent.indexOfFirst { it is DeltaBatch }
+        val released = sent.indexOfFirst { it is ProbeManifest && it.dependencies.isNotEmpty() }
+        assertTrue(released >= 0, "the dependency must go out in the flush that delivered its counts")
+        assertTrue(delta in 0 until released, "the dependency went out before its counts were confirmed: $sent")
+    }
+
+    @Test
+    fun `a failed delta send releases nothing, and the next successful flush does`() {
+        val scenario = ListingScenario("a")
+        scenario.exporter.failDeltaBatches = true
+
+        val failed = scenario.flush()
+
+        assertTrue(failed.none { it.dependencies.isNotEmpty() }, "counts that were never confirmed release nothing")
+        scenario.exporter.failDeltaBatches = false
+        assertEquals(listOf("a"), scenario.flush().flatMap { it.dependencies }.map { it.identities.single().artifactId })
+    }
+
+    @Test
+    fun `a mapping held on a dependency goes out in the same flush as that dependency's entry`() {
+        val scenario = ListingScenario("a")
+        scenario.externalClassRegistry.record("org.lib.A", "jar:file:/libs/a.jar!/")
+        scenario.externalClassRegistry.record("org.gone.Missing", null)
+        scenario.exporter.failDeltaBatches = true
+
+        val held = scenario.flush()
+
+        assertEquals(listOf(ExternalClass("org.gone.Missing", null, absent = true)), held.flatMap { it.externalClasses })
+        assertTrue(held.none { it.dependencies.isNotEmpty() })
+        scenario.exporter.failDeltaBatches = false
+        val released = scenario.flush()
+        assertEquals(listOf(0), released.flatMap { it.dependencies }.map { it.dependencyId })
+        assertEquals(listOf(ExternalClass("org.lib.A", 0)), released.flatMap { it.externalClasses })
+    }
+
+    @Test
+    fun `dependenciesListed is false until the listing is delivered, then true on every manifest with no extra empty one`() {
+        val scenario = ListingScenario("a", listingComplete = false)
+        scenario.externalClassRegistry.record("org.lib.A", "jar:file:/libs/a.jar!/")
+        scenario.probeRegistry.register("com.example.A", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "a", "()V", 1)))
+
+        val beforeListing = scenario.flush()
+        assertTrue(beforeListing.isNotEmpty() && beforeListing.none { it.dependenciesListed })
+
+        scenario.dependencyRegistry.markListingComplete()
+        val releasing = scenario.flush()
+        assertTrue(releasing.dropLast(1).none { it.dependenciesListed }, "only the flush's last manifest may carry the flag")
+        assertTrue(releasing.last().dependenciesListed, "the flush that delivers the listing must end with the flag")
+        assertTrue(releasing.last().let { it.probes.isEmpty() && it.dependencies.isEmpty() && it.externalClasses.isEmpty() })
+        assertEquals(1, releasing.sumOf { it.dependencies.size })
+        assertEquals(1, releasing.sumOf { it.externalClasses.size })
+
+        scenario.probeRegistry.register("com.example.B", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "b", "()V", 1)))
+        val later = scenario.flush()
+        assertEquals(1, later.size, "a manifest carrying the flag was confirmed, so no empty one follows")
+        assertTrue(later.single().dependenciesListed)
+        assertEquals(
+            "com.example.B",
+            later
+                .single()
+                .probes
+                .single()
+                .className,
+        )
+        assertTrue(scenario.flush().isEmpty())
+    }
+
+    @Test
+    fun `a listing that completes with no dependencies sends the flag on the next flush, as an empty manifest`() {
+        val scenario = ListingScenario()
+
+        val first = scenario.flush()
+
+        val manifest = first.single()
+        assertTrue(manifest.dependenciesListed)
+        assertTrue(manifest.probes.isEmpty() && manifest.dependencies.isEmpty() && manifest.externalClasses.isEmpty())
+        assertTrue(scenario.flush().isEmpty())
+    }
+
+    @Test
+    fun `a failed listing never sets dependenciesListed`() {
+        val scenario = ListingScenario("a", listingComplete = false)
+        scenario.dependencyRegistry.markListingFailed()
+        scenario.probeRegistry.register("com.example.A", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "a", "()V", 1)))
+
+        val manifests = scenario.flush() + scenario.flush() + scenario.flush(final = true)
+
+        assertEquals(1, manifests.size)
+        assertTrue(manifests.none { it.dependenciesListed })
+    }
+
+    @Test
+    fun `the final flush delivers a listing counted in that same flush`() {
+        val scenario = ListingScenario("a")
+
+        val manifests = scenario.flush(final = true)
+
+        assertEquals(1, manifests.sumOf { it.dependencies.size })
+        assertTrue(manifests.last().dependenciesListed)
+    }
+
+    @Test
+    fun `a flush whose first delta batch is confirmed and a later one fails releases nothing, and the next flush does`() {
+        val scenario = ListingScenario("a", maxDeltasPerBatch = 1)
+        for (name in listOf("com.example.A", "com.example.B")) {
+            scenario.probeRegistry.register(name, 1L, listOf(ProbeMeta(ProbeKind.METHOD, "m", "()V", 1)))[0] += 1
+        }
+        scenario.exporter.failDeltaSendNumber = 2
+
+        val split = scenario.flush()
+
+        assertEquals(1, scenario.exporter.deltaBatches.size, "the first batch is confirmed and the second fails")
+        assertTrue(split.none { it.dependencies.isNotEmpty() }, "a flush with a failed delta send releases nothing")
+        assertEquals(1, scenario.flush().sumOf { it.dependencies.size })
+    }
+
+    @Test
+    fun `a flush after the listing is delivered sends one manifest, even when a class registers during its delta send`() {
+        val manifestComputed = AtomicReference(CountDownLatch(1))
+        val probeRegistry =
+            object : ProbeRegistry() {
+                override fun computeManifestDeltas(
+                    resource: ResourceAttributes,
+                    maxEntriesPerChunk: Int,
+                ): List<ProbeRegistry.ManifestSnapshot> =
+                    super.computeManifestDeltas(resource, maxEntriesPerChunk).also { manifestComputed.get().countDown() }
+            }
+        val scenario = ListingScenario("a", probeRegistry = probeRegistry)
+        scenario.flush()
+        assertTrue(
+            scenario.exporter.manifests
+                .last()
+                .dependenciesListed,
+            "the first flush delivers the listing",
+        )
+
+        manifestComputed.set(CountDownLatch(1))
+        probeRegistry.register("com.example.B", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "b", "()V", 1)))
+        var registered = false
+        scenario.exporter.beforeDeltaSend = {
+            assertTrue(manifestComputed.get().await(5, TimeUnit.SECONDS))
+            if (!registered) {
+                registered = true
+                probeRegistry.register("com.example.C", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "c", "()V", 1)))
+            }
+        }
+        val second = scenario.flush()
+
+        assertEquals(listOf("com.example.B"), second.flatMap { it.probes }.map { it.className }.distinct())
+        assertEquals(1, second.size, "nothing was released, so no second manifest send runs")
+    }
+
+    @Test
+    fun `an empty flag manifest that fails is sent again, but not by a flush whose delta send failed`() {
+        val scenario = ListingScenario()
+        var failFlag = true
+        scenario.exporter.beforeManifestSend = { manifest ->
+            if (manifest.dependenciesListed && failFlag) {
+                failFlag = false
+                throw RuntimeException("collector unreachable")
+            }
+        }
+
+        assertTrue(scenario.flush().isEmpty(), "the flag manifest failed")
+
+        scenario.exporter.failDeltaBatches = true
+        assertTrue(scenario.flush().isEmpty(), "a flush whose delta send failed sends no flag manifest")
+
+        scenario.exporter.failDeltaBatches = false
+        val retried = scenario.flush().single()
+        assertTrue(retried.dependenciesListed && retried.probes.isEmpty())
+        assertTrue(scenario.flush().isEmpty())
+    }
+
+    @Test
+    fun `a real sweep counts a listed jar's class, and its delta is confirmed before the manifest carrying its entry`(
+        @TempDir dir: Path,
+    ) {
+        val includes = listOf("com.acme")
+        val jar =
+            TestJars.write(
+                dir.resolve("listed-1.0.jar"),
+                listOf(TestJars.pom("org.listed", "listed", "1.0"), TestJars.loadableClassEntry("org.listed.One")),
+            )
+        val dependencyRegistry = DependencyRegistry()
+        Agent.runDependencyListing(StartupClasspathLister(includes, emptyList(), jar.toString())::list, dependencyRegistry)
+        val listedId = assertNotNull(dependencyRegistry.idForKey(listOf("org.listed:listed")))
+        val loaded = Class.forName("org.listed.One", true, URLClassLoader(arrayOf(jar.toUri().toURL()), null))
+        val agentConfig = AgentConfig.parse("serviceName=checkout,includePackages=com.acme")
+        val probeRegistry = ProbeRegistry()
+        val exporter = RecordingExporter()
+        val scheduler =
+            ExportScheduler(
+                agentConfig,
+                TestResources.forConfig(agentConfig),
+                probeRegistry,
+                EndpointRegistry(),
+                exporter,
+                loadedClassSweep =
+                    LoadedClassSweep(
+                        ByteBuddyAgent.install(),
+                        probeRegistry,
+                        agentConfig,
+                        LoadedDependencyCounter(dependencyRegistry, includes, emptyList()),
+                    ),
+                dependencyRegistry = dependencyRegistry,
+            )
+
+        scheduler.flush()
+        Reference.reachabilityFence(loaded)
+
+        val sent = exporter.sent.toList()
+        val delta =
+            sent.indexOfFirst { batch ->
+                batch is DeltaBatch && batch.dependencyDeltas.any { it.dependencyId == listedId && it.loadedClassesTotal == 1L }
+            }
+        val entry = sent.indexOfFirst { it is ProbeManifest && it.dependencies.any { d -> d.dependencyId == listedId } }
+        assertTrue(delta >= 0, "the counted class must go out on a confirmed delta batch")
+        assertTrue(entry > delta, "the entry must follow its confirmed delta: delta at $delta, entry at $entry")
     }
 }

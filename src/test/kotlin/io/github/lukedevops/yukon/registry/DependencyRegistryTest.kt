@@ -26,6 +26,12 @@ class DependencyRegistryTest {
             origin = DependencyOrigin.FlatJar(Path.of(location)),
         )
 
+    /** Counts every registered dependency and delivers those counts, so each is sendable. */
+    private fun DependencyRegistry.release() {
+        markCounted()
+        markCountsDelivered(countGeneration)
+    }
+
     @Test
     fun `ids are assigned from 0 in registration order`() {
         val registry = DependencyRegistry()
@@ -60,6 +66,7 @@ class DependencyRegistryTest {
     fun `a dependency is delivered once, and the location carries every field`() {
         val registry = DependencyRegistry()
         registry.add(DependencyIdentity("g", "a", "1"))
+        registry.release()
 
         val chunks = registry.computeManifestEntries(10)
         registry.advanceManifest(chunks.single())
@@ -78,6 +85,7 @@ class DependencyRegistryTest {
     fun `a snapshot never advanced is computed again on the next call`() {
         val registry = DependencyRegistry()
         registry.add(DependencyIdentity("g", "a", "1"))
+        registry.release()
 
         registry.computeManifestEntries(10)
 
@@ -94,8 +102,10 @@ class DependencyRegistryTest {
     fun `advancing one snapshot marks exactly its dependencies delivered`() {
         val registry = DependencyRegistry()
         registry.add(DependencyIdentity("g", "a", "1"))
+        registry.release()
         val first = registry.computeManifestEntries(10).single()
         registry.add(DependencyIdentity("g", "b", "1"))
+        registry.release()
 
         registry.advanceManifest(first)
 
@@ -113,6 +123,7 @@ class DependencyRegistryTest {
     fun `manifest entries are chunked at the cap, each dependency weighing one`() {
         val registry = DependencyRegistry()
         repeat(5) { registry.add(DependencyIdentity("g", "a$it", "1")) }
+        registry.release()
 
         val chunks = registry.computeManifestEntries(2)
 
@@ -400,5 +411,149 @@ class DependencyRegistryTest {
         assertEquals(null, registry.dependencyForClass("org.a.A"))
         assertEquals(null, registry.dependencyForClass("org.b.B"))
         assertEquals(0, registry.classIndexSize)
+    }
+
+    private fun DependencyRegistry.offeredIds(): List<Int> =
+        computeManifestEntries(10).flatMap { chunk -> chunk.dependencies.map { it.dependencyId } }
+
+    @Test
+    fun `an entry registered before any counting sweep is not offered`() {
+        val registry = DependencyRegistry()
+        registry.add(DependencyIdentity("g", "a", "1"))
+
+        assertTrue(registry.computeManifestEntries(10).isEmpty())
+    }
+
+    @Test
+    fun `a counted entry is held until its generation's counts are delivered`() {
+        val registry = DependencyRegistry()
+        val a = registry.add(DependencyIdentity("g", "a", "1"))
+        registry.markCounted()
+
+        assertTrue(registry.computeManifestEntries(10).isEmpty(), "counted, but its counts are not delivered")
+        assertFalse(registry.isSendable(a))
+
+        registry.markCountsDelivered(registry.countGeneration)
+
+        assertEquals(listOf(a), registry.offeredIds())
+        assertTrue(registry.isSendable(a))
+    }
+
+    @Test
+    fun `an entry registered after a counting sweep waits for a later generation`() {
+        val registry = DependencyRegistry()
+        val a = registry.add(DependencyIdentity("g", "a", "1"))
+        registry.markCounted()
+        val first = registry.countGeneration
+        val b = registry.add(DependencyIdentity("g", "b", "1"))
+        registry.markCountsDelivered(first)
+
+        assertEquals(listOf(a), registry.offeredIds())
+
+        registry.markCounted()
+        assertEquals(listOf(a), registry.offeredIds(), "the second generation is counted, not delivered")
+
+        registry.markCountsDelivered(registry.countGeneration)
+        assertEquals(listOf(a, b), registry.offeredIds())
+    }
+
+    @Test
+    fun `delivering an older generation never lowers the delivered generation`() {
+        val registry = DependencyRegistry()
+        registry.markCounted()
+        val older = registry.countGeneration
+        val a = registry.add(DependencyIdentity("g", "a", "1"))
+        registry.markCounted()
+        registry.markCountsDelivered(registry.countGeneration)
+        assertTrue(registry.isSendable(a))
+
+        registry.markCountsDelivered(older)
+
+        assertTrue(registry.isSendable(a))
+        assertEquals(listOf(a), registry.offeredIds())
+    }
+
+    @Test
+    fun `an unknown id is never sendable`() {
+        val registry = DependencyRegistry()
+        registry.release()
+
+        assertFalse(registry.isSendable(42))
+    }
+
+    private fun DependencyRegistry.addDiscoveredByLoad(artifact: String): Int =
+        register(
+            listOf(DependencyIdentity("g", artifact, "1")),
+            DependencyIdentitySource.POM_PROPERTIES,
+            "/libs/$artifact.jar",
+            DependencyDiscoverySource.LOAD,
+        )
+
+    private fun DependencyRegistry.deliverAll() {
+        computeManifestEntries(100).forEach(::advanceManifest)
+    }
+
+    @Test
+    fun `the startup listing is delivered only once complete and every startup entry went out`() {
+        val registry = DependencyRegistry()
+        registry.add(DependencyIdentity("g", "a", "1"))
+        registry.add(DependencyIdentity("g", "b", "1"))
+        assertFalse(registry.isStartupListingDelivered, "the listing has not completed")
+
+        registry.markListingComplete()
+        assertFalse(registry.isStartupListingDelivered, "no startup entry has gone out")
+
+        registry.markCounted()
+        registry.markCountsDelivered(registry.countGeneration)
+        val chunks = registry.computeManifestEntries(1)
+        registry.advanceManifest(chunks.first())
+        assertFalse(registry.isStartupListingDelivered, "one startup entry is still undelivered")
+
+        registry.advanceManifest(chunks.last())
+        assertTrue(registry.isStartupListingDelivered)
+    }
+
+    @Test
+    fun `an undelivered entry discovered by load does not hold the startup listing back`() {
+        val registry = DependencyRegistry()
+        registry.add(DependencyIdentity("g", "a", "1"))
+        registry.markListingComplete()
+        registry.release()
+        registry.deliverAll()
+        registry.addDiscoveredByLoad("late")
+
+        assertTrue(registry.isStartupListingDelivered)
+    }
+
+    @Test
+    fun `a complete listing with no dependencies is delivered at once`() {
+        val registry = DependencyRegistry()
+
+        registry.markListingComplete()
+
+        assertTrue(registry.isStartupListingDelivered)
+    }
+
+    @Test
+    fun `a failed listing is never delivered`() {
+        val registry = DependencyRegistry()
+        registry.markListingFailed()
+        registry.release()
+        registry.deliverAll()
+
+        assertFalse(registry.isStartupListingDelivered)
+    }
+
+    @Test
+    fun `hasSendableUndelivered is true only while a sendable entry has not gone out`() {
+        val registry = DependencyRegistry()
+        registry.add(DependencyIdentity("g", "a", "1"))
+        assertFalse(registry.hasSendableUndelivered(), "an uncounted entry is not sendable")
+
+        registry.release()
+        assertTrue(registry.hasSendableUndelivered())
+
+        registry.deliverAll()
+        assertFalse(registry.hasSendableUndelivered())
     }
 }

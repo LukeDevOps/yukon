@@ -56,6 +56,13 @@ sealed interface DependencyOrigin {
  * flag no index is kept: it costs memory in proportion to the dependencies' class count. For the
  * same reason the baseline releases it ([releaseClassIndex]) once it has been read.
  *
+ * A record is held back from the manifest until its loaded-class count has reached the collector,
+ * so a collector never reads a used jar as unloaded (ADR 0036). Each counting sweep ends with
+ * [markCounted], which opens a counting generation. A record takes the first generation that finds
+ * it registered. Once every delta send computed after that sweep is confirmed, the export thread
+ * calls [markCountsDelivered] with it. [computeManifestEntries] offers only records whose
+ * generation has been delivered this way ([isSendable]).
+ *
  * Safe to use from several threads: the listing thread registers, the sweep records loads and
  * registers jars found at load on the scheduler thread, and the send pool computes and advances.
  */
@@ -93,6 +100,10 @@ class DependencyRegistry(
         /** Stamped by the first [computeDeltas] that sees a non-zero total; 0 until then. */
         @Volatile
         internal var firstLoadedAt: Long = 0
+
+        /** The counting generation that first counted this dependency; 0 until a [markCounted] sees it. */
+        @Volatile
+        internal var countedInGeneration: Long = 0
 
         /** The last loaded-class total a confirmed delta send carried. */
         internal var lastDelivered: Long = 0
@@ -136,6 +147,12 @@ class DependencyRegistry(
 
     @Volatile
     private var listingComplete = false
+
+    private val countGenerations = AtomicLong(0)
+    private val deliveredGenerations = AtomicLong(0)
+
+    @Volatile
+    private var startupListingDelivered = false
 
     /**
      * True once the startup listing has finished and every dependency it found is registered.
@@ -306,17 +323,85 @@ class DependencyRegistry(
         }
     }
 
+    /**
+     * The newest counting generation, or 0 before any sweep has counted. Read it after a sweep and
+     * before the delta sends that carry the sweep's counts, then pass it to [markCountsDelivered].
+     */
+    val countGeneration: Long
+        get() = countGenerations.get()
+
+    /** The newest counting generation whose counts a confirmed delta send carried; see [markCountsDelivered]. */
+    val deliveredGeneration: Long
+        get() = deliveredGenerations.get()
+
+    /**
+     * Records that a counting sweep finished. This opens the next counting generation and stamps it
+     * on every record that no earlier generation has stamped.
+     *
+     * No lock guards registration against this. After the listing completes, a jar is registered
+     * only inside a sweep's count or through `resolveLocation` on a send thread. Neither overlaps
+     * this call, because each flush waits for its sends before the next sweep runs.
+     */
+    @Synchronized
+    fun markCounted() {
+        val generation = countGenerations.get() + 1
+        for (entry in entriesByKey.values) {
+            if (entry.countedInGeneration == 0L) entry.countedInGeneration = generation
+        }
+        countGenerations.set(generation)
+    }
+
+    /**
+     * Records that every delta send computed after the sweep of [generation] was confirmed. The
+     * delivered generation only rises: an older [generation] changes nothing.
+     */
+    fun markCountsDelivered(generation: Long) {
+        deliveredGenerations.accumulateAndGet(generation, ::maxOf)
+    }
+
+    /**
+     * Whether dependency [dependencyId] may go out on a manifest: a sweep counted it, and the
+     * counts of that sweep have been delivered. False for an unknown id.
+     */
+    fun isSendable(dependencyId: Int): Boolean = entriesById[dependencyId]?.let(::isSendable) ?: false
+
+    private fun isSendable(entry: DependencyEntry): Boolean {
+        val generation = entry.countedInGeneration
+        return generation in 1..deliveredGenerations.get()
+    }
+
+    /**
+     * Whether any record is sendable ([isSendable]) and has not gone out on a confirmed manifest.
+     * A mapping is held only on such a record, so false means nothing is waiting on a release.
+     */
+    fun hasSendableUndelivered(): Boolean = entriesByKey.values.any { !it.delivered && isSendable(it) }
+
+    /**
+     * True once the startup listing is complete and every record it registered has gone out on a
+     * confirmed manifest. A record discovered by load never holds it back. It stays false after a
+     * failed listing. Once true, it stays true.
+     */
+    val isStartupListingDelivered: Boolean
+        get() {
+            if (startupListingDelivered) return true
+            if (!listingComplete) return false
+            val delivered =
+                entriesByKey.values.all { it.discoverySource != DependencyDiscoverySource.STARTUP_CLASSPATH || it.delivered }
+            if (delivered) startupListingDelivered = true
+            return delivered
+        }
+
     /** Every registered dependency, in id order. */
     fun entries(): List<DependencyEntry> = entriesByKey.values.sortedBy { it.dependencyId }
 
     /**
      * Returns chunks of at most [maxPerChunk] dependencies, each weighing one entry, covering every
-     * dependency not yet delivered, in id order. Empty when there is nothing to send. Nothing is
-     * marked delivered here; see [advanceManifest].
+     * dependency not yet delivered whose counts have been delivered ([isSendable]), in id order.
+     * Empty when there is nothing to send. Nothing is marked delivered here; see [advanceManifest].
      */
     fun computeManifestEntries(maxPerChunk: Int): List<ManifestSnapshot> =
         entries()
-            .filterNot { it.delivered }
+            .filter { !it.delivered && isSendable(it) }
             .chunked(maxPerChunk)
             .map { chunk -> ManifestSnapshot(chunk.map { it.toLocation() }, chunk) }
 

@@ -12,6 +12,7 @@ import java.net.URLClassLoader
 import java.nio.file.Path
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class LoadedDependencyCounterTest {
@@ -93,5 +94,24 @@ class LoadedDependencyCounterTest {
         counter.count(emptyArray())
 
         assertTrue(registry.computeDeltas(10).isEmpty(), "an unloaded class keeps its count, so nothing changes")
+    }
+
+    @Test
+    fun `a count before the listing completes marks no generation`() {
+        counter.count(arrayOf(LoadedDependencyCounterTest::class.java))
+
+        assertEquals(0, registry.countGeneration)
+    }
+
+    @Test
+    fun `a count after the listing completes marks a generation, which releases the dependency once delivered`() {
+        registry.markListingComplete()
+
+        counter.count(arrayOf(LoadedDependencyCounterTest::class.java))
+
+        assertEquals(1, registry.countGeneration)
+        assertFalse(registry.isSendable(dependencyId), "counted, but the counts are not delivered")
+        registry.markCountsDelivered(registry.countGeneration)
+        assertTrue(registry.isSendable(dependencyId))
     }
 }

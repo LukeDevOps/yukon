@@ -19,6 +19,10 @@ import java.util.concurrent.atomic.AtomicLong
  * the manifest the same way, so the baseline itself never carries a mapping and no name is sent
  * twice.
  *
+ * A name that maps to a dependency is held while [isDependencySendable] is false for that id. It is
+ * neither delivered nor dropped, and a later compute offers it. An absent name names no dependency
+ * and is never held.
+ *
  * Delivery follows [DependencyRegistry]'s snapshot pattern: [computeManifestEntries] stages entries
  * onto the snapshot it returns, and [advanceManifest] marks exactly those delivered once the send
  * carrying them is confirmed.
@@ -26,6 +30,11 @@ import java.util.concurrent.atomic.AtomicLong
 class ExternalClassRegistry(
     private val isListingComplete: () -> Boolean = { false },
     private val resolveLocation: (String) -> Int? = { null },
+    /**
+     * Whether a mapping to this dependency id may go out. A mapping waits until its dependency's
+     * own entry may go out; see [DependencyRegistry.isSendable] and ADR 0036.
+     */
+    private val isDependencySendable: (Int) -> Boolean = { true },
 ) {
     private class Entry(
         val className: String,
@@ -55,6 +64,32 @@ class ExternalClassRegistry(
 
     private val entries = ConcurrentHashMap<String, Entry>()
     private val nextSequence = AtomicLong(0)
+
+    /** The first sequence number past the backlog; -1 until the first compute after the listing. */
+    @Volatile
+    private var backlogEnd: Long = -1
+
+    @Volatile
+    private var backlogDelivered = false
+
+    /**
+     * True once every name recorded before the first compute after the listing completed has
+     * gone out on a confirmed send, or resolved to no dependency. A name recorded later never holds
+     * it back. False before that first compute, so false for good when the listing never
+     * completes. Once true, it stays true. See ADR 0036.
+     */
+    val isBacklogDelivered: Boolean
+        get() {
+            if (backlogDelivered) return true
+            val end = backlogEnd
+            if (end < 0) return false
+            val delivered =
+                entries.values.all { entry ->
+                    entry.sequence >= end || entry.delivered || (entry.resolved && !entry.absent && entry.dependencyId == null)
+                }
+            if (delivered) backlogDelivered = true
+            return delivered
+        }
 
     /**
      * Records where [className] (dotted) was found: a code-source location string, or null when no
@@ -87,18 +122,22 @@ class ExternalClassRegistry(
 
     /**
      * Returns chunks of at most [maxPerChunk] entries, each weighing one, covering every name not yet
-     * delivered that maps to a dependency or is absent, in the order the names were first recorded.
-     * Resolves any name not yet resolved first. Empty until the dependency listing completes, and
-     * when there is nothing to send. Nothing is marked delivered here; see [advanceManifest].
+     * delivered that is absent or maps to a dependency [isDependencySendable] allows, in the order
+     * the names were first recorded. Resolves any name not yet resolved first. Empty until the
+     * dependency listing completes, and when there is nothing to send. The first call after the
+     * listing completes fixes the backlog that [isBacklogDelivered] waits for. Nothing is marked
+     * delivered here; see [advanceManifest].
      */
     fun computeManifestEntries(maxPerChunk: Int): List<ManifestSnapshot> {
         if (!isListingComplete()) return emptyList()
+        if (backlogEnd < 0) backlogEnd = nextSequence.get()
         val sendable =
             entries.values
                 .asSequence()
                 .filterNot { it.delivered }
                 .sortedBy { it.sequence }
                 .mapNotNull { entry -> toExternalClass(entry)?.let { entry to it } }
+                .filter { (_, external) -> external.dependencyId?.let(isDependencySendable) ?: true }
                 .toList()
         return sendable.chunked(maxPerChunk).map { chunk -> ManifestSnapshot(chunk.map { it.second }, chunk.map { it.first }) }
     }
