@@ -222,7 +222,10 @@ stub's (annotations unloaded, protobuf-java and byte-buddy unreferenced,
 kotlin-stdlib used). The server judges a baseline complete from each
 instance's latest complete scan, as its never-loaded rule does, and counts a
 sweep-reported class as loaded; the stub and the testkit differ from it only
-in the "never loaded" mark on a site, never in a status.
+in the "never loaded" mark on a site, never in a status. Protobuf-java and
+byte-buddy were the agent's own libraries, on the demo server's classpath by
+mistake; since `94d64af` the plain demo lists only annotations (unloaded) and
+kotlin-stdlib (used), and the stack run has not been repeated against that.
 
 Open, recorded rather than started:
 - A `byte-buddy-agent` jar sitting flat in an exploded war's `WEB-INF/lib`
@@ -274,7 +277,7 @@ Landing order, one chunk and one commit each, built with `/chunked-build`:
 3. `yukon-collector`: bindings bump, `LogSink` logs the flag.
 
 Chunk 0 has landed (`c243ff3`): field 15 on `ProbeManifest`, the agent's model
-and codec. Chunk 1 has landed: counting generations in `DependencyRegistry`,
+and codec. Chunk 1 has landed (`761a475`): counting generations in `DependencyRegistry`,
 entries and mappings held until a flush's delta sends are all confirmed, a
 second manifest send in that flush for what it releases, and the flag with an
 empty manifest to carry it. The independent review found three things the
@@ -287,7 +290,7 @@ would have held every dependency back for good; the count runs in a `finally`.
 On the plain demo the releasing flush sends three manifests: probes, then the
 dependencies and mappings, then the flag.
 
-Chunk 2 has landed: the testkit judges a dependency once its entry arrives,
+Chunk 2 has landed (`0f6fcd2`): the testkit judges a dependency once its entry arrives,
 the list queries and `absentReferences()` throw until every instance heard
 from has sent the flag (and while none has been heard from), and
 `awaitDependenciesListed` waits for it. The stub collector logs the flag and
