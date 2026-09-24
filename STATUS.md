@@ -141,10 +141,13 @@ Chunk 2 (counting, discovery by load, `DependencyDelta`) has landed. On
 `jar:nested:<outer>/!BOOT-INF/lib/<jar>!/`, parsed as Boot 4.1.1's
 `NestedLocation` does (split at the last `/!`, `%` escapes decoded, the Windows
 drive fix); 31 of the 36 dependencies load a class, none is discovered by load,
-and the sweep reads no jar. Two things stay open. The Boot 2
-`jar:file:<outer>!/<entry>!/` form is pinned only by unit tests: no Boot 2
-loader is in the local caches to check it against. And a flat jar first seen at
-load still goes through the agent-jar rule, which rightly turns away a
+and the sweep reads no jar. The Boot 2 `jar:file:<outer>!/<entry>!/` form was
+checked on 2026-09-24 against the real `spring-boot-loader` 2.7.18 and 3.1.12,
+each in a fat jar built by hand around one app class and three libraries. Both
+loaders gave exactly that form for `BOOT-INF/classes` and for a nested jar. The
+used library counted its one loaded class, the other two read as unloaded, and
+all three came from the startup listing. One thing stays open: a flat jar first
+seen at load still goes through the agent-jar rule, which rightly turns away a
 dynamically attached agent's jar but would also turn away `byte-buddy-agent`
 sitting flat in an exploded war's `WEB-INF/lib`; it would then read as no
 dependency rather than as one.
@@ -226,8 +229,6 @@ in the "never loaded" mark on a site, never in a status.
 Open, recorded rather than started:
 - `absentReferences()` in the testkit has no settle gate, and
   `dependency()`'s gate assumes one delta batch per flush.
-- The Boot 2 `jar:file:<outer>!/<entry>!/` code-source form is pinned only by
-  unit tests; no Boot 2 loader has been run.
 - A `byte-buddy-agent` jar sitting flat in an exploded war's `WEB-INF/lib`
   is turned away by the agent-jar rule and reads as no dependency.
 - Every Kotlin service reads kotlin-stdlib as used through `kotlin.Metadata`,
