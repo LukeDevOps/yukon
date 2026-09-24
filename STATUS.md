@@ -7,7 +7,7 @@ one record per decision, and `CONTEXT.md` the glossary. Where this file and
 
 ## TODO
 
-### Readable branch findings: in progress
+### Readable branch findings: landed in all three repos
 
 Settled 2026-09-24 in a grilling session across all three repos, after
 reading the `yukon-server` UI against the demo. A never-hit outcome reached a
@@ -172,6 +172,20 @@ return `rows`, each a method row or a site row carrying every outcome with
 the newest in-scope run. The report has `methods` and `branch_sites` in place
 of the mixed probe triple. An outcome with no site forms a site of its own
 rather than dropping out.
+
+Chunk 9 landed in `yukon-server` (`b6c649b`): the never-hit and stale-hit
+tables, the graph's expanded method nodes and the headline read sites through
+one module, and the branch index and key are shown nowhere. The browser check
+found the mono font drawing `!=` as one glyph, which blurs `==` against
+`===`, so mono text has ligatures off.
+
+Checked end to end on 2026-09-25 against the rebuilt compose stack, with
+`runDemoStack` (`53ff83c` taught its report printer the server's site rows):
+the server reports 2 methods and 7 conditions with an untaken path, and
+reads `System.getenv("ENABLE_LEGACY_DISCOUNT") == "true"` was never true,
+only path to `DemoServerMain.kt:59`. The browser shows the same rows, and the
+graph's `totalParam` node lists its four conditions with a true and false
+marker each.
 
 Left for later, in `yukon-server`'s STATUS: folding a dead method's branches
 into its row, rooting clusters at a never-taken outcome, telling
