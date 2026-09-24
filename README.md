@@ -28,6 +28,23 @@ Produces a shaded agent jar at `build/libs/yukon-<version>.jar` with
 ByteBuddy and protobuf relocated, so it won't collide with copies already on
 the target application's classpath.
 
+### Benchmark the transform-time analysis
+
+```
+./gradlew jmh
+./gradlew jmh -Pyukon.benchmark.corpus=demo
+./gradlew jmh -Pyukon.benchmark.corpus=demo,scala
+```
+
+A JMH benchmark in `src/jmh/kotlin` times the branch analyser over five
+corpora of real class files: `demo`, `demo-spring`, `scala` (both Scala
+fixture modules), `spring-webmvc` (the jar `demo-spring` resolves) and
+`ktor-server-core` (the jar `endpoints-ktor-3` tests against). The first command runs all five, about 40
+seconds each. `-Pyukon.benchmark.corpus` picks one or more by name. The
+score is the average time to analyse the whole corpus once. Each run prints
+the corpus's class count, so the time per class is the score divided by that
+count. Results go to `build/results/jmh/results.txt`.
+
 ## Attach it to an app
 
 ```

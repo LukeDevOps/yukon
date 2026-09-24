@@ -5,6 +5,7 @@ plugins {
     kotlin("jvm") version "2.2.21"
     id("com.gradleup.shadow") version "8.3.11"
     id("com.google.protobuf") version "0.9.4"
+    id("me.champeau.jmh") version "0.7.3"
 }
 
 group = "io.github.lukedevops"
@@ -34,6 +35,8 @@ evaluationDependsOn(":fixtures-scala3")
 evaluationDependsOn(":fixtures-scala2")
 evaluationDependsOn(":fixtures-kotlin-jvm-default-disable")
 evaluationDependsOn(":fixtures-kotlin-class-sam")
+evaluationDependsOn(":demo-spring")
+evaluationDependsOn(":endpoints-ktor-3")
 
 dependencies {
     // Compile-time only: at runtime the holder class comes from the target JVM's bootstrap
@@ -385,6 +388,82 @@ tasks.test {
         )
         systemProperty("yukon.fixtures.classsam.dir", classSamFixtureClassesDir.get().asFile.absolutePath)
     }
+}
+
+// The transform-time benchmark's corpora: class sets by corpus name, each one module's output or
+// one jar. BenchmarkCorpus reads them from the system properties below, in the JMH fork and in the
+// test that keeps them loadable. spring-webmvc is the jar demo-spring already resolves, a large
+// body of real Java. ktor-server-core is the jar endpoints-ktor-3 tests against, a large body of
+// real Kotlin with suspend functions and inline functions. The agent's own classes are not a
+// corpus: TypeMatchPolicy never includes the agent's package, so the analyser would drop their
+// inlined copies and call edges, which no adopter class sees.
+val benchmarkCorpora: Map<String, Map<String, FileCollection>> =
+    mapOf(
+        "ktor-server-core" to
+            mapOf(
+                "jar" to
+                    project(":endpoints-ktor-3")
+                        .configurations
+                        .getByName("testRuntimeClasspath")
+                        .filter { it.name.startsWith("ktor-server-core-jvm-") },
+            ),
+        "demo" to mapOf("main" to files(project(":demo").layout.buildDirectory.dir("classes/kotlin/main")).builtBy(":demo:classes")),
+        "demo-spring" to
+            mapOf(
+                "main" to files(project(":demo-spring").layout.buildDirectory.dir("classes/kotlin/main")).builtBy(":demo-spring:classes"),
+            ),
+        "scala" to
+            mapOf(
+                "fixtures-scala2" to files(scala2FixtureClassesDir).builtBy(":fixtures-scala2:classes"),
+                "fixtures-scala3" to files(scala3FixtureClassesDir).builtBy(":fixtures-scala3:classes"),
+            ),
+        "spring-webmvc" to
+            mapOf(
+                "jar" to
+                    project(":demo-spring")
+                        .configurations
+                        .getByName("runtimeClasspath")
+                        .filter { it.name.startsWith("spring-webmvc-") },
+            ),
+    )
+val benchmarkCorpusFiles = files(benchmarkCorpora.values.flatMap { it.values })
+
+fun benchmarkCorpusProperties(): Map<String, String> =
+    benchmarkCorpora
+        .flatMap { (corpus, classSets) ->
+            classSets.map { (classSet, files) ->
+                val path = files.asPath
+                // JMH joins the fork's JVM arguments with spaces, so a space in a path would split it.
+                check(' ' !in path) { "benchmark corpus $corpus.$classSet has a space in its path: $path" }
+                "yukon.benchmark.corpus.$corpus.$classSet" to path
+            }
+        }.toMap()
+
+tasks.test {
+    inputs.files(benchmarkCorpusFiles).withPropertyName("benchmarkCorpora")
+    doFirst { systemProperties(benchmarkCorpusProperties()) }
+}
+
+// Fork, warmup and measurement settings live on the benchmark class. `-Pyukon.benchmark.corpus=demo`
+// runs one corpus; a comma-separated list runs several.
+jmh {
+    jmhVersion.set("1.37")
+    includeTests.set(false)
+    jvmArgsAppend.addAll(provider { benchmarkCorpusProperties().map { (key, value) -> "-D$key=$value" } })
+    providers.gradleProperty("yukon.benchmark.corpus").orNull?.let { selected ->
+        benchmarkParameters.put("corpus", objects.listProperty<String>().value(selected.split(',').map { it.trim() }))
+    }
+}
+
+tasks.named("jmh") {
+    inputs.files(benchmarkCorpusFiles).withPropertyName("benchmarkCorpora")
+}
+
+// BenchmarkCorpusTest compiles against the benchmark's own corpus loader. So every build also
+// compiles the benchmark, and an analyser change that breaks it fails the build.
+sourceSets.test {
+    compileClasspath += sourceSets["jmh"].output
+    runtimeClasspath += sourceSets["jmh"].output
 }
 
 val agentMainClass = "io.github.lukedevops.yukon.Agent"

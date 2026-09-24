@@ -7,7 +7,7 @@ one record per decision, and `CONTEXT.md` the glossary. Where this file and
 
 ## TODO
 
-### Readable branch findings: designed, not started
+### Readable branch findings: in progress
 
 Settled 2026-09-24 in a grilling session across all three repos, after
 reading the `yukon-server` UI against the demo. A never-hit outcome reached a
@@ -43,6 +43,25 @@ Landing order, one chunk per commit:
    shown.
 10. End to end: the compose stack plus `runDemoStack`, and each repo's
     STATUS brought up to date.
+
+Chunk 1 landed: `./gradlew jmh` times `BranchSiteAnalyzer.analyze` over
+five corpora (README, "Benchmark the transform-time analysis"). Baseline on
+an Apple M3 Pro, JDK 21.0.4, 1 fork, 3 warmup and 5 measurement iterations
+of 5 s:
+
+| Corpus | Classes | ms per corpus | Per class |
+|---|---|---|---|
+| demo | 61 | 5.811 ± 0.088 | 95 µs |
+| demo-spring | 9 | 0.124 ± 0.002 | 14 µs |
+| scala | 56 | 1.045 ± 0.194 | 19 µs |
+| spring-webmvc | 545 | 41.239 ± 0.668 | 76 µs |
+| ktor-server-core | 477 | 35.488 ± 0.309 | 74 µs |
+
+The review replaced a corpus of the agent's own classes: `TypeMatchPolicy`
+never includes the agent's package, so the analyser dropped their inlined
+copies and call edges, a shape no adopter class has. Ktor's server core
+stands in as the large Kotlin corpus. `demo` costs more per class than the
+others, which is worth a look when chunk 3 reruns this.
 
 Left for later, in `yukon-server`'s STATUS: folding a dead method's branches
 into its row, rooting clusters at a never-taken outcome, telling
