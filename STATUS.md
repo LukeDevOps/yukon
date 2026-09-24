@@ -225,7 +225,8 @@ sweep-reported class as loaded; the stub and the testkit differ from it only
 in the "never loaded" mark on a site, never in a status. Protobuf-java and
 byte-buddy were the agent's own libraries, on the demo server's classpath by
 mistake; since `94d64af` the plain demo lists only annotations (unloaded) and
-kotlin-stdlib (used), and the stack run has not been repeated against that.
+kotlin-stdlib (used). The stack run was repeated on 2026-09-24, after
+`yukon-server` took up the flag, and the server's answer matched.
 
 Open, recorded rather than started:
 - A `byte-buddy-agent` jar sitting flat in an exploded war's `WEB-INF/lib`
@@ -304,8 +305,10 @@ with several instances, `awaitDependenciesListed` first covers the rest.
 Chunk 3 has landed in `yukon-collector` (`74d7a9b`): bindings bumped to BSR commit
 `084ba94b`, `LogSink` logs the flag, and the relay round-trip test carries it.
 
-Recorded, not planned: `yukon-server` still answers with an empty list for an
-instance whose listing has not arrived; gating on the flag is its follow-up.
+`yukon-server` takes the flag up under its ADR 0029: dependency reads carry
+`listing_complete` and the instance list `dependencies_listed`.
+
+Recorded, not planned:
 The testkit's `awaitSettled` counts delta batches the same way and keeps the
 split-flush weakness for hit totals.
 
