@@ -203,10 +203,8 @@ Chunk 6 (testkit) has landed: `dependency(group, artifact)`,
 demo's rules, with the demo's cases ported too and three more added to both.
 The split queries throw rather than return an empty list when the include
 rules or a complete baseline are missing, so an assertion of "none" cannot
-pass on missing data. `dependency()` refuses to answer until two delta batches
-have followed the listing's manifest, since the manifest and the delta batch go
-out side by side; an instance that splits one flush's deltas across several
-batches would read as settled early. `absentReferences()` has no such gate. The
+pass on missing data. The two-batch gate `dependency()` had at first is
+replaced by ADR 0036's delivery order; see "Dependency delivery order". The
 `agentTest` suite runs with `staticBaselineEnabled=true` at no measurable cost
 and proves unloaded, used and the split end to end against two fixture jars.
 Chunk 7 has landed in `yukon-collector` (`4bc51e7`): its generated bindings
@@ -288,6 +286,17 @@ send. And the sweep's confirmation pass could throw before the count, which
 would have held every dependency back for good; the count runs in a `finally`.
 On the plain demo the releasing flush sends three manifests: probes, then the
 dependencies and mappings, then the flag.
+
+Chunk 2 has landed: the testkit judges a dependency once its entry arrives,
+the list queries and `absentReferences()` throw until every instance heard
+from has sent the flag (and while none has been heard from), and
+`awaitDependenciesListed` waits for it. The stub collector logs the flag and
+names, after the counts line, any run that never sent it. The review found
+that the testkit stored a manifest's entries before its mappings, on a handler
+thread outside the query lock, so a query woken between the two could read a
+used jar as unreferenced. The store writes mappings first, entries next and
+the flag last. `dependency()` judges on the instances whose entry has arrived;
+with several instances, `awaitDependenciesListed` first covers the rest.
 
 Recorded, not planned: `yukon-server` still answers with an empty list for an
 instance whose listing has not arrived; gating on the flag is its follow-up.

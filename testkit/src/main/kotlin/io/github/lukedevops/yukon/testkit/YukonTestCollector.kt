@@ -51,6 +51,9 @@ import kotlin.concurrent.withLock
  * and follow the same rule again: a dependency no manifest has listed throws
  * [UnknownDependencyException], and a question the data cannot answer yet, or at all without a
  * complete static baseline, throws [IllegalStateException] instead of returning an empty list.
+ * The agent sends a dependency's entry only after its loaded-class counts have been delivered
+ * (ADR 0036), so [dependency] answers once the entry arrives. The four list queries answer only once every instance heard from has
+ * sent `dependencies_listed`; [awaitDependenciesListed] waits for that.
  *
  * Every probe, endpoint and dependency is keyed on its instance id alone, not on the run id ADR
  * 0032 adds. That is the same as keying on the run only while each instance id names one run, which
@@ -270,15 +273,15 @@ class YukonTestCollector private constructor(
     // assigned by each instance's own registry.
     private val dependencyLocations = ConcurrentHashMap<InstanceKey<Int>, DependencyView>()
 
-    /** The listing instance's delta-batch count when a dependency's record first arrived; see [isSettled]. */
-    private val dependencyListedAtBatch = ConcurrentHashMap<InstanceKey<Int>, Long>()
-    private val deltaBatchesByInstance = ConcurrentHashMap<String, AtomicLong>()
     private val loadedClassesTotals = ConcurrentHashMap<InstanceKey<Int>, Long>()
     private val externalClassesByName = ConcurrentHashMap<InstanceKey<String>, ExternalClassView>()
     private val classLevelReferences = ConcurrentHashMap<InstanceKey<Int>, List<String>>()
     private val classNamesByClassId = ConcurrentHashMap<InstanceKey<Int>, String>()
     private val baselineReferences = ConcurrentHashMap<InstanceKey<String>, BaselineReferences>()
     private val instancesRecordingReferences: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+    /** Every instance that sent a manifest with `dependencies_listed` set; see [awaitDependenciesListed]. */
+    private val instancesWithDependenciesListed: MutableSet<String> = ConcurrentHashMap.newKeySet()
     private val instanceIds: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
     /** Per instance, every class a manifest named as probed, skipped or unreported: every class that loaded there. */
@@ -343,6 +346,12 @@ class YukonTestCollector private constructor(
         timeout: Duration,
         timeoutMessage: String,
         predicate: () -> Boolean,
+    ) = awaitUntil(timeout, { timeoutMessage }, predicate)
+
+    private fun awaitUntil(
+        timeout: Duration,
+        timeoutMessage: () -> String,
+        predicate: () -> Boolean,
     ) {
         val deadlineNanos = System.nanoTime() + timeout.toNanos()
         lock.withLock {
@@ -350,7 +359,7 @@ class YukonTestCollector private constructor(
                 // A rejection wakes this wait, so it fails at once rather than at the timeout.
                 checkNoRejections()
                 val remaining = deadlineNanos - System.nanoTime()
-                if (remaining <= 0) throw TimeoutException(timeoutMessage)
+                if (remaining <= 0) throw TimeoutException(timeoutMessage())
                 condition.awaitNanos(remaining)
             }
         }
@@ -1023,13 +1032,17 @@ class YukonTestCollector private constructor(
      * example `dependency(null, "commons-lang3")` for a jar with no `pom.properties`, or
      * `dependency("com.fasterxml.jackson.core", "jackson-databind")` for one with it.
      *
-     * The agent lists the startup classpath on a background thread and delivers the result on the
-     * flush after the listing ends. Its loaded-class counts can arrive a flush later, since the
-     * manifest and the delta batch go out side by side and the agent counts nothing before the
-     * listing ends. So a dependency is judged only once its listing instance has sent two delta batches after the
-     * manifest that listed it; before that this throws [IllegalStateException] rather than calling
-     * it unloaded or unreferenced on half the data. [awaitDependency] waits for exactly that point,
-     * and [awaitSettled] after the listing has ended covers it too.
+     * The agent sends a dependency's entry only after a confirmed delta send has carried its first
+     * loaded-class count, and it holds each reference mapping to the dependency under the same
+     * condition (ADR 0036). So this answers as soon as the entry has arrived: that instance's
+     * counts for it, and its mappings to it, have arrived by then. [awaitDependency] waits for the
+     * entry.
+     *
+     * Two things are not covered by that. The hits and reference sites that tell used from
+     * unreached arrive like any probe data, so a test waits for them with [awaitSettled]. And a
+     * dependency is judged on the instances whose entry has arrived: with several instances, one
+     * that loaded the jar but whose entry has not arrived yet does not count. Call
+     * [awaitDependenciesListed] first when that matters.
      *
      * Throws [UnknownDependencyException] if no manifest has listed the dependency, naming the
      * identities this collector does know.
@@ -1043,15 +1056,13 @@ class YukonTestCollector private constructor(
         val finding =
             computeDependencyReport(dependencyViews()).findings.firstOrNull { wanted in it.identities }
                 ?: throw unknownDependency(wanted)
-        checkSettled(listOf(finding))
         return toDependencyStatus(finding)
     }
 
     /**
      * Blocks until some manifest has listed the dependency carrying `groupId:artifactId`, matched
-     * the way [dependency] matches, and the instance that listed it has sent two delta batches
-     * since, so [dependency] answers without throwing. Throws [TimeoutException] if [timeout]
-     * elapses first.
+     * the way [dependency] matches. [dependency] then answers without throwing. Throws
+     * [TimeoutException] if [timeout] elapses first.
      */
     fun awaitDependency(
         groupId: String?,
@@ -1060,20 +1071,41 @@ class YukonTestCollector private constructor(
     ) {
         checkNoRejections()
         val wanted = groupId.orEmpty() to artifactId
-        awaitUntil(timeout, "no manifest listed dependency ${wanted.first}:${wanted.second}, settled, within $timeout") {
-            val listings =
-                dependencyLocations.filterValues { view -> view.identities.any { (it.groupId to it.artifactId) == wanted } }.keys
-            listings.isNotEmpty() && listings.all(::isSettled)
+        awaitUntil(timeout, "no manifest listed dependency ${wanted.first}:${wanted.second} within $timeout") {
+            dependencyLocations.values.any { view -> view.identities.any { (it.groupId to it.artifactId) == wanted } }
         }
+    }
+
+    /**
+     * Blocks until at least one instance has been heard from and every instance heard from has
+     * sent `dependencies_listed`. The agent sets that flag once its startup listing, and every
+     * reference mapping recorded before the listing ended, has reached this collector (ADR 0036).
+     * [unloadedDependencies], [unreferencedDependencies], [unreachedDependencies] and
+     * [absentReferences] answer only after this point. Throws [TimeoutException] if [timeout]
+     * elapses first, naming the instances still waiting. An agent whose listing failed never sends
+     * the flag, so this times out for it.
+     */
+    fun awaitDependenciesListed(timeout: Duration) {
+        checkNoRejections()
+        awaitUntil(timeout, { dependenciesListedTimeoutMessage(timeout) }) {
+            instanceIds.isNotEmpty() && instancesWaitingForDependencyListing().isEmpty()
+        }
+    }
+
+    private fun dependenciesListedTimeoutMessage(timeout: Duration): String {
+        val waiting = instancesWaitingForDependencyListing()
+        if (instanceIds.isEmpty()) return "no instance was heard from within $timeout"
+        return "these instances did not send dependencies_listed within $timeout: ${waiting.joinToString(", ")}"
     }
 
     /**
      * Every dependency some instance listed from its startup classpath with no class from it
      * loaded on any instance, sorted by [DependencyStatus.identityKey]. Needs neither references
-     * nor a static baseline. An empty list means none, but only once the listing has arrived: a
-     * test should first [awaitDependency] on one dependency it knows is there.
+     * nor a static baseline.
      *
-     * Throws [IllegalStateException] while any listed dependency is not yet settled; see [dependency].
+     * Throws [IllegalStateException] until every instance heard from has sent
+     * `dependencies_listed`, and while no instance has been heard from. Before that point an empty
+     * list could mean "not listed yet". Call [awaitDependenciesListed] first.
      */
     fun unloadedDependencies(): List<DependencyStatus> = checked { dependenciesWithStatus(DependencyUsage.UNLOADED, needsSplit = false) }
 
@@ -1086,7 +1118,8 @@ class YukonTestCollector private constructor(
      * unreferenced or unreached: that needs `references_recorded`, which the agent sends only with
      * `includePackages` set, and a complete static baseline (`staticBaselineEnabled=true`) from
      * every instance that lists it. An empty list without them would read as "none" when the
-     * real answer is "unknown". Throws the same way while a dependency is not yet settled.
+     * real answer is "unknown". Throws the same way as [unloadedDependencies] until every instance
+     * heard from has sent `dependencies_listed`, and checks that first.
      */
     fun unreferencedDependencies(): List<DependencyStatus> =
         checked { dependenciesWithStatus(DependencyUsage.UNREFERENCED, needsSplit = true) }
@@ -1101,12 +1134,17 @@ class YukonTestCollector private constructor(
 
     /**
      * Every referenced class no loader could find, sorted by class name, with the sites that
-     * reference it: code guarded by a check for an optional library, for example. Throws
-     * [IllegalStateException] when no instance sent `references_recorded`, which the agent sends
-     * only with `includePackages` set, since an empty list would then say nothing.
+     * reference it: code guarded by a check for an optional library, for example.
+     *
+     * Throws [IllegalStateException] the same way as [unloadedDependencies] until every instance
+     * heard from has sent `dependencies_listed`. The agent holds no absent reference back, but it
+     * sends none until its listing ends. After that check, this throws when no instance sent
+     * `references_recorded`, which the agent sends only with `includePackages` set, since an
+     * empty list would then say nothing.
      */
     fun absentReferences(): List<AbsentReference> {
         checkNoRejections()
+        checkDependenciesListed()
         val report = computeDependencyReport(dependencyViews())
         check(!report.referencesUnavailable) {
             "no instance sent references_recorded, so absent references are unknown: run the agent with includePackages set"
@@ -1118,8 +1156,8 @@ class YukonTestCollector private constructor(
         status: DependencyUsage,
         needsSplit: Boolean,
     ): List<DependencyStatus> {
+        checkDependenciesListed()
         val report = computeDependencyReport(dependencyViews())
-        checkSettled(report.findings)
         if (needsSplit) {
             val unsplit = report.findings.filter { it.status == DependencyUsage.NO_LIVE_REFERENCE || it.status == DependencyUsage.LOADED }
             check(!report.referencesUnavailable && unsplit.isEmpty()) {
@@ -1140,22 +1178,16 @@ class YukonTestCollector private constructor(
             .map(::toDependencyStatus)
     }
 
-    /** True once the instance that listed [key] has sent two delta batches after the manifest carrying it. */
-    private fun isSettled(key: InstanceKey<Int>): Boolean {
-        val listedAt = dependencyListedAtBatch[key] ?: return false
-        return (deltaBatchesByInstance[key.serviceInstanceId]?.get() ?: 0L) >= listedAt + 2
-    }
+    private fun instancesWaitingForDependencyListing(): List<String> = (instanceIds - instancesWithDependenciesListed).sorted()
 
-    private fun checkSettled(findings: List<DependencyFinding>) {
-        val keys = findings.map { it.identityKey }.toSet()
-        val unsettled =
-            dependencyLocations.entries
-                .filter { (key, view) -> view.identityKey in keys && !isSettled(key) }
-                .map { (key, view) -> "${view.identityKey} on ${key.serviceInstanceId}" }
-                .sorted()
-        check(unsettled.isEmpty()) {
-            "listed, but its loaded-class counts and reference mappings may not have arrived yet: ${unsettled.joinToString(", ")}; " +
-                "call awaitSettled or awaitDependency first"
+    private fun checkDependenciesListed() {
+        check(instanceIds.isNotEmpty()) {
+            "no instance has been heard from, so its dependencies are unknown; call awaitDependenciesListed first"
+        }
+        val waiting = instancesWaitingForDependencyListing()
+        check(waiting.isEmpty()) {
+            "these instances have not sent dependencies_listed, so their dependency listing may be incomplete: " +
+                "${waiting.joinToString(", ")}; call awaitDependenciesListed first"
         }
     }
 
@@ -1168,7 +1200,8 @@ class YukonTestCollector private constructor(
         if (known.isEmpty()) {
             return UnknownDependencyException(
                 "${wanted.first}:${wanted.second}: no manifest has listed any dependency yet; the agent lists the startup " +
-                    "classpath on a background thread and delivers it on the flush after the listing ends",
+                    "classpath on a background thread and delivers each entry at the earliest on the flush after the listing ends; " +
+                    "call awaitDependency first",
             )
         }
         return UnknownDependencyException(
@@ -1284,7 +1317,6 @@ class YukonTestCollector private constructor(
         }
         if (batch.finalFlush) instancesThatEndedCleanly += instanceId
         instanceIds += instanceId
-        deltaBatchesByInstance.computeIfAbsent(instanceId) { AtomicLong() }.incrementAndGet()
         deltaBatchSeq.incrementAndGet()
         respond(exchange, 200)
         signalAll()
@@ -1387,7 +1419,15 @@ class YukonTestCollector private constructor(
         }
         manifest.skippedClasses.forEach { loaded += it.className }
         manifest.unreportedClasses.forEach { loaded += it.className }
-        val batchesSoFar = deltaBatchesByInstance.computeIfAbsent(instanceId) { AtomicLong() }.get()
+        for (references in manifest.classReferences) {
+            classLevelReferences[InstanceKey(instanceId, references.classId)] = references.referencedClasses
+        }
+        for (external in manifest.externalClasses) {
+            externalClassesByName[InstanceKey(instanceId, external.className)] = ExternalClassView(external.dependencyId, external.absent)
+        }
+        // The entries go in after the mappings and the flag goes in last. A query answers once it
+        // sees an entry or the flag, and it runs outside this handler's thread, so it must never
+        // see either before the rest of the same manifest.
         for (dependency in manifest.dependencies) {
             val key = InstanceKey(instanceId, dependency.dependencyId)
             dependencyLocations[key] =
@@ -1401,14 +1441,8 @@ class YukonTestCollector private constructor(
                     classCount = dependency.classCount,
                     location = dependency.location,
                 )
-            dependencyListedAtBatch.putIfAbsent(key, batchesSoFar)
         }
-        for (references in manifest.classReferences) {
-            classLevelReferences[InstanceKey(instanceId, references.classId)] = references.referencedClasses
-        }
-        for (external in manifest.externalClasses) {
-            externalClassesByName[InstanceKey(instanceId, external.className)] = ExternalClassView(external.dependencyId, external.absent)
-        }
+        if (manifest.dependenciesListed) instancesWithDependenciesListed += instanceId
     }
 
     private fun handleStaticBaseline(exchange: HttpExchange) {

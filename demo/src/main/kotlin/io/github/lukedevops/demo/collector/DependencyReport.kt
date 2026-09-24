@@ -66,11 +66,14 @@ internal data class HeldReferences(
  * Everything one instance said about dependencies. [baselineComplete] is true only when the
  * instance sent at least one static scan and every chunk of it arrived. [loadedClassNames] is every
  * class the instance's manifest named, probed or skipped, so every class that loaded.
+ * [dependenciesListed] is true once any manifest from the instance carried `dependencies_listed`.
+ * See ADR 0036.
  */
 internal data class InstanceDependencyView(
     val instanceId: String,
     val referencesRecorded: Boolean,
     val baselineComplete: Boolean,
+    val dependenciesListed: Boolean = false,
     val dependencies: List<DependencyView> = emptyList(),
     val loadedClassesTotal: Map<Int, Long> = emptyMap(),
     val externalClasses: Map<String, ExternalClassView> = emptyMap(),
@@ -123,12 +126,14 @@ internal data class AbsentReference(
 
 /**
  * The dependency report's content. [referencesUnavailable] is true when no instance recorded
- * references, so nothing past loaded or unloaded is claimed.
+ * references, so nothing past loaded or unloaded is claimed. [unlistedInstances] names, sorted,
+ * each instance that never sent `dependencies_listed`. Its listing may be missing entries.
  */
 internal data class DependencyReport(
     val findings: List<DependencyFinding>,
     val absentReferences: List<AbsentReference>,
     val referencesUnavailable: Boolean,
+    val unlistedInstances: List<String>,
 )
 
 /**
@@ -252,6 +257,12 @@ internal fun computeDependencyReport(instances: List<InstanceDependencyView>): D
                 .map { (className, sites) -> AbsentReference(className, sites.sortedBy { it.toString() }) }
                 .sortedBy { it.className },
         referencesUnavailable = recording.isEmpty(),
+        unlistedInstances =
+            instances
+                .filterNot { it.dependenciesListed }
+                .map { it.instanceId }
+                .distinct()
+                .sorted(),
     )
 }
 
@@ -272,6 +283,10 @@ internal fun formatDependencyReport(report: DependencyReport): List<String> {
         countsLine += ", loaded: ${counts[DependencyStatus.LOADED] ?: 0}"
     }
     lines += countsLine
+    if (report.unlistedInstances.isNotEmpty()) {
+        lines += "the dependency listing had not fully arrived from ${report.unlistedInstances.joinToString(", ")} " +
+            "(no dependencies_listed), so an empty or short list may be missing entries"
+    }
     if (report.referencesUnavailable) {
         lines += "no instance sent references_recorded (only one with include rules set records references), " +
             "so levels 2 and 3 (unreferenced, unreached) are unavailable"

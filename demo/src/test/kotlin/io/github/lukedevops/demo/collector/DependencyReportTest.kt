@@ -25,10 +25,12 @@ class DependencyReportTest {
         loadedClassNames: Set<String> = emptySet(),
         instanceId: String = "instance-1",
         dependency: DependencyView = jackson,
+        dependenciesListed: Boolean = true,
     ) = InstanceDependencyView(
         instanceId = instanceId,
         referencesRecorded = referencesRecorded,
         baselineComplete = baselineComplete,
+        dependenciesListed = dependenciesListed,
         dependencies = listOf(dependency),
         loadedClassesTotal = mapOf(dependency.dependencyId to loaded),
         externalClasses = mapOf("tools.jackson.databind.json.JsonMapper" to ExternalClassView(dependency.dependencyId, absent = false)),
@@ -284,6 +286,7 @@ class DependencyReportTest {
                 instanceId = "instance-1",
                 referencesRecorded = true,
                 baselineComplete = true,
+                dependenciesListed = true,
                 dependencies = listOf(dependency(1, "zeta"), dependency(2, "alpha"), dependency(3, "beta"), dependency(4, "gamma")),
                 loadedClassesTotal = mapOf(1 to 3L, 2 to 0L, 3 to 1L, 4 to 2L),
                 externalClasses = mapOf("org.example.Z" to ExternalClassView(1, false), "org.example.G" to ExternalClassView(4, false)),
@@ -312,6 +315,27 @@ class DependencyReportTest {
         assertTrue(lines.any { it.contains("UNREACHED: org.example:gamma") }, lines.joinToString("\n"))
         assertTrue(lines.any { it.contains("demo.B#b") }, lines.joinToString("\n"))
         assertFalse(lines.any { it.contains("levels 2 and 3") })
+        assertFalse(lines.any { it.contains("not fully arrived") }, lines.joinToString("\n"))
+    }
+
+    @Test
+    fun `a run that never sent dependencies_listed is named on the line after the counts`() {
+        val report =
+            computeDependencyReport(
+                listOf(
+                    instance(instanceId = "instance-1"),
+                    instance(instanceId = "instance-2", dependenciesListed = false),
+                    instance(instanceId = "instance-3", dependenciesListed = false),
+                ),
+            )
+
+        assertEquals(listOf("instance-2", "instance-3"), report.unlistedInstances)
+        val lines = formatDependencyReport(report)
+        val countsAt = lines.indexOfFirst { it.startsWith("unloaded: ") }
+        val warning = lines[countsAt + 1]
+        assertTrue(warning.contains("not fully arrived"), lines.joinToString("\n"))
+        assertTrue(warning.contains("instance-2, instance-3"), warning)
+        assertFalse(warning.contains("instance-1"), warning)
     }
 
     @Test

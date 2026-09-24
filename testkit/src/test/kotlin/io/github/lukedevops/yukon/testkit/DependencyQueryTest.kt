@@ -78,6 +78,7 @@ class DependencyQueryTest {
         unreportedClasses: List<UnreportedClass> = emptyList(),
         skippedClasses: List<SkippedClass> = emptyList(),
         referencesRecorded: Boolean = true,
+        dependenciesListed: Boolean = true,
         instanceId: String = "i-1",
     ) {
         exporter.exportManifest(
@@ -90,6 +91,7 @@ class DependencyQueryTest {
                 unreportedClasses = unreportedClasses,
                 skippedClasses = skippedClasses,
                 referencesRecorded = referencesRecorded,
+                dependenciesListed = dependenciesListed,
             ),
         )
     }
@@ -102,12 +104,6 @@ class DependencyQueryTest {
         exporter.exportDeltaBatch(
             DeltaBatch(ResourceAttributes("svc", null, instanceId, null, "run-1"), probeDeltas, dependencyDeltas = dependencyDeltas),
         )
-    }
-
-    /** Two delta batches after the listing manifest, the most an agent needs to deliver the counts that go with it. */
-    private fun settle(instanceId: String = "i-1") {
-        deltas(instanceId = instanceId)
-        deltas(instanceId = instanceId)
     }
 
     private fun baseline(
@@ -138,7 +134,6 @@ class DependencyQueryTest {
                 ),
         )
         deltas(listOf(DependencyDelta(0, 1L, 12L)))
-        settle()
 
         val jackson = collector.dependency("com.fasterxml.jackson.core", "jackson-databind")
         assertEquals("com.fasterxml.jackson.core:jackson-databind", jackson.identityKey)
@@ -159,7 +154,6 @@ class DependencyQueryTest {
             dependencies =
                 listOf(dependency(0, "com.acme", "fat", extraIdentities = listOf(DependencyIdentity("com.google.guava", "guava", "33.0")))),
         )
-        settle()
 
         assertEquals("com.acme:fat,com.google.guava:guava", collector.dependency("com.google.guava", "guava").identityKey)
         assertEquals("com.acme:fat,com.google.guava:guava", collector.dependency("com.acme", "fat").identityKey)
@@ -171,7 +165,6 @@ class DependencyQueryTest {
         assertTrue(nothingYet.message!!.contains("no manifest has listed any dependency"), nothingYet.message)
 
         manifest(dependencies = listOf(dependency(0, "com.acme", "known"), dependency(1, null, "plain")))
-        settle()
 
         val failure = assertFailsWith<UnknownDependencyException> { collector.dependency("com.acme", "missing") }
         assertTrue(failure.message!!.contains("com.acme:missing"), failure.message)
@@ -179,38 +172,126 @@ class DependencyQueryTest {
     }
 
     @Test
-    fun `a dependency is not judged until two delta batches from its instance follow the manifest listing it`() {
-        manifest(dependencies = listOf(dependency(0, "com.acme", "lib")))
-
-        val early = assertFailsWith<IllegalStateException> { collector.dependency("com.acme", "lib") }
-        assertTrue(early.message!!.contains("awaitSettled"), early.message)
-        assertFailsWith<IllegalStateException> { collector.unloadedDependencies() }
-
+    fun `a dependency is judged as soon as its entry arrives`() {
         deltas(listOf(DependencyDelta(0, 1L, 3L)))
-        assertFailsWith<IllegalStateException> { collector.dependency("com.acme", "lib") }
+        manifest(dependencies = listOf(dependency(0, "com.acme", "lib")), dependenciesListed = false)
 
-        deltas()
         assertEquals(3L, collector.dependency("com.acme", "lib").loadedClassesTotal)
+        assertEquals(DependencyUsage.NO_LIVE_REFERENCE, collector.dependency("com.acme", "lib").status)
+    }
+
+    @Test
+    fun `awaitDependency returns once the entry arrives, and times out otherwise`() {
+        assertFailsWith<TimeoutException> { collector.awaitDependency("com.acme", "lib", Duration.ofMillis(200)) }
+
+        manifest(dependencies = listOf(dependency(0, "com.acme", "other")), dependenciesListed = false)
+        assertFailsWith<TimeoutException> { collector.awaitDependency("com.acme", "lib", Duration.ofMillis(200)) }
+
+        manifest(dependencies = listOf(dependency(1, "com.acme", "lib")), dependenciesListed = false)
+        collector.awaitDependency("com.acme", "lib", Duration.ofSeconds(5))
+    }
+
+    @Test
+    fun `the list queries and absentReferences throw until the instance sends dependencies_listed, naming it`() {
+        deltas(listOf(DependencyDelta(0, 1L, 3L)))
+        manifest(dependencies = listOf(dependency(0, "com.acme", "lib")), dependenciesListed = false)
+        baseline()
+
+        val queries =
+            listOf(
+                collector::unloadedDependencies,
+                collector::unreferencedDependencies,
+                collector::unreachedDependencies,
+                collector::absentReferences,
+            )
+        for (query in queries) {
+            val failure = assertFailsWith<IllegalStateException> { query() }
+            assertTrue(failure.message!!.contains("i-1"), failure.message)
+            assertTrue(failure.message!!.contains("awaitDependenciesListed"), failure.message)
+        }
+
+        manifest()
+        assertEquals(emptyList(), collector.unloadedDependencies())
+        assertEquals(listOf("com.acme:lib"), collector.unreferencedDependencies().map { it.identityKey })
+        assertEquals(emptyList(), collector.unreachedDependencies())
+        assertEquals(emptyList(), collector.absentReferences())
+    }
+
+    @Test
+    fun `with one instance flagged and one not, the list queries throw naming only the unflagged one`() {
+        manifest(dependencies = listOf(dependency(0, "com.acme", "lib")), instanceId = "i-flagged")
+        manifest(dependencies = listOf(dependency(0, "com.acme", "lib")), dependenciesListed = false, instanceId = "i-waiting")
+
+        for (query in listOf(collector::unloadedDependencies, collector::absentReferences)) {
+            val failure = assertFailsWith<IllegalStateException> { query() }
+            assertTrue(failure.message!!.contains("i-waiting"), failure.message)
+            assertTrue(!failure.message!!.contains("i-flagged"), failure.message)
+        }
+
+        manifest(instanceId = "i-waiting")
+        assertEquals(listOf("com.acme:lib"), collector.unloadedDependencies().map { it.identityKey })
+    }
+
+    @Test
+    fun `an instance that sent dependencies_listed with no dependencies has none unloaded`() {
+        manifest()
+
         assertEquals(emptyList(), collector.unloadedDependencies())
     }
 
     @Test
-    fun `awaitDependency returns once the dependency is listed and settled, and times out otherwise`() {
-        assertFailsWith<TimeoutException> { collector.awaitDependency("com.acme", "lib", Duration.ofMillis(200)) }
+    fun `the list queries throw while no instance has been heard from`() {
+        for (query in listOf(collector::unloadedDependencies, collector::absentReferences)) {
+            val failure = assertFailsWith<IllegalStateException> { query() }
+            assertTrue(failure.message!!.contains("no instance has been heard from"), failure.message)
+        }
+    }
 
-        manifest(dependencies = listOf(dependency(0, "com.acme", "lib")))
-        deltas()
-        assertFailsWith<TimeoutException> { collector.awaitDependency("com.acme", "lib", Duration.ofMillis(200)) }
+    @Test
+    fun `an instance heard only by a delta batch holds the list queries back until its flag arrives`() {
+        manifest(instanceId = "i-flagged")
+        deltas(instanceId = "i-deltas-only")
 
-        deltas()
-        collector.awaitDependency("com.acme", "lib", Duration.ofSeconds(5))
+        val failure = assertFailsWith<IllegalStateException> { collector.unloadedDependencies() }
+        assertTrue(failure.message!!.contains("i-deltas-only"), failure.message)
+        assertFailsWith<TimeoutException> { collector.awaitDependenciesListed(Duration.ofMillis(200)) }
+
+        manifest(instanceId = "i-deltas-only")
+        collector.awaitDependenciesListed(Duration.ofSeconds(5))
+        assertEquals(emptyList(), collector.unloadedDependencies())
+    }
+
+    @Test
+    fun `absentReferences names the missing flag before the missing references_recorded`() {
+        manifest(referencesRecorded = false, dependenciesListed = false)
+
+        val unlisted = assertFailsWith<IllegalStateException> { collector.absentReferences() }
+        assertTrue(unlisted.message!!.contains("dependencies_listed"), unlisted.message)
+
+        manifest(referencesRecorded = false)
+        val unrecorded = assertFailsWith<IllegalStateException> { collector.absentReferences() }
+        assertTrue(unrecorded.message!!.contains("references_recorded"), unrecorded.message)
+    }
+
+    @Test
+    fun `awaitDependenciesListed returns once every instance has sent it, and times out otherwise`() {
+        val nobody = assertFailsWith<TimeoutException> { collector.awaitDependenciesListed(Duration.ofMillis(200)) }
+        assertTrue(nobody.message!!.contains("no instance"), nobody.message)
+
+        manifest(dependenciesListed = false, instanceId = "i-1")
+        manifest(instanceId = "i-2")
+        val waiting = assertFailsWith<TimeoutException> { collector.awaitDependenciesListed(Duration.ofMillis(200)) }
+        assertTrue(waiting.message!!.contains("i-1"), waiting.message)
+        assertTrue(!waiting.message!!.contains("i-2"), waiting.message)
+
+        manifest(instanceId = "i-1")
+        collector.awaitDependenciesListed(Duration.ofSeconds(5))
     }
 
     @Test
     fun `the split queries throw without references_recorded`() {
         manifest(dependencies = listOf(dependency(0, "com.acme", "lib")), referencesRecorded = false)
         deltas(listOf(DependencyDelta(0, 1L, 3L)))
-        settle()
         baseline()
 
         for (query in listOf(collector::unreferencedDependencies, collector::unreachedDependencies)) {
@@ -225,7 +306,6 @@ class DependencyQueryTest {
     @Test
     fun `the split queries throw without references_recorded even when every listed dependency is unloaded`() {
         manifest(dependencies = listOf(dependency(0, "com.acme", "lib")), referencesRecorded = false)
-        settle()
         baseline()
 
         assertFailsWith<IllegalStateException> { collector.unreferencedDependencies() }
@@ -246,7 +326,6 @@ class DependencyQueryTest {
     fun `the split queries throw without a complete static baseline, and answer once it arrives`() {
         manifest(dependencies = listOf(dependency(0, "com.acme", "lib")))
         deltas(listOf(DependencyDelta(0, 1L, 3L)))
-        settle()
 
         val noBaseline = assertFailsWith<IllegalStateException> { collector.unreferencedDependencies() }
         assertTrue(noBaseline.message!!.contains("staticBaselineEnabled=true"), noBaseline.message)
@@ -272,7 +351,6 @@ class DependencyQueryTest {
     fun `unloadedDependencies needs neither references nor a baseline`() {
         manifest(dependencies = listOf(dependency(0, "com.acme", "lib"), dependency(1, "com.acme", "loaded")), referencesRecorded = false)
         deltas(listOf(DependencyDelta(1, 1L, 2L)))
-        settle()
 
         assertEquals(listOf("com.acme:lib"), collector.unloadedDependencies().map { it.identityKey })
     }
@@ -308,7 +386,6 @@ class DependencyQueryTest {
             dependencyDeltas = (2..6).map { DependencyDelta(it, 1L, 1L) },
             probeDeltas = listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 4L)),
         )
-        settle()
         baseline(
             declaredClasses =
                 listOf(DeclaredClass("demo.Legacy", listOf(DeclaredMethod("apply", "()V", referencedClasses = listOf("org.example.Old"))))),
@@ -332,7 +409,6 @@ class DependencyQueryTest {
             unreportedClasses = listOf(UnreportedClass("demo.Deflected", 1L)),
         )
         deltas(listOf(DependencyDelta(0, 1L, 1L)))
-        settle()
         baseline(
             declaredClasses =
                 listOf(
@@ -354,7 +430,6 @@ class DependencyQueryTest {
             skippedClasses = listOf(SkippedClass("demo.Skipped", "unsafe annotation", 1L)),
         )
         deltas(listOf(DependencyDelta(0, 1L, 1L)))
-        settle()
         baseline(
             declaredClasses =
                 listOf(DeclaredClass("demo.Skipped", listOf(DeclaredMethod("run", "()V", referencedClasses = listOf("org.example.Lib"))))),

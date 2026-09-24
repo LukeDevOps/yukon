@@ -24,6 +24,7 @@ class DependencyUsageAgentTest {
 
         collector.awaitDependency("com.example.fixture", "dep-used", Duration.ofSeconds(30))
         collector.awaitDependency(null, "dep-unused", Duration.ofSeconds(30))
+        collector.awaitDependenciesListed(Duration.ofSeconds(30))
         collector.awaitSettled(Duration.ofSeconds(15))
 
         val unused = collector.dependency(null, "dep-unused")

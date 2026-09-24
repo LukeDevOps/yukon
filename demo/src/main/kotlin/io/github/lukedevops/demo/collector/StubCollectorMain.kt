@@ -217,6 +217,9 @@ private val baselineReferences = ConcurrentHashMap<InstanceClassKey, BaselineRef
 
 /** Runs any manifest arrived from with `references_recorded` set. See ADR 0030. */
 private val runsRecordingReferences = Collections.newSetFromMap(ConcurrentHashMap<Run, Boolean>())
+
+/** Runs any manifest arrived from with `dependencies_listed` set. See ADR 0036. */
+private val runsWithDependenciesListed = Collections.newSetFromMap(ConcurrentHashMap<Run, Boolean>())
 private val manifestRuns = Collections.newSetFromMap(ConcurrentHashMap<Run, Boolean>())
 
 /** One node of the call graph [computeUnreachedClusters] resolves: a probed method, by identity alone. See ADR 0024. */
@@ -385,6 +388,7 @@ private fun handleManifest(exchange: HttpExchange) {
     }
     manifestRuns += run
     if (manifest.referencesRecorded) runsRecordingReferences += run
+    if (manifest.dependenciesListed) runsWithDependenciesListed += run
     for (dependency in manifest.dependenciesList) {
         dependencyLocations[InstanceDependencyKey(run, dependency.dependencyId)] =
             DependencyView(
@@ -435,7 +439,8 @@ private fun handleManifest(exchange: HttpExchange) {
             "$callEdgeCount call edges (known total: ${manifestCallEdges.values.sumOf { it.size }}) and " +
             "${manifest.classLocationsList.size} class location records (known total: ${supertypesByClassId.size}), " +
             "${manifest.dependenciesList.size} dependencies (known total: ${dependencyLocations.size}) and " +
-            "${manifest.externalClassesList.size} external classes (known total: ${externalClasses.size})",
+            "${manifest.externalClassesList.size} external classes (known total: ${externalClasses.size}), " +
+            "dependencies_listed=${manifest.dependenciesListed}",
     )
     respondOk(exchange)
 }
@@ -1044,6 +1049,7 @@ private fun dependencyViews(): List<InstanceDependencyView> {
             instanceId = run.serviceInstanceId,
             referencesRecorded = run in runsRecordingReferences,
             baselineComplete = runScans.isNotEmpty() && runScans.all { it.complete },
+            dependenciesListed = run in runsWithDependenciesListed,
             dependencies = dependencyLocations.filterKeys { it.run == run }.values.toList(),
             loadedClassesTotal =
                 latestLoadedClassesTotal.filterKeys { it.run == run }.mapKeys { it.key.dependencyId },
