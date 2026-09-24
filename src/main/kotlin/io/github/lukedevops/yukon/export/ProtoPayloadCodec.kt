@@ -1,6 +1,9 @@
 package io.github.lukedevops.yukon.export
 
 import io.github.lukedevops.yukon.proto.BodyKind as ProtoBodyKind
+import io.github.lukedevops.yukon.proto.BranchOutcome as ProtoBranchOutcome
+import io.github.lukedevops.yukon.proto.BranchRole as ProtoBranchRole
+import io.github.lukedevops.yukon.proto.BranchSite as ProtoBranchSite
 import io.github.lukedevops.yukon.proto.CallEdge as ProtoCallEdge
 import io.github.lukedevops.yukon.proto.CallEdgeKind as ProtoCallEdgeKind
 import io.github.lukedevops.yukon.proto.ClassLocation as ProtoClassLocation
@@ -189,9 +192,11 @@ object ProtoPayloadCodec {
                 .setGeneratedBy(toProto(location.generatedBy))
                 .addAllReferencedClasses(location.referencedClasses)
                 .setLambdaBody(location.lambdaBody)
+                .addAllBranchSites(location.branchSites.map { toProto(it) })
         location.branchIndex?.let { builder.branchIndex = it }
         location.parameterIndex?.let { builder.parameterIndex = it }
         location.branchKey?.let { builder.branchKey = it }
+        location.siteIndex?.let { builder.siteIndex = it }
         return builder.build()
     }
 
@@ -219,8 +224,77 @@ object ProtoPayloadCodec {
             referencedClasses = location.referencedClassesList,
             branchKey = if (location.hasBranchKey()) location.branchKey else null,
             lambdaBody = location.lambdaBody,
+            branchSites = location.branchSitesList.map { fromProto(it) },
+            siteIndex = if (location.hasSiteIndex()) location.siteIndex else null,
         )
     }
+
+    private fun toProto(site: BranchSite): ProtoBranchSite {
+        val builder =
+            ProtoBranchSite
+                .newBuilder()
+                .setSiteIndex(site.siteIndex)
+                .setLine(site.line)
+                .addAllOutcomes(site.outcomes.map { toProto(it) })
+        site.siteKey?.let { builder.siteKey = it }
+        return builder.build()
+    }
+
+    private fun fromProto(site: ProtoBranchSite): BranchSite =
+        BranchSite(
+            siteIndex = site.siteIndex,
+            siteKey = if (site.hasSiteKey()) site.siteKey else null,
+            line = site.line,
+            outcomes = site.outcomesList.map { fromProto(it) },
+        )
+
+    private fun toProto(outcome: BranchOutcome): ProtoBranchOutcome {
+        val builder =
+            ProtoBranchOutcome
+                .newBuilder()
+                .setBranchIndex(outcome.branchIndex)
+                .setRole(toProto(outcome.role))
+        outcome.caseKey?.let { builder.caseKey = it }
+        return builder.build()
+    }
+
+    private fun fromProto(outcome: ProtoBranchOutcome): BranchOutcome =
+        BranchOutcome(
+            branchIndex = outcome.branchIndex,
+            role = fromProto(outcome.role),
+            caseKey = if (outcome.hasCaseKey()) outcome.caseKey else null,
+        )
+
+    private fun toProto(role: BranchRole): ProtoBranchRole =
+        when (role) {
+            BranchRole.TAKEN -> ProtoBranchRole.TAKEN
+            BranchRole.FALL_THROUGH -> ProtoBranchRole.FALL_THROUGH
+            BranchRole.CASE -> ProtoBranchRole.CASE
+            BranchRole.DEFAULT -> ProtoBranchRole.DEFAULT
+        }
+
+    private fun fromProto(role: ProtoBranchRole): BranchRole =
+        when (role) {
+            ProtoBranchRole.TAKEN -> {
+                BranchRole.TAKEN
+            }
+
+            ProtoBranchRole.FALL_THROUGH -> {
+                BranchRole.FALL_THROUGH
+            }
+
+            ProtoBranchRole.CASE -> {
+                BranchRole.CASE
+            }
+
+            ProtoBranchRole.DEFAULT -> {
+                BranchRole.DEFAULT
+            }
+
+            ProtoBranchRole.BRANCH_ROLE_UNSPECIFIED, ProtoBranchRole.UNRECOGNIZED -> {
+                throw IllegalArgumentException("unrecognized branch role on the wire: $role")
+            }
+        }
 
     private fun toProto(edge: CallEdge): ProtoCallEdge =
         ProtoCallEdge
@@ -419,6 +493,7 @@ object ProtoPayloadCodec {
             .setGeneratedBy(toProto(method.generatedBy))
             .addAllReferencedClasses(method.referencedClasses)
             .setLambdaBody(method.lambdaBody)
+            .addAllBranchSites(method.branchSites.map { toProto(it) })
             .build()
 
     private fun fromProto(method: ProtoDeclaredMethod): DeclaredMethod =
@@ -430,6 +505,7 @@ object ProtoPayloadCodec {
             generatedBy = fromProto(method.generatedBy),
             referencedClasses = method.referencedClassesList,
             lambdaBody = method.lambdaBody,
+            branchSites = method.branchSitesList.map { fromProto(it) },
         )
 
     private fun toProto(unsafeClass: StaticallyUnsafeClass): ProtoStaticallyUnsafeClass =

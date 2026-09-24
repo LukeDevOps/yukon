@@ -12,7 +12,6 @@ import io.github.lukedevops.yukon.export.BodyKind
 import io.github.lukedevops.yukon.export.ProbeKind
 import io.github.lukedevops.yukon.instrumentation.branch.BranchDropCounts
 import io.github.lukedevops.yukon.instrumentation.branch.BranchDropReason
-import io.github.lukedevops.yukon.instrumentation.branch.BranchKeys
 import io.github.lukedevops.yukon.instrumentation.branch.BranchProbeAsmVisitorWrapper
 import io.github.lukedevops.yukon.instrumentation.branch.BranchSite
 import io.github.lukedevops.yukon.instrumentation.branch.BranchSiteAnalyzer
@@ -428,38 +427,33 @@ class YukonInstrumentation(
                         generatedBy = analysis.generatedBy(it.internalName, it.descriptor),
                         referencedClasses = references.keep(analysis.referencesOf(it.internalName, it.descriptor)),
                         lambdaBody = analysis.isLambdaBody(it.internalName, it.descriptor),
+                        branchSites = analysis.branchSitesOf(it.internalName, it.descriptor),
                     )
                 }
             }
-        // Each site contributes `outcomeCount` adjacent outcome ordinals, dropped sites included,
-        // so a kept site's branch_index never shifts when an earlier site is dropped (ADR 0025).
-        // Only a kept site gets a slot in the array: BranchProbeAsmVisitorWrapper allocates one
+        // Only a kept site gets slots in the array: BranchProbeAsmVisitorWrapper allocates them
         // per kept site, in the same siteIndex order, and branchSlotCapacity below is sized to
         // match. A branch inside an inline method's body is just as invisible to a Kotlin caller
         // as the method probe itself, so it inherits the same flag, and a branch inside a
         // generated method carries that method's mark (ADR 0026).
-        var branchOrdinal = 0
-        val branchProbes = mutableListOf<ProbeMeta>()
-        val branchKeys = BranchKeys.compute(branchSites, typeDescription.name)
-        for (site in branchSites) {
-            if (site.dropReason == null) {
-                for (offset in 0 until site.outcomeCount) {
-                    branchProbes +=
-                        ProbeMeta(
-                            ProbeKind.BRANCH,
-                            site.methodName,
-                            site.methodDescriptor,
-                            site.line,
-                            branchIndex = branchOrdinal + offset,
-                            inline = analysis.isInline(site.methodName, site.methodDescriptor),
-                            inlinedFromClassName = site.inlinedFromClassName,
-                            branchKey = branchKeys[site.siteIndex to offset],
-                            generatedBy = analysis.generatedBy(site.methodName, site.methodDescriptor),
-                        )
+        val branchProbes =
+            analysis.keptSites.flatMap { kept ->
+                val site = kept.site
+                kept.outcomes.map { outcome ->
+                    ProbeMeta(
+                        ProbeKind.BRANCH,
+                        site.methodName,
+                        site.methodDescriptor,
+                        site.line,
+                        branchIndex = outcome.branchIndex,
+                        inline = analysis.isInline(site.methodName, site.methodDescriptor),
+                        inlinedFromClassName = site.inlinedFromClassName,
+                        branchKey = outcome.branchKey,
+                        generatedBy = analysis.generatedBy(site.methodName, site.methodDescriptor),
+                        siteIndex = site.siteIndex,
+                    )
                 }
             }
-            branchOrdinal += site.outcomeCount
-        }
         recordBranchDrops(typeDescription.name, branchSites)
         // Slots are packed per default site, one per optional parameter, appended after the
         // method and branch slots: bit i's slot is siteBase + bitCount(optionalBits & ((1 << i) - 1)),

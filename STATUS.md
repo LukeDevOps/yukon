@@ -23,13 +23,13 @@ Landing order, one chunk per commit:
 1. Agent: a transform-time benchmark over the demos and a Spring Boot app,
    with numbers recorded here before any analysis lands.
 2. Agent: sites on the wire. `BranchSite` on METHOD probes and on
-   `DeclaredMethod`, with site index, site key and line; site index and
-   role on BRANCH probes. Switch roles carry the numeric case key until
-   chunk 5.
+   `DeclaredMethod`, with site index, site key, line and its outcomes
+   (branch index, role); site index on BRANCH probes. Switch roles carry
+   the numeric case key until chunk 5.
 3. Agent: guarded code and guards. Control-flow graph and dominators per
-   method; guarded and partly guarded line ranges, SMAP-mapped, on BRANCH
-   probes; a guard on each site and call edge, in the manifest and the
-   baseline. Benchmark read again.
+   method; guarded and partly guarded line ranges, SMAP-mapped, on each
+   site's outcomes; a guard on each site and call edge, in the manifest
+   and the baseline. Benchmark read again.
 4. Agent: conditions as code and literal parts, for Kotlin, Java, Scala 2
    and Scala 3, each idiom confirmed with `javap` first.
 5. Agent: string and enum switches read back to source cases, with the
@@ -62,6 +62,18 @@ never includes the agent's package, so the analyser dropped their inlined
 copies and call edges, a shape no adopter class has. Ktor's server core
 stands in as the large Kotlin corpus. `demo` costs more per class than the
 others, which is worth a look when chunk 3 reruns this.
+
+Chunk 2 landed: `BranchSite`, `BranchOutcome` and `BranchRole` are on the
+wire, on METHOD probes and on `DeclaredMethod`, and a BRANCH probe names its
+site. `KeptBranchSite.of` is the one numbering the manifest and the baseline
+share, and a site key uses the branch key's collision rules under its own
+`site-v1` tag. Two things the design did not predict: a one-case switch also
+has two outcomes, so `BranchSite.isSwitch` tells it from a conditional; and
+the review found the manifest and baseline chunk weights ignored the new
+sites, so `BranchSite.chunkWeight` (one per site and one per outcome) now
+counts in both, and chunk 3 extends it to line ranges. ADR 0037 was amended
+before this chunk to list outcomes inside their site, since the baseline has
+no BRANCH probes to carry them.
 
 Left for later, in `yukon-server`'s STATUS: folding a dead method's branches
 into its row, rooting clusters at a never-taken outcome, telling

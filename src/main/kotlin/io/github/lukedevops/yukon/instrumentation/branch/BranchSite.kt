@@ -25,7 +25,11 @@ package io.github.lukedevops.yukon.instrumentation.branch
  *
  * [caseKeys] is set only for a switch: one entry per case outcome, in the exact order
  * [BranchProbeMethodVisitor] numbers case outcomes, so `caseKeys.size + 1 == outcomeCount` holds.
- * Null for a conditional.
+ * Null for a conditional, and null for a switch in a method [ConditionFingerprinter] could not
+ * read.
+ *
+ * [isSwitch] is true for a `TABLESWITCH` or `LOOKUPSWITCH`, and false for a conditional jump. A
+ * switch with one case also has two outcomes, so [outcomeCount] alone cannot tell the two apart.
  */
 data class BranchSite(
     val methodName: String,
@@ -37,4 +41,5 @@ data class BranchSite(
     val inlinedFromClassName: String? = null,
     val conditionFingerprint: String? = null,
     val caseKeys: List<Int>? = null,
+    val isSwitch: Boolean = false,
 )

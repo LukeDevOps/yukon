@@ -418,7 +418,10 @@ class StaticBaselineScannerTest {
                 "nested\$lambda\$0\$0",
                 "withDefault\$lambda\$0",
             ),
-            declared.methods.filter { it.lambdaBody }.map { it.methodName }.toSet(),
+            declared.methods
+                .filter { it.lambdaBody }
+                .map { it.methodName }
+                .toSet(),
         )
         assertEquals("CreationEdgeTarget.kt", declared.sourceFile)
     }
@@ -697,6 +700,49 @@ class StaticBaselineScannerTest {
             val supertypes = manifest.classLocations.single { it.classId == methodProbes.first().classId }
             assertEquals(supertypes.superClassName, declared.superClassName)
             assertEquals(supertypes.interfaceNames, declared.interfaceNames)
+        } finally {
+            yukon.uninstall(instrumentation, transformer)
+        }
+    }
+
+    @Test
+    fun `declares each method's branch sites exactly as the manifest's METHOD probes list them for the loaded class`() {
+        val javaClasses = listOf("BranchTarget", "SwitchFillerTarget", "StaticInitBranchTarget")
+        val kotlinClasses = listOf("InlinedCopyTargetKt", "CoroutineTargetKt")
+        val root =
+            directoryRoot(
+                *(
+                    javaClasses.map { "com/example/target/$it.class" to classBytes("java/test/com/example/target/$it.class") } +
+                        kotlinClasses.map { "com/example/target/$it.class" to classBytes("kotlin/test/com/example/target/$it.class") }
+                ).toTypedArray(),
+            )
+        val result = StaticBaselineScanner(listOf("com.example.target")).scan(listOf(root))
+
+        val registry = ProbeRegistry()
+        val instrumentation = ByteBuddyAgent.install()
+        val yukon = YukonInstrumentation(AgentConfig.parse("includePackages=com.example.target"), registry)
+        val transformer = yukon.install(instrumentation)
+        try {
+            val javaLoader = FixtureClassLoader(arrayOf(File("build/classes/java/test").toURI().toURL()), javaClass.classLoader)
+            val kotlinLoader = FixtureClassLoader(arrayOf(File("build/classes/kotlin/test").toURI().toURL()), javaClass.classLoader)
+            javaClasses.forEach { Class.forName("com.example.target.$it", true, javaLoader) }
+            kotlinClasses.forEach { Class.forName("com.example.target.$it", true, kotlinLoader) }
+
+            val manifest = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
+            for (simpleName in javaClasses + kotlinClasses) {
+                val className = "com.example.target.$simpleName"
+                val declared = result.declaredClasses.single { it.className == className }
+                val methodProbes = manifest.probes.filter { it.className == className && it.kind == ProbeKind.METHOD }
+                assertEquals(declared.methods.size, methodProbes.size, "$className declares one entry per METHOD probe")
+                assertTrue(methodProbes.any { it.branchSites.isNotEmpty() }, "$className has at least one listed site")
+                for (probe in methodProbes) {
+                    val declaredMethod =
+                        declared.methods.single { it.methodName == probe.methodName && it.methodDescriptor == probe.methodDescriptor }
+                    assertEquals(probe.branchSites, declaredMethod.branchSites, "mismatch for $className#${probe.methodName}")
+                }
+            }
+            val staticInit = result.declaredClasses.single { it.className == "com.example.target.StaticInitBranchTarget" }
+            assertEquals(emptyList(), staticInit.methods.single { it.methodName == "<clinit>" }.branchSites)
         } finally {
             yukon.uninstall(instrumentation, transformer)
         }

@@ -1,5 +1,6 @@
 package io.github.lukedevops.yukon.registry
 
+import io.github.lukedevops.yukon.export.BranchSite
 import io.github.lukedevops.yukon.export.CallEdge
 import io.github.lukedevops.yukon.export.GeneratedBy
 import io.github.lukedevops.yukon.export.ProbeKind
@@ -42,6 +43,10 @@ import io.github.lukedevops.yukon.export.ProbeKind
  *
  * [lambdaBody] is set only for a [ProbeKind.METHOD] probe whose method is a lambda body. See
  * [io.github.lukedevops.yukon.export.ProbeLocation.lambdaBody] and ADR 0034.
+ *
+ * [branchSites] is set only for a [ProbeKind.METHOD] probe: the method's kept branch sites, in
+ * site index order. [siteIndex] is set only for a [ProbeKind.BRANCH] probe and names its site. See
+ * [io.github.lukedevops.yukon.export.ProbeLocation.branchSites] and ADR 0037.
  */
 data class ProbeMeta(
     val kind: ProbeKind,
@@ -60,4 +65,6 @@ data class ProbeMeta(
     val referencedClasses: List<String> = emptyList(),
     val branchKey: String? = null,
     val lambdaBody: Boolean = false,
+    val branchSites: List<BranchSite> = emptyList(),
+    val siteIndex: Int? = null,
 )

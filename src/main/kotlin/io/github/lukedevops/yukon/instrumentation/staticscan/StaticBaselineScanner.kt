@@ -356,6 +356,7 @@ class StaticBaselineScanner(
                     analysis.generatedBy(it.internalName, it.descriptor),
                     analysis.referencesOf(it.internalName, it.descriptor),
                     analysis.isLambdaBody(it.internalName, it.descriptor),
+                    analysis.branchSitesOf(it.internalName, it.descriptor),
                 )
             }
         val typeInitializer =

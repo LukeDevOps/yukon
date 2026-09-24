@@ -147,6 +147,13 @@ data class DeltaBatch(
  * the boxing forwarder scalac puts in between, and its name is one a compiler gives a body the
  * source never named. A named method passed by reference is not a lambda body. See
  * [io.github.lukedevops.yukon.instrumentation.TypeMatchPolicy.isLambdaBodyName] and ADR 0034.
+ *
+ * [branchSites] is set only for a [ProbeKind.METHOD] probe: the method's kept branch sites, in
+ * [BranchSite.siteIndex] order. A dropped site is not listed, and the type initializer's probe
+ * lists none. See ADR 0037.
+ *
+ * [siteIndex] is set only for a [ProbeKind.BRANCH] probe. It names the site this outcome belongs
+ * to, which the METHOD probe of the same method lists in [branchSites]. See ADR 0037.
  */
 data class ProbeLocation(
     val classId: Int,
@@ -168,7 +175,66 @@ data class ProbeLocation(
     val referencedClasses: List<String> = emptyList(),
     val branchKey: String? = null,
     val lambdaBody: Boolean = false,
+    val branchSites: List<BranchSite> = emptyList(),
+    val siteIndex: Int? = null,
 )
+
+/** What one outcome of a [BranchSite] is within its site. See ADR 0037. */
+enum class BranchRole {
+    /** A conditional's taken jump. */
+    TAKEN,
+
+    /** A conditional's fall-through: the jump's own test was false. */
+    FALL_THROUGH,
+
+    /** One case entry of a switch. */
+    CASE,
+
+    /** A switch's default, which a value with no case entry of its own also reaches. */
+    DEFAULT,
+}
+
+/**
+ * One outcome of a [BranchSite]. [branchIndex] is the same value the outcome's BRANCH probe carries
+ * in a manifest. [caseKey] is set only for [BranchRole.CASE]: the case key value as the switch
+ * instruction names it. It is null for a case when the agent could not read the switch's case keys.
+ */
+data class BranchOutcome(
+    val branchIndex: Int,
+    val role: BranchRole,
+    val caseKey: Int? = null,
+)
+
+/**
+ * One kept conditional jump or switch in a method, with its outcomes listed inside it. See ADR 0037.
+ *
+ * [siteIndex] is the site's ordinal within its class, in bytecode order across every method,
+ * dropped sites counted. It names the site within one build only.
+ *
+ * [siteKey] is an opaque lowercase hex token naming this site across builds and instances, compared
+ * only for equality. It is made the way a branch key is, without the outcome, and it is null in
+ * exactly the cases the site's branch keys are null. See ADR 0031.
+ *
+ * [line] is the same line the site's BRANCH probes carry, including the origin line for a kept
+ * inlined copy.
+ *
+ * [outcomes] lists a conditional's [BranchRole.TAKEN] then [BranchRole.FALL_THROUGH] outcome, or a
+ * switch's [BranchRole.CASE] outcomes in the order its instruction names them, then
+ * [BranchRole.DEFAULT] last.
+ */
+data class BranchSite(
+    val siteIndex: Int,
+    val siteKey: String?,
+    val line: Int,
+    val outcomes: List<BranchOutcome>,
+) {
+    /**
+     * What this site adds to a manifest or baseline chunk's weight: one entry for the site and one
+     * per outcome. The chunkers count entries to keep each payload under the collector's size
+     * limit.
+     */
+    val chunkWeight: Int get() = 1 + outcomes.size
+}
 
 /**
  * A class the JVM has loaded that reached no manifest, neither as a probed class nor as a skipped
@@ -345,6 +411,9 @@ data class ProbeManifest(
  *
  * [lambdaBody] follows the same rule as [ProbeLocation.lambdaBody]. Always false for the class's
  * own `<clinit>` entry. See ADR 0034.
+ *
+ * [branchSites] follows the same rule as [ProbeLocation.branchSites], read from the same class.
+ * Always empty for the class's own `<clinit>` entry. See ADR 0037.
  */
 data class DeclaredMethod(
     val methodName: String,
@@ -354,6 +423,7 @@ data class DeclaredMethod(
     val generatedBy: GeneratedBy = GeneratedBy.NONE,
     val referencedClasses: List<String> = emptyList(),
     val lambdaBody: Boolean = false,
+    val branchSites: List<BranchSite> = emptyList(),
 )
 
 /**

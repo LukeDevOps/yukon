@@ -1,5 +1,8 @@
 package io.github.lukedevops.yukon.instrumentation.staticscan
 
+import io.github.lukedevops.yukon.export.BranchOutcome
+import io.github.lukedevops.yukon.export.BranchRole
+import io.github.lukedevops.yukon.export.BranchSite
 import io.github.lukedevops.yukon.export.CallEdge
 import io.github.lukedevops.yukon.export.DeclaredClass
 import io.github.lukedevops.yukon.export.DeclaredMethod
@@ -140,5 +143,30 @@ class StaticBaselineChunkerTest {
 
         assertEquals(listOf(listOf("First"), listOf("Second")), withReferences.map { c -> c.declaredClasses.map { it.className } })
         assertEquals(listOf(listOf("First", "Second")), withoutReferences.map { c -> c.declaredClasses.map { it.className } })
+    }
+
+    @Test
+    fun `branch sites add one for the site and one per outcome to a class's weight`() {
+        // "First" weighs 1 method + 1 class record = 2, plus one site with two outcomes = 3, so 5.
+        // A cap of 6 cannot also hold "Second", which weighs 2.
+        val site =
+            BranchSite(
+                siteIndex = 0,
+                siteKey = null,
+                line = 1,
+                outcomes = listOf(BranchOutcome(0, BranchRole.TAKEN), BranchOutcome(1, BranchRole.FALL_THROUGH)),
+            )
+        val first = DeclaredClass("First", listOf(DeclaredMethod("m", "()V", branchSites = listOf(site))))
+        val second = DeclaredClass("Second", listOf(DeclaredMethod("m", "()V")))
+
+        val chunks =
+            StaticBaselineChunker.chunk(
+                StaticScanResult(listOf(first, second), emptyList(), emptyList()),
+                resource,
+                scannedAt = 1L,
+                maxEntriesPerChunk = 6,
+            )
+
+        assertEquals(listOf(listOf("First"), listOf("Second")), chunks.map { c -> c.declaredClasses.map { it.className } })
     }
 }

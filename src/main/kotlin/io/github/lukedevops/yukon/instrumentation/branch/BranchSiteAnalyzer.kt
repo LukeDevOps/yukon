@@ -16,6 +16,7 @@ import net.bytebuddy.jar.asm.MethodVisitor
 import net.bytebuddy.jar.asm.Opcodes
 import net.bytebuddy.jar.asm.RecordComponentVisitor
 import net.bytebuddy.jar.asm.TypePath
+import io.github.lukedevops.yukon.export.BranchSite as BranchSitePayload
 
 /**
  * Finds every [ConditionalJump], every `TABLESWITCH`/`LOOKUPSWITCH`, and every Kotlin `$default`
@@ -107,7 +108,27 @@ object BranchSiteAnalyzer {
          * one probed method it forwards to. Empty when no handler interface was given.
          */
         val handlerForwarders: List<HandlerForwarder> = emptyList(),
+        /** The class's own name, dotted, as its header names it. Empty on [EMPTY]. Every branch key and site key digests it. */
+        val className: String = "",
     ) {
+        /**
+         * Each kept site of [sites], in site index order, with its outcomes numbered, given roles
+         * and keyed by [KeptBranchSite.of]. This is the one numbering both the manifest's BRANCH
+         * and METHOD probes and the static baseline's declared methods use. See ADR 0037.
+         */
+        val keptSites: List<KeptBranchSite> by lazy { KeptBranchSite.of(sites, className) }
+
+        private val keptSitesByMethod by lazy { keptSites.groupBy { it.site.methodName to it.site.methodDescriptor } }
+
+        /**
+         * The method's kept sites as the manifest and the static baseline send them, in site index
+         * order. Empty for any method with no kept site, `<clinit>` included. See ADR 0037.
+         */
+        fun branchSitesOf(
+            name: String,
+            descriptor: String,
+        ): List<BranchSitePayload> = keptSitesByMethod[name to descriptor]?.map { it.toPayload() } ?: emptyList()
+
         /**
          * Whether the method is a lambda body: [methodFilter][analyze] accepted it, an
          * `invokedynamic` in this class names it as the `LambdaMetafactory` implementation, and
@@ -734,6 +755,7 @@ object BranchSiteAnalyzer {
             bodyClass.kind,
             bodyClass.sourceName,
             resolvedCalls.handlerForwarders,
+            internalClassName.replace('/', '.'),
         )
     }
 
@@ -1104,7 +1126,14 @@ object BranchSiteAnalyzer {
                 // and otherwise takes the kind the pass-through was reached with.
                 fun visitInside(candidate: RawCandidate) {
                     if (candidate.kind == CallEdgeKind.CREATES) {
-                        visit(candidate.owner, candidate.name, candidate.descriptor, candidate.virtualRaw, CallEdgeKind.CREATES, candidate.capturedCount)
+                        visit(
+                            candidate.owner,
+                            candidate.name,
+                            candidate.descriptor,
+                            candidate.virtualRaw,
+                            CallEdgeKind.CREATES,
+                            candidate.capturedCount,
+                        )
                     } else {
                         visit(candidate.owner, candidate.name, candidate.descriptor, candidate.virtualRaw, kind, capturedCount)
                     }
@@ -1668,6 +1697,7 @@ object BranchSiteAnalyzer {
             if (eligible) {
                 recordSite(
                     switchOutcomeCount(dflt, labels),
+                    isSwitch = true,
                     coroutineMachinery =
                         suspendShaped && CoroutineShapes.isLabelSwitch(recentInsn1),
                 )
@@ -1682,7 +1712,7 @@ object BranchSiteAnalyzer {
         ) {
             if (defaultShaped) resetMaskPhase()
             if (eligible) {
-                recordSite(switchOutcomeCount(dflt, labels))
+                recordSite(switchOutcomeCount(dflt, labels), isSwitch = true)
             }
             pushInsn(RecentInsn.Other)
         }
@@ -1709,7 +1739,8 @@ object BranchSiteAnalyzer {
             }
 
         /**
-         * Records one tracked site at [currentLine], with [outcomeCount] outcomes.
+         * Records one tracked site at [currentLine], with [outcomeCount] outcomes. [isSwitch] is
+         * true for a `TABLESWITCH` or `LOOKUPSWITCH`, and false for a conditional jump.
          *
          * [coroutineMachinery] is checked first, ahead of the SMAP lookup: a site kotlinc wove for
          * a suspend function's own state machine gets [BranchDropReason.COROUTINE_MACHINERY] and
@@ -1722,6 +1753,7 @@ object BranchSiteAnalyzer {
          */
         private fun recordSite(
             outcomeCount: Int = 2,
+            isSwitch: Boolean = false,
             coroutineMachinery: Boolean = false,
         ) {
             val ordinal = nextMethodOrdinal++
@@ -1735,6 +1767,7 @@ object BranchSiteAnalyzer {
                         nextSiteIndex(),
                         outcomeCount,
                         dropReason = BranchDropReason.COROUTINE_MACHINERY,
+                        isSwitch = isSwitch,
                     )
                 onSiteIndexUsed()
                 return
@@ -1743,7 +1776,7 @@ object BranchSiteAnalyzer {
             val site =
                 when {
                     origin == null -> {
-                        BranchSite(name, descriptor, currentLine, nextSiteIndex(), outcomeCount)
+                        BranchSite(name, descriptor, currentLine, nextSiteIndex(), outcomeCount, isSwitch = isSwitch)
                     }
 
                     TypeMatchPolicy.isIncluded(origin.originClassName, includePackages, excludePackages) -> {
@@ -1754,6 +1787,7 @@ object BranchSiteAnalyzer {
                             nextSiteIndex(),
                             outcomeCount,
                             inlinedFromClassName = origin.originClassName,
+                            isSwitch = isSwitch,
                         )
                     }
 
@@ -1766,6 +1800,7 @@ object BranchSiteAnalyzer {
                             nextSiteIndex(),
                             outcomeCount,
                             dropReason = BranchDropReason.INLINED_OUT_OF_SCOPE,
+                            isSwitch = isSwitch,
                         )
                     }
                 }

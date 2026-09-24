@@ -37,8 +37,7 @@ class KeyedBuild(
     /**
      * The class-wide branch index [methodName]'s [methodOrdinal]-th site's [outcome] would get:
      * the outcome slots of every earlier site in the class, dropped or kept, plus [outcome]
-     * itself. Mirrors the running total `YukonInstrumentation` keeps while it builds branch
-     * probes.
+     * itself. Mirrors the running total `KeptBranchSite.of` keeps while it numbers outcomes.
      */
     fun branchIndexOf(
         methodName: String,

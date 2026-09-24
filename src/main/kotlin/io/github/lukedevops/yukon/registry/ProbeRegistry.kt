@@ -1,8 +1,8 @@
 package io.github.lukedevops.yukon.registry
 
-import io.github.lukedevops.yukon.export.ClassReferences
 import io.github.lukedevops.yukon.export.BodyKind
 import io.github.lukedevops.yukon.export.ClassLocation
+import io.github.lukedevops.yukon.export.ClassReferences
 import io.github.lukedevops.yukon.export.DeltaBatch
 import io.github.lukedevops.yukon.export.ProbeDelta
 import io.github.lukedevops.yukon.export.ProbeLocation
@@ -589,6 +589,8 @@ open class ProbeRegistry(
                         referencedClasses = meta.referencedClasses,
                         branchKey = meta.branchKey,
                         lambdaBody = meta.lambdaBody,
+                        branchSites = meta.branchSites,
+                        siteIndex = meta.siteIndex,
                     )
                 }
             }
@@ -702,13 +704,15 @@ open class ProbeRegistry(
         for (entry in entriesByKey.values) {
             if (entry.manifestIncluded) continue
             if (confirmsDefinitions && !isConfirmed(entry)) continue
-            // A class's weight is its probe count, plus its total call-edge and referenced-class
-            // count, plus one for its own ClassLocation record, plus its class-level references:
-            // all of it is staged and committed together, so a class with many edges or references
-            // seals a chunk earlier than one without.
+            // A class's weight is its probe count, plus its total call-edge, referenced-class and
+            // branch-site weight, plus one for its own ClassLocation record, plus its class-level
+            // references: all of it is staged and committed together, so a class with many edges,
+            // references or sites seals a chunk earlier than one without.
             val weight =
-                entry.probes.size + entry.probes.sumOf { it.calls.size + it.referencedClasses.size } + 1 +
-                    entry.classReferences.size
+                entry.probes.size +
+                    entry.probes.sumOf { meta ->
+                        meta.calls.size + meta.referencedClasses.size + meta.branchSites.sumOf { it.chunkWeight }
+                    } + 1 + entry.classReferences.size
             if (chunkWeight > 0 && chunkWeight + weight > maxEntriesPerChunk) seal()
             stagedEntries += entry
             entry.probes.forEachIndexed { index, meta ->
@@ -733,6 +737,8 @@ open class ProbeRegistry(
                         referencedClasses = meta.referencedClasses,
                         branchKey = meta.branchKey,
                         lambdaBody = meta.lambdaBody,
+                        branchSites = meta.branchSites,
+                        siteIndex = meta.siteIndex,
                     )
             }
             classLocations += classLocationOf(entry)

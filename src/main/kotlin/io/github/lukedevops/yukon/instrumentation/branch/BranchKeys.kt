@@ -3,12 +3,17 @@ package io.github.lukedevops.yukon.instrumentation.branch
 import java.security.MessageDigest
 
 /**
- * Derives the branch key of each kept branch outcome from its site's condition fingerprint. See
- * ADR 0031.
+ * Derives the branch key of each kept branch outcome, and the site key of each kept site, from the
+ * site's condition fingerprint. See ADRs 0031 and 0037.
  *
  * [compute] returns a key for every kept outcome it can name safely, keyed by
  * `(siteIndex, outcome offset)`. An outcome missing from the result has no key: the agent could
  * not name it safely, and a collector treats it as an outcome it has never seen.
+ *
+ * [computeSiteKeys] returns a key for every kept site, keyed by `siteIndex`. It uses the same rules,
+ * so a site has a key exactly when its outcomes have keys. A site key digests the same input as a
+ * branch key without the outcome token, under its own derivation tag, so it never equals a branch
+ * key.
  *
  * Two tracked sites in one method collide when they share a [BranchSite.conditionFingerprint] and
  * [BranchSite.inlinedFromClassName]. Dropped sites count toward a collision, since whether a kept
@@ -19,6 +24,9 @@ import java.security.MessageDigest
 object BranchKeys {
     /** The derivation's version, folded into the digest input so a change to the derivation changes every key. */
     private const val DERIVATION_TAG = "v1"
+
+    /** The site key derivation's own tag and version. It differs from [DERIVATION_TAG], so a site key never equals a branch key. */
+    private const val SITE_DERIVATION_TAG = "site-v1"
 
     private const val SEPARATOR = "\u0000"
 
@@ -42,6 +50,41 @@ object BranchKeys {
         sites: List<BranchSite>,
         className: String,
     ): Map<Pair<Int, Int>, String> {
+        val keys = mutableMapOf<Pair<Int, Int>, String>()
+        for (nameable in nameableSites(sites)) {
+            nameable.outcomeTokens.forEachIndexed { offset, outcomeToken ->
+                keys[nameable.site.siteIndex to offset] =
+                    digest(DERIVATION_TAG, className, nameable.site, nameable.fingerprint, outcomeToken)
+            }
+        }
+        return keys
+    }
+
+    /**
+     * Computes the site key of every kept site of [sites], one class's analysed branch sites, keyed
+     * by `siteIndex`. [className] is the class's own name, dotted. A site is missing from the
+     * result exactly when [compute] gives none of its outcomes a key.
+     */
+    fun computeSiteKeys(
+        sites: List<BranchSite>,
+        className: String,
+    ): Map<Int, String> =
+        nameableSites(sites).associate { nameable ->
+            nameable.site.siteIndex to digest(SITE_DERIVATION_TAG, className, nameable.site, nameable.fingerprint, null)
+        }
+
+    /** A kept site that [compute] and [computeSiteKeys] can name, with its fingerprint and outcome tokens. */
+    private class NameableSite(
+        val site: BranchSite,
+        val fingerprint: String,
+        val outcomeTokens: List<String>,
+    )
+
+    /**
+     * The kept sites of [sites] that can be named safely: each has a fingerprint, shares no
+     * [CollisionIdentity] with another tracked site, dropped sites included, and has outcome tokens.
+     */
+    private fun nameableSites(sites: List<BranchSite>): List<NameableSite> {
         val collisionCounts = mutableMapOf<CollisionIdentity, Int>()
         for (site in sites) {
             val fingerprint = site.conditionFingerprint ?: continue
@@ -49,18 +92,16 @@ object BranchKeys {
             collisionCounts[identity] = (collisionCounts[identity] ?: 0) + 1
         }
 
-        val keys = mutableMapOf<Pair<Int, Int>, String>()
+        val nameable = mutableListOf<NameableSite>()
         for (site in sites) {
             if (site.dropReason != null) continue
             val fingerprint = site.conditionFingerprint ?: continue
             val identity = CollisionIdentity(site.methodName, site.methodDescriptor, fingerprint, site.inlinedFromClassName)
             if (collisionCounts.getValue(identity) > 1) continue
             val outcomeTokens = outcomeTokensOf(site) ?: continue
-            outcomeTokens.forEachIndexed { offset, outcomeToken ->
-                keys[site.siteIndex to offset] = digest(className, site, fingerprint, outcomeToken)
-            }
+            nameable += NameableSite(site, fingerprint, outcomeTokens)
         }
-        return keys
+        return nameable
     }
 
     /**
@@ -83,18 +124,20 @@ object BranchKeys {
     /**
      * Hex of the first 16 bytes of the SHA-256 digest of [className], [site]'s method name,
      * method descriptor, origin class, [fingerprint] and [outcomeToken], joined with a
-     * `\u0000` separator none of them can contain. [DERIVATION_TAG] leads the text, so a later
-     * change to this derivation changes the digest input, not only its output.
+     * `\u0000` separator none of them can contain. [tag] leads the text, so a later change to a
+     * derivation changes the digest input, not only its output. A site key passes a null
+     * [outcomeToken] and adds nothing after [fingerprint].
      */
     private fun digest(
+        tag: String,
         className: String,
         site: BranchSite,
         fingerprint: String,
-        outcomeToken: String,
+        outcomeToken: String?,
     ): String {
         val text =
-            listOf(
-                DERIVATION_TAG,
+            listOfNotNull(
+                tag,
                 className,
                 site.methodName,
                 site.methodDescriptor,

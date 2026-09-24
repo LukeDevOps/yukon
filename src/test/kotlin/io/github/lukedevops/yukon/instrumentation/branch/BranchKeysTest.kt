@@ -4,6 +4,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 class BranchKeysTest {
     private fun conditionalSite(
@@ -132,5 +133,43 @@ class BranchKeysTest {
         val keys = BranchKeys.compute(listOf(site), "com.example.Fixed")
 
         assertEquals("102421f64c17d8b2d7315cabbecf108e", keys.getValue(0 to 0))
+    }
+
+    @Test
+    fun `a site has a site key exactly when its outcomes have branch keys`() {
+        val sites =
+            listOf(
+                conditionalSite(siteIndex = 0, fingerprint = "fp-lone"),
+                conditionalSite(siteIndex = 1, fingerprint = "fp-same"),
+                conditionalSite(siteIndex = 2, fingerprint = "fp-same"),
+                conditionalSite(siteIndex = 3, fingerprint = null),
+                conditionalSite(siteIndex = 4, fingerprint = "fp-dropped", dropReason = BranchDropReason.COROUTINE_MACHINERY),
+                switchSite(siteIndex = 5, fingerprint = "fp-switch", caseKeys = listOf(1, 2), outcomeCount = 4),
+                switchSite(siteIndex = 6, fingerprint = "fp-switch-ok", caseKeys = listOf(1, 2), outcomeCount = 3),
+            )
+        val branchKeys = BranchKeys.compute(sites, "com.example.C")
+        val siteKeys = BranchKeys.computeSiteKeys(sites, "com.example.C")
+
+        assertEquals(setOf(0, 6), siteKeys.keys)
+        assertEquals(siteKeys.keys, branchKeys.keys.map { it.first }.toSet())
+    }
+
+    @Test
+    fun `a site key differs from each of its own branch keys and from another method's site key`() {
+        val a = conditionalSite(methodName = "m1", siteIndex = 0, fingerprint = "fp-shared")
+        val b = conditionalSite(methodName = "m2", siteIndex = 1, fingerprint = "fp-shared")
+        val branchKeys = BranchKeys.compute(listOf(a, b), "com.example.C")
+        val siteKeys = BranchKeys.computeSiteKeys(listOf(a, b), "com.example.C")
+
+        assertNotEquals(siteKeys.getValue(0), siteKeys.getValue(1))
+        assertTrue(siteKeys.values.none { it in branchKeys.values })
+    }
+
+    @Test
+    fun `the site digest pins one exact key for one fixed input`() {
+        val site = conditionalSite(methodName = "target", methodDescriptor = "()Z", siteIndex = 0, fingerprint = "ICONST_1;IRETURN")
+        val keys = BranchKeys.computeSiteKeys(listOf(site), "com.example.Fixed")
+
+        assertEquals("f84e80ae59161ed19f957fe718a12c38", keys.getValue(0))
     }
 }

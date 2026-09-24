@@ -101,4 +101,37 @@ class BranchKeyEndToEndTest {
             "first gained a conditional, so second's branch indices shift in v2",
         )
     }
+
+    @Test
+    fun `second's site key survives the edit to first, while its site index does not`() {
+        val commonName = "com.example.target.keypairs.CommonSiteKeyE2E"
+        val commonInternal = commonName.replace('.', '/')
+
+        val v1Bytes =
+            renamedTo(kotlinFixtureBytes("EarlierMethodEditV1"), "com/example/target/keypairs/EarlierMethodEditV1", commonInternal)
+        val v2Bytes =
+            renamedTo(kotlinFixtureBytes("EarlierMethodEditV2"), "com/example/target/keypairs/EarlierMethodEditV2", commonInternal)
+
+        val registry = ProbeRegistry()
+        val yukon = YukonInstrumentation(AgentConfig.parse("includePackages=com.example.target.keypairs"), registry)
+        installedYukon = yukon
+        installedTransformer = yukon.install(ByteBuddyAgent.install())
+
+        val v1Class = ByteArrayClassLoader(javaClass.classLoader).define(commonName, v1Bytes)
+        val v2Class = ByteArrayClassLoader(javaClass.classLoader).define(commonName, v2Bytes)
+        v1Class.getDeclaredConstructor().newInstance()
+        v2Class.getDeclaredConstructor().newInstance()
+
+        val manifest = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
+        val methodProbes = manifest.probes.filter { it.className == commonName && it.kind == ProbeKind.METHOD }
+        assertEquals(2, methodProbes.map { it.classId }.distinct().size)
+        // Only v2's first has a conditional, which tells the two builds apart.
+        val v2ClassId = methodProbes.single { it.methodName == "first" && it.branchSites.isNotEmpty() }.classId
+        val v1Site = methodProbes.single { it.classId != v2ClassId && it.methodName == "second" }.branchSites.single()
+        val v2Site = methodProbes.single { it.classId == v2ClassId && it.methodName == "second" }.branchSites.single()
+
+        assertNotNull(v1Site.siteKey)
+        assertEquals(v1Site.siteKey, v2Site.siteKey, "second's site keeps its key across the edit to first")
+        assertNotEquals(v1Site.siteIndex, v2Site.siteIndex, "first gained a site, so second's site index shifts in v2")
+    }
 }

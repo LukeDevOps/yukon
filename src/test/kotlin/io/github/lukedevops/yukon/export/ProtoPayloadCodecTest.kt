@@ -6,6 +6,9 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import io.github.lukedevops.yukon.proto.BodyKind as ProtoBodyKind
+import io.github.lukedevops.yukon.proto.BranchOutcome as ProtoBranchOutcome
+import io.github.lukedevops.yukon.proto.BranchRole as ProtoBranchRole
+import io.github.lukedevops.yukon.proto.BranchSite as ProtoBranchSite
 import io.github.lukedevops.yukon.proto.CallEdge as ProtoCallEdge
 import io.github.lukedevops.yukon.proto.CallEdgeKind as ProtoCallEdgeKind
 import io.github.lukedevops.yukon.proto.ClassLocation as ProtoClassLocation
@@ -558,6 +561,131 @@ class ProtoPayloadCodecTest {
         assertEquals(manifest, decoded)
         assertEquals("a1b2c3d4e5f60718293a4b5c6d7e8f90", decoded.probes[0].branchKey)
         assertEquals(null, decoded.probes[1].branchKey)
+    }
+
+    /** A keyed conditional and a keyless switch, one of whose cases has no case key. */
+    private val sampleBranchSites =
+        listOf(
+            BranchSite(
+                siteIndex = 0,
+                siteKey = "0123456789abcdef0123456789abcdef",
+                line = 12,
+                outcomes =
+                    listOf(
+                        BranchOutcome(branchIndex = 0, role = BranchRole.TAKEN),
+                        BranchOutcome(branchIndex = 1, role = BranchRole.FALL_THROUGH),
+                    ),
+            ),
+            BranchSite(
+                siteIndex = 2,
+                siteKey = null,
+                line = 14,
+                outcomes =
+                    listOf(
+                        BranchOutcome(branchIndex = 5, role = BranchRole.CASE, caseKey = 0),
+                        BranchOutcome(branchIndex = 6, role = BranchRole.CASE, caseKey = -7),
+                        BranchOutcome(branchIndex = 7, role = BranchRole.CASE, caseKey = null),
+                        BranchOutcome(branchIndex = 8, role = BranchRole.DEFAULT),
+                    ),
+            ),
+        )
+
+    @Test
+    fun `a METHOD probe's branch sites and a BRANCH probe's site index round-trip through the wire`() {
+        val manifest =
+            ProbeManifest(
+                resource = ResourceAttributes("checkout", "1.0.0", "", null, "run-1"),
+                probes =
+                    listOf(
+                        ProbeLocation(
+                            classId = 0,
+                            probeIndex = 0,
+                            kind = ProbeKind.METHOD,
+                            className = "com.example.Foo",
+                            methodName = "bar",
+                            methodDescriptor = "(I)I",
+                            line = 11,
+                            branchIndex = null,
+                            branchSites = sampleBranchSites,
+                        ),
+                        ProbeLocation(
+                            classId = 0,
+                            probeIndex = 1,
+                            kind = ProbeKind.BRANCH,
+                            className = "com.example.Foo",
+                            methodName = "bar",
+                            methodDescriptor = "(I)I",
+                            line = 14,
+                            branchIndex = 5,
+                            siteIndex = 2,
+                        ),
+                    ),
+            )
+
+        val bytes = ProtoPayloadCodec.encode(manifest)
+        val decoded = ProtoPayloadCodec.decodeProbeManifest(bytes)
+
+        assertEquals(manifest, decoded)
+        val wire = ProtoProbeManifest.parseFrom(bytes).probesList
+        assertFalse(wire[0].hasSiteIndex(), "a METHOD probe carries no site index")
+        assertTrue(wire[1].hasSiteIndex())
+        assertEquals(0, wire[1].branchSitesCount, "a BRANCH probe lists no sites")
+        val wireSites = wire[0].branchSitesList
+        assertTrue(wireSites[0].hasSiteKey())
+        assertFalse(wireSites[1].hasSiteKey())
+        assertEquals(
+            listOf(true, true, false, false),
+            wireSites[1].outcomesList.map { it.hasCaseKey() },
+            "a case key of zero is still set, and a case with no key and the default are unset",
+        )
+        assertEquals(
+            listOf(ProtoBranchRole.CASE, ProtoBranchRole.CASE, ProtoBranchRole.CASE, ProtoBranchRole.DEFAULT),
+            wireSites[1].outcomesList.map { it.role },
+        )
+    }
+
+    @Test
+    fun `a declared method's branch sites round-trip through the wire`() {
+        val baseline =
+            StaticBaseline(
+                resource = ResourceAttributes("checkout", null, "instance-1", null, "run-1"),
+                declaredClasses =
+                    listOf(
+                        DeclaredClass(
+                            className = "com.example.Foo",
+                            methods =
+                                listOf(
+                                    DeclaredMethod(methodName = "bar", methodDescriptor = "(I)I", branchSites = sampleBranchSites),
+                                    DeclaredMethod(methodName = "<clinit>", methodDescriptor = "()V"),
+                                ),
+                        ),
+                    ),
+                scannedAt = 1000L,
+            )
+
+        val decoded = ProtoPayloadCodec.decodeStaticBaseline(ProtoPayloadCodec.encode(baseline))
+
+        assertEquals(baseline, decoded)
+    }
+
+    @Test
+    fun `an unspecified branch role on the wire is rejected`() {
+        val wire =
+            ProtoProbeManifest
+                .newBuilder()
+                .setResource(ProtoResourceAttributes.newBuilder().setServiceName("checkout").setRunId("run-1"))
+                .addProbes(
+                    ProtoProbeLocation
+                        .newBuilder()
+                        .setKind(ProtoProbeKind.METHOD)
+                        .addBranchSites(
+                            ProtoBranchSite
+                                .newBuilder()
+                                .addOutcomes(ProtoBranchOutcome.newBuilder().setRole(ProtoBranchRole.BRANCH_ROLE_UNSPECIFIED)),
+                        ),
+                ).build()
+
+        assertFailsWith<IllegalArgumentException> { ProtoPayloadCodec.decodeProbeManifest(wire.toByteArray()) }
     }
 
     @Test

@@ -150,6 +150,57 @@ message ProbeLocation {
   // included. False for a named method passed by reference, and for every other method. The
   // method that creates the body is the source of its CREATES edge. See ADR 0034.
   bool lambda_body = 19;
+  // Set only for a METHOD probe: the method's kept branch sites, in site_index order, each with its
+  // outcomes listed inside it. A dropped site (coroutine machinery, an inlined copy from
+  // out-of-scope code) is not listed, and a type initializer's METHOD probe lists none. See ADR
+  // 0037.
+  repeated BranchSite branch_sites = 20;
+  // Set only for a BRANCH probe: the site_index of the site this outcome belongs to, which the
+  // METHOD probe of the same method lists in branch_sites. This probe's branch_index picks its
+  // outcome in that site. See ADR 0037.
+  optional int32 site_index = 21;
+}
+
+// What one outcome of a branch site is within its site. See ADR 0037.
+enum BranchRole {
+  BRANCH_ROLE_UNSPECIFIED = 0;
+  // A conditional's taken jump.
+  TAKEN = 1;
+  // A conditional's fall-through: the jump's own test was false.
+  FALL_THROUGH = 2;
+  // One case entry of a switch. Two cases that share a body are still two outcomes.
+  CASE = 3;
+  // A switch's default, which a value with no case entry of its own also reaches.
+  DEFAULT = 4;
+}
+
+// One outcome of a BranchSite.
+message BranchOutcome {
+  // The outcome's branch_index, the same value its BRANCH probe carries in a manifest.
+  int32 branch_index = 1;
+  BranchRole role = 2;
+  // Set only for CASE: the case key value as the switch instruction names it. Unset for a CASE
+  // when the agent could not read the switch's case keys.
+  optional int32 case_key = 3;
+}
+
+// One kept conditional jump or switch in a method, with its outcomes listed inside it. A consumer
+// groups outcomes into sites by this message. See ADR 0037.
+message BranchSite {
+  // The site's ordinal within its class, in bytecode order across every method, dropped sites
+  // counted. It names the site within one build only, never across builds.
+  int32 site_index = 1;
+  // An opaque lowercase hex token naming this site across builds and instances, compared only for
+  // equality. Made the way a branch_key is, without the outcome, and unset in exactly the cases
+  // the site's branch keys are unset. A consumer groups a site's outcomes across builds by it, and
+  // within one run by site_index when it is unset. See ADRs 0031 and 0037.
+  optional string site_key = 2;
+  // The same line the site's BRANCH probes carry, including the origin line for a kept inlined
+  // copy.
+  int32 line = 3;
+  // A conditional lists TAKEN then FALL_THROUGH. A switch lists one CASE per case entry, in the
+  // order the switch instruction names them, then DEFAULT last.
+  repeated BranchOutcome outcomes = 4;
 }
 
 // What a CallEdge records. A collector reaches the target of either kind the same way; the kind
@@ -349,6 +400,10 @@ message DeclaredMethod {
   // The same rule as ProbeLocation.lambda_body, read from the same class. False for the class's
   // own <clinit> entry. See ADR 0034.
   bool lambda_body = 7;
+  // The method's kept branch sites, the same rule ProbeLocation.branch_sites uses, read from the
+  // same class. Empty for the class's own <clinit> entry. A site's branch_index values resolve
+  // without any BRANCH probe. See ADR 0037.
+  repeated BranchSite branch_sites = 8;
 }
 
 message DeclaredClass {

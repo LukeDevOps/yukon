@@ -1,6 +1,9 @@
 package io.github.lukedevops.yukon.registry
 
 import io.github.lukedevops.yukon.export.BodyKind
+import io.github.lukedevops.yukon.export.BranchOutcome
+import io.github.lukedevops.yukon.export.BranchRole
+import io.github.lukedevops.yukon.export.BranchSite
 import io.github.lukedevops.yukon.export.CallEdge
 import io.github.lukedevops.yukon.export.ProbeKind
 import io.github.lukedevops.yukon.export.ResourceAttributes
@@ -743,7 +746,10 @@ class ProbeRegistryTest {
         for (sent in listOf(manifest, delta)) {
             assertEquals(
                 listOf(false, true),
-                sent.probes.filter { it.className == "com.example.Foo" }.sortedBy { it.probeIndex }.map { it.lambdaBody },
+                sent.probes
+                    .filter { it.className == "com.example.Foo" }
+                    .sortedBy { it.probeIndex }
+                    .map { it.lambdaBody },
             )
             val classIds = sent.probes.associate { it.className to it.classId }
             val sourceFiles = sent.classLocations.associate { it.classId to it.sourceFile }
@@ -1251,5 +1257,33 @@ class ProbeRegistryTest {
                         .toSet()
                 }.toSet(),
         )
+    }
+
+    @Test
+    fun `branch sites weigh one for the site and one per outcome against the chunk cap`() {
+        val site =
+            BranchSite(
+                siteIndex = 0,
+                siteKey = null,
+                line = 1,
+                outcomes = listOf(BranchOutcome(0, BranchRole.TAKEN), BranchOutcome(1, BranchRole.FALL_THROUGH)),
+            )
+        val registry = ProbeRegistry()
+        registry.register(
+            "com.example.Heavy",
+            layoutHash = 1L,
+            probes = listOf(ProbeMeta(ProbeKind.METHOD, "run", "()V", line = 1, branchSites = listOf(site))),
+        )
+        registry.register("com.example.Light", layoutHash = 1L, probes = methodProbes(1))
+
+        // Heavy weighs 1 probe + 1 class location record + 1 site + 2 outcomes = 5; Light weighs 2.
+        // Without the site they would share a chunk under a cap of 6.
+        val chunks =
+            registry.computeManifestDeltas(
+                ResourceAttributes("checkout", null, "instance-1", null, "run-1"),
+                maxEntriesPerChunk = 6,
+            )
+
+        assertEquals(2, chunks.size)
     }
 }
