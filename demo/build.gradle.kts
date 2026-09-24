@@ -317,18 +317,65 @@ fun awaitShutdownFlush(
     )
 }
 
+// Server ADR 0030's condition parts as one line: code as sent, a string
+// literal quoted, a placeholder as an ellipsis.
+fun conditionText(parts: List<*>): String =
+    parts.joinToString("") { part ->
+        val p = part as Map<*, *>
+        when (p["kind"]) {
+            "string_literal" -> "\"${p["text"]}\""
+            "placeholder" -> "…"
+            else -> p["text"] as String
+        }
+    }
+
+// The result a never-hit outcome did not reach. The agent writes a condition
+// as its fall-through side reads it (ADR 0037).
+fun neverHappened(outcome: Map<*, *>): String =
+    when (outcome["role"]) {
+        "fall_through" -> "was never true"
+        "taken" -> "was never false"
+        "case" -> "never took " + conditionText(outcome["case_label"] as List<*>).ifEmpty { "case ${outcome["case_key"]}" }
+        "default" -> "never took the default"
+        else -> "never ran"
+    }
+
+// The lines only this outcome reaches, or a note that it guards nothing.
+fun guardedText(outcome: Map<*, *>): String {
+    fun ranges(key: String) =
+        (outcome[key] as List<*>).joinToString(", ") { range ->
+            val r = range as Map<*, *>
+            val lines = if (r["first_line"] == r["last_line"]) "${r["first_line"]}" else "${r["first_line"]}-${r["last_line"]}"
+            "${r["source_file"]}:$lines"
+        }
+    val whole = ranges("guarded_lines")
+    val part = ranges("partly_guarded_lines")
+    return when {
+        whole.isNotEmpty() && part.isNotEmpty() -> "only path to $whole, partly $part"
+        whole.isNotEmpty() -> "only path to $whole"
+        part.isNotEmpty() -> "partly the path to $part"
+        else -> "guards no code of its own"
+    }
+}
+
 // The report covers every instance of this service and version the server
 // has ever seen, so repeated runs against the same stack accumulate.
 fun printStackReport() {
     val version = "?version=$stackServiceVersion"
     val report = readApi("/report$version")
+    val methods = report["methods"] as Map<*, *>
+    val branchSites = report["branch_sites"] as Map<*, *>
     val probes = report["probes"] as Map<*, *>
     val classes = report["classes"] as Map<*, *>
     val instances = report["instances"] as Map<*, *>
     println("yukon demo: report for $stackServiceName@$stackServiceVersion from $stackServerUrl (${instances["total"]} instance(s) so far)")
+    println("  methods: known=${methods["known"]} hit=${methods["hit"]} never_hit=${methods["never_hit"]}")
     println(
-        "  probes: known=${probes["known"]} hit=${probes["hit"]} never_hit=${probes["never_hit"]} " +
-            "inline (not judged)=${probes["inline"]} generated (not judged)=${probes["generated"]} " +
+        "  branch sites: known=${branchSites["known"]} all_outcomes_hit=${branchSites["all_outcomes_hit"]} " +
+            "with_never_hit_outcome=${branchSites["with_never_hit_outcome"]}",
+    )
+    println(
+        "  probes: inline (not judged)=${probes["inline"]} generated (not judged)=${probes["generated"]} " +
             "no_debug_info=${probes["no_debug_info"]}",
     )
     println(
@@ -353,12 +400,21 @@ fun printStackReport() {
     }
 
     println("  NEVER HIT:")
-    for (probe in readApi("/never-hit$version")["probes"] as List<*>) {
-        val p = probe as Map<*, *>
-        val detail = p["branch_index"]?.let { "branch $it" } ?: p["kind"]
-        val routes = (p["routes"] as List<*>).takeIf { it.isNotEmpty() }?.let { " routes=$it" } ?: ""
-        val inlinedFrom = p["inlined_from_class_name"]?.let { " (inlined from $it)" } ?: ""
-        println("    ${p["class_name"]}#${p["method_name"]}:${p["line"]} ($detail)$inlinedFrom$routes")
+    for (row in readApi("/never-hit$version")["rows"] as List<*>) {
+        val r = row as Map<*, *>
+        val routes = (r["routes"] as List<*>).takeIf { it.isNotEmpty() }?.let { " routes=$it" } ?: ""
+        val inlinedFrom = r["inlined_from_class_name"]?.let { " (inlined from $it)" } ?: ""
+        val where = "${r["class_name"]}#${r["method_name"]}:${r["line"]}"
+        if (r["kind"] != "branch") {
+            println("    $where (method)$inlinedFrom$routes")
+            continue
+        }
+        val condition = conditionText(r["condition"] as List<*>).ifEmpty { "branch" }
+        for (outcome in r["outcomes"] as List<*>) {
+            val o = outcome as Map<*, *>
+            if (o["in_finding"] != true) continue
+            println("    $where `$condition` ${neverHappened(o)}, ${guardedText(o)}$inlinedFrom$routes")
+        }
     }
     println("  NEVER LOADED:")
     for (cls in readApi("/never-loaded$version")["classes"] as List<*>) {
