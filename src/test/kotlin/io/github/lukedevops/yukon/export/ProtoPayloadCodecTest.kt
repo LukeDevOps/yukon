@@ -755,7 +755,13 @@ class ProtoPayloadCodecTest {
         val decoded = ProtoPayloadCodec.decodeStaticBaseline(bytes)
 
         assertEquals(baseline, decoded)
-        assertEquals(listOf(false, true), decoded.declaredClasses.first().methods.map { it.lambdaBody })
+        assertEquals(
+            listOf(false, true),
+            decoded.declaredClasses
+                .first()
+                .methods
+                .map { it.lambdaBody },
+        )
         assertEquals(listOf("Foo.kt", null), decoded.declaredClasses.map { it.sourceFile })
         assertEquals(listOf("Foo.kt", ""), ProtoStaticBaseline.parseFrom(bytes).declaredClassesList.map { it.sourceFile })
     }
@@ -1134,8 +1140,21 @@ class ProtoPayloadCodecTest {
                         methodProbe(
                             calls =
                                 listOf(
-                                    CallEdge("com.example.Foo", "bar\$lambda\$0", "(JI)I", virtual = false, kind = CallEdgeKind.CREATES, capturedCount = 1),
-                                    CallEdge("com.example.Foo", "name", "()Ljava/lang/String;", virtual = true, kind = CallEdgeKind.CREATES),
+                                    CallEdge(
+                                        "com.example.Foo",
+                                        "bar\$lambda\$0",
+                                        "(JI)I",
+                                        virtual = false,
+                                        kind = CallEdgeKind.CREATES,
+                                        capturedCount = 1,
+                                    ),
+                                    CallEdge(
+                                        "com.example.Foo",
+                                        "name",
+                                        "()Ljava/lang/String;",
+                                        virtual = true,
+                                        kind = CallEdgeKind.CREATES,
+                                    ),
                                     CallEdge("com.example.Baz", "qux", "()I", virtual = true),
                                 ),
                         ),
@@ -1143,7 +1162,12 @@ class ProtoPayloadCodecTest {
             )
 
         val bytes = ProtoPayloadCodec.encode(manifest)
-        val wireCalls = ProtoProbeManifest.parseFrom(bytes).probesList.single().callsList
+        val wireCalls =
+            ProtoProbeManifest
+                .parseFrom(bytes)
+                .probesList
+                .single()
+                .callsList
 
         assertEquals(manifest, ProtoPayloadCodec.decodeProbeManifest(bytes))
         assertEquals(listOf(ProtoCallEdgeKind.CREATES, ProtoCallEdgeKind.CREATES, ProtoCallEdgeKind.CALL), wireCalls.map { it.kind })
@@ -1163,10 +1187,22 @@ class ProtoPayloadCodecTest {
                         .setClassName("com.example.Foo")
                         .setMethodName("bar")
                         .setMethodDescriptor("()V")
-                        .addCalls(ProtoCallEdge.newBuilder().setClassName("com.example.Baz").setMethodName("qux").setMethodDescriptor("()I")),
+                        .addCalls(
+                            ProtoCallEdge
+                                .newBuilder()
+                                .setClassName("com.example.Baz")
+                                .setMethodName("qux")
+                                .setMethodDescriptor("()I"),
+                        ),
                 ).build()
 
-        val edge = ProtoPayloadCodec.decodeProbeManifest(wireManifest.toByteArray()).probes.single().calls.single()
+        val edge =
+            ProtoPayloadCodec
+                .decodeProbeManifest(wireManifest.toByteArray())
+                .probes
+                .single()
+                .calls
+                .single()
 
         assertEquals(CallEdgeKind.CALL, edge.kind)
         assertEquals(0, edge.capturedCount)
@@ -1185,7 +1221,13 @@ class ProtoPayloadCodecTest {
                         .setClassName("com.example.Foo")
                         .setMethodName("bar")
                         .setMethodDescriptor("()V")
-                        .addCalls(ProtoCallEdge.newBuilder().setClassName("com.example.Baz").setMethodName("qux").setKindValue(99)),
+                        .addCalls(
+                            ProtoCallEdge
+                                .newBuilder()
+                                .setClassName("com.example.Baz")
+                                .setMethodName("qux")
+                                .setKindValue(99),
+                        ),
                 ).build()
 
         assertFailsWith<IllegalArgumentException> {
@@ -1215,8 +1257,18 @@ class ProtoPayloadCodecTest {
                 probes = emptyList(),
                 classLocations =
                     listOf(
-                        ClassLocation(classId = 0, superClassName = "java.lang.Object", interfaceNames = emptyList(), sourceFile = "Foo.kt"),
-                        ClassLocation(classId = 1, superClassName = "java.lang.Object", interfaceNames = emptyList(), sourceFile = "<generated>"),
+                        ClassLocation(
+                            classId = 0,
+                            superClassName = "java.lang.Object",
+                            interfaceNames = emptyList(),
+                            sourceFile = "Foo.kt",
+                        ),
+                        ClassLocation(
+                            classId = 1,
+                            superClassName = "java.lang.Object",
+                            interfaceNames = emptyList(),
+                            sourceFile = "<generated>",
+                        ),
                         ClassLocation(classId = 2, superClassName = "java.lang.Object", interfaceNames = emptyList(), sourceFile = null),
                     ),
             )
@@ -1731,6 +1783,30 @@ class ProtoPayloadCodecTest {
                 .toByteArray()
 
         assertFalse(ProtoPayloadCodec.decodeProbeManifest(wireBytes).referencesRecorded)
+    }
+
+    @Test
+    fun `a manifest's dependencies listed flag round-trips through the wire, both ways`() {
+        val listed =
+            ProbeManifest(ResourceAttributes("checkout", "1.0.0", "instance-1", null, "run-1"), emptyList(), dependenciesListed = true)
+        val notListed = listed.copy(dependenciesListed = false)
+
+        assertTrue(ProtoProbeManifest.parseFrom(ProtoPayloadCodec.encode(listed)).dependenciesListed)
+        assertFalse(ProtoProbeManifest.parseFrom(ProtoPayloadCodec.encode(notListed)).dependenciesListed)
+        assertEquals(listed, ProtoPayloadCodec.decodeProbeManifest(ProtoPayloadCodec.encode(listed)))
+        assertEquals(notListed, ProtoPayloadCodec.decodeProbeManifest(ProtoPayloadCodec.encode(notListed)))
+    }
+
+    @Test
+    fun `a manifest with no dependencies listed field set decodes as false, matching an old payload`() {
+        val wireBytes =
+            ProtoProbeManifest
+                .newBuilder()
+                .setResource(ProtoResourceAttributes.newBuilder().setServiceName("checkout"))
+                .build()
+                .toByteArray()
+
+        assertFalse(ProtoPayloadCodec.decodeProbeManifest(wireBytes).dependenciesListed)
     }
 
     @Test

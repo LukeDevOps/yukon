@@ -309,6 +309,10 @@ enum class BodyKind {
  * when its include rules are set. The agent sets it on every manifest it sends, so a collector can
  * tell an instance whose code references nothing from one that records nothing, and claims
  * unreferenced or unreached only for an instance that sent it true. See ADR 0030.
+ *
+ * [dependenciesListed] is true once every dependency from the startup listing, and every reference
+ * mapping recorded before the listing ended, has gone out on a confirmed manifest. Until then, an
+ * empty dependency list or no absent references means "not listed yet", not "none". See ADR 0036.
  */
 data class ProbeManifest(
     val resource: ResourceAttributes,
@@ -322,6 +326,7 @@ data class ProbeManifest(
     val classReferences: List<ClassReferences> = emptyList(),
     val externalClasses: List<ExternalClass> = emptyList(),
     val referencesRecorded: Boolean = false,
+    val dependenciesListed: Boolean = false,
 )
 
 /**

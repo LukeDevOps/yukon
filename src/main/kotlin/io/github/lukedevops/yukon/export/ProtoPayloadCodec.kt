@@ -122,6 +122,7 @@ object ProtoPayloadCodec {
             .addAllClassReferences(manifest.classReferences.map { toProto(it) })
             .addAllExternalClasses(manifest.externalClasses.map { toProto(it) })
             .setReferencesRecorded(manifest.referencesRecorded)
+            .setDependenciesListed(manifest.dependenciesListed)
             .build()
 
     private fun fromProto(manifest: ProtoProbeManifest): ProbeManifest =
@@ -137,6 +138,7 @@ object ProtoPayloadCodec {
             classReferences = manifest.classReferencesList.map { fromProto(it) },
             externalClasses = manifest.externalClassesList.map { fromProto(it) },
             referencesRecorded = manifest.referencesRecorded,
+            dependenciesListed = manifest.dependenciesListed,
         )
 
     private fun toProto(unreportedClass: UnreportedClass): ProtoUnreportedClass =

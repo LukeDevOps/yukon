@@ -315,6 +315,13 @@ message ProbeManifest {
   // sends. A collector claims unreferenced or unreached only for an instance that sent it true.
   // See ADR 0030.
   bool references_recorded = 13;
+  // True once every dependency the startup listing found, and every reference mapping recorded
+  // before the listing ended, has been delivered on a confirmed manifest. Each dependency's entry
+  // is sent only after a confirmed delta send carried its first counts, so a collector can judge a
+  // dependency once its entry arrives. Once true, it is set on every manifest the instance sends.
+  // A listing that failed never sets it. Before it is true, an empty list of dependencies or
+  // absent references means "not listed yet", not "none". See ADR 0036.
+  bool dependencies_listed = 15;
 }
 
 // No line field, unlike ProbeLocation. A method's first source line is
