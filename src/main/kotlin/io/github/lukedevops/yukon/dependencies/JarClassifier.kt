@@ -19,8 +19,8 @@ import java.util.jar.Manifest
  *
  * A jar holding a class in the agent's own package ([TypeMatchPolicy.AGENT_PACKAGE_PREFIX]) is
  * never a dependency either, flat or nested. The agent-jar rule reads the manifest, and an unshaded
- * build of the agent carries no `Premain-Class`: the plain demo puts one on its `-cp` beside the
- * shaded agent jar, and it read as a dependency of the application it was measuring.
+ * build of the agent carries no `Premain-Class`. This rule keeps such a build off the list when it
+ * sits on a classpath beside the shaded agent jar.
  *
  * A jar holding any class [TypeMatchPolicy.isIncluded] admits is the adopter's own.
  */

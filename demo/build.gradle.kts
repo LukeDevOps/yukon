@@ -19,6 +19,12 @@ repositories {
     mavenCentral()
 }
 
+// The demo server and client run on this classpath, not the module's runtime classpath. That one
+// carries the root project's unshaded classes for the stub collector, and on a server's `-cp` it
+// would load the agent ahead of the shaded `-javaagent` jar and list the agent's own libraries as
+// the demo's dependencies.
+val demoAppRuntime by configurations.creating
+
 dependencies {
     // The stub collector decodes the root project's generated protobuf
     // classes directly (io.github.lukedevops.yukon.proto.*); the demo server
@@ -28,6 +34,8 @@ dependencies {
     implementation("com.google.protobuf:protobuf-java:3.25.5")
 
     testImplementation(kotlin("test"))
+
+    demoAppRuntime(kotlin("stdlib"))
 }
 
 tasks.test {
@@ -49,6 +57,8 @@ val stubCollectorMainClass = "io.github.lukedevops.demo.collector.StubCollectorM
 val flushIntervalSeconds = 3L
 val portWaitTimeoutSeconds = 15L
 
+fun demoAppClasspath(): String = (sourceSets["main"].output + demoAppRuntime).asPath
+
 tasks.register("runDemo") {
     group = "application"
     description = "Runs the stub collector, the -javaagent-instrumented demo server, and the demo client end to end."
@@ -57,6 +67,7 @@ tasks.register("runDemo") {
     doLast {
         val javaBin = Jvm.current().javaExecutable.absolutePath
         val demoClasspath = sourceSets["main"].runtimeClasspath.asPath
+        val appClasspath = demoAppClasspath()
         val agentJar =
             rootProject.tasks
                 .named("shadowJar", Jar::class.java)
@@ -76,12 +87,12 @@ tasks.register("runDemo") {
                     "endpoint=http://localhost:$collectorPort," +
                     "includePackages=io.github.lukedevops.demo.server," +
                     "staticBaselineEnabled=true"
-            val server = startProcess("server", javaBin, listOf(agentArg, "-cp", demoClasspath, demoServerMainClass))
+            val server = startProcess("server", javaBin, listOf(agentArg, "-cp", appClasspath, demoServerMainClass))
             try {
                 waitForPort(DemoPorts.SERVER_PORT, portWaitTimeoutSeconds)
 
                 println("yukon demo: running demo client")
-                val client = startProcess("client", javaBin, listOf("-cp", demoClasspath, demoClientMainClass))
+                val client = startProcess("client", javaBin, listOf("-cp", appClasspath, demoClientMainClass))
                 client.process.waitFor()
                 client.outputThread.join()
 
@@ -117,6 +128,7 @@ tasks.register("runSpringDemo") {
     doLast {
         val javaBin = Jvm.current().javaExecutable.absolutePath
         val demoClasspath = sourceSets["main"].runtimeClasspath.asPath
+        val appClasspath = demoAppClasspath()
         val agentJar =
             rootProject.tasks
                 .named("shadowJar", Jar::class.java)
@@ -155,7 +167,7 @@ tasks.register("runSpringDemo") {
                 waitForPort(DemoPorts.SPRING_SERVER_PORT, springPortWaitTimeoutSeconds)
 
                 println("yukon spring demo: running spring demo client")
-                val client = startProcess("spring-client", javaBin, listOf("-cp", demoClasspath, springDemoClientMainClass))
+                val client = startProcess("spring-client", javaBin, listOf("-cp", appClasspath, springDemoClientMainClass))
                 client.process.waitFor()
                 client.outputThread.join()
 
@@ -187,7 +199,7 @@ tasks.register("runDemoStack") {
 
     doLast {
         val javaBin = Jvm.current().javaExecutable.absolutePath
-        val demoClasspath = sourceSets["main"].runtimeClasspath.asPath
+        val demoClasspath = demoAppClasspath()
         val agentJar =
             rootProject.tasks
                 .named("shadowJar", Jar::class.java)

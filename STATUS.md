@@ -190,9 +190,9 @@ runs: a filename version must contain a dot (`endpoints-ktor-2.jar` had read
 as `endpoints-ktor` at version 2 and merged with ktor-3; `jsr305-3.jar` now
 reads as one artifact with no version), and a jar holding the agent's own
 package is never a dependency, since an unshaded agent build carries no
-`Premain-Class`. The plain demo's `-cp` puts `yukon-*-plain.jar` ahead of the
-shaded agent jar, so its agent runs from the unshaded classes; that predates
-this work and is left as found.
+`Premain-Class`. The demo server and client run on a classpath of their own
+classes and kotlin-stdlib, so the agent runs from the shaded jar and the plain
+demo lists no agent library as its dependency.
 
 Chunk 6 (testkit) has landed: `dependency(group, artifact)`,
 `awaitDependency`, `unloadedDependencies()`, `unreferencedDependencies()`,
@@ -230,7 +230,6 @@ Open, recorded rather than started:
   unit tests; no Boot 2 loader has been run.
 - A `byte-buddy-agent` jar sitting flat in an exploded war's `WEB-INF/lib`
   is turned away by the agent-jar rule and reads as no dependency.
-- The plain demo's `-cp` loads the agent from its unshaded classes.
 - Every Kotlin service reads kotlin-stdlib as used through `kotlin.Metadata`,
   which is true but says nothing about the adopter's own use of it.
 
