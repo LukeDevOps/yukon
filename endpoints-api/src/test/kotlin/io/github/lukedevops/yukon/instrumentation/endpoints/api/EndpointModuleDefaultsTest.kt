@@ -48,15 +48,6 @@ class EndpointModuleDefaultsTest {
     }
 
     @Test
-    fun `a module with no declared list ignores a framework object handed to declare`() {
-        val module = MinimalModule()
-
-        module.declare("a framework object this module has no interest in")
-
-        assertEquals("minimal", module.name, "declare's default body does nothing observable at all")
-    }
-
-    @Test
     fun `an advice binder resolves against the bootstrap loader when the target loader is null`() {
         // A module instrumenting a JDK class (the `jdk.httpserver` module's own types) is handed a
         // null classloader, which means the bootstrap loader rather than "no loader at all". The

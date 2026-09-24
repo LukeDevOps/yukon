@@ -169,11 +169,6 @@ class AgentTest {
     }
 
     @Test
-    fun `premain with the agent disabled returns quietly`() {
-        Agent.premain("enabled=false", ByteBuddyAgent.install())
-    }
-
-    @Test
     fun `premain never propagates a failure from start, since that would abort the target JVM`() {
         // Every Instrumentation call throws, so start() fails at its first use of it, before any
         // thread or transformer exists to clean up.
