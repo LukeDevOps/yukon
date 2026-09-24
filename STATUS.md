@@ -268,7 +268,8 @@ Landing order, one chunk and one commit each, built with `/chunked-build`:
 0. Wire and codec: `ProbeManifest.dependencies_listed`.
 1. Agent: counting generations in `DependencyRegistry`, delivery recorded when
    every delta send of a flush is confirmed, entries and mappings held until
-   then, the flag, and an empty manifest to carry it when nothing else goes.
+   then, one more manifest send in the same flush for what that releases, the
+   flag, and an empty manifest to carry it.
 2. Testkit and stub collector: a dependency is judged once its entry arrives;
    list queries and `absentReferences()` throw until every instance sent the
    flag; `awaitDependenciesListed`; the stub logs the flag.
