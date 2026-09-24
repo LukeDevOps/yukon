@@ -7,6 +7,47 @@ one record per decision, and `CONTEXT.md` the glossary. Where this file and
 
 ## TODO
 
+### Readable branch findings: designed, not started
+
+Settled 2026-09-24 in a grilling session across all three repos, after
+reading the `yukon-server` UI against the demo. A never-hit outcome reached a
+person as "Branch 12, `DemoServerMain.kt:121`": no condition, no side, and
+nothing about what code it leads to. ADRs 0037 (sites, conditions, guarded
+code, guards) and 0038 (string and enum switches read back to source
+cases), collector ADR 0001 (redaction processor), server ADR 0030 (read by
+site, newest run describes a row). Terms: condition, site key, guarded code,
+guard.
+
+Landing order, one chunk per commit:
+
+1. Agent: a transform-time benchmark over the demos and a Spring Boot app,
+   with numbers recorded here before any analysis lands.
+2. Agent: sites on the wire. `BranchSite` on METHOD probes and on
+   `DeclaredMethod`, with site index, site key and line; site index and
+   role on BRANCH probes. Switch roles carry the numeric case key until
+   chunk 5.
+3. Agent: guarded code and guards. Control-flow graph and dominators per
+   method; guarded and partly guarded line ranges, SMAP-mapped, on BRANCH
+   probes; a guard on each site and call edge, in the manifest and the
+   baseline. Benchmark read again.
+4. Agent: conditions as code and literal parts, for Kotlin, Java, Scala 2
+   and Scala 3, each idiom confirmed with `javap` first.
+5. Agent: string and enum switches read back to source cases, with the
+   lowering's jumps and throw-only defaults dropped as machinery.
+6. Collector: bindings bump and the redaction processor.
+7. Server: bindings bump, migration 0002, and storing every new fact.
+8. Server: reads by site, display fields from the newest in-scope run
+   (method lines included), and the report counting sites.
+9. Server: the web UI's site rows in never-hit and stale-hit and in the
+   graph's expanded method nodes; the branch index and key no longer
+   shown.
+10. End to end: the compose stack plus `runDemoStack`, and each repo's
+    STATUS brought up to date.
+
+Left for later, in `yukon-server`'s STATUS: folding a dead method's branches
+into its row, rooting clusters at a never-taken outcome, telling
+real-but-uninteresting outcomes apart, and redaction at the server's ingest.
+
 ### Nothing is published anywhere
 
 No build in this repo publishes an artifact. An adopter cannot depend on the
