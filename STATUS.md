@@ -191,7 +191,7 @@ Left for later, in `yukon-server`'s STATUS: folding a dead method's branches
 into its row, rooting clusters at a never-taken outcome, telling
 real-but-uninteresting outcomes apart, and redaction at the server's ingest.
 
-### Readable names and findings, UI items 3 and 6 to 9: landed in both repos
+### Readable names and findings, UI items 3 and 6 to 10: landed in both repos
 
 Settled 2026-09-25 and 2026-09-26 in grilling sessions driven by
 `yukon-server`'s STATUS list "Names and findings a person can act on",
@@ -214,6 +214,10 @@ agent side, one ADR and chunk each:
   `invokedynamic` implements.
 - ADR 0043 (`2df937b`): each method's parameter names, generic
   signature and extension-receiver flag.
+- ADR 0044 (`5ef0082`): an omission probe carries its default value's
+  line, not its target's: the line in effect at the fill block in
+  `f$default`, or a Scala getter's own line. A Scala constructor
+  getter's static forwarder has no line-number table and sends -1.
 
 `ConditionInstrumentationTest` finds the demo checkout's condition
 lines in the demo source (`52392b1`), so demo edits no longer break it.
