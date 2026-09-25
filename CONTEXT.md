@@ -205,11 +205,11 @@ A class that exists only to carry a body its creator hands to someone else: a fu
 _Avoid_: lambda class for every body class (it names only the Kotlin lambda kind, and a Java lambda is a hidden class with no class file), adapter (Scala's boxing forwarder), callback
 
 **Unreached cluster**:
-A root plus every never-hit method reachable from it through call edges whose every in-scope caller is itself in the cluster. Deleting the root removes the whole cluster.
+A root plus every never-hit method reachable from it through call edges whose every in-scope caller is itself in the cluster. A call edge behind a never-hit outcome in a method that ran counts as a call from that outcome. Deleting the root removes the whole cluster.
 _Avoid_: dead cluster, dead code (a collector's verdict, not an observation)
 
 **Root**:
-A never-hit method that starts an unreached cluster. *Reached from hit* when one of its callers has hits; *uncalled* when nothing in scope calls it.
+The never-hit code that starts an unreached cluster. A method root is *reached from hit* when one of its callers has hits, and names those callers; it is *uncalled* when nothing in scope calls it. An *untaken outcome* root is a never-hit outcome in a method that ran, with at least one method behind it. See ADR 0039.
 _Avoid_: entry point (a root may be deep inside the code), node
 
 ### Dependencies

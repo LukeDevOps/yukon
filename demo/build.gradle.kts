@@ -358,6 +358,39 @@ fun guardedText(outcome: Map<*, *>): String {
     }
 }
 
+// Each outcome that put a never-hit site row on the list, as its condition,
+// the result that never happened and the lines only it reaches.
+fun siteFindings(row: Map<*, *>): List<String> {
+    val condition = conditionText(row["condition"] as List<*>).ifEmpty { "branch" }
+    return (row["outcomes"] as List<*>)
+        .map { it as Map<*, *> }
+        .filter { it["in_finding"] == true }
+        .map { "`$condition` ${neverHappened(it)}, ${guardedText(it)}" }
+}
+
+// A cluster's root as one line (server ADR 0032). An untaken outcome reads as
+// its site row does, then the method that holds it. A root reached from hit
+// names the methods with hits that call it.
+fun clusterRootText(root: Map<*, *>): String {
+    val method = "${root["class_name"]}#${root["method_name"]}"
+    return when (val kind = root["root_kind"] as String) {
+        "untaken_outcome" -> {
+            val site = root["site"] as Map<*, *>?
+            val finding = site?.let { siteFindings(it).firstOrNull() } ?: "an untaken branch"
+            "$finding, in $method:${site?.get("line") ?: root["line"]} (untaken outcome)"
+        }
+
+        "reached_from_hit" -> {
+            val callers = (root["reached_from"] as List<*>).joinToString(", ") { "${(it as Map<*, *>)["class_name"]}#${it["method_name"]}" }
+            "$method (reached from hit, called from $callers)"
+        }
+
+        else -> {
+            "$method (${kind.replace('_', ' ')})"
+        }
+    }
+}
+
 // The report covers every instance of this service and version the server
 // has ever seen, so repeated runs against the same stack accumulate.
 fun printStackReport() {
@@ -409,11 +442,8 @@ fun printStackReport() {
             println("    $where (method)$inlinedFrom$routes")
             continue
         }
-        val condition = conditionText(r["condition"] as List<*>).ifEmpty { "branch" }
-        for (outcome in r["outcomes"] as List<*>) {
-            val o = outcome as Map<*, *>
-            if (o["in_finding"] != true) continue
-            println("    $where `$condition` ${neverHappened(o)}, ${guardedText(o)}$inlinedFrom$routes")
+        for (finding in siteFindings(r)) {
+            println("    $where $finding$inlinedFrom$routes")
         }
     }
     println("  NEVER LOADED:")
@@ -435,10 +465,7 @@ fun printStackReport() {
         val root = c["root"] as Map<*, *>
         val routes = (root["routes"] as List<*>).takeIf { it.isNotEmpty() }?.let { " routes=$it" } ?: ""
         println(
-            "    UNREACHED CLUSTER: root ${root["class_name"]}#${root["method_name"]} (${(root["root_kind"] as String).replace(
-                '_',
-                ' ',
-            )}), " +
+            "    UNREACHED CLUSTER: root ${clusterRootText(root)}, " +
                 "${c["members_total"]} methods, ${c["never_loaded_classes"]} never-loaded classes$routes",
         )
         for (member in c["members"] as List<*>) {

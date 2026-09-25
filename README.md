@@ -113,9 +113,10 @@ NEVER HIT: io.github.lukedevops.demo.server.DemoServerMainKt#handleCheckout:64 `
 ```
 
 The last report groups those never-hit probes into unreached clusters: a
-root that's either reached from code that does run or never called at all,
-plus every never-hit method beneath it whose only callers are also in the
-cluster. `/promo`'s handler calls a helper that calls a repository method
+root that's either reached from code that does run, never called at all, or
+a branch outcome that never ran in a method that did, plus every never-hit
+method beneath it whose only callers are also in the cluster. `/promo`'s
+handler calls a helper that calls a repository method
 neither the handler nor anything else ever reaches, so it prints as one
 five-method cluster: the handler, its helper, and the repository's method,
 static initialiser and constructor, the last three marked never loaded
@@ -144,14 +145,27 @@ sit side by side in the endpoint report: `* /promo` names
 `PromoHandler#handle`, and `* /checkout` names
 `DemoServerMainKt#handleCheckout`.
 
-Three smaller clusters follow it, each reached from the checkout handler
-under the branch the demo never takes: `LegacyDiscountCalculator`'s
-constructor and `apply`, which the branch calls, and `LegacyRates`'
-static initialiser, which the branch reaches only by reading a static
-field. A static field read counts as a use of the class the same way a
-call does. The checkout handler also calls its response helper through a
-function reference; the class the compiler generates for that reference
-is reached from the handler and never appears in a cluster.
+A second cluster starts at the branch the demo never takes. The untaken
+side of the checkout handler's `if` constructs `LegacyDiscountCalculator`,
+calls its `apply`, and reads a static field of `LegacyRates`, which runs
+that object's static initialiser and so its constructor. Each of those
+calls sits behind that one outcome, so the outcome is the root, printed the
+way the never-hit report prints it, followed by the method that holds it.
+Deleting that side of the `if` removes all four methods:
+
+```
+UNREACHED CLUSTER: root `System.getenv("ENABLE_LEGACY_DISCOUNT") == "true"` was never true, only path to DemoServerMain.kt:59, in io.github.lukedevops.demo.server.DemoServerMainKt#handleCheckout:58 (untaken outcome), 4 methods, 2 never-loaded classes routes=[* /checkout]
+  io.github.lukedevops.demo.server.LegacyDiscountCalculator#<init> (never loaded)
+  io.github.lukedevops.demo.server.LegacyDiscountCalculator#apply (never loaded)
+  io.github.lukedevops.demo.server.LegacyRates#<clinit> (never loaded)
+  io.github.lukedevops.demo.server.LegacyRates#<init> (never loaded)
+```
+
+A never-hit method called from a method that ran, and not from behind an
+untaken outcome, is a root "reached from hit", and the report names the
+callers after it. The checkout handler also calls its response helper
+through a function reference; the class the compiler generates for that
+reference is reached from the handler and never appears in a cluster.
 
 ## Run the demo against a real collector
 

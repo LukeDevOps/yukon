@@ -1,7 +1,12 @@
 package io.github.lukedevops.yukon.testkit
 
+import io.github.lukedevops.yukon.export.BranchOutcome
+import io.github.lukedevops.yukon.export.BranchRole
+import io.github.lukedevops.yukon.export.BranchSite
 import io.github.lukedevops.yukon.export.CallEdge
 import io.github.lukedevops.yukon.export.ClassLocation
+import io.github.lukedevops.yukon.export.ConditionPart
+import io.github.lukedevops.yukon.export.ConditionPartKind
 import io.github.lukedevops.yukon.export.DeclaredClass
 import io.github.lukedevops.yukon.export.DeclaredMethod
 import io.github.lukedevops.yukon.export.DeltaBatch
@@ -11,6 +16,7 @@ import io.github.lukedevops.yukon.export.EndpointDiscoverySource
 import io.github.lukedevops.yukon.export.EndpointLocation
 import io.github.lukedevops.yukon.export.GeneratedBy
 import io.github.lukedevops.yukon.export.HttpOtlpStyleExporter
+import io.github.lukedevops.yukon.export.LineRange
 import io.github.lukedevops.yukon.export.ProbeDelta
 import io.github.lukedevops.yukon.export.ProbeKind
 import io.github.lukedevops.yukon.export.ProbeLocation
@@ -61,7 +67,64 @@ class YukonTestCollectorTest {
         methodDescriptor: String,
         line: Int,
         calls: List<CallEdge> = emptyList(),
-    ) = ProbeLocation(classId, probeIndex, ProbeKind.METHOD, className, methodName, methodDescriptor, line, null, calls = calls)
+        branchSites: List<BranchSite> = emptyList(),
+    ) = ProbeLocation(
+        classId,
+        probeIndex,
+        ProbeKind.METHOD,
+        className,
+        methodName,
+        methodDescriptor,
+        line,
+        null,
+        calls = calls,
+        branchSites = branchSites,
+    )
+
+    private fun branchProbe(
+        classId: Int,
+        probeIndex: Int,
+        className: String,
+        methodName: String,
+        methodDescriptor: String,
+        line: Int,
+        branchIndex: Int,
+        siteIndex: Int,
+    ) = ProbeLocation(
+        classId,
+        probeIndex,
+        ProbeKind.BRANCH,
+        className,
+        methodName,
+        methodDescriptor,
+        line,
+        branchIndex,
+        siteIndex = siteIndex,
+    )
+
+    /**
+     * An `if` site whose taken jump is outcome [takenIndex] and whose fall-through is
+     * [fallThroughIndex], as kotlinc compiles `if (c) A`: the fall-through runs `A`.
+     */
+    private fun ifSite(
+        siteIndex: Int,
+        line: Int,
+        takenIndex: Int,
+        fallThroughIndex: Int,
+        guard: Int? = null,
+        condition: String = "c",
+    ) = BranchSite(
+        siteIndex = siteIndex,
+        siteKey = null,
+        line = line,
+        outcomes =
+            listOf(
+                BranchOutcome(takenIndex, BranchRole.TAKEN),
+                BranchOutcome(fallThroughIndex, BranchRole.FALL_THROUGH, guardedLines = listOf(LineRange("App.kt", line + 1, line + 1))),
+            ),
+        guard = guard,
+        condition = listOf(ConditionPart(ConditionPartKind.CODE, condition)),
+    )
 
     private fun omissionProbe(
         classId: Int,
@@ -1868,5 +1931,274 @@ class YukonTestCollectorTest {
         val cluster = target.unreachedClusters().single()
         assertEquals(RootKind.REACHED_FROM_HIT, cluster.rootKind)
         assertEquals("n", cluster.root.methodName)
+    }
+
+    @Test
+    fun `an untaken outcome roots the cluster of the methods only it calls`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+        val resource = ResourceAttributes("svc", null, "i-1", null, "run-1")
+        val site = ifSite(siteIndex = 0, line = 11, takenIndex = 0, fallThroughIndex = 1, condition = "legacy")
+        exporter.exportManifest(
+            ProbeManifest(
+                resource,
+                probes =
+                    listOf(
+                        methodProbe(
+                            1,
+                            0,
+                            "com.acme.App",
+                            "handle",
+                            "()V",
+                            10,
+                            calls =
+                                listOf(
+                                    CallEdge("com.acme.Legacy", "<init>", "()V", virtual = false, guard = 1),
+                                    CallEdge("com.acme.Legacy", "apply", "()V", virtual = true, guard = 1),
+                                ),
+                            branchSites = listOf(site),
+                        ),
+                        branchProbe(1, 1, "com.acme.App", "handle", "()V", 11, branchIndex = 0, siteIndex = 0),
+                        branchProbe(1, 2, "com.acme.App", "handle", "()V", 11, branchIndex = 1, siteIndex = 0),
+                        methodProbe(2, 0, "com.acme.Legacy", "<init>", "()V", 3),
+                        methodProbe(2, 1, "com.acme.Legacy", "apply", "()V", 4),
+                    ),
+            ),
+        )
+        exporter.exportDeltaBatch(
+            DeltaBatch(resource, listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 5L), ProbeDelta(1, 1, ProbeKind.BRANCH, 1L, 5L))),
+        )
+
+        val cluster = target.unreachedClusters().single()
+        assertEquals(RootKind.UNTAKEN_OUTCOME, cluster.rootKind)
+        assertEquals(
+            listOf("com.acme.App", "handle", ProbeKind.BRANCH, 1, 11),
+            with(cluster.root) { listOf(className, methodName, kind, branchIndex, line) },
+        )
+        assertTrue(cluster.root in target.neverHit(), "the root is the same ref neverHit lists for the outcome")
+        assertEquals(site, cluster.rootSite)
+        assertEquals(listOf("<init>", "apply"), cluster.members.map { it.methodName })
+        assertTrue(cluster.members.all { it.kind == ProbeKind.METHOD })
+        assertEquals(emptyList(), cluster.reachedFrom)
+    }
+
+    @Test
+    fun `an untaken outcome nested in another joins the outer root's cluster instead of rooting one`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+        val resource = ResourceAttributes("svc", null, "i-1", null, "run-1")
+        exporter.exportManifest(
+            ProbeManifest(
+                resource,
+                probes =
+                    listOf(
+                        methodProbe(
+                            1,
+                            0,
+                            "com.acme.App",
+                            "handle",
+                            "()V",
+                            10,
+                            calls =
+                                listOf(
+                                    CallEdge("com.acme.X", "run", "()V", false, guard = 1),
+                                    CallEdge("com.acme.Y", "run", "()V", false, guard = 2),
+                                    CallEdge("com.acme.Z", "run", "()V", false, guard = 3),
+                                ),
+                            branchSites =
+                                listOf(
+                                    ifSite(siteIndex = 0, line = 10, takenIndex = 0, fallThroughIndex = 1),
+                                    ifSite(siteIndex = 1, line = 12, takenIndex = 2, fallThroughIndex = 3, guard = 1),
+                                ),
+                        ),
+                        branchProbe(1, 1, "com.acme.App", "handle", "()V", 10, branchIndex = 0, siteIndex = 0),
+                        branchProbe(1, 2, "com.acme.App", "handle", "()V", 10, branchIndex = 1, siteIndex = 0),
+                        branchProbe(1, 3, "com.acme.App", "handle", "()V", 12, branchIndex = 2, siteIndex = 1),
+                        branchProbe(1, 4, "com.acme.App", "handle", "()V", 12, branchIndex = 3, siteIndex = 1),
+                        methodProbe(2, 0, "com.acme.X", "run", "()V", 1),
+                        methodProbe(3, 0, "com.acme.Y", "run", "()V", 1),
+                        methodProbe(4, 0, "com.acme.Z", "run", "()V", 1),
+                    ),
+            ),
+        )
+        exporter.exportDeltaBatch(
+            DeltaBatch(resource, listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 5L), ProbeDelta(1, 1, ProbeKind.BRANCH, 1L, 5L))),
+        )
+
+        val cluster = target.unreachedClusters().single()
+        assertEquals(RootKind.UNTAKEN_OUTCOME, cluster.rootKind)
+        assertEquals(1, cluster.root.branchIndex)
+        assertEquals(listOf("com.acme.X", "com.acme.Y", "com.acme.Z"), cluster.members.map { it.className })
+    }
+
+    @Test
+    fun `a method called under two untaken outcomes belongs to neither cluster`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+        val resource = ResourceAttributes("svc", null, "i-1", null, "run-1")
+        exporter.exportManifest(
+            ProbeManifest(
+                resource,
+                probes =
+                    listOf(
+                        methodProbe(
+                            1,
+                            0,
+                            "com.acme.App",
+                            "handle",
+                            "()V",
+                            10,
+                            calls =
+                                listOf(
+                                    CallEdge("com.acme.A", "run", "()V", false, guard = 1),
+                                    CallEdge("com.acme.S", "shared", "()V", false, guard = 1),
+                                    CallEdge("com.acme.B", "run", "()V", false, guard = 3),
+                                    CallEdge("com.acme.S", "shared", "()V", false, guard = 3),
+                                ),
+                            branchSites =
+                                listOf(
+                                    ifSite(siteIndex = 0, line = 10, takenIndex = 0, fallThroughIndex = 1),
+                                    ifSite(siteIndex = 1, line = 20, takenIndex = 2, fallThroughIndex = 3),
+                                ),
+                        ),
+                        branchProbe(1, 1, "com.acme.App", "handle", "()V", 10, branchIndex = 0, siteIndex = 0),
+                        branchProbe(1, 2, "com.acme.App", "handle", "()V", 10, branchIndex = 1, siteIndex = 0),
+                        branchProbe(1, 3, "com.acme.App", "handle", "()V", 20, branchIndex = 2, siteIndex = 1),
+                        branchProbe(1, 4, "com.acme.App", "handle", "()V", 20, branchIndex = 3, siteIndex = 1),
+                        methodProbe(2, 0, "com.acme.A", "run", "()V", 1),
+                        methodProbe(3, 0, "com.acme.B", "run", "()V", 1),
+                        methodProbe(4, 0, "com.acme.S", "shared", "()V", 1),
+                    ),
+            ),
+        )
+        exporter.exportDeltaBatch(
+            DeltaBatch(
+                resource,
+                listOf(
+                    ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 5L),
+                    ProbeDelta(1, 1, ProbeKind.BRANCH, 1L, 5L),
+                    ProbeDelta(1, 3, ProbeKind.BRANCH, 1L, 5L),
+                ),
+            ),
+        )
+
+        val clusters = target.unreachedClusters()
+        assertEquals(listOf(1, 3), clusters.map { it.root.branchIndex }.sortedBy { it })
+        assertEquals(listOf("com.acme.A"), clusters.single { it.root.branchIndex == 1 }.members.map { it.className })
+        assertEquals(listOf("com.acme.B"), clusters.single { it.root.branchIndex == 3 }.members.map { it.className })
+        assertTrue(clusters.none { it.root.className == "com.acme.S" || it.members.any { m -> m.className == "com.acme.S" } })
+    }
+
+    @Test
+    fun `a reached-from-hit root names the methods with hits that call it`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+        val resource = ResourceAttributes("svc", null, "i-1", null, "run-1")
+        exporter.exportManifest(
+            ProbeManifest(
+                resource,
+                probes =
+                    listOf(
+                        methodProbe(1, 0, "com.acme.H2", "run", "()V", 1, calls = listOf(CallEdge("com.acme.N", "step", "()V", false))),
+                        methodProbe(2, 0, "com.acme.H1", "run", "()V", 1, calls = listOf(CallEdge("com.acme.N", "step", "()V", false))),
+                        methodProbe(3, 0, "com.acme.N", "step", "()V", 1),
+                        methodProbe(4, 0, "com.acme.P", "orphan", "()V", 1),
+                    ),
+            ),
+        )
+        exporter.exportDeltaBatch(
+            DeltaBatch(resource, listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 2L), ProbeDelta(2, 0, ProbeKind.METHOD, 1L, 2L))),
+        )
+
+        val clusters = target.unreachedClusters()
+        val reached = clusters.single { it.root.className == "com.acme.N" }
+        assertEquals(RootKind.REACHED_FROM_HIT, reached.rootKind)
+        assertEquals(listOf("com.acme.H1" to "run", "com.acme.H2" to "run"), reached.reachedFrom.map { it.className to it.methodName })
+        assertEquals(null, reached.rootSite)
+        val uncalled = clusters.single { it.root.className == "com.acme.P" }
+        assertEquals(RootKind.UNCALLED, uncalled.rootKind)
+        assertEquals(emptyList(), uncalled.reachedFrom)
+    }
+
+    @Test
+    fun `an untaken outcome with no method behind it gives no cluster`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+        val resource = ResourceAttributes("svc", null, "i-1", null, "run-1")
+        exporter.exportManifest(
+            ProbeManifest(
+                resource,
+                probes =
+                    listOf(
+                        methodProbe(
+                            1,
+                            0,
+                            "com.acme.App",
+                            "handle",
+                            "()V",
+                            10,
+                            branchSites = listOf(ifSite(siteIndex = 0, line = 10, takenIndex = 0, fallThroughIndex = 1)),
+                        ),
+                        branchProbe(1, 1, "com.acme.App", "handle", "()V", 10, branchIndex = 0, siteIndex = 0),
+                        branchProbe(1, 2, "com.acme.App", "handle", "()V", 10, branchIndex = 1, siteIndex = 0),
+                    ),
+            ),
+        )
+        exporter.exportDeltaBatch(
+            DeltaBatch(resource, listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 5L), ProbeDelta(1, 1, ProbeKind.BRANCH, 1L, 5L))),
+        )
+
+        assertEquals(listOf(1), target.neverHit().map { it.branchIndex })
+        assertTrue(target.unreachedClusters().isEmpty())
+    }
+
+    @Test
+    fun `a callee behind a hit outcome, or behind a guard that names no outcome, is reached from hit`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+        val resource = ResourceAttributes("svc", null, "i-1", null, "run-1")
+        exporter.exportManifest(
+            ProbeManifest(
+                resource,
+                probes =
+                    listOf(
+                        methodProbe(
+                            1,
+                            0,
+                            "com.acme.App",
+                            "handle",
+                            "()V",
+                            10,
+                            calls =
+                                listOf(
+                                    CallEdge("com.acme.N", "step", "()V", false, guard = 0),
+                                    CallEdge("com.acme.M", "step", "()V", false, guard = 9),
+                                ),
+                            branchSites = listOf(ifSite(siteIndex = 0, line = 10, takenIndex = 0, fallThroughIndex = 1)),
+                        ),
+                        branchProbe(1, 1, "com.acme.App", "handle", "()V", 10, branchIndex = 0, siteIndex = 0),
+                        branchProbe(1, 2, "com.acme.App", "handle", "()V", 10, branchIndex = 1, siteIndex = 0),
+                        methodProbe(2, 0, "com.acme.N", "step", "()V", 1),
+                        methodProbe(3, 0, "com.acme.M", "step", "()V", 1),
+                    ),
+            ),
+        )
+        exporter.exportDeltaBatch(
+            DeltaBatch(
+                resource,
+                listOf(
+                    ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 5L),
+                    ProbeDelta(1, 1, ProbeKind.BRANCH, 1L, 3L),
+                    ProbeDelta(1, 2, ProbeKind.BRANCH, 1L, 2L),
+                ),
+            ),
+        )
+
+        val clusters = target.unreachedClusters()
+        assertEquals(listOf("com.acme.M", "com.acme.N"), clusters.map { it.root.className }.sorted())
+        for (cluster in clusters) {
+            assertEquals(RootKind.REACHED_FROM_HIT, cluster.rootKind)
+            assertEquals(listOf("com.acme.App" to "handle"), cluster.reachedFrom.map { it.className to it.methodName })
+        }
     }
 }

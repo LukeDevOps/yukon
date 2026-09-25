@@ -2,6 +2,7 @@ package io.github.lukedevops.yukon.testkit
 
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
+import io.github.lukedevops.yukon.export.BranchSite
 import io.github.lukedevops.yukon.export.CallEdge
 import io.github.lukedevops.yukon.export.DisabledEndpointModule
 import io.github.lukedevops.yukon.export.EndpointDiscoverySource
@@ -93,6 +94,7 @@ class YukonTestCollector private constructor(
         val generatedBy: GeneratedBy = GeneratedBy.NONE,
         val referencedClasses: List<String> = emptyList(),
         val branchKey: String? = null,
+        val branchSites: List<BranchSite> = emptyList(),
     )
 
     /** A class's superclass and direct interfaces, resolved to a class name. See ADR 0024. */
@@ -143,11 +145,41 @@ class YukonTestCollector private constructor(
         val edges: Set<CallEdge>,
     )
 
-    /** The resolved call graph: every node, its resolved outgoing edges, and the reverse (caller) index. */
+    /** One resolved call out of a method: the callee node and the guard the raw [CallEdge] carried. */
+    private data class ResolvedCall(
+        val callee: NodeKey,
+        val guard: Int?,
+    )
+
+    /** The resolved call graph: every node and its resolved outgoing calls. */
     private class CallGraph(
         val nodes: Map<NodeKey, NodeInfo>,
-        val resolvedEdges: Map<NodeKey, Set<NodeKey>>,
-        val callersOf: Map<NodeKey, Set<NodeKey>>,
+        val calls: Map<NodeKey, Set<ResolvedCall>>,
+    )
+
+    /**
+     * One node of the cluster graph [unreachedClusters] grows clusters over: a method, or, when
+     * [branchIndex] is set, an outcome node in that method. See ADR 0039.
+     */
+    private data class ClusterNode(
+        val method: NodeKey,
+        val branchIndex: Int? = null,
+    )
+
+    /**
+     * An outcome node: a judgeable outcome with no hits in a method with hits, merged across
+     * instances by its method and branch index. [ref] is one instance's BRANCH probe for it. [site]
+     * is the site that lists it on its method's METHOD probe, or null when no manifest listed one.
+     */
+    private data class OutcomeNode(
+        val ref: ProbeRef,
+        val site: BranchSite?,
+    )
+
+    /** The cluster graph: each node's callers and callees, over methods and outcome nodes alike. */
+    private class ClusterGraph(
+        val callersOf: Map<ClusterNode, Set<ClusterNode>>,
+        val calleesOf: Map<ClusterNode, Set<ClusterNode>>,
     )
 
     private data class ScanKey(
@@ -606,22 +638,28 @@ class YukonTestCollector private constructor(
                         probe.generatedBy == GeneratedBy.NONE &&
                         probe.kind != ProbeKind.OPTIONAL_ARGUMENT &&
                         (hitsByKey[key] ?: 0L) <= 0L
-                }.map { (key, probe) ->
-                    ProbeRef(
-                        serviceInstanceId = key.serviceInstanceId,
-                        className = probe.className,
-                        methodName = probe.methodName,
-                        methodDescriptor = probe.methodDescriptor,
-                        line = probe.line,
-                        kind = probe.kind,
-                        branchIndex = probe.branchIndex,
-                        inline = probe.inline,
-                        inlinedFromClassName = probe.inlinedFromClassName,
-                        generatedBy = probe.generatedBy,
-                        branchKey = probe.branchKey,
-                    )
-                }.sortedWith(compareBy({ it.className }, { it.methodName }, { it.line }, { it.branchIndex ?: -1 }))
+                }.map { (key, probe) -> neverHitRef(key, probe) }
+                .sortedWith(compareBy({ it.className }, { it.methodName }, { it.line }, { it.branchIndex ?: -1 }))
         }
+
+    /** The [ProbeRef] [neverHit] lists for [probe]. */
+    private fun neverHitRef(
+        key: ProbeKey,
+        probe: StoredProbe,
+    ): ProbeRef =
+        ProbeRef(
+            serviceInstanceId = key.serviceInstanceId,
+            className = probe.className,
+            methodName = probe.methodName,
+            methodDescriptor = probe.methodDescriptor,
+            line = probe.line,
+            kind = probe.kind,
+            branchIndex = probe.branchIndex,
+            inline = probe.inline,
+            inlinedFromClassName = probe.inlinedFromClassName,
+            generatedBy = probe.generatedBy,
+            branchKey = probe.branchKey,
+        )
 
     /** Every class reported as matched but not instrumented by any manifest, distinct by class name, sorted by name. */
     fun skippedClasses(): List<SkippedClass> = checked { skippedByClassName.values.sortedBy { it.className } }
@@ -694,20 +732,33 @@ class YukonTestCollector private constructor(
     }
 
     /**
-     * Every unreached cluster in the call graph, applying the collector's rule (ADR 0024) within
-     * this one test JVM: a root is a never-hit method with at least one hit caller
-     * ([RootKind.REACHED_FROM_HIT]) or no in-scope caller at all ([RootKind.UNCALLED]), and its
-     * cluster is the root plus every never-hit method reachable from it whose every caller is
-     * itself already in the cluster. Sorted by member count descending, then by root.
+     * Every unreached cluster in the call graph, applying the collector's rule (ADR 0024 and ADR
+     * 0039) within this one test JVM. Sorted by member count descending, then by root.
      *
-     * A node comes from a manifest METHOD probe, merged across instances with hits summed, or from
-     * a non-inline declared method of a class a complete static baseline declared but no manifest
-     * ever mentioned; such a member carries [ProbeRef.neverLoaded] `true`, line `-1`, and the
-     * declaring instance's id. Inline methods are never nodes, so an edge into one resolves to
-     * nothing. Edges are the union of manifest and complete-baseline call edges; resolution walks a
-     * callee's owner up through [supertypesByClassName] and complete-baseline supertypes to the
-     * first type with a matching node, and, for a virtual call, also down from the owner to every
-     * known transitive subtype with one, `<init>` and `<clinit>` excepted. See [computeCallGraph].
+     * The graph holds two kinds of node. A method node comes from a manifest METHOD probe, merged
+     * across instances with hits summed, or from a non-inline declared method of a class a complete
+     * static baseline declared but no manifest ever mentioned. Such a member carries
+     * [ProbeRef.neverLoaded] `true`, line `-1`, and the declaring instance's id. An outcome node is
+     * a BRANCH probe with no hits, merged across instances by its method and branch index, in a
+     * method node with hits. A BRANCH probe that is inline or generated is never an outcome node,
+     * by the rule that keeps its method out of the graph.
+     *
+     * A call edge whose guard names an outcome node counts as a call from that outcome node. Every
+     * other edge counts as a call from its method. An outcome node has one caller: the outcome
+     * node its site's guard names, or else its method. Within one JVM a guard's branch index names
+     * one outcome of the caller's class, so it is looked up there directly.
+     *
+     * A root is a never-hit node with no caller ([RootKind.UNCALLED]) or with a caller that is a
+     * method with hits. Such a method root is [RootKind.REACHED_FROM_HIT], and such an outcome node
+     * is [RootKind.UNTAKEN_OUTCOME]. The cluster is the root plus every never-hit node reachable from
+     * it whose every caller is already in the cluster. Only methods are members, so an untaken
+     * outcome with no method behind it gives no cluster.
+     *
+     * Inline methods are never nodes, so an edge into one resolves to nothing. Edges are the union
+     * of manifest and complete-baseline call edges. Resolution walks a callee's owner up through
+     * [supertypesByClassName] and complete-baseline supertypes to the first type with a matching
+     * node. For a virtual call it also walks down from the owner to every known transitive subtype
+     * with one, `<init>` and `<clinit>` excepted. See [computeCallGraph].
      */
     fun unreachedClusters(): List<UnreachedCluster> {
         checkNoRejections()
@@ -715,42 +766,58 @@ class YukonTestCollector private constructor(
 
         fun isHit(key: NodeKey) = (graph.nodes[key]?.hits ?: 0L) > 0L
 
-        val roots =
-            graph.nodes.keys.filter { !isHit(it) }.mapNotNull { key ->
-                val callers = graph.callersOf[key].orEmpty()
-                when {
-                    callers.isEmpty() -> key to RootKind.UNCALLED
-                    callers.any { isHit(it) } -> key to RootKind.REACHED_FROM_HIT
-                    else -> null
-                }
-            }
+        val outcomes = buildOutcomeNodes(::isHit)
+        val clusterGraph = buildClusterGraph(graph, outcomes)
 
-        return roots
-            .map { (rootKey, rootKind) -> buildCluster(graph, rootKey, rootKind, ::isHit) }
-            .sortedWith(compareByDescending<UnreachedCluster> { it.members.size }.thenComparing({ it.root }, probeRefComparator))
+        fun isNeverHit(node: ClusterNode) = if (node.branchIndex != null) node in outcomes else !isHit(node.method)
+
+        val neverHitNodes = graph.nodes.keys.filter { !isHit(it) }.map { ClusterNode(it) } + outcomes.keys
+        return neverHitNodes
+            .mapNotNull { node ->
+                val callers = clusterGraph.callersOf[node].orEmpty()
+                val hitCallers = callers.filter { it.branchIndex == null && isHit(it.method) }
+                val kind =
+                    when {
+                        callers.isEmpty() -> RootKind.UNCALLED
+                        hitCallers.isEmpty() -> return@mapNotNull null
+                        node.branchIndex != null -> RootKind.UNTAKEN_OUTCOME
+                        else -> RootKind.REACHED_FROM_HIT
+                    }
+                val reachedFrom =
+                    if (kind == RootKind.REACHED_FROM_HIT) {
+                        hitCallers.map { toProbeRef(graph.nodes.getValue(it.method), it.method) }.sortedWith(probeRefComparator)
+                    } else {
+                        emptyList()
+                    }
+                buildCluster(graph, clusterGraph, outcomes, node, kind, reachedFrom, ::isNeverHit)
+            }.sortedWith(compareByDescending<UnreachedCluster> { it.members.size }.thenComparing({ it.root }, probeRefComparator))
     }
 
     /**
-     * Grows [rootKey]'s cluster by fixpoint: repeatedly add a never-hit node reachable by a
-     * resolved edge from a current member, once every one of that node's callers is itself already
-     * in the cluster. Two consequences of this rule, pinned by tests: a node whose callers sit in
-     * two different clusters is added to neither, and a cycle of never-hit nodes with no outside
-     * caller produces no root at all, so it never reaches this method in the first place.
+     * Grows [root]'s cluster by fixpoint: repeatedly add a never-hit node reachable from a current
+     * member, once every one of that node's callers is itself already in the cluster. Two
+     * consequences of this rule, pinned by tests: a node whose callers sit in two different
+     * clusters is added to neither, and a cycle of never-hit nodes with no outside caller produces
+     * no root at all, so it never reaches this method in the first place. Returns null when no
+     * method joined, which only an outcome root can give.
      */
     private fun buildCluster(
         graph: CallGraph,
-        rootKey: NodeKey,
+        clusterGraph: ClusterGraph,
+        outcomes: Map<ClusterNode, OutcomeNode>,
+        root: ClusterNode,
         rootKind: RootKind,
-        isHit: (NodeKey) -> Boolean,
-    ): UnreachedCluster {
-        val members = mutableSetOf(rootKey)
+        reachedFrom: List<ProbeRef>,
+        isNeverHit: (ClusterNode) -> Boolean,
+    ): UnreachedCluster? {
+        val members = mutableSetOf(root)
         var changed = true
         while (changed) {
             changed = false
             for (member in members.toList()) {
-                for (target in graph.resolvedEdges[member].orEmpty()) {
-                    if (target in members || isHit(target)) continue
-                    val callers = graph.callersOf[target].orEmpty()
+                for (target in clusterGraph.calleesOf[member].orEmpty()) {
+                    if (target in members || !isNeverHit(target)) continue
+                    val callers = clusterGraph.callersOf[target].orEmpty()
                     if (callers.isNotEmpty() && members.containsAll(callers)) {
                         members += target
                         changed = true
@@ -758,56 +825,125 @@ class YukonTestCollector private constructor(
                 }
             }
         }
-        val memberRefs = members.map { toProbeRef(graph.nodes.getValue(it), it) }.sortedWith(probeRefComparator)
+        val memberRefs =
+            members
+                .filter { it.branchIndex == null }
+                .map { toProbeRef(graph.nodes.getValue(it.method), it.method) }
+                .sortedWith(probeRefComparator)
+        if (memberRefs.isEmpty()) return null
         val neverLoadedClasses =
             memberRefs
                 .filter { it.neverLoaded }
                 .map { it.className }
                 .distinct()
                 .size
-        return UnreachedCluster(toProbeRef(graph.nodes.getValue(rootKey), rootKey), rootKind, memberRefs, neverLoadedClasses)
+        val rootOutcome = outcomes[root]
+        return UnreachedCluster(
+            root = rootOutcome?.ref ?: toProbeRef(graph.nodes.getValue(root.method), root.method),
+            rootKind = rootKind,
+            members = memberRefs,
+            neverLoadedClasses = neverLoadedClasses,
+            rootSite = rootOutcome?.site,
+            reachedFrom = reachedFrom,
+        )
     }
 
     /**
-     * Builds every [NodeKey], resolves its edges against the known supertype graph, and indexes
-     * callers. An edge resolves to the union of two lookups, either of which may find nothing: the
-     * first node up the owner's supertype chain, which is an inherited concrete declaration, and,
-     * for a virtual call, every node with the same name and descriptor on a transitive subtype of
-     * the owner. Widening starts at the owner, not at the declaring type, for two reasons: an
-     * abstract interface method has no node anywhere, so requiring the up-walk to succeed would
-     * drop every edge into a pure interface, which is the constructor-injected case supertypes
-     * exist for; and a receiver typed as the owner can only be the owner or one of its subtypes,
-     * never a sibling under some ancestor.
+     * Every outcome node, keyed by its [ClusterNode]: a BRANCH probe that is neither inline nor
+     * generated, whose hits summed across instances are zero, in a method [isHit] says has hits. Its
+     * site is looked up by branch index in the sites its method's METHOD probes list. See ADR 0039.
+     */
+    private fun buildOutcomeNodes(isHit: (NodeKey) -> Boolean): Map<ClusterNode, OutcomeNode> {
+        val sitesByMethod =
+            probesByKey.values
+                .filter { it.kind == ProbeKind.METHOD && it.branchSites.isNotEmpty() }
+                .groupBy({ NodeKey(it.className, it.methodName, it.methodDescriptor) }, { it.branchSites })
+                .mapValues { (_, lists) -> lists.flatten() }
+        return probesByKey.entries
+            .filter { (_, probe) ->
+                probe.kind == ProbeKind.BRANCH && probe.branchIndex != null && !probe.inline && probe.generatedBy == GeneratedBy.NONE
+            }.groupBy { (_, probe) -> ClusterNode(NodeKey(probe.className, probe.methodName, probe.methodDescriptor), probe.branchIndex) }
+            .filter { (node, entries) -> isHit(node.method) && entries.sumOf { (key, _) -> hitsByKey[key] ?: 0L } == 0L }
+            .mapValues { (node, entries) ->
+                val (key, probe) = entries.first()
+                val site = sitesByMethod[node.method]?.firstOrNull { site -> site.outcomes.any { it.branchIndex == node.branchIndex } }
+                OutcomeNode(neverHitRef(key, probe), site)
+            }
+    }
+
+    /**
+     * Links every resolved call and every outcome node into the cluster graph. A call whose guard
+     * names an outcome node in the caller's method starts at that outcome node, and any other call
+     * starts at its method. An outcome node's one caller is the outcome node its site's guard
+     * names, when that is another outcome node, and otherwise its method.
+     */
+    private fun buildClusterGraph(
+        graph: CallGraph,
+        outcomes: Map<ClusterNode, OutcomeNode>,
+    ): ClusterGraph {
+        val callersOf = mutableMapOf<ClusterNode, MutableSet<ClusterNode>>()
+        val calleesOf = mutableMapOf<ClusterNode, MutableSet<ClusterNode>>()
+
+        fun link(
+            caller: ClusterNode,
+            callee: ClusterNode,
+        ) {
+            callersOf.getOrPut(callee) { mutableSetOf() } += caller
+            calleesOf.getOrPut(caller) { mutableSetOf() } += callee
+        }
+        for ((caller, calls) in graph.calls) {
+            for (call in calls) {
+                val guardNode = call.guard?.let { ClusterNode(caller, it) }?.takeIf { it in outcomes }
+                link(guardNode ?: ClusterNode(caller), ClusterNode(call.callee))
+            }
+        }
+        for ((node, outcome) in outcomes) {
+            val guardNode = outcome.site?.guard?.let { ClusterNode(node.method, it) }?.takeIf { it != node && it in outcomes }
+            link(guardNode ?: ClusterNode(node.method), node)
+        }
+        return ClusterGraph(callersOf, calleesOf)
+    }
+
+    /**
+     * Builds every [NodeKey] and resolves its edges against the known supertype graph. An edge
+     * resolves to the union of two lookups, either of which may find nothing: the first node up
+     * the owner's supertype chain, which is an inherited concrete declaration, and, for a virtual
+     * call, every node with the same name and descriptor on a transitive subtype of the owner.
+     * Widening starts at the owner, not at the declaring type, for two reasons: an abstract
+     * interface method has no node anywhere, so requiring the up-walk to succeed would drop every
+     * edge into a pure interface, which is the constructor-injected case supertypes exist for; and
+     * a receiver typed as the owner can only be the owner or one of its subtypes, never a sibling
+     * under some ancestor. Each resolved call keeps its raw edge's guard.
      * Every resolved edge into a class also implies an edge into that class's `<clinit>` node
-     * when it has one: no bytecode ever calls `<clinit>`, the JVM runs it on the class's first
-     * active use, and a resolved call into the class is exactly such a use. Without this a
-     * never-initialised class's `<clinit>` would be an uncalled root of its own beside the
-     * cluster that actually owns it.
+     * when it has one, under the same guard: no bytecode ever calls `<clinit>`, the JVM runs it on
+     * the class's first active use, and a resolved call into the class is exactly such a use.
+     * Without this a never-initialised class's `<clinit>` would be an uncalled root of its own
+     * beside the cluster that actually owns it. A call from a method to itself is dropped.
      */
     private fun computeCallGraph(): CallGraph {
         val nodes = buildNodes()
         val reverseSubtypes = buildReverseSubtypes()
-        val resolvedEdges = mutableMapOf<NodeKey, Set<NodeKey>>()
-        val callersOf = mutableMapOf<NodeKey, MutableSet<NodeKey>>()
+        val calls = mutableMapOf<NodeKey, Set<ResolvedCall>>()
         for ((nodeKey, info) in nodes) {
-            val targets = mutableSetOf<NodeKey>()
+            val resolved = mutableSetOf<ResolvedCall>()
             for (edge in info.edges) {
+                val targets = mutableSetOf<NodeKey>()
                 findDeclaringType(nodes, edge.className, edge.methodName, edge.methodDescriptor)?.let {
                     targets += NodeKey(it, edge.methodName, edge.methodDescriptor)
                 }
                 if (edge.virtual && edge.methodName != "<init>" && edge.methodName != "<clinit>") {
                     targets += widenToSubtypes(nodes, reverseSubtypes, edge.className, edge.methodName, edge.methodDescriptor)
                 }
+                for (target in targets.toList()) {
+                    val typeInitializer = NodeKey(target.className, "<clinit>", "()V")
+                    if (typeInitializer in nodes) targets += typeInitializer
+                }
+                targets -= nodeKey
+                targets.mapTo(resolved) { ResolvedCall(it, edge.guard) }
             }
-            for (target in targets.toList()) {
-                val typeInitializer = NodeKey(target.className, "<clinit>", "()V")
-                if (typeInitializer in nodes) targets += typeInitializer
-            }
-            targets -= nodeKey
-            resolvedEdges[nodeKey] = targets
-            for (target in targets) callersOf.getOrPut(target) { mutableSetOf() } += nodeKey
+            calls[nodeKey] = resolved
         }
-        return CallGraph(nodes, resolvedEdges, callersOf)
+        return CallGraph(nodes, calls)
     }
 
     /**
@@ -1357,6 +1493,7 @@ class YukonTestCollector private constructor(
                     location.generatedBy,
                     location.referencedClasses,
                     location.branchKey,
+                    location.branchSites,
                 )
             nameIndex.computeIfAbsent(location.className) { ConcurrentHashMap.newKeySet() }.add(key)
             if (location.kind == ProbeKind.OPTIONAL_ARGUMENT) {
@@ -1627,27 +1764,56 @@ data class ProbeRef(
 )
 
 /**
- * Which of the two root shapes ADR 0024 distinguishes an [UnreachedCluster] by.
- * [REACHED_FROM_HIT] means at least one in-scope caller has hits; [UNCALLED] means the root has no
- * in-scope caller at all. The two call for different fixes: a reached-from-hit root's caller works
- * but never takes this branch, while an uncalled root's caller may not exist yet, or may live
- * outside scope.
+ * Which of the three root shapes ADR 0024 and ADR 0039 distinguish an [UnreachedCluster] by. They
+ * call for different fixes, so they are reported apart.
  */
-enum class RootKind { REACHED_FROM_HIT, UNCALLED }
+enum class RootKind {
+    /**
+     * The root is a method, and at least one of its in-scope callers is a method with hits. The
+     * caller ran and its call was not behind an untaken outcome. That is mostly an override a
+     * virtual call never reached, or a call an exception cut short. [UnreachedCluster.reachedFrom]
+     * names the callers.
+     */
+    REACHED_FROM_HIT,
+
+    /** The root is a method with no in-scope caller at all. Its caller may not exist yet, or may live outside scope. */
+    UNCALLED,
+
+    /**
+     * The root is a branch outcome that was never hit, in a method with hits. Every method in the
+     * cluster runs only through it, so deleting that side of the branch removes the cluster.
+     */
+    UNTAKEN_OUTCOME,
+}
 
 /**
  * A root plus every never-hit method reachable from it through call edges whose every in-scope
- * caller is itself in the cluster, as found by [YukonTestCollector.unreachedClusters]. [members]
- * includes [root] and is sorted the same way [YukonTestCollector.neverHit] sorts its results.
+ * caller is itself in the cluster, as found by [YukonTestCollector.unreachedClusters]. Deleting
+ * [root] removes the whole cluster. See ADR 0024, ADR 0039 and CONTEXT.md, "Unreached cluster".
+ *
+ * [root] is a [ProbeKind.METHOD] ref for a method root. For a [RootKind.UNTAKEN_OUTCOME] root it
+ * is the outcome's [ProbeKind.BRANCH] ref, the same ref [YukonTestCollector.neverHit] lists for
+ * it, whose class and method name the method that holds the outcome.
+ *
+ * [members] lists methods only, sorted the same way [YukonTestCollector.neverHit] sorts its
+ * results. A method root is one of its own members. An outcome root is not.
  * [neverLoadedClasses] counts the distinct classes among [members] that exist only because a
- * complete static baseline declared them; see [ProbeRef.neverLoaded]. Deleting [root] removes the
- * whole cluster. See ADR 0024 and CONTEXT.md, "Unreached cluster".
+ * complete static baseline declared them; see [ProbeRef.neverLoaded].
+ *
+ * [rootSite] is set only for a [RootKind.UNTAKEN_OUTCOME] root: the site whose outcomes include
+ * the root's [ProbeRef.branchIndex], with its condition and each outcome's role and guarded lines,
+ * as the method's METHOD probe listed it. It is null when no manifest listed the site.
+ *
+ * [reachedFrom] is set only for a [RootKind.REACHED_FROM_HIT] root: the methods with hits that call
+ * it, sorted the same way as [members]. It is empty for every other kind.
  */
 data class UnreachedCluster(
     val root: ProbeRef,
     val rootKind: RootKind,
     val members: List<ProbeRef>,
     val neverLoadedClasses: Int,
+    val rootSite: BranchSite? = null,
+    val reachedFrom: List<ProbeRef> = emptyList(),
 )
 
 /**
