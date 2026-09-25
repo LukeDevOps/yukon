@@ -39,6 +39,13 @@ private const val FREE_SHIPPING_THRESHOLD = 100.0
  * the collector learns which method backs it only from the call graph. `/promo` takes
  * [PromoHandler], a named class, so its endpoint record names `PromoHandler.handle` and the
  * collector can put the route beside that method's never-hit row and its unreached cluster's root.
+ *
+ * Four more shapes cover the class findings of yukon-server's ADR 0034. [main] names [AuditLog]
+ * and [ReceiptPrinter] through class literals, which load a class without initialising it:
+ * `AuditLog` is loaded and never initialised, and `ReceiptPrinter`, which has no static
+ * initialiser, is loaded and never instantiated. [handleCheckout] builds every [Money] from pence,
+ * leaving its pounds-and-pence constructor an unused overload, and always passes [Price]'s scale,
+ * so the overload `@JvmOverloads` adds never runs and is never reported.
  */
 fun main() {
     val server = HttpServer.create(InetSocketAddress(DemoPorts.SERVER_PORT), 0)
@@ -50,6 +57,8 @@ fun main() {
     }
     server.start()
     println("yukon demo server listening on ${DemoPorts.SERVER_PORT}")
+    // A class literal loads a class without initialising it. See AuditLog and ReceiptPrinter.
+    println("yukon demo server can audit with ${AuditLog::class.java.simpleName} and print with ${ReceiptPrinter::class.java.simpleName}")
 }
 
 private fun handleCheckout(exchange: HttpExchange) {
@@ -60,11 +69,12 @@ private fun handleCheckout(exchange: HttpExchange) {
         } else {
             total
         }
+    val charged = Price(Money(Math.round(discounted * 100)).amount, scale = 2).amount
     val message =
         if (discounted > FREE_SHIPPING_THRESHOLD) {
-            "${describeOrder(discounted)} qualifies for free shipping"
+            "${describeOrder(charged)} qualifies for free shipping"
         } else {
-            "${describeOrder(discounted)} does not qualify for free shipping"
+            "${describeOrder(charged)} does not qualify for free shipping"
         }
     val send: (HttpExchange, String) -> Unit = ::respond
     send(exchange, message)
