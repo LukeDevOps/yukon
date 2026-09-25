@@ -191,6 +191,51 @@ Left for later, in `yukon-server`'s STATUS: folding a dead method's branches
 into its row, rooting clusters at a never-taken outcome, telling
 real-but-uninteresting outcomes apart, and redaction at the server's ingest.
 
+### Readable names and findings, UI items 3 and 6 to 9: landed in both repos
+
+Settled 2026-09-25 and 2026-09-26 in grilling sessions driven by
+`yukon-server`'s STATUS list "Names and findings a person can act on",
+each checked end to end with `runDemoStack` and in the browser. The
+server side of each is in that repo's ADRs 0032 and 0034 to 0037; the
+agent side, one ADR and chunk each:
+
+- ADR 0039 (`2077d68`): a never-taken outcome roots the unreached
+  cluster behind it; the testkit and stub collector apply the rule.
+- ADR 0040 (`4f8cea6`): each method's `static` flag on the wire, and
+  `@JvmOverloads` forwarders marked `JVM_OVERLOADS`. Parity for server
+  ADR 0034's class findings in `15c49f9`. Demo shapes in `70441f3`
+  (`AuditLog`, `ReceiptPrinter`, `Money`, `Price`).
+- ADR 0041 (`e34eb72`): each class's Kotlin kind from
+  `@kotlin.Metadata`'s `k`; multi-file facade forwarders marked
+  `MULTIFILE_FACADE`; generated forwarders pass calls through; multi-file
+  parts, which kotlinc marks synthetic, are probed. Demo gains the
+  two-file `DemoText` shape.
+- ADR 0042 (`c774947`): a `CREATES` edge carries the interface its
+  `invokedynamic` implements.
+- ADR 0043 (`2df937b`): each method's parameter names, generic
+  signature and extension-receiver flag.
+
+`ConditionInstrumentationTest` finds the demo checkout's condition
+lines in the demo source (`52392b1`), so demo edits no longer break it.
+
+Open from these:
+
+- A `@file:JvmName` single-file facade is never probed: ByteBuddy
+  refuses to redefine a class carrying `@kotlin.jvm.JvmName`, so the
+  agent reports it skipped. Its code is never judged.
+- `LoadedClassSweep` still drops every synthetic class, so a multi-file
+  part that reached no transformer is not reported.
+- A javac inner-class constructor with no generic types has no
+  `Signature` to drop its outer instance by, so `yukon-server` shows
+  `this$0`. A flag read from the class's `InnerClasses` attribute would
+  close it.
+- A receiver lambda whose captured values come first gets no
+  `extension_receiver` flag, since only the first parameter is read.
+- The testkit and stub collector do not fold the sites under a
+  never-hit method, which the server does (its ADR 0031).
+- `runDemoStack`'s printer still prints JVM names on its endpoint and
+  optional-parameter lines.
+
 ### Nothing is published anywhere
 
 No build in this repo publishes an artifact. An adopter cannot depend on the
