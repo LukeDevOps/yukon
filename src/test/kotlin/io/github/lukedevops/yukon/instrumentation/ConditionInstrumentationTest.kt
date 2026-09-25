@@ -22,7 +22,7 @@ class ConditionInstrumentationTest {
     private fun literal(text: String) = ConditionPart(ConditionPartKind.STRING_LITERAL, text)
 
     @Test
-    fun `the demo's checkout handler sends the conditions at lines 58 and 64`() {
+    fun `the demo's checkout handler sends the conditions at lines 67 and 74`() {
         val demoClasses =
             File(
                 System.getProperty("yukon.benchmark.corpus.demo.main")
@@ -46,8 +46,8 @@ class ConditionInstrumentationTest {
 
             assertEquals(
                 mapOf(
-                    58 to listOf(code("System.getenv("), literal("ENABLE_LEGACY_DISCOUNT"), code(") == "), literal("true")),
-                    64 to listOf(code("discounted > 100.0")),
+                    67 to listOf(code("System.getenv("), literal("ENABLE_LEGACY_DISCOUNT"), code(") == "), literal("true")),
+                    74 to listOf(code("discounted > 100.0")),
                 ),
                 handler.branchSites.associate { it.line to it.condition },
             )
