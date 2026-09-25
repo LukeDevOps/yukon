@@ -1757,6 +1757,78 @@ class ProtoPayloadCodecTest {
     }
 
     @Test
+    fun `a probe location's parameter names, generic signature and receiver flag round-trip through the wire`() {
+        val manifest =
+            ProbeManifest(
+                resource = ResourceAttributes("checkout", null, "", null, "run-1"),
+                probes =
+                    listOf(
+                        methodProbe().copy(
+                            methodName = "shout",
+                            methodDescriptor = "(Ljava/lang/String;)Ljava/lang/String;",
+                            parameterNames = listOf("\$this\$shout"),
+                            extensionReceiver = true,
+                        ),
+                        methodProbe().copy(
+                            probeIndex = 1,
+                            methodName = "firstOf",
+                            methodDescriptor = "(Ljava/util/List;)Ljava/lang/Object;",
+                            parameterNames = listOf("items"),
+                            genericSignature = "<T:Ljava/lang/Object;>(Ljava/util/List<+TT;>;)TT;",
+                        ),
+                        methodProbe().copy(probeIndex = 2, methodName = "baz"),
+                    ),
+            )
+
+        val decoded = ProtoPayloadCodec.decodeProbeManifest(ProtoPayloadCodec.encode(manifest))
+
+        assertEquals(manifest, decoded)
+        val onTheWire = ProtoProbeManifest.parseFrom(ProtoPayloadCodec.encode(manifest))
+        assertEquals(listOf(listOf("\$this\$shout"), listOf("items"), emptyList()), onTheWire.probesList.map { it.parameterNamesList.toList() })
+        assertEquals(listOf("", "<T:Ljava/lang/Object;>(Ljava/util/List<+TT;>;)TT;", ""), onTheWire.probesList.map { it.genericSignature })
+        assertEquals(listOf(true, false, false), onTheWire.probesList.map { it.extensionReceiver })
+    }
+
+    @Test
+    fun `a declared method's parameter names, generic signature and receiver flag round-trip through the wire`() {
+        val baseline =
+            StaticBaseline(
+                resource = ResourceAttributes("checkout", "1.0.0", "instance-1", "prod", "run-1"),
+                declaredClasses =
+                    listOf(
+                        DeclaredClass(
+                            className = "com.example.Foo",
+                            methods =
+                                listOf(
+                                    DeclaredMethod(
+                                        methodName = "loadName",
+                                        methodDescriptor = "(ILkotlin/coroutines/Continuation;)Ljava/lang/Object;",
+                                        parameterNames = listOf("id", "\$completion"),
+                                        genericSignature = "(ILkotlin/coroutines/Continuation<-Ljava/lang/String;>;)Ljava/lang/Object;",
+                                    ),
+                                    DeclaredMethod(
+                                        methodName = "shout",
+                                        methodDescriptor = "(Ljava/lang/String;)Ljava/lang/String;",
+                                        static = true,
+                                        parameterNames = listOf("\$this\$shout"),
+                                        extensionReceiver = true,
+                                    ),
+                                    DeclaredMethod(methodName = "<clinit>", methodDescriptor = "()V"),
+                                ),
+                        ),
+                    ),
+                scannedAt = 1000L,
+            )
+
+        val decoded = ProtoPayloadCodec.decodeStaticBaseline(ProtoPayloadCodec.encode(baseline))
+
+        assertEquals(baseline, decoded)
+        val methods = decoded.declaredClasses.single().methods
+        assertEquals(listOf(listOf("id", "\$completion"), listOf("\$this\$shout"), emptyList()), methods.map { it.parameterNames })
+        assertEquals(listOf(false, true, false), methods.map { it.extensionReceiver })
+    }
+
+    @Test
     fun `a class location's source file round-trips through the wire, empty as null`() {
         val manifest =
             ProbeManifest(

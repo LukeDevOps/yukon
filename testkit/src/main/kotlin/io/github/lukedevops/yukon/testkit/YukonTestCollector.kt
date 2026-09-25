@@ -99,6 +99,9 @@ class YukonTestCollector private constructor(
         val branchSites: List<BranchSite> = emptyList(),
         val static: Boolean = false,
         val lambdaBody: Boolean = false,
+        val parameterNames: List<String> = emptyList(),
+        val genericSignature: String = "",
+        val extensionReceiver: Boolean = false,
     )
 
     /** A class's superclass and direct interfaces, resolved to a class name. See ADR 0024. */
@@ -116,6 +119,9 @@ class YukonTestCollector private constructor(
         val generatedBy: GeneratedBy = GeneratedBy.NONE,
         val referencedClasses: List<String> = emptyList(),
         val static: Boolean = false,
+        val parameterNames: List<String> = emptyList(),
+        val genericSignature: String = "",
+        val extensionReceiver: Boolean = false,
     )
 
     /**
@@ -1874,6 +1880,9 @@ class YukonTestCollector private constructor(
                     location.branchSites,
                     location.static,
                     location.lambdaBody,
+                    location.parameterNames,
+                    location.genericSignature,
+                    location.extensionReceiver,
                 )
             nameIndex.computeIfAbsent(location.className) { ConcurrentHashMap.newKeySet() }.add(key)
             if (location.kind == ProbeKind.OPTIONAL_ARGUMENT) {
@@ -1997,6 +2006,9 @@ class YukonTestCollector private constructor(
                                 it.generatedBy,
                                 it.referencedClasses,
                                 it.static,
+                                it.parameterNames,
+                                it.genericSignature,
+                                it.extensionReceiver,
                             )
                         },
                     superClassName = declaredClass.superClassName,

@@ -127,6 +127,7 @@ object BranchSiteAnalyzer {
          * ADR 0041.
          */
         val kotlinKind: KotlinKind = KotlinKind.NONE,
+        private val sourceSignatures: Map<Pair<String, String>, SourceSignature> = emptyMap(),
     ) {
         /**
          * Each kept site of [sites], in site index order, with its outcomes numbered, given roles
@@ -206,6 +207,16 @@ object BranchSiteAnalyzer {
             name: String,
             descriptor: String,
         ): Set<Int> = throwingDefaultOrdinalsByMethod[name to descriptor] ?: emptySet()
+
+        /**
+         * The method's parameter names, generic signature and extension-receiver flag, read from
+         * its own class file. [SourceSignature.NONE] for `<clinit>`, on [EMPTY], and for a method
+         * the class does not declare. See ADR 0043.
+         */
+        fun sourceSignatureOf(
+            name: String,
+            descriptor: String,
+        ): SourceSignature = sourceSignatures[name to descriptor] ?: SourceSignature.NONE
 
         /**
          * What compiled this method into existence, from bytecode shape alone, per ADR 0026.
@@ -581,6 +592,7 @@ object BranchSiteAnalyzer {
         val instructionsByMethod = mutableMapOf<Pair<String, String>, () -> MethodInstructions>()
         val rawClassReferences = LinkedHashSet<String>()
         val classReferenceCollector = ReferenceCollector(rawClassReferences)
+        val sourceSignatures = mutableMapOf<Pair<String, String>, SourceSignature>()
 
         val classVisitor =
             object : ClassVisitor(Opcodes.ASM9) {
@@ -667,6 +679,20 @@ object BranchSiteAnalyzer {
                 ): RecordComponentVisitor = recordComponentReferences(classReferenceCollector, descriptor, signature)
 
                 override fun visitMethod(
+                    access: Int,
+                    name: String,
+                    descriptor: String,
+                    signature: String?,
+                    exceptions: Array<out String>?,
+                ): MethodVisitor {
+                    val visitor = methodVisitor(access, name, descriptor, signature, exceptions)
+                    if (name == "<clinit>") return visitor
+                    return ParameterNameReader(access, descriptor, visitor) { names ->
+                        sourceSignatures[name to descriptor] = SourceSignature.of(names, signature)
+                    }
+                }
+
+                private fun methodVisitor(
                     access: Int,
                     name: String,
                     descriptor: String,
@@ -854,6 +880,7 @@ object BranchSiteAnalyzer {
                 .associate { it.key to it.value },
             throwingDefaultOrdinalsByMethod,
             kotlinKind,
+            sourceSignatures,
         )
     }
 

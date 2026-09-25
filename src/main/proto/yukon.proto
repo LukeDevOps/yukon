@@ -174,6 +174,23 @@ message ProbeLocation {
   // Set only for a METHOD probe: true when the method has ACC_STATIC. False for a constructor and
   // for the <clinit> probe, whose meaning a consumer takes from its name. See ADR 0040.
   bool static = 22;
+  // Set only for a METHOD probe: the names of the method's declared parameters, one per
+  // method_descriptor parameter, in order. They come from the MethodParameters attribute when it
+  // names every parameter, and otherwise from the LocalVariableTable entries that start at the
+  // method's first instruction in each parameter's slot. An instance method's this is not a
+  // declared parameter. Names are sent as the class file writes them, compiler names such as
+  // $this$shout, $completion or a lambda body's captured values included. Empty when the method
+  // has no parameters, when the class file names none of them, and when it names only some, so a
+  // list is never partial. Empty for the <clinit> probe. See ADR 0043.
+  repeated string parameter_names = 23;
+  // Set only for a METHOD probe: the method's Signature attribute exactly as the class file writes
+  // it, which keeps the generic types method_descriptor erases. Empty when the method has none,
+  // and for the <clinit> probe. See ADR 0043.
+  string generic_signature = 24;
+  // Set only for a METHOD probe: true when the method's first declared parameter is a Kotlin
+  // extension receiver, that is, its name in parameter_names starts with $this$ or is $receiver,
+  // the name older kotlinc gave it. False when parameter_names is empty. See ADR 0043.
+  bool extension_receiver = 25;
 }
 
 // What one outcome of a branch site is within its site. See ADR 0037.
@@ -527,6 +544,15 @@ message DeclaredMethod {
   // The same rule as ProbeLocation.static: true when the method has ACC_STATIC. False for a
   // constructor and for the class's own <clinit> entry. See ADR 0040.
   bool static = 9;
+  // The same rule as ProbeLocation.parameter_names, read from the same class. Empty for the
+  // class's own <clinit> entry. See ADR 0043.
+  repeated string parameter_names = 10;
+  // The same rule as ProbeLocation.generic_signature. Empty for the class's own <clinit> entry.
+  // See ADR 0043.
+  string generic_signature = 11;
+  // The same rule as ProbeLocation.extension_receiver. False for the class's own <clinit> entry.
+  // See ADR 0043.
+  bool extension_receiver = 12;
 }
 
 message DeclaredClass {

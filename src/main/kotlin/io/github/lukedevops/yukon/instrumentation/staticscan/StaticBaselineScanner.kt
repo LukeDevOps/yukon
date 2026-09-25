@@ -355,6 +355,7 @@ class StaticBaselineScanner(
             }
         val declaredMethods =
             methods.map {
+                val sourceSignature = analysis.sourceSignatureOf(it.internalName, it.descriptor)
                 DeclaredMethod(
                     it.internalName,
                     it.descriptor,
@@ -365,6 +366,9 @@ class StaticBaselineScanner(
                     analysis.isLambdaBody(it.internalName, it.descriptor),
                     analysis.branchSitesOf(it.internalName, it.descriptor),
                     it.isStatic,
+                    sourceSignature.parameterNames,
+                    sourceSignature.genericSignature,
+                    sourceSignature.extensionReceiver,
                 )
             }
         val typeInitializer =

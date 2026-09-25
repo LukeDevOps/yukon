@@ -51,6 +51,10 @@ import io.github.lukedevops.yukon.export.ProbeKind
  * [static] is set only for a [ProbeKind.METHOD] probe whose method has `ACC_STATIC`. It is false
  * for a constructor and for the type initializer's probe. See
  * [io.github.lukedevops.yukon.export.ProbeLocation.static] and ADR 0040.
+ *
+ * [parameterNames], [genericSignature] and [extensionReceiver] are set only for a
+ * [ProbeKind.METHOD] probe, and are empty or false for the type initializer's probe. See
+ * [io.github.lukedevops.yukon.export.ProbeLocation.parameterNames] and ADR 0043.
  */
 data class ProbeMeta(
     val kind: ProbeKind,
@@ -72,4 +76,7 @@ data class ProbeMeta(
     val branchSites: List<BranchSite> = emptyList(),
     val siteIndex: Int? = null,
     val static: Boolean = false,
+    val parameterNames: List<String> = emptyList(),
+    val genericSignature: String = "",
+    val extensionReceiver: Boolean = false,
 )

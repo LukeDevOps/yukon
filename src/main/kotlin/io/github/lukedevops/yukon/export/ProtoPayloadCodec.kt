@@ -198,6 +198,9 @@ object ProtoPayloadCodec {
                 .setLambdaBody(location.lambdaBody)
                 .addAllBranchSites(location.branchSites.map { toProto(it) })
                 .setStatic(location.static)
+                .addAllParameterNames(location.parameterNames)
+                .setGenericSignature(location.genericSignature)
+                .setExtensionReceiver(location.extensionReceiver)
         location.branchIndex?.let { builder.branchIndex = it }
         location.parameterIndex?.let { builder.parameterIndex = it }
         location.branchKey?.let { builder.branchKey = it }
@@ -232,6 +235,9 @@ object ProtoPayloadCodec {
             branchSites = location.branchSitesList.map { fromProto(it) },
             siteIndex = if (location.hasSiteIndex()) location.siteIndex else null,
             static = location.static,
+            parameterNames = location.parameterNamesList,
+            genericSignature = location.genericSignature,
+            extensionReceiver = location.extensionReceiver,
         )
     }
 
@@ -590,6 +596,9 @@ object ProtoPayloadCodec {
             .setLambdaBody(method.lambdaBody)
             .addAllBranchSites(method.branchSites.map { toProto(it) })
             .setStatic(method.static)
+            .addAllParameterNames(method.parameterNames)
+            .setGenericSignature(method.genericSignature)
+            .setExtensionReceiver(method.extensionReceiver)
             .build()
 
     private fun fromProto(method: ProtoDeclaredMethod): DeclaredMethod =
@@ -603,6 +612,9 @@ object ProtoPayloadCodec {
             lambdaBody = method.lambdaBody,
             branchSites = method.branchSitesList.map { fromProto(it) },
             static = method.static,
+            parameterNames = method.parameterNamesList,
+            genericSignature = method.genericSignature,
+            extensionReceiver = method.extensionReceiver,
         )
 
     private fun toProto(unsafeClass: StaticallyUnsafeClass): ProtoStaticallyUnsafeClass =

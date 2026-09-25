@@ -64,6 +64,8 @@ class StaticBaselineScannerTest {
         classBytes("kotlin/test/com/example/target/GeneratedInterface\$DefaultImpls.class")
     private val recordTargetBytes = classBytes("java/test/com/example/target/RecordTarget.class")
     private val staticFlagTargetBytes = classBytes("java/test/com/example/target/StaticFlagTarget.class")
+    private val signatureTargetKtBytes = classBytes("kotlin/test/com/example/target/SignatureTargetKt.class")
+    private val signatureTargetBytes = classBytes("kotlin/test/com/example/target/SignatureTarget.class")
     private val priceBytes = classBytes("kotlin/test/com/example/target/Price.class")
     private val referenceTargetBytes = classBytes("java/test/com/example/target/ReferenceTarget.class")
 
@@ -615,6 +617,38 @@ class StaticBaselineScannerTest {
         assertFalse(methods.single { it.methodName == "plusOne" }.static)
         assertFalse(methods.single { it.methodName == "<init>" }.static)
         assertFalse(methods.single { it.methodName == "<clinit>" }.static)
+    }
+
+    @Test
+    fun `declares each method's parameter names, generic signature and receiver flag, and none for clinit`() {
+        val root =
+            directoryRoot(
+                "com/example/target/SignatureTargetKt.class" to signatureTargetKtBytes,
+                "com/example/target/SignatureTarget.class" to signatureTargetBytes,
+                "com/example/target/StaticFlagTarget.class" to staticFlagTargetBytes,
+            )
+        val scanner = StaticBaselineScanner(listOf("com.example.target"))
+
+        val result = scanner.scan(listOf(root))
+
+        fun methodsOf(className: String) = result.declaredClasses.single { it.className == className }.methods
+        val topLevel = methodsOf("com.example.target.SignatureTargetKt")
+        val loadName = topLevel.single { it.methodName == "loadName" }
+        assertEquals(listOf("id", "\$completion"), loadName.parameterNames)
+        assertEquals("(ILkotlin/coroutines/Continuation<-Ljava/lang/String;>;)Ljava/lang/Object;", loadName.genericSignature)
+        val shout = topLevel.single { it.methodName == "shout" }
+        assertEquals(listOf("\$this\$shout"), shout.parameterNames)
+        assertTrue(shout.extensionReceiver)
+        val orders = topLevel.single { it.methodName == "orders" }
+        assertEquals(emptyList(), orders.parameterNames)
+        assertEquals("()Ljava/util/List<Ljava/lang/String;>;", orders.genericSignature)
+        val scale = methodsOf("com.example.target.SignatureTarget").single { it.methodName == "scale" }
+        assertEquals(listOf("factor", "weight", "tag"), scale.parameterNames)
+        assertFalse(scale.extensionReceiver)
+        val clinit = methodsOf("com.example.target.StaticFlagTarget").single { it.methodName == "<clinit>" }
+        assertEquals(emptyList(), clinit.parameterNames)
+        assertEquals("", clinit.genericSignature)
+        assertFalse(clinit.extensionReceiver)
     }
 
     @Test

@@ -202,6 +202,14 @@ data class DeltaBatch(
  * [static] is set only for a [ProbeKind.METHOD] probe. It is true when the method has
  * `ACC_STATIC`, and false for a constructor and for the type initializer's probe, whose meaning a
  * consumer takes from its name. See ADR 0040.
+ *
+ * [parameterNames], [genericSignature] and [extensionReceiver] are set only for a
+ * [ProbeKind.METHOD] probe, and are empty or false for the type initializer's probe.
+ * [parameterNames] holds one name per descriptor parameter, in order, from the `MethodParameters`
+ * attribute when it names every parameter, and otherwise from the LocalVariableTable. It is empty
+ * when the class file names none or only some of them. [genericSignature] is the method's
+ * `Signature` attribute as written, or empty. [extensionReceiver] is true when the first name
+ * starts with `$this$` or is `$receiver`. See ADR 0043.
  */
 data class ProbeLocation(
     val classId: Int,
@@ -226,6 +234,9 @@ data class ProbeLocation(
     val branchSites: List<BranchSite> = emptyList(),
     val siteIndex: Int? = null,
     val static: Boolean = false,
+    val parameterNames: List<String> = emptyList(),
+    val genericSignature: String = "",
+    val extensionReceiver: Boolean = false,
 )
 
 /** What one outcome of a [BranchSite] is within its site. See ADR 0037. */
@@ -545,6 +556,10 @@ data class ProbeManifest(
  *
  * [static] follows the same rule as [ProbeLocation.static]. Always false for a constructor and for
  * the class's own `<clinit>` entry. See ADR 0040.
+ *
+ * [parameterNames], [genericSignature] and [extensionReceiver] follow the same rules as the
+ * [ProbeLocation] fields of the same names, read from the same class. Empty or false for the
+ * class's own `<clinit>` entry. See ADR 0043.
  */
 data class DeclaredMethod(
     val methodName: String,
@@ -556,6 +571,9 @@ data class DeclaredMethod(
     val lambdaBody: Boolean = false,
     val branchSites: List<BranchSite> = emptyList(),
     val static: Boolean = false,
+    val parameterNames: List<String> = emptyList(),
+    val genericSignature: String = "",
+    val extensionReceiver: Boolean = false,
 )
 
 /**

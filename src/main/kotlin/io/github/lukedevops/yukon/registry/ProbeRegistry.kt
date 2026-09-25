@@ -597,6 +597,9 @@ open class ProbeRegistry(
                         branchSites = meta.branchSites,
                         siteIndex = meta.siteIndex,
                         static = meta.static,
+                        parameterNames = meta.parameterNames,
+                        genericSignature = meta.genericSignature,
+                        extensionReceiver = meta.extensionReceiver,
                     )
                 }
             }
@@ -754,6 +757,9 @@ open class ProbeRegistry(
                         branchSites = meta.branchSites,
                         siteIndex = meta.siteIndex,
                         static = meta.static,
+                        parameterNames = meta.parameterNames,
+                        genericSignature = meta.genericSignature,
+                        extensionReceiver = meta.extensionReceiver,
                     )
             }
             classLocations += classLocationOf(entry)

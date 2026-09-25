@@ -442,6 +442,7 @@ class YukonInstrumentation(
                         generatedBy = analysis.generatedBy(getterSite.targetName, getterSite.targetDescriptor),
                     )
                 } else {
+                    val sourceSignature = analysis.sourceSignatureOf(it.internalName, it.descriptor)
                     ProbeMeta(
                         ProbeKind.METHOD,
                         it.internalName,
@@ -454,6 +455,9 @@ class YukonInstrumentation(
                         lambdaBody = analysis.isLambdaBody(it.internalName, it.descriptor),
                         branchSites = analysis.branchSitesOf(it.internalName, it.descriptor),
                         static = it.isStatic,
+                        parameterNames = sourceSignature.parameterNames,
+                        genericSignature = sourceSignature.genericSignature,
+                        extensionReceiver = sourceSignature.extensionReceiver,
                     )
                 }
             }

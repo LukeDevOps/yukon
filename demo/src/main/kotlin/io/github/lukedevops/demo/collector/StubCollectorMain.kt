@@ -94,6 +94,9 @@ private data class ProbeInfo(
     val siteIndex: Int? = null,
     val static: Boolean = false,
     val lambdaBody: Boolean = false,
+    val parameterNames: List<String> = emptyList(),
+    val genericSignature: String = "",
+    val extensionReceiver: Boolean = false,
 )
 
 /** One method of one run: where a METHOD probe's branch sites are kept, for its BRANCH probes to find. See ADR 0037. */
@@ -155,6 +158,9 @@ private data class DeclaredMethodInfo(
     val generatedBy: GeneratedBy = GeneratedBy.GENERATED_BY_NONE,
     val referencedClasses: List<String> = emptyList(),
     val static: Boolean = false,
+    val parameterNames: List<String> = emptyList(),
+    val genericSignature: String = "",
+    val extensionReceiver: Boolean = false,
 )
 
 /** Scopes a dependency id to the run that reported it, for the same reason as [InstanceProbeKey]. */
@@ -535,6 +541,9 @@ private fun handleManifest(exchange: HttpExchange) {
                 siteIndex = if (location.hasSiteIndex()) location.siteIndex else null,
                 static = location.static,
                 lambdaBody = location.lambdaBody,
+                parameterNames = location.parameterNamesList.toList(),
+                genericSignature = location.genericSignature,
+                extensionReceiver = location.extensionReceiver,
             )
         if (location.branchSitesList.isNotEmpty()) {
             manifestBranchSites[InstanceMethodKey(run, location.classId, location.methodName, location.methodDescriptor)] =
@@ -628,6 +637,9 @@ private fun handleStaticBaseline(exchange: HttpExchange) {
                     it.generatedBy,
                     it.referencedClassesList.toList(),
                     it.static,
+                    it.parameterNamesList.toList(),
+                    it.genericSignature,
+                    it.extensionReceiver,
                 )
             }
         baselineReferences[InstanceClassKey(run, declaredClass.className)] =

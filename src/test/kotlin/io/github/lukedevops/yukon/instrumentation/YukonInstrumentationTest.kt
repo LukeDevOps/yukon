@@ -306,6 +306,47 @@ class YukonInstrumentationTest {
     }
 
     @Test
+    fun `a METHOD probe carries its parameter names, generic signature and receiver flag, and clinit and branches carry none`() {
+        val registry = ProbeRegistry()
+        val config = AgentConfig.parse("includePackages=com.example.target")
+        install(registry, config)
+
+        val loader =
+            FixtureClassLoader(
+                arrayOf(File("build/classes/java/test").toURI().toURL(), File("build/classes/kotlin/test").toURI().toURL()),
+                javaClass.classLoader,
+            )
+        Class.forName("com.example.target.SignatureTargetKt", true, loader)
+        Class.forName("com.example.target.StaticFlagTarget", true, loader)
+
+        val probes = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1")).probes
+
+        fun methodProbe(
+            className: String,
+            name: String,
+        ) = probes.single { it.className == className && it.kind == ProbeKind.METHOD && it.methodName == name }
+        val formatTotal = methodProbe("com.example.target.SignatureTargetKt", "formatTotal")
+        assertEquals(listOf("total", "currency", "decimals"), formatTotal.parameterNames)
+        assertEquals("", formatTotal.genericSignature)
+        assertFalse(formatTotal.extensionReceiver)
+        val firstOf = methodProbe("com.example.target.SignatureTargetKt", "firstOf")
+        assertEquals(listOf("items"), firstOf.parameterNames)
+        assertEquals("<T:Ljava/lang/Object;>(Ljava/util/List<+TT;>;)TT;", firstOf.genericSignature)
+        val shout = methodProbe("com.example.target.SignatureTargetKt", "shout")
+        assertEquals(listOf("\$this\$shout"), shout.parameterNames)
+        assertTrue(shout.extensionReceiver)
+        val twice = methodProbe("com.example.target.StaticFlagTarget", "twice")
+        assertEquals(listOf("value"), twice.parameterNames)
+        val clinit = methodProbe("com.example.target.StaticFlagTarget", "<clinit>")
+        assertEquals(emptyList(), clinit.parameterNames)
+        assertEquals("", clinit.genericSignature)
+        assertFalse(clinit.extensionReceiver)
+        val branchProbes = probes.filter { it.kind == ProbeKind.BRANCH && it.className == "com.example.target.StaticFlagTarget" }
+        assertTrue(branchProbes.isNotEmpty())
+        branchProbes.forEach { assertEquals(emptyList(), it.parameterNames) }
+    }
+
+    @Test
     fun `a class loaded without being initialised has its clinit probe present at zero`() {
         val registry = ProbeRegistry()
         val config = AgentConfig.parse("includePackages=com.example.target")
