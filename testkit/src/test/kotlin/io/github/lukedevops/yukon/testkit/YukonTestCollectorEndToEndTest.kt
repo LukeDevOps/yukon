@@ -4,6 +4,7 @@ import io.github.lukedevops.yukon.config.AgentConfig
 import io.github.lukedevops.yukon.export.BranchRole
 import io.github.lukedevops.yukon.export.ExportScheduler
 import io.github.lukedevops.yukon.export.HttpOtlpStyleExporter
+import io.github.lukedevops.yukon.export.ProbeKind
 import io.github.lukedevops.yukon.instrumentation.YukonInstrumentation
 import io.github.lukedevops.yukon.registry.EndpointRegistry
 import io.github.lukedevops.yukon.registry.ProbeRegistry
@@ -166,12 +167,144 @@ class YukonTestCollectorEndToEndTest {
         assertEquals(BranchRole.FALL_THROUGH, site.outcomes.single { it.branchIndex == cluster.root.branchIndex }.role)
         assertEquals(
             listOf(
+                "com.example.testkittarget.LegacyCalculator" to ClassFinding.NEVER_INSTANTIATED,
+                "com.example.testkittarget.LegacyFees" to ClassFinding.NEVER_INITIALISED,
+            ),
+            cluster.wholeClasses.map { it.className to it.finding },
+        )
+        assertEquals(
+            listOf(
                 "com.example.testkittarget.LegacyCalculator#<init>",
                 "com.example.testkittarget.LegacyCalculator#apply",
-                "com.example.testkittarget.LegacyFees#<clinit>",
                 "com.example.testkittarget.LegacyFees#<init>",
             ),
+            cluster.methods.map { "${it.className}#${it.methodName}" },
+        )
+    }
+
+    /**
+     * Runs the shapes in `ClassFindingShapes.kt` under a real agent that reports to a fresh
+     * collector, and returns that collector once the probes the tests read have arrived.
+     */
+    private fun collectClassFindingShapes(instanceId: String): YukonTestCollector {
+        val target = YukonTestCollector.start()
+        collector = target
+
+        val registry = ProbeRegistry()
+        val config =
+            AgentConfig.parse(
+                "includePackages=com.example.testkittarget," +
+                    "endpoint=${target.endpoint}," +
+                    "flushIntervalSeconds=1," +
+                    "serviceName=testkit-e2e," +
+                    "serviceInstanceId=$instanceId",
+            )
+
+        val instrumentation = ByteBuddyAgent.install()
+        val yukon = YukonInstrumentation(config, registry)
+        installedYukon = yukon
+        installedTransformer = yukon.install(instrumentation)
+
+        val loader = fixtureLoader()
+        fun load(simpleName: String, initialise: Boolean) = Class.forName("$FIXTURES.$simpleName", initialise, loader)
+        load("AuditTrail", initialise = false)
+        load("LinePrinter", initialise = false)
+        load("Greeter", initialise = false)
+        load("ReportWriter", initialise = true)
+
+        val textUtil = load("TextUtil", initialise = true)
+        textUtil.getMethod("trim", String::class.java).invoke(textUtil.getDeclaredConstructor().newInstance(), " x ")
+        val amount = load("Amount", initialise = true)
+        amount.getMethod("inPounds").invoke(amount.getDeclaredConstructor(Long::class.java).newInstance(250L))
+        load("Scaled", initialise = true).getDeclaredConstructor(Double::class.java, Int::class.java).newInstance(1.5, 2)
+        load("Utils", initialise = true).getMethod("name").invoke(null)
+        val counters = load("Counters", initialise = true)
+        counters.getMethod("size").invoke(counters.getField("INSTANCE").get(null))
+
+        val exporter = HttpOtlpStyleExporter(target.endpoint)
+        val exportScheduler = ExportScheduler(config, TestResources.forConfig(config), registry, EndpointRegistry(), exporter)
+        scheduler = exportScheduler
+        exportScheduler.start()
+
+        for ((simpleName, methodName) in listOf(
+            "AuditTrail" to "<clinit>",
+            "LinePrinter" to "print",
+            "Greeter" to "greet",
+            "ReportWriter" to "write",
+            "TextUtil" to "pad",
+            "Amount" to "inPounds",
+            "Scaled" to "<init>",
+            "Utils" to "name",
+            "Counters" to "unused",
+        )) {
+            target.awaitProbe("$FIXTURES.$simpleName", methodName, Duration.ofSeconds(10))
+        }
+        target.awaitSettled(Duration.ofSeconds(10))
+        return target
+    }
+
+    @Test
+    fun `class findings name a class loaded and never initialised and one never instantiated, observed only through the wire protocol`() {
+        val target = collectClassFindingShapes("e2e-4")
+
+        // A class literal loads AuditTrail without running its static initialiser. It is a Kotlin
+        // object, so it is never initialised, and a stronger finding rules out never instantiated.
+        val neverInitialised = target.neverInitialised()
+        assertEquals(listOf("$FIXTURES.AuditTrail"), neverInitialised.map { it.className })
+        assertEquals(listOf("<init>", "record"), neverInitialised.single().methods)
+        assertEquals(1, neverInitialised.single().instancesLoading)
+
+        // LinePrinter has no static initialiser and ReportWriter's ran. Neither was created. Utils
+        // holds only statics, Greeter has no constructor, and Counters is a used object, so none of
+        // those three is judged.
+        assertEquals(
+            listOf("$FIXTURES.LinePrinter", "$FIXTURES.ReportWriter"),
+            target.neverInstantiated().map { it.className },
+        )
+    }
+
+    @Test
+    fun `neverHit folds class findings, keeps static methods and lists only unused overloads, observed only through the wire protocol`() {
+        val target = collectClassFindingShapes("e2e-5")
+
+        val rows = target.neverHit().filter { it.kind == ProbeKind.METHOD }.map { "${it.className.removePrefix("$FIXTURES.")}#${it.methodName}${it.methodDescriptor}" }
+        assertTrue("Amount#<init>(II)V" in rows, "Amount's unused overload is a row: $rows")
+        assertTrue("ReportWriter#footer()Ljava/lang/String;" in rows, "a never-instantiated class keeps its static methods: $rows")
+        assertTrue("Counters#unused()I" in rows, "an initialised object's never-hit method is a row: $rows")
+        assertTrue("Greeter#greet()Ljava/lang/String;" in rows, "an interface's default method is a row of its own: $rows")
+        assertTrue("TextUtil#pad(Ljava/lang/String;I)Ljava/lang/String;" in rows, rows.toString())
+        assertTrue(rows.none { it.contains("#<clinit>") }, "<clinit> is never a row: $rows")
+        assertTrue(rows.none { it.startsWith("AuditTrail#") }, "a never-initialised class folds every method: $rows")
+        assertTrue(
+            rows.none { it.startsWith("LinePrinter#") || it.startsWith("ReportWriter#<init>") || it.startsWith("ReportWriter#write") },
+            "a never-instantiated class folds its constructors and instance methods: $rows",
+        )
+        assertTrue(rows.none { it.startsWith("Utils#<init>") }, "a lone constructor that never ran is not a row: $rows")
+        assertTrue(rows.none { it.startsWith("Scaled#<init>") }, "a @JvmOverloads forwarder is generated, never an unused overload: $rows")
+    }
+
+    @Test
+    fun `a class finding roots a cluster only when it reaches beyond its own methods, observed only through the wire protocol`() {
+        val target = collectClassFindingShapes("e2e-6")
+
+        val clusters = target.unreachedClusters()
+        val classRoots = clusters.filter { it.rootKind == RootKind.CLASS_FINDING }
+        assertEquals(listOf("$FIXTURES.ReportWriter"), classRoots.map { it.root.className })
+        val cluster = classRoots.single()
+        assertEquals(ClassFinding.NEVER_INSTANTIATED, cluster.rootFinding)
+        assertEquals(emptyList(), cluster.reachedFrom)
+        // The class's folded methods are members too. It is not held whole, since its static footer
+        // and its initialiser, which ran, stay outside the class finding.
+        assertEquals(
+            listOf("$FIXTURES.ReportWriter#<init>", "$FIXTURES.ReportWriter#write", "$FIXTURES.TextUtil#pad"),
             cluster.members.map { "${it.className}#${it.methodName}" },
         )
+        assertEquals(emptyList(), cluster.wholeClasses)
+        assertTrue(clusters.none { it.root.className in setOf("$FIXTURES.AuditTrail", "$FIXTURES.LinePrinter") })
+        assertTrue(clusters.all { c -> c.methods.none { it.methodName == "<clinit>" } })
+    }
+
+    private companion object {
+        const val FIXTURES = "com.example.testkittarget"
     }
 }

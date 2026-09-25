@@ -368,11 +368,50 @@ fun siteFindings(row: Map<*, *>): List<String> {
         .map { "`$condition` ${neverHappened(it)}, ${guardedText(it)}" }
 }
 
-// A cluster's root as one line (server ADR 0032). An untaken outcome reads as
-// its site row does, then the method that holds it. A root reached from hit
-// names the methods with hits that call it.
+// A constructor's name as source reads it (server ADR 0034): `constructor(...)`
+// with its parameters' simple type names, read from the JVM descriptor. The stub
+// collector prints constructors the same way.
+fun constructorText(descriptor: String): String {
+    val primitives =
+        mapOf('Z' to "boolean", 'B' to "byte", 'C' to "char", 'S' to "short", 'I' to "int", 'J' to "long", 'F' to "float", 'D' to "double")
+    val types = mutableListOf<String>()
+    var i = descriptor.indexOf('(') + 1
+    while (i in 1 until descriptor.length && descriptor[i] != ')') {
+        var dimensions = 0
+        while (descriptor[i] == '[') {
+            dimensions++
+            i++
+        }
+        val type =
+            if (descriptor[i] == 'L') {
+                val end = descriptor.indexOf(';', i)
+                descriptor.substring(i + 1, end).substringAfterLast('/').also { i = end }
+            } else {
+                primitives[descriptor[i]] ?: descriptor[i].toString()
+            }
+        types += type + "[]".repeat(dimensions)
+        i++
+    }
+    return "constructor(${types.joinToString(", ")})"
+}
+
+// A method row or node as `Class#name`, or `Class#constructor(...)` for a constructor.
+fun methodText(node: Map<*, *>): String {
+    val name = node["method_name"] as String
+    val shown = if (name == "<init>") constructorText(node["method_descriptor"] as String) else name
+    return "${node["class_name"]}#$shown"
+}
+
+// A class finding's name as a report line spells it: "never_initialised" reads
+// "never initialised".
+fun findingText(finding: Any?): String = (finding as String).replace('_', ' ')
+
+// A cluster's root as one line (server ADRs 0032 and 0034). An untaken outcome
+// reads as its site row does, then the method that holds it. A root reached
+// from hit, and a class root that a method with hits calls, name those callers.
 fun clusterRootText(root: Map<*, *>): String {
-    val method = "${root["class_name"]}#${root["method_name"]}"
+    val method = methodText(root)
+    val callers = (root["reached_from"] as List<*>).joinToString(", ") { methodText(it as Map<*, *>) }
     return when (val kind = root["root_kind"] as String) {
         "untaken_outcome" -> {
             val site = root["site"] as Map<*, *>?
@@ -381,8 +420,12 @@ fun clusterRootText(root: Map<*, *>): String {
         }
 
         "reached_from_hit" -> {
-            val callers = (root["reached_from"] as List<*>).joinToString(", ") { "${(it as Map<*, *>)["class_name"]}#${it["method_name"]}" }
             "$method (reached from hit, called from $callers)"
+        }
+
+        "class_finding" -> {
+            val calledFrom = if (callers.isEmpty()) "" else ", called from $callers"
+            "${root["class_name"]} (class finding: ${findingText(root["finding"])}$calledFrom)"
         }
 
         else -> {
@@ -402,7 +445,11 @@ fun printStackReport() {
     val classes = report["classes"] as Map<*, *>
     val instances = report["instances"] as Map<*, *>
     println("yukon demo: report for $stackServiceName@$stackServiceVersion from $stackServerUrl (${instances["total"]} instance(s) so far)")
-    println("  methods: known=${methods["known"]} hit=${methods["hit"]} never_hit=${methods["never_hit"]}")
+    println(
+        "  methods: known=${methods["known"]} hit=${methods["hit"]} never_hit=${methods["never_hit"]} " +
+            "in_class_findings=${methods["in_class_findings"]} in_never_hit_code=${methods["in_never_hit_code"]} " +
+            "unjudged_constructors=${methods["unjudged_constructors"]}",
+    )
     println(
         "  branch sites: known=${branchSites["known"]} all_outcomes_hit=${branchSites["all_outcomes_hit"]} " +
             "with_never_hit_outcome=${branchSites["with_never_hit_outcome"]}",
@@ -413,6 +460,7 @@ fun printStackReport() {
     )
     println(
         "  classes: declared=${classes["declared"]} loaded=${classes["loaded"]} never_loaded=${classes["never_loaded"]} " +
+            "never_initialised=${classes["never_initialised"]} never_instantiated=${classes["never_instantiated"]} " +
             "all inline or generated (not judged)=${classes["all_inline_or_generated"]}",
     )
     println(
@@ -437,9 +485,10 @@ fun printStackReport() {
         val r = row as Map<*, *>
         val routes = (r["routes"] as List<*>).takeIf { it.isNotEmpty() }?.let { " routes=$it" } ?: ""
         val inlinedFrom = r["inlined_from_class_name"]?.let { " (inlined from $it)" } ?: ""
-        val where = "${r["class_name"]}#${r["method_name"]}:${r["line"]}"
+        val where = "${methodText(r)}:${r["line"]}"
         if (r["kind"] != "branch") {
-            println("    $where (method)$inlinedFrom$routes")
+            val kind = if (r["method_name"] == "<init>") "unused overload" else "method"
+            println("    $where ($kind)$inlinedFrom$routes")
             continue
         }
         for (finding in siteFindings(r)) {
@@ -450,6 +499,14 @@ fun printStackReport() {
     for (cls in readApi("/never-loaded$version")["classes"] as List<*>) {
         val c = cls as Map<*, *>
         println("    ${c["class_name"]} (${(c["methods"] as List<*>).size} methods)")
+    }
+    for (finding in listOf("never-initialised", "never-instantiated")) {
+        println("  ${finding.replace('-', ' ').uppercase()}:")
+        for (cls in readApi("/$finding$version")["classes"] as List<*>) {
+            val c = cls as Map<*, *>
+            val names = (c["methods"] as List<*>).joinToString(", ") { if (it == "<init>") "constructor" else "$it" }
+            println("    ${c["class_name"]} (methods: $names) (instances loading: ${c["instances_loading"]})")
+        }
     }
     for (status in listOf("never-supplied", "always-supplied")) {
         println("  ${status.replace('-', ' ').uppercase()}:")
@@ -468,10 +525,15 @@ fun printStackReport() {
             "    UNREACHED CLUSTER: root ${clusterRootText(root)}, " +
                 "${c["members_total"]} methods, ${c["never_loaded_classes"]} never-loaded classes$routes",
         )
+        for (whole in c["whole_classes"] as List<*>) {
+            val w = whole as Map<*, *>
+            val finding = w["finding"]?.let { ", ${findingText(it)}" } ?: ""
+            println("      ${w["class_name"]} (whole class$finding, ${w["methods_total"]} methods)")
+        }
         for (member in c["members"] as List<*>) {
             val m = member as Map<*, *>
             val suffix = if (m["never_loaded"] == true) " (never loaded)" else ""
-            println("      ${m["class_name"]}#${m["method_name"]}$suffix")
+            println("      ${methodText(m)}$suffix")
         }
     }
     println("  ENDPOINTS:")

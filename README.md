@@ -108,33 +108,59 @@ sees it, which for a plain `if` is the condition the source wrote. The demo's
 two checkout conditions print like this:
 
 ```
-NEVER HIT: io.github.lukedevops.demo.server.DemoServerMainKt#handleCheckout:58 `System.getenv("ENABLE_LEGACY_DISCOUNT") == "true"` was never true, only path to DemoServerMain.kt:59 (instance b259d51a-420a-4b57-af82-e7b089691c49, class 0, probe 10) [BRANCH branch#1]
-NEVER HIT: io.github.lukedevops.demo.server.DemoServerMainKt#handleCheckout:64 `discounted > 100.0` was never true, only path to DemoServerMain.kt:65, partly to DemoServerMain.kt:78 (instance b259d51a-420a-4b57-af82-e7b089691c49, class 0, probe 12) [BRANCH branch#3]
+NEVER HIT: io.github.lukedevops.demo.server.DemoServerMainKt#handleCheckout:67 `System.getenv("ENABLE_LEGACY_DISCOUNT") == "true"` was never true, only path to DemoServerMain.kt:68 (instance 7b19f033-7980-4e51-bfbd-c088d2e21533, class 0, probe 10) [BRANCH branch#1]
+NEVER HIT: io.github.lukedevops.demo.server.DemoServerMainKt#handleCheckout:74 `discounted > 100.0` was never true, only path to DemoServerMain.kt:75, partly to DemoServerMain.kt:88 (instance 7b19f033-7980-4e51-bfbd-c088d2e21533, class 0, probe 12) [BRANCH branch#3]
+```
+
+Some findings are about a whole class, not a method in it (yukon-server's
+ADR 0034). `main` names `AuditLog` and `ReceiptPrinter` through class
+literals, which load a class without initialising it. `AuditLog` is an
+object, so its static initialiser is where its one instance is made; that
+never runs, so the class is never initialised. `ReceiptPrinter` has no
+static initialiser, but it declares an instance method and none of its
+constructors ran, so it is never instantiated. The report prints both, and
+the never-hit list leaves out the methods that can only run through them:
+
+```
+NEVER INITIALISED: io.github.lukedevops.demo.server.AuditLog (methods: constructor, record) (instances loading: 1)
+NEVER INSTANTIATED: io.github.lukedevops.demo.server.ReceiptPrinter (methods: constructor, print, print$lambda$0) (instances loading: 1)
+```
+
+A static initialiser is never a row of its own, and a constructor is a row
+only as an unused overload: one that never ran while another constructor
+of its class did. The checkout handler builds every `Money` from pence, so
+`Money`'s pounds-and-pence constructor is one. `Price` has one constructor
+with `@JvmOverloads`, and the checkout always passes its scale, so the
+extra overload kotlinc adds never runs either. The agent marks that
+overload generated, so it is never reported. Constructors print with their
+parameter types:
+
+```
+NEVER HIT: io.github.lukedevops.demo.server.Money#constructor(int, int):10 [CONSTRUCTOR, unused overload] (instance 7b19f033-7980-4e51-bfbd-c088d2e21533, class 5, probe 1)
 ```
 
 The last report groups those never-hit probes into unreached clusters: a
-root that's either reached from code that does run, never called at all, or
-a branch outcome that never ran in a method that did, plus every never-hit
-method beneath it whose only callers are also in the cluster. `/promo`'s
-handler calls a helper that calls a repository method
-neither the handler nor anything else ever reaches, so it prints as one
-five-method cluster: the handler, its helper, and the repository's method,
-static initialiser and constructor, the last three marked never loaded
-since that class never loads at all in this demo. A call into a class
-counts as a call into its static initialiser, which is why the whole
-class follows the handler into the cluster. The handler is a named class,
-so the endpoint record names its `handle` method and the route is printed
-beside the root; nothing in the demo's own code calls `handle`, only the
-server does, which is why the root is uncalled rather than reached from
-hit:
+root that's either reached from code that does run, never called at all, a
+branch outcome that never ran in a method that did, or a class that holds a
+class finding, plus every never-hit method beneath it whose only callers are
+also in the cluster. `/promo`'s handler calls a helper that calls a
+repository method neither the handler nor anything else ever reaches, so it
+prints as one four-method cluster: the handler, its helper, and the
+repository's method and constructor. The repository class never loads at
+all in this demo, and the cluster holds every method of it, so it prints
+once as a whole class with its finding. A call into a class counts as a
+call into its static initialiser, which is why the whole class follows the
+handler into the cluster; the initialiser itself is never listed or
+counted. The handler is a named class, so the endpoint record names its
+`handle` method and the route is printed beside the root; nothing in the
+demo's own code calls `handle`, only the server does, which is why the root
+is uncalled rather than reached from hit:
 
 ```
-UNREACHED CLUSTER: root io.github.lukedevops.demo.server.PromoHandler#handle (uncalled), 5 methods, 1 never-loaded classes routes=[* /promo]
+UNREACHED CLUSTER: root io.github.lukedevops.demo.server.PromoHandler#handle (uncalled), 4 methods, 1 never-loaded classes routes=[* /promo]
+  io.github.lukedevops.demo.server.PromoRepository (whole class, never loaded, 2 methods)
   io.github.lukedevops.demo.server.DemoServerMainKt#applyPromoCode
   io.github.lukedevops.demo.server.PromoHandler#handle
-  io.github.lukedevops.demo.server.PromoRepository#<clinit> (never loaded)
-  io.github.lukedevops.demo.server.PromoRepository#<init> (never loaded)
-  io.github.lukedevops.demo.server.PromoRepository#find (never loaded)
 ```
 
 `/checkout` is registered the other way, as a function reference that
@@ -151,15 +177,22 @@ calls its `apply`, and reads a static field of `LegacyRates`, which runs
 that object's static initialiser and so its constructor. Each of those
 calls sits behind that one outcome, so the outcome is the root, printed the
 way the never-hit report prints it, followed by the method that holds it.
-Deleting that side of the `if` removes all four methods:
+Deleting that side of the `if` removes both classes whole:
 
 ```
-UNREACHED CLUSTER: root `System.getenv("ENABLE_LEGACY_DISCOUNT") == "true"` was never true, only path to DemoServerMain.kt:59, in io.github.lukedevops.demo.server.DemoServerMainKt#handleCheckout:58 (untaken outcome), 4 methods, 2 never-loaded classes routes=[* /checkout]
-  io.github.lukedevops.demo.server.LegacyDiscountCalculator#<init> (never loaded)
-  io.github.lukedevops.demo.server.LegacyDiscountCalculator#apply (never loaded)
-  io.github.lukedevops.demo.server.LegacyRates#<clinit> (never loaded)
-  io.github.lukedevops.demo.server.LegacyRates#<init> (never loaded)
+UNREACHED CLUSTER: root `System.getenv("ENABLE_LEGACY_DISCOUNT") == "true"` was never true, only path to DemoServerMain.kt:68, in io.github.lukedevops.demo.server.DemoServerMainKt#handleCheckout:67 (untaken outcome), 3 methods, 2 never-loaded classes routes=[* /checkout]
+  io.github.lukedevops.demo.server.LegacyDiscountCalculator (whole class, never loaded, 2 methods)
+  io.github.lukedevops.demo.server.LegacyRates (whole class, never loaded, 1 methods)
 ```
+
+A class that holds a class finding roots a cluster of its own when nothing
+calls it, or when a method that ran does. It is listed only when the
+cluster holds more than the methods the finding folds, since the class
+findings report already names the class. A lambda body goes with the
+methods that create it: `ReceiptPrinter`'s `print` hands a lambda to
+`joinToString`, and kotlinc compiles that lambda to a static method of the
+class, which folds into the class finding with `print`. So neither
+`AuditLog` nor `ReceiptPrinter` roots a listed cluster.
 
 A never-hit method called from a method that ran, and not from behind an
 untaken outcome, is a root "reached from hit", and the report names the
@@ -175,8 +208,9 @@ reference is reached from the handler and never appears in a cluster.
 
 Runs the same instrumented demo server and client, but against a real
 collector instead of the stub, then prints what the backend behind it
-reports: probe and class counts, the never-hit probes, and the never-loaded
-classes. It expects a collector at `http://localhost:4319` and the
+reports: probe and class counts, the never-hit probes, the never-loaded,
+never-initialised and never-instantiated classes, and the unreached
+clusters. It expects a collector at `http://localhost:4319` and the
 yukon-server read API at `http://localhost:4320`, which is what
 yukon-server's `docker compose --profile stack up --build` provides. Every
 address and credential can be overridden:
@@ -221,7 +255,7 @@ Class names are the dotted binary names the manifest carries
 `com.acme.Outer$Inner` for a nested class).
 
 Queries cover methods (`wasHit`, `hitCount`, `neverHit`, `skippedClasses`,
-`unreportedClasses`), endpoints (`wasCalled`, `callCount`, `neverCalled`,
+`unreportedClasses`), classes (`neverInitialised`, `neverInstantiated`), endpoints (`wasCalled`, `callCount`, `neverCalled`,
 `endpoints`, `disabledEndpointModules`), optional parameters
 (`omissionCount`, `neverSupplied`, `alwaysSupplied`), the call graph
 (`callEdges`, `unreachedClusters`), a clean shutdown (`endedCleanly`,

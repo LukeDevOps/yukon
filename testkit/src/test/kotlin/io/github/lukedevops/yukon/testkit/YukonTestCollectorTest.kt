@@ -4,6 +4,7 @@ import io.github.lukedevops.yukon.export.BranchOutcome
 import io.github.lukedevops.yukon.export.BranchRole
 import io.github.lukedevops.yukon.export.BranchSite
 import io.github.lukedevops.yukon.export.CallEdge
+import io.github.lukedevops.yukon.export.CallEdgeKind
 import io.github.lukedevops.yukon.export.ClassLocation
 import io.github.lukedevops.yukon.export.ConditionPart
 import io.github.lukedevops.yukon.export.ConditionPartKind
@@ -68,6 +69,9 @@ class YukonTestCollectorTest {
         line: Int,
         calls: List<CallEdge> = emptyList(),
         branchSites: List<BranchSite> = emptyList(),
+        static: Boolean = false,
+        generatedBy: GeneratedBy = GeneratedBy.NONE,
+        lambdaBody: Boolean = false,
     ) = ProbeLocation(
         classId,
         probeIndex,
@@ -79,6 +83,9 @@ class YukonTestCollectorTest {
         null,
         calls = calls,
         branchSites = branchSites,
+        static = static,
+        generatedBy = generatedBy,
+        lambdaBody = lambdaBody,
     )
 
     private fun branchProbe(
@@ -1411,8 +1418,12 @@ class YukonTestCollectorTest {
         assertEquals("step", cluster.root.methodName)
         assertEquals(
             listOf("com.acme.B" to "step", "com.acme.C" to "leaf"),
-            cluster.members.map { it.className to it.methodName },
+            cluster.methods.map { it.className to it.methodName },
         )
+        // B and C have one method each, so the cluster holds both classes whole.
+        assertEquals(listOf("com.acme.B" to null, "com.acme.C" to null), cluster.wholeClasses.map { it.className to it.finding })
+        assertEquals(emptyList(), cluster.members)
+        assertEquals(2, cluster.membersTotal)
     }
 
     @Test
@@ -1431,7 +1442,8 @@ class YukonTestCollectorTest {
         val cluster = clusters.single()
         assertEquals(RootKind.UNCALLED, cluster.rootKind)
         assertEquals("com.acme.D", cluster.root.className)
-        assertEquals(listOf("job"), cluster.members.map { it.methodName })
+        assertEquals(listOf("job"), cluster.methods.map { it.methodName })
+        assertEquals(listOf("com.acme.D"), cluster.wholeClasses.map { it.className })
     }
 
     @Test
@@ -1485,7 +1497,7 @@ class YukonTestCollectorTest {
         assertTrue(clusters.none { it.root.className == "com.acme.A" && it.root.methodName == "secret" })
         assertTrue(
             clusters.none { cluster ->
-                cluster.members.any {
+                cluster.methods.any {
                     it.className == "com.acme.A\$run\$f\$1" || (it.className == "com.acme.A" && it.methodName == "secret")
                 }
             },
@@ -1525,7 +1537,7 @@ class YukonTestCollectorTest {
 
             val stripeCluster = target.unreachedClusters().single { it.root.className == "com.acme.StripeSvc" }
             assertEquals(RootKind.REACHED_FROM_HIT, stripeCluster.rootKind)
-            assertEquals(listOf("com.acme.StripeSvc"), stripeCluster.members.map { it.className })
+            assertEquals(listOf("com.acme.StripeSvc"), stripeCluster.methods.map { it.className })
         }
 
         run {
@@ -1634,10 +1646,16 @@ class YukonTestCollectorTest {
         val cluster = target.unreachedClusters().single()
         assertEquals("step", cluster.root.methodName)
         assertEquals(
-            listOf("<clinit>", "<init>", "find", "step"),
-            cluster.members.map { it.methodName }.sorted(),
-            "Repo's initialiser and constructor belong to the cluster that first uses the class",
+            listOf("<init>", "find", "step"),
+            cluster.methods.map { it.methodName }.sorted(),
+            "Repo's constructor belongs to the cluster that first uses the class, and <clinit> is never listed",
         )
+        assertEquals(
+            ClassFinding.NEVER_INITIALISED,
+            cluster.wholeClasses.single { it.className == "com.acme.Repo" }.finding,
+            "Repo's initialiser never ran, so the cluster holds the whole class with its finding",
+        )
+        assertEquals(3, cluster.membersTotal)
     }
 
     @Test
@@ -1670,7 +1688,7 @@ class YukonTestCollectorTest {
 
         val cluster = target.unreachedClusters().single { it.root.className == "com.acme.Base" }
         assertEquals(RootKind.REACHED_FROM_HIT, cluster.rootKind)
-        assertEquals(listOf("com.acme.Base" to "inherited"), cluster.members.map { it.className to it.methodName })
+        assertEquals(listOf("com.acme.Base" to "inherited"), cluster.methods.map { it.className to it.methodName })
     }
 
     @Test
@@ -1708,9 +1726,9 @@ class YukonTestCollectorTest {
         val clusters = target.unreachedClusters()
         val r1Cluster = clusters.single { it.root.className == "com.acme.R1" }
         val r2Cluster = clusters.single { it.root.className == "com.acme.R2" }
-        assertEquals(listOf("com.acme.R1"), r1Cluster.members.map { it.className })
-        assertEquals(listOf("com.acme.R2"), r2Cluster.members.map { it.className })
-        assertTrue(clusters.none { it.root.className == "com.acme.S" || it.members.any { m -> m.className == "com.acme.S" } })
+        assertEquals(listOf("com.acme.R1"), r1Cluster.methods.map { it.className })
+        assertEquals(listOf("com.acme.R2"), r2Cluster.methods.map { it.className })
+        assertTrue(clusters.none { it.root.className == "com.acme.S" || it.methods.any { m -> m.className == "com.acme.S" } })
     }
 
     @Test
@@ -1764,14 +1782,23 @@ class YukonTestCollectorTest {
             ),
         )
 
+        // B never loaded, so the class, not its method, is the root, and A.run is the hit caller.
         val cluster = target.unreachedClusters().single { it.root.className == "com.acme.B" }
-        assertEquals(RootKind.REACHED_FROM_HIT, cluster.rootKind)
+        assertEquals(RootKind.CLASS_FINDING, cluster.rootKind)
+        assertEquals(ClassFinding.NEVER_LOADED, cluster.rootFinding)
+        assertEquals("" to "", cluster.root.methodName to cluster.root.methodDescriptor)
+        assertTrue(cluster.root.neverLoaded)
+        assertEquals(listOf("com.acme.A" to "run"), cluster.reachedFrom.map { it.className to it.methodName })
+        assertEquals(
+            listOf("com.acme.B" to ClassFinding.NEVER_LOADED, "com.acme.C" to ClassFinding.NEVER_LOADED),
+            cluster.wholeClasses.map { it.className to it.finding },
+        )
         assertEquals(
             listOf("com.acme.B" to "helper", "com.acme.C" to "leaf"),
-            cluster.members.map { it.className to it.methodName },
+            cluster.methods.map { it.className to it.methodName },
         )
-        assertTrue(cluster.members.all { it.neverLoaded })
-        assertTrue(cluster.members.all { it.line == -1 })
+        assertTrue(cluster.methods.all { it.neverLoaded })
+        assertTrue(cluster.methods.all { it.line == -1 })
         assertEquals(2, cluster.neverLoadedClasses)
     }
 
@@ -1822,7 +1849,7 @@ class YukonTestCollectorTest {
             DeltaBatch(ResourceAttributes("svc", null, "i-1", null, "run-1"), listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 2L))),
         )
 
-        assertTrue(target.unreachedClusters().none { c -> c.members.any { it.className == "com.acme.B" } })
+        assertTrue(target.unreachedClusters().none { c -> c.methods.any { it.className == "com.acme.B" } })
     }
 
     @Test
@@ -1977,8 +2004,11 @@ class YukonTestCollectorTest {
         )
         assertTrue(cluster.root in target.neverHit(), "the root is the same ref neverHit lists for the outcome")
         assertEquals(site, cluster.rootSite)
-        assertEquals(listOf("<init>", "apply"), cluster.members.map { it.methodName })
-        assertTrue(cluster.members.all { it.kind == ProbeKind.METHOD })
+        // Legacy has a constructor and an instance method and none ran, so it is never instantiated
+        // and the cluster holds it whole.
+        assertEquals(listOf("com.acme.Legacy" to ClassFinding.NEVER_INSTANTIATED), cluster.wholeClasses.map { it.className to it.finding })
+        assertEquals(listOf("<init>", "apply"), cluster.methods.map { it.methodName })
+        assertTrue(cluster.methods.all { it.kind == ProbeKind.METHOD })
         assertEquals(emptyList(), cluster.reachedFrom)
     }
 
@@ -2028,7 +2058,7 @@ class YukonTestCollectorTest {
         val cluster = target.unreachedClusters().single()
         assertEquals(RootKind.UNTAKEN_OUTCOME, cluster.rootKind)
         assertEquals(1, cluster.root.branchIndex)
-        assertEquals(listOf("com.acme.X", "com.acme.Y", "com.acme.Z"), cluster.members.map { it.className })
+        assertEquals(listOf("com.acme.X", "com.acme.Y", "com.acme.Z"), cluster.methods.map { it.className })
     }
 
     @Test
@@ -2084,9 +2114,9 @@ class YukonTestCollectorTest {
 
         val clusters = target.unreachedClusters()
         assertEquals(listOf(1, 3), clusters.map { it.root.branchIndex }.sortedBy { it })
-        assertEquals(listOf("com.acme.A"), clusters.single { it.root.branchIndex == 1 }.members.map { it.className })
-        assertEquals(listOf("com.acme.B"), clusters.single { it.root.branchIndex == 3 }.members.map { it.className })
-        assertTrue(clusters.none { it.root.className == "com.acme.S" || it.members.any { m -> m.className == "com.acme.S" } })
+        assertEquals(listOf("com.acme.A"), clusters.single { it.root.branchIndex == 1 }.methods.map { it.className })
+        assertEquals(listOf("com.acme.B"), clusters.single { it.root.branchIndex == 3 }.methods.map { it.className })
+        assertTrue(clusters.none { it.root.className == "com.acme.S" || it.methods.any { m -> m.className == "com.acme.S" } })
     }
 
     @Test
@@ -2200,5 +2230,301 @@ class YukonTestCollectorTest {
             assertEquals(RootKind.REACHED_FROM_HIT, cluster.rootKind)
             assertEquals(listOf("com.acme.App" to "handle"), cluster.reachedFrom.map { it.className to it.methodName })
         }
+    }
+
+    /** Sends [probes] as one manifest from `i-1`, then one delta batch hitting each of [hits] (class id, probe index) once. */
+    private fun collect(
+        target: YukonTestCollector,
+        probes: List<ProbeLocation>,
+        vararg hits: Pair<Int, Int>,
+    ) {
+        val exporter = exporterFor(target)
+        val resource = ResourceAttributes("svc", null, "i-1", null, "run-1")
+        exporter.exportManifest(ProbeManifest(resource, probes))
+        val kinds = probes.associate { (it.classId to it.probeIndex) to it.kind }
+        exporter.exportDeltaBatch(DeltaBatch(resource, hits.map { (c, p) -> ProbeDelta(c, p, kinds.getValue(c to p), 1L, 1L) }))
+    }
+
+    private fun ProbeRef.id() = "${className.removePrefix("com.acme.")}#$methodName${if (kind == ProbeKind.BRANCH) "/$branchIndex" else ""}"
+
+    @Test
+    fun `neverInitialised lists a loaded class whose initialiser never ran, and neverHit folds every method of it`() {
+        val target = startCollector()
+        collect(
+            target,
+            listOf(
+                methodProbe(1, 0, "com.acme.Audit", "<clinit>", "()V", 1),
+                methodProbe(1, 1, "com.acme.Audit", "<init>", "()V", 1),
+                methodProbe(1, 2, "com.acme.Audit", "record", "()V", 3),
+                branchProbe(1, 3, "com.acme.Audit", "record", "()V", 4, branchIndex = 0, siteIndex = 0),
+                methodProbe(2, 0, "com.acme.Used", "<clinit>", "()V", 1),
+                methodProbe(2, 1, "com.acme.Used", "<init>", "()V", 1),
+                methodProbe(2, 2, "com.acme.Used", "other", "()V", 5),
+            ),
+            2 to 0,
+            2 to 1,
+        )
+
+        val audit = target.neverInitialised().single()
+        assertEquals("com.acme.Audit", audit.className)
+        assertEquals(ClassFinding.NEVER_INITIALISED, audit.finding)
+        assertEquals(listOf("<init>", "record"), audit.methods, "<clinit> is a class state, never listed as a method")
+        assertEquals(1, audit.instancesLoading)
+        assertEquals(emptyList(), target.neverInstantiated(), "a never-initialised class is not also never instantiated")
+        assertEquals(listOf("Used#other"), target.neverHit().map { it.id() })
+    }
+
+    @Test
+    fun `neverInstantiated needs a constructor and an instance method, and folds only those and their branches`() {
+        val target = startCollector()
+        collect(
+            target,
+            listOf(
+                methodProbe(1, 0, "com.acme.Printer", "<init>", "(I)V", 1),
+                methodProbe(1, 1, "com.acme.Printer", "print", "()V", 3),
+                branchProbe(1, 2, "com.acme.Printer", "print", "()V", 4, branchIndex = 0, siteIndex = 0),
+                methodProbe(1, 3, "com.acme.Printer", "make", "()V", 6, static = true),
+                branchProbe(1, 4, "com.acme.Printer", "make", "()V", 7, branchIndex = 1, siteIndex = 1),
+                // A holder of statics: a private constructor nobody meant to run.
+                methodProbe(2, 0, "com.acme.Utils", "<init>", "()V", 1),
+                methodProbe(2, 1, "com.acme.Utils", "name", "()V", 2, static = true),
+                // An interface: a default method and no constructor.
+                methodProbe(3, 0, "com.acme.Greeter", "greet", "()V", 1),
+            ),
+        )
+
+        val printer = target.neverInstantiated().single()
+        assertEquals("com.acme.Printer", printer.className)
+        assertEquals(ClassFinding.NEVER_INSTANTIATED, printer.finding)
+        assertEquals(listOf("<init>", "make", "print"), printer.methods)
+        assertEquals(emptyList(), target.neverInitialised())
+        assertEquals(
+            listOf("Greeter#greet", "Printer#make", "Printer#make/1", "Utils#name"),
+            target.neverHit().map { it.id() },
+            "a static method of a never-instantiated class stays, with its branches; a lone constructor is never a row",
+        )
+    }
+
+    @Test
+    fun `a Kotlin object is never initialised or holds no class finding, never never instantiated`() {
+        val target = startCollector()
+        collect(
+            target,
+            listOf(
+                methodProbe(1, 0, "com.acme.Idle", "<clinit>", "()V", 1, calls = listOf(CallEdge("com.acme.Idle", "<init>", "()V", false))),
+                methodProbe(1, 1, "com.acme.Idle", "<init>", "()V", 1),
+                methodProbe(1, 2, "com.acme.Idle", "run", "()V", 2),
+                methodProbe(2, 0, "com.acme.Busy", "<clinit>", "()V", 1, calls = listOf(CallEdge("com.acme.Busy", "<init>", "()V", false))),
+                methodProbe(2, 1, "com.acme.Busy", "<init>", "()V", 1),
+                methodProbe(2, 2, "com.acme.Busy", "run", "()V", 2),
+                methodProbe(2, 3, "com.acme.Busy", "unused", "()V", 3),
+            ),
+            2 to 0,
+            2 to 1,
+            2 to 2,
+        )
+
+        assertEquals(listOf("com.acme.Idle"), target.neverInitialised().map { it.className })
+        assertEquals(emptyList(), target.neverInstantiated())
+        assertEquals(listOf("Busy#unused"), target.neverHit().map { it.id() })
+    }
+
+    @Test
+    fun `neverHit lists a never-hit constructor only as an unused overload, and never a JvmOverloads forwarder`() {
+        val target = startCollector()
+        collect(
+            target,
+            listOf(
+                methodProbe(1, 0, "com.acme.Money", "<init>", "(J)V", 1),
+                methodProbe(1, 1, "com.acme.Money", "<init>", "(II)V", 2),
+                methodProbe(1, 2, "com.acme.Money", "getAmount", "()D", 3),
+                methodProbe(2, 0, "com.acme.Price", "<init>", "(DI)V", 1),
+                methodProbe(2, 1, "com.acme.Price", "<init>", "(D)V", 1, generatedBy = GeneratedBy.JVM_OVERLOADS),
+                methodProbe(2, 2, "com.acme.Price", "getAmount", "()D", 3),
+            ),
+            1 to 0,
+            1 to 2,
+            2 to 0,
+            2 to 2,
+        )
+
+        val rows = target.neverHit()
+        assertEquals(listOf("Money#<init>"), rows.map { it.id() })
+        assertEquals("(II)V", rows.single().methodDescriptor)
+    }
+
+    @Test
+    fun `a class finding roots a cluster only when it reaches beyond its own methods, and a cluster holding a class lists it whole`() {
+        val target = startCollector()
+        collect(
+            target,
+            listOf(
+                methodProbe(1, 0, "com.acme.Audit", "<clinit>", "()V", 1),
+                methodProbe(1, 1, "com.acme.Audit", "record", "()V", 2, static = true),
+                methodProbe(2, 0, "com.acme.Printer", "<init>", "()V", 1),
+                methodProbe(2, 1, "com.acme.Printer", "print", "()V", 2, calls = listOf(CallEdge("com.acme.Helper", "format", "()V", false))),
+                methodProbe(3, 0, "com.acme.Helper", "<init>", "()V", 1),
+                methodProbe(3, 1, "com.acme.Helper", "format", "()V", 2),
+            ),
+            3 to 0,
+        )
+
+        // Audit's own methods say nothing its never-initialised finding does not, so it roots no
+        // listed cluster. Printer reaches Helper.format, which nothing else calls.
+        val cluster = target.unreachedClusters().single()
+        assertEquals(RootKind.CLASS_FINDING, cluster.rootKind)
+        assertEquals(ClassFinding.NEVER_INSTANTIATED, cluster.rootFinding)
+        assertEquals(listOf("com.acme.Printer", "", "", 0), with(cluster.root) { listOf(className, methodName, methodDescriptor, line) })
+        assertFalse(cluster.root.neverLoaded)
+        assertEquals(emptyList(), cluster.reachedFrom)
+        assertEquals(
+            listOf(WholeClass("com.acme.Printer", ClassFinding.NEVER_INSTANTIATED, cluster.methods.filter { it.className == "com.acme.Printer" })),
+            cluster.wholeClasses,
+        )
+        assertEquals(listOf("Printer#<init>", "Printer#print"), cluster.wholeClasses.single().methods.map { it.id() })
+        assertEquals(listOf("Helper#format"), cluster.members.map { it.id() }, "Helper's constructor ran, so Helper is not whole")
+        assertEquals(3, cluster.membersTotal)
+    }
+
+    @Test
+    fun `a class finding a method with hits calls is a class root that names those callers`() {
+        val target = startCollector()
+        collect(
+            target,
+            listOf(
+                methodProbe(1, 0, "com.acme.App", "run", "()V", 1, calls = listOf(CallEdge("com.acme.Audit", "record", "()V", false))),
+                methodProbe(2, 0, "com.acme.Audit", "<clinit>", "()V", 1),
+                methodProbe(
+                    2,
+                    1,
+                    "com.acme.Audit",
+                    "record",
+                    "()V",
+                    2,
+                    static = true,
+                    calls = listOf(CallEdge("com.acme.Sink", "write", "()V", false)),
+                ),
+                methodProbe(3, 0, "com.acme.Sink", "write", "()V", 1, static = true),
+            ),
+            1 to 0,
+        )
+
+        val cluster = target.unreachedClusters().single()
+        assertEquals(RootKind.CLASS_FINDING, cluster.rootKind)
+        assertEquals("com.acme.Audit", cluster.root.className)
+        assertEquals(ClassFinding.NEVER_INITIALISED, cluster.rootFinding)
+        assertEquals(listOf("App#run"), cluster.reachedFrom.map { it.id() })
+        assertEquals(
+            listOf("com.acme.Audit" to ClassFinding.NEVER_INITIALISED, "com.acme.Sink" to null),
+            cluster.wholeClasses.map { it.className to it.finding },
+        )
+        assertEquals(listOf("Audit#record", "Sink#write"), cluster.methods.map { it.id() }, "<clinit> is never listed")
+        assertEquals(2, cluster.membersTotal, "<clinit> is never counted")
+    }
+
+    @Test
+    fun `a static method of a never-instantiated class stays a method node, and joining the class makes it whole`() {
+        fun printer(printCallsMake: Boolean) =
+            listOf(
+                methodProbe(1, 0, "com.acme.Printer", "<init>", "()V", 1),
+                methodProbe(
+                    1,
+                    1,
+                    "com.acme.Printer",
+                    "print",
+                    "()V",
+                    2,
+                    calls = if (printCallsMake) listOf(CallEdge("com.acme.Printer", "make", "()V", false)) else emptyList(),
+                ),
+                methodProbe(1, 2, "com.acme.Printer", "make", "()V", 3, static = true),
+            )
+
+        run {
+            val target = startCollector()
+            collect(target, printer(printCallsMake = false))
+            val cluster = target.unreachedClusters().single()
+            assertEquals(RootKind.UNCALLED, cluster.rootKind)
+            assertEquals("make", cluster.root.methodName)
+            assertEquals(listOf("Printer#make"), cluster.members.map { it.id() })
+            assertEquals(emptyList(), cluster.wholeClasses)
+        }
+
+        run {
+            val target = startCollector()
+            collect(target, printer(printCallsMake = true))
+            val cluster = target.unreachedClusters().single()
+            assertEquals(RootKind.CLASS_FINDING, cluster.rootKind)
+            assertEquals(listOf("com.acme.Printer" to ClassFinding.NEVER_INSTANTIATED), cluster.wholeClasses.map { it.className to it.finding })
+            assertEquals(emptyList(), cluster.members)
+            assertEquals(3, cluster.membersTotal)
+        }
+    }
+
+    /** A CREATES edge to the lambda body [methodName] of [className], as an `invokedynamic` records it. */
+    private fun creates(
+        className: String,
+        methodName: String,
+    ) = CallEdge(className, methodName, "()V", virtual = false, kind = CallEdgeKind.CREATES)
+
+    /** A never-hit static lambda body, the shape kotlinc compiles a lambda to. */
+    private fun lambdaProbe(
+        classId: Int,
+        probeIndex: Int,
+        className: String,
+        methodName: String,
+        calls: List<CallEdge> = emptyList(),
+    ) = methodProbe(classId, probeIndex, className, methodName, "()V", 9, calls = calls, static = true, lambdaBody = true)
+
+    @Test
+    fun `a lambda body in a never-instantiated class's instance method folds into the class, whose cluster is then not listed`() {
+        val target = startCollector()
+        collect(
+            target,
+            listOf(
+                methodProbe(1, 0, "com.acme.Printer", "<init>", "()V", 1),
+                methodProbe(1, 1, "com.acme.Printer", "print", "()V", 2, calls = listOf(creates("com.acme.Printer", "print\$lambda\$0"))),
+                lambdaProbe(1, 2, "com.acme.Printer", "print\$lambda\$0"),
+                branchProbe(1, 3, "com.acme.Printer", "print\$lambda\$0", "()V", 9, branchIndex = 0, siteIndex = 0),
+            ),
+        )
+
+        assertEquals(listOf("com.acme.Printer"), target.neverInstantiated().map { it.className })
+        assertEquals(emptyList(), target.neverHit(), "the static lambda body and its branch fold with print")
+        assertEquals(emptyList(), target.unreachedClusters(), "the class cluster holds only the methods its finding folds")
+    }
+
+    @Test
+    fun `a lambda body folds into the never-hit method that creates it, and a nested one folds with it`() {
+        val target = startCollector()
+        collect(
+            target,
+            listOf(
+                methodProbe(1, 0, "com.acme.App", "run", "()V", 1),
+                methodProbe(1, 1, "com.acme.App", "job", "()V", 2, calls = listOf(creates("com.acme.App", "job\$lambda\$0"))),
+                lambdaProbe(1, 2, "com.acme.App", "job\$lambda\$0", calls = listOf(creates("com.acme.App", "job\$lambda\$0\$lambda\$1"))),
+                lambdaProbe(1, 3, "com.acme.App", "job\$lambda\$0\$lambda\$1"),
+            ),
+            1 to 0,
+        )
+
+        assertEquals(listOf("App#job"), target.neverHit().map { it.id() })
+    }
+
+    @Test
+    fun `a lambda body stays a row when a creator ran, even beside a creator that never did, or when no creator is known`() {
+        val target = startCollector()
+        collect(
+            target,
+            listOf(
+                methodProbe(1, 0, "com.acme.App", "run", "()V", 1, calls = listOf(creates("com.acme.App", "shared"), creates("com.acme.App", "ran"))),
+                methodProbe(1, 1, "com.acme.App", "job", "()V", 2, calls = listOf(creates("com.acme.App", "shared"))),
+                lambdaProbe(1, 2, "com.acme.App", "ran"),
+                lambdaProbe(1, 3, "com.acme.App", "shared"),
+                lambdaProbe(1, 4, "com.acme.App", "orphan"),
+            ),
+            1 to 0,
+        )
+
+        assertEquals(listOf("App#job", "App#orphan", "App#ran", "App#shared"), target.neverHit().map { it.id() })
     }
 }

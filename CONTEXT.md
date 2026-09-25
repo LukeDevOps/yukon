@@ -209,7 +209,7 @@ A root plus every never-hit method reachable from it through call edges whose ev
 _Avoid_: dead cluster, dead code (a collector's verdict, not an observation)
 
 **Root**:
-The never-hit code that starts an unreached cluster. A method root is *reached from hit* when one of its callers has hits, and names those callers; it is *uncalled* when nothing in scope calls it. An *untaken outcome* root is a never-hit outcome in a method that ran, with at least one method behind it. See ADR 0039.
+The never-hit code that starts an unreached cluster. A method root is *reached from hit* when one of its callers has hits, and names those callers; it is *uncalled* when nothing in scope calls it. An *untaken outcome* root is a never-hit outcome in a method that ran, with at least one method behind it. See ADR 0039. A *class finding* root is a class that holds a class finding, with no caller or a caller that has hits. Its cluster is listed only when it holds a method or class besides the methods the finding folds. A `<clinit>` is never a root. See yukon-server ADR 0034.
 _Avoid_: entry point (a root may be deep inside the code), node
 
 ### Dependencies
@@ -277,6 +277,22 @@ _Avoid_: last batch, shutdown batch
 **Never loaded**:
 A class declared by a complete static baseline that never appears in any manifest from that instance. The class was never constructed.
 _Avoid_: dead (a collector's verdict, not an observation)
+
+**Class finding**:
+A finding about a whole class rather than a method in it: never loaded, never initialised or never instantiated. A class holds at most one, the strongest that applies, and a method that can only run through it is not listed on its own. A lambda body folds with the methods that create it: a never-hit lambda body is not listed when every creator is covered by a class finding or is a never-hit method that is listed. A collector judges it, and the agent sends the facts it rests on, such as each method's static and lambda-body flags. See yukon-server ADR 0034 and ADR 0040.
+_Avoid_: unused class, dead class
+
+**Never initialised**:
+A class that some in-scope run loaded, that has a static initialiser, and whose static initialiser no in-scope run ran. Nothing used its statics and nothing created an instance. A class with no static initialiser can be loaded or never loaded, but never judged never initialised. A never-loaded class is not also never initialised.
+_Avoid_: uninitialised class, dead class, never used
+
+**Never instantiated**:
+A class that some in-scope run loaded, that declares at least one constructor and at least one instance method, and none of whose constructors any in-scope run ran. No instance of it or of a subclass ever existed, since a subclass's constructor runs its superclass's. A class with only static methods is never judged, since nobody meant to create one, and neither is an interface, which has no constructor. A class with a stronger finding, never loaded or never initialised, is not also never instantiated. Its static methods can still run, so they stay listed.
+_Avoid_: unused class, never constructed, never created
+
+**Unused overload**:
+A never-hit constructor of a class that some in-scope run created through another of its constructors. It is the only case in which a constructor is itself a finding. A `@JvmOverloads` forwarder is generated, so it is never one.
+_Avoid_: dead constructor, unused constructor (a lone constructor that never ran says the class was never instantiated, not that the constructor is unused)
 
 **Unreported class**:
 A class the JVM has loaded that reached no manifest, neither as a probed class nor as a skipped one. Found by comparing the loaded classes against what the registry knows, never by a transformer, since the ones this catches are the ones no transformer was offered.

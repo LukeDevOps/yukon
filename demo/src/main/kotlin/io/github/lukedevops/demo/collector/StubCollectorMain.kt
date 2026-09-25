@@ -6,6 +6,7 @@ import io.github.lukedevops.demo.DemoPorts
 import io.github.lukedevops.yukon.proto.BranchRole
 import io.github.lukedevops.yukon.proto.BranchSite
 import io.github.lukedevops.yukon.proto.CallEdge
+import io.github.lukedevops.yukon.proto.CallEdgeKind
 import io.github.lukedevops.yukon.proto.ConditionPart
 import io.github.lukedevops.yukon.proto.ConditionPartKind
 import io.github.lukedevops.yukon.proto.DeltaBatch
@@ -90,6 +91,8 @@ private data class ProbeInfo(
     val inlinedFromClassName: String? = null,
     val generatedBy: GeneratedBy = GeneratedBy.GENERATED_BY_NONE,
     val siteIndex: Int? = null,
+    val static: Boolean = false,
+    val lambdaBody: Boolean = false,
 )
 
 /** One method of one run: where a METHOD probe's branch sites are kept, for its BRANCH probes to find. See ADR 0037. */
@@ -103,7 +106,8 @@ private data class InstanceMethodKey(
 /**
  * One call edge read from a METHOD probe's own bytecode. See ADR 0024. [guard] is the branch index,
  * in the caller's class, of the innermost outcome that must run before the call, or null when none
- * does. See ADR 0037.
+ * does. See ADR 0037. [creates] is true for a CREATES edge, which hands the callee to someone else
+ * to run. See ADR 0028.
  */
 private data class CallEdgeInfo(
     val className: String,
@@ -111,6 +115,7 @@ private data class CallEdgeInfo(
     val methodDescriptor: String,
     val virtual: Boolean,
     val guard: Int? = null,
+    val creates: Boolean = false,
 )
 
 /** A class's superclass and direct interfaces, as reported by one instance. See ADR 0024. */
@@ -137,6 +142,7 @@ private data class DeclaredMethodInfo(
     val calls: List<CallEdgeInfo> = emptyList(),
     val generatedBy: GeneratedBy = GeneratedBy.GENERATED_BY_NONE,
     val referencedClasses: List<String> = emptyList(),
+    val static: Boolean = false,
 )
 
 /** Scopes a dependency id to the run that reported it, for the same reason as [InstanceProbeKey]. */
@@ -276,12 +282,65 @@ private class CallGraph(
 
 /**
  * One node of the cluster graph: a method, or, when [branchIndex] is set, an outcome node in that
- * method. See ADR 0039.
+ * method. See ADR 0039. When [isClass] is true it is a class node, and [method] holds only the class
+ * name. See [classNode].
  */
 private data class ClusterNode(
     val method: NodeKey,
     val branchIndex: Int? = null,
+    val isClass: Boolean = false,
 )
+
+/** The class node for [className]. */
+private fun classNode(className: String) = ClusterNode(NodeKey(className, "", ""), isClass = true)
+
+/** A class finding, as a class node and a report name it. See server ADR 0034. */
+private enum class ClassFinding(
+    val text: String,
+) {
+    NEVER_LOADED("never loaded"),
+    NEVER_INITIALISED("never initialised"),
+    NEVER_INSTANTIATED("never instantiated"),
+}
+
+/**
+ * A class node: a class that holds a class finding, standing for the never-hit [methods] the
+ * finding covers. Those methods are never nodes of their own. See server ADR 0034.
+ */
+private class ClassNodeInfo(
+    val finding: ClassFinding,
+    val methods: List<NodeKey>,
+)
+
+/**
+ * What server ADR 0034's rules say about the loaded classes. [findings] holds each class that is
+ * never initialised or never instantiated. [covered] names the never-hit methods a finding covers,
+ * which can only run through it, lambda bodies that fold into it included. [inNeverHitCode] names
+ * the lambda bodies that fold into never-hit methods that are rows of their own. [constructed]
+ * holds each class one of whose constructors ran, so a never-hit constructor of it is an unused
+ * overload.
+ */
+private class ClassJudgement(
+    val findings: Map<String, ClassFinding>,
+    val covered: Map<String, List<NodeKey>>,
+    val inNeverHitCode: Set<NodeKey>,
+    val constructed: Set<String>,
+) {
+    val coveredMethods: Set<NodeKey> = covered.values.flatten().toSet()
+}
+
+/** One judgeable method merged across runs: [hits] summed, [static] and [lambdaBody] true when any run's probe said so. */
+private data class MethodFacts(
+    val hits: Long,
+    val static: Boolean,
+    val lambdaBody: Boolean,
+)
+
+/** A class's static initialiser, a class state and never a method row. See server ADR 0034. */
+private const val CLASS_INIT = "<clinit>"
+
+/** A constructor's method name. */
+private const val CONSTRUCTOR = "<init>"
 
 /**
  * An outcome node: a judgeable outcome with no hits in a method with hits. [line] is its BRANCH
@@ -299,8 +358,8 @@ private class ClusterGraph(
     val calleesOf: Map<ClusterNode, Set<ClusterNode>>,
 )
 
-/** Which of the three root shapes ADR 0024 and ADR 0039 distinguish an [UnreachedClusterInfo] by. */
-private enum class ClusterRootKind { REACHED_FROM_HIT, UNCALLED, UNTAKEN_OUTCOME }
+/** Which of the four root shapes ADR 0024, ADR 0039 and server ADR 0034 distinguish an [UnreachedClusterInfo] by. */
+private enum class ClusterRootKind { REACHED_FROM_HIT, UNCALLED, UNTAKEN_OUTCOME, CLASS_FINDING }
 
 /** One member of an unreached cluster, printed by [printUnreachedClusterReport]. */
 private data class ClusterMember(
@@ -312,9 +371,11 @@ private data class ClusterMember(
 
 /**
  * A root plus every never-hit method reachable from it whose every in-scope caller is itself in the
- * cluster. [root] is the root method, or for an untaken outcome root the method that holds it.
- * [rootOutcome] is set only for an untaken outcome root, and [reachedFrom] only for a root reached
- * from hit, where it lists the methods with hits that call it. [members] lists methods only.
+ * cluster. [root] is the root method, or for an untaken outcome root the method that holds it, or
+ * for a class root the class alone, with an empty method name and descriptor. [rootOutcome] is set
+ * only for an untaken outcome root, and [rootFinding] only for a class root. [reachedFrom] lists the
+ * methods with hits that call a root reached from hit or a class root. [wholeClasses] lists each
+ * class the cluster holds whole, and [members] every other method. Neither lists `<clinit>`.
  */
 private data class UnreachedClusterInfo(
     val root: ClusterMember,
@@ -323,6 +384,18 @@ private data class UnreachedClusterInfo(
     val neverLoadedClasses: Int,
     val rootOutcome: RootOutcome? = null,
     val reachedFrom: List<ClusterMember> = emptyList(),
+    val rootFinding: ClassFinding? = null,
+    val wholeClasses: List<WholeClassInfo> = emptyList(),
+) {
+    /** How many methods the cluster holds, never counting `<clinit>`. */
+    val membersTotal: Int get() = members.size + wholeClasses.sumOf { it.methodsTotal }
+}
+
+/** One class a cluster holds whole: every method node of it. [finding] is null when it holds none. */
+private data class WholeClassInfo(
+    val className: String,
+    val finding: ClassFinding?,
+    val methodsTotal: Int,
 )
 
 /** The untaken outcome that roots a cluster: its branch index, its BRANCH probe's line, and its site if a manifest listed one. */
@@ -340,8 +413,10 @@ private data class RootOutcome(
  * no delta that ever reported a hit) and, since the demo server opts into
  * `staticBaselineEnabled=true`, "never loaded" (classes the static scan found that never once
  * appeared in the reactive manifest at all). It also prints the optional-argument, endpoint,
- * unreached-cluster and dependency reports, the last applying ADR 0030's statuses to each
- * dependency the instances listed.
+ * class-finding, unreached-cluster and dependency reports, the last applying ADR 0030's statuses to
+ * each dependency the instances listed. The never-hit, class-finding and cluster reports apply
+ * server ADR 0034 the way `YukonTestCollector` does. A constructor prints as `constructor(...)`
+ * with its parameter types, as the server's web UI shows it.
  *
  * Takes the port to bind as its one argument, defaulting to [DemoPorts.COLLECTOR_PORT] for a run
  * by hand. Port 0 binds an ephemeral one; either way the port that was actually bound is printed,
@@ -358,6 +433,7 @@ fun main(args: Array<String>) {
             printOmissionReport()
             printEndpointReport()
             printNeverLoadedReport()
+            printClassFindingReport()
             printUnreachedClusterReport()
             printDependencyReport()
         },
@@ -441,6 +517,8 @@ private fun handleManifest(exchange: HttpExchange) {
                 inlinedFromClassName = location.inlinedFromClassName.ifEmpty { null },
                 generatedBy = location.generatedBy,
                 siteIndex = if (location.hasSiteIndex()) location.siteIndex else null,
+                static = location.static,
+                lambdaBody = location.lambdaBody,
             )
         if (location.branchSitesList.isNotEmpty()) {
             manifestBranchSites[InstanceMethodKey(run, location.classId, location.methodName, location.methodDescriptor)] =
@@ -528,6 +606,7 @@ private fun handleStaticBaseline(exchange: HttpExchange) {
                     it.callsList.map(::callEdgeInfo),
                     it.generatedBy,
                     it.referencedClassesList.toList(),
+                    it.static,
                 )
             }
         baselineReferences[InstanceClassKey(run, declaredClass.className)] =
@@ -562,7 +641,14 @@ private fun handleStaticBaseline(exchange: HttpExchange) {
 }
 
 private fun callEdgeInfo(edge: CallEdge): CallEdgeInfo =
-    CallEdgeInfo(edge.className, edge.methodName, edge.methodDescriptor, edge.virtual, if (edge.hasGuard()) edge.guard else null)
+    CallEdgeInfo(
+        edge.className,
+        edge.methodName,
+        edge.methodDescriptor,
+        edge.virtual,
+        if (edge.hasGuard()) edge.guard else null,
+        edge.kind == CallEdgeKind.CREATES,
+    )
 
 private fun respondOk(exchange: HttpExchange) {
     exchange.sendResponseHeaders(200, -1)
@@ -581,6 +667,14 @@ private fun respondBadRequest(
     exchange.responseBody.use { it.write(body) }
 }
 
+/**
+ * Prints every judgeable probe with no hits that is a never-hit row under server ADR 0034. A
+ * `<clinit>` is a class state and never a row. A constructor is a row only as an unused overload,
+ * when another constructor of its class ran. A method a class finding covers, and a branch in one,
+ * is not a row: [printClassFindingReport] reports the class instead. A lambda body that folds into
+ * never-hit methods listed here is not a row either, and neither is a branch in it. The report
+ * counts each kind of folded probe apart.
+ */
 private fun printNeverHitReport() {
     // An optional-argument probe reading zero means its parameter is never omitted, which is
     // ALWAYS SUPPLIED, not dead code, so it is excluded here entirely and reported by
@@ -591,8 +685,23 @@ private fun printNeverHitReport() {
     // A generated probe, such as a data class's copy or an enum's values, is kept and counted,
     // but the compiler will emit it again regardless of what the adopter does, so a zero hit
     // total is not a finding the adopter can act on. See ADR 0026.
-    val (generatedNeverHit, judgeable) =
+    val (generatedNeverHit, judgeableNeverHit) =
         notInlineNeverHit.partition { manifestProbes[it]?.generatedBy != GeneratedBy.GENERATED_BY_NONE }
+    val judgement = judgeClasses()
+
+    fun methodOf(key: InstanceProbeKey) = manifestProbes.getValue(key).let { NodeKey(it.className, it.methodName, it.methodDescriptor) }
+    val (inClassFindings, notInClassFindings) = judgeableNeverHit.partition { methodOf(it) in judgement.coveredMethods }
+    val (inNeverHitCode, notFolded) = notInClassFindings.partition { methodOf(it) in judgement.inNeverHitCode }
+    val (judgeable, classStates) =
+        notFolded.partition { key ->
+            val info = manifestProbes.getValue(key)
+            info.kind != ProbeKind.METHOD ||
+                when (info.methodName) {
+                    CLASS_INIT -> false
+                    CONSTRUCTOR -> info.className in judgement.constructed
+                    else -> true
+                }
+        }
     val judgeableTotal =
         judgeableKeys.count { key ->
             val probe = manifestProbes[key]
@@ -613,7 +722,9 @@ private fun printNeverHitReport() {
             val where = "(instance ${key.run.serviceInstanceId}, class ${key.classId}, probe ${key.probeIndex})"
             val branchIndex = info.branchIndex
             if (branchIndex == null) {
-                println("  NEVER HIT: ${info.className}#${info.methodName}:${info.line} [${info.kind}]$inlinedFromSuffix $where")
+                val method = methodText(info.className, info.methodName, info.methodDescriptor)
+                val kind = if (info.methodName == CONSTRUCTOR) "CONSTRUCTOR, unused overload" else "${info.kind}"
+                println("  NEVER HIT: $method:${info.line} [$kind]$inlinedFromSuffix $where")
             } else {
                 val site =
                     info.siteIndex?.let { siteIndex ->
@@ -631,6 +742,9 @@ private fun printNeverHitReport() {
     // zero however often they run: no "never hit" claim is made about them. See ADR 0022.
     println("inline (not judged): ${inlineNeverHit.size}")
     println("generated (not judged): ${generatedNeverHit.size}")
+    println("in class findings (reported by class): ${inClassFindings.size}")
+    println("in never-hit methods (lambda bodies reported with their creator): ${inNeverHitCode.size}")
+    println("static initialisers and lone constructors (not listed): ${classStates.size}")
     if (skippedClasses.isNotEmpty()) {
         println("skipped (matched but could not be instrumented): ${skippedClasses.size}")
         skippedClasses.entries
@@ -638,6 +752,211 @@ private fun printNeverHitReport() {
             .forEach { (key, info) -> println("  SKIPPED: ${key.className} (instance ${key.run.serviceInstanceId}) - ${info.reason}") }
     }
     println("=====================================")
+}
+
+/** A method as the reports print it: `Class#name`, or `Class#constructor(int, String)` for a constructor. */
+private fun methodText(
+    className: String,
+    methodName: String,
+    methodDescriptor: String,
+): String = if (methodName == CONSTRUCTOR) "$className#${constructorText(methodDescriptor)}" else "$className#$methodName"
+
+/** A constructor's name as source reads it: `constructor(...)` with its parameters' simple type names. */
+private fun constructorText(methodDescriptor: String): String {
+    val types = mutableListOf<String>()
+    var i = methodDescriptor.indexOf('(') + 1
+    while (i in 1 until methodDescriptor.length && methodDescriptor[i] != ')') {
+        var dimensions = 0
+        while (methodDescriptor[i] == '[') {
+            dimensions++
+            i++
+        }
+        val type =
+            if (methodDescriptor[i] == 'L') {
+                val end = methodDescriptor.indexOf(';', i)
+                methodDescriptor.substring(i + 1, end).substringAfterLast('/').also { i = end }
+            } else {
+                PRIMITIVE_NAMES[methodDescriptor[i]] ?: methodDescriptor[i].toString()
+            }
+        types += type + "[]".repeat(dimensions)
+        i++
+    }
+    return "constructor(${types.joinToString(", ")})"
+}
+
+private val PRIMITIVE_NAMES =
+    mapOf('Z' to "boolean", 'B' to "byte", 'C' to "char", 'S' to "short", 'I' to "int", 'J' to "long", 'F' to "float", 'D' to "double")
+
+/**
+ * Applies server ADR 0034's class rules to every loaded class, over its judgeable METHOD probes
+ * merged across runs with hits summed. A class with such a probe loaded, so none of these is never
+ * loaded.
+ *
+ * A class is never initialised when it has a `<clinit>` and that never ran. Otherwise it is never
+ * instantiated when it has a `<init>`, none ran, and it has a method that is neither static nor a
+ * constructor. A never-initialised class covers every never-hit method. A never-instantiated class
+ * covers each never-hit constructor and each never-hit method that is not static. A never-hit
+ * lambda body then folds with its creators; see [foldLambdaBodies]. Same rules as
+ * `YukonTestCollector.judgeClasses`.
+ */
+private fun judgeClasses(): ClassJudgement {
+    val methods =
+        manifestProbes.entries
+            .filter { (_, probe) -> probe.kind == ProbeKind.METHOD && !probe.inline && probe.generatedBy == GeneratedBy.GENERATED_BY_NONE }
+            .groupBy { (_, probe) -> NodeKey(probe.className, probe.methodName, probe.methodDescriptor) }
+            .mapValues { (_, entries) ->
+                MethodFacts(
+                    entries.sumOf { (key, _) -> latestHitsTotal[key] ?: 0L },
+                    entries.any { it.value.static },
+                    entries.any { it.value.lambdaBody },
+                )
+            }
+    val findings = mutableMapOf<String, ClassFinding>()
+    val covered = mutableMapOf<String, List<NodeKey>>()
+    val constructed = mutableSetOf<String>()
+    for ((className, classMethods) in methods.entries.groupBy { it.key.className }) {
+        val initialisers = classMethods.filter { it.key.methodName == CLASS_INIT }
+        val constructors = classMethods.filter { it.key.methodName == CONSTRUCTOR }
+        if (constructors.any { it.value.hits > 0L }) constructed += className
+        val finding =
+            when {
+                initialisers.isNotEmpty() && initialisers.all { it.value.hits == 0L } -> {
+                    ClassFinding.NEVER_INITIALISED
+                }
+
+                constructors.isNotEmpty() &&
+                    className !in constructed &&
+                    classMethods.any { it.key.methodName != CONSTRUCTOR && it.key.methodName != CLASS_INIT && !it.value.static } -> {
+                    ClassFinding.NEVER_INSTANTIATED
+                }
+
+                else -> {
+                    continue
+                }
+            }
+        findings[className] = finding
+        covered[className] =
+            classMethods
+                .filter { (key, facts) ->
+                    facts.hits == 0L &&
+                        (finding == ClassFinding.NEVER_INITIALISED || key.methodName == CONSTRUCTOR || (key.methodName != CLASS_INIT && !facts.static))
+                }.map { it.key }
+    }
+    val (intoClassFindings, inNeverHitCode) = foldLambdaBodies(methods, findings, covered.values.flatten().toSet(), constructed)
+    for (lambda in intoClassFindings) covered[lambda.className] = covered.getValue(lambda.className) + lambda
+    return ClassJudgement(findings, covered, inNeverHitCode, constructed)
+}
+
+/**
+ * Every method some CREATES call edge names, with the methods whose edges name it: its creators.
+ * Reads the edges of every METHOD probe and of every static-baseline declaration. A method never
+ * counts as its own creator. See ADR 0028.
+ */
+private fun creatorsOf(): Map<NodeKey, Set<NodeKey>> {
+    val creators = mutableMapOf<NodeKey, MutableSet<NodeKey>>()
+
+    fun add(
+        creator: NodeKey,
+        edges: List<CallEdgeInfo>,
+    ) {
+        for (edge in edges) {
+            if (!edge.creates) continue
+            val created = NodeKey(edge.className, edge.methodName, edge.methodDescriptor)
+            if (created != creator) creators.getOrPut(created) { mutableSetOf() } += creator
+        }
+    }
+    for ((key, edges) in manifestCallEdges) {
+        val info = manifestProbes[key] ?: continue
+        add(NodeKey(info.className, info.methodName, info.methodDescriptor), edges)
+    }
+    for ((className, declared) in staticallyDeclaredClasses) {
+        declared.forEach { add(NodeKey(className, it.methodName, it.methodDescriptor), it.calls) }
+    }
+    return creators
+}
+
+/**
+ * Folds each judgeable never-hit lambda body whose every creator is judgeable and never hit, and is
+ * itself covered by a class finding or a row of the never-hit report: a method other than
+ * `<clinit>` and a lone constructor. A lambda body some method created is one or the other, so
+ * nested lambda bodies fold with the outermost one. A lambda body with no known creator, or with a
+ * creator that ran, never folds. See server ADR 0034.
+ *
+ * Returns the folded lambda bodies in two sets. The first fold into their own class's finding:
+ * every creator is covered by a class finding or is in that first set. The rest fold into never-hit
+ * methods that are rows of their own.
+ */
+private fun foldLambdaBodies(
+    methods: Map<NodeKey, MethodFacts>,
+    findings: Map<String, ClassFinding>,
+    covered: Set<NodeKey>,
+    constructed: Set<String>,
+): Pair<Set<NodeKey>, Set<NodeKey>> {
+    val creators = creatorsOf()
+
+    fun absorbs(creator: NodeKey): Boolean {
+        if ((methods[creator] ?: return false).hits > 0L) return false
+        if (creator in covered) return true
+        return when (creator.methodName) {
+            CLASS_INIT -> false
+            CONSTRUCTOR -> creator.className in constructed
+            else -> true
+        }
+    }
+    val folded =
+        methods
+            .filter { (key, facts) -> facts.lambdaBody && facts.hits == 0L && key !in covered }
+            .keys
+            .filter { lambda -> creators[lambda].orEmpty().let { it.isNotEmpty() && it.all(::absorbs) } }
+            .toSet()
+    val intoClassFindings = mutableSetOf<NodeKey>()
+    var changed = true
+    while (changed) {
+        changed = false
+        for (lambda in folded - intoClassFindings) {
+            if (lambda.className in findings && creators.getValue(lambda).all { it in covered || it in intoClassFindings }) {
+                intoClassFindings += lambda
+                changed = true
+            }
+        }
+    }
+    return intoClassFindings to (folded - intoClassFindings)
+}
+
+/**
+ * Reports each class loaded and never initialised, and each class loaded and never instantiated,
+ * as [judgeClasses] finds them. A class's methods are its METHOD probes other than `<clinit>`, one
+ * entry per name, inline and generated ones included. Instances loading counts the instances that
+ * sent a probe for the class. See server ADR 0034.
+ */
+private fun printClassFindingReport() {
+    println()
+    println("=== yukon demo: class findings ===")
+    val findings = judgeClasses().findings
+    println(
+        "never initialised: ${findings.values.count { it == ClassFinding.NEVER_INITIALISED }}, " +
+            "never instantiated: ${findings.values.count { it == ClassFinding.NEVER_INSTANTIATED }}",
+    )
+    for (finding in listOf(ClassFinding.NEVER_INITIALISED, ClassFinding.NEVER_INSTANTIATED)) {
+        findings
+            .filterValues { it == finding }
+            .keys
+            .sorted()
+            .forEach { className ->
+                val probes = manifestProbes.filter { (_, info) -> info.className == className }
+                val methods =
+                    probes.values
+                        .filter { it.kind == ProbeKind.METHOD && it.methodName != CLASS_INIT }
+                        .map { if (it.methodName == CONSTRUCTOR) "constructor" else it.methodName }
+                        .distinct()
+                        .sorted()
+                val instances = probes.keys.map { it.run.serviceInstanceId }.distinct().size
+                println(
+                    "  ${finding.text.uppercase()}: $className (methods: ${methods.joinToString(", ")}) (instances loading: $instances)",
+                )
+            }
+    }
+    println("==================================")
 }
 
 /**
@@ -906,8 +1225,10 @@ private val clusterMemberComparator: Comparator<ClusterMember> = compareBy({ it.
  * `YukonTestCollector.unreachedClusters` applies within a test JVM, over the manifest call edges,
  * class supertypes, and complete-baseline declarations this stub already stores. An untaken
  * outcome root prints as [printNeverHitReport] prints its outcome, then the method that holds it.
- * A root reached from hit names the methods with hits that call it. See ADRs 0024 and 0039 and
- * CONTEXT.md, "Unreached cluster".
+ * A root reached from hit names the methods with hits that call it, and so does a class root that
+ * one calls. A class the cluster holds whole prints once, with its finding and method count, in
+ * place of its methods. See ADRs 0024 and 0039, server ADR 0034 and CONTEXT.md, "Unreached
+ * cluster".
  */
 private fun printUnreachedClusterReport() {
     println()
@@ -916,8 +1237,9 @@ private fun printUnreachedClusterReport() {
     println("clusters: ${clusters.size}")
     val routesByHandler = routesByHandler()
     clusters.forEach { cluster ->
-        val method = "${cluster.root.className}#${cluster.root.methodName}"
+        val method = methodText(cluster.root.className, cluster.root.methodName, cluster.root.methodDescriptor)
         val outcome = cluster.rootOutcome
+        val callers = cluster.reachedFrom.joinToString(", ") { methodText(it.className, it.methodName, it.methodDescriptor) }
         val root =
             when (cluster.rootKind) {
                 ClusterRootKind.UNTAKEN_OUTCOME -> {
@@ -927,21 +1249,30 @@ private fun printUnreachedClusterReport() {
                 }
 
                 ClusterRootKind.REACHED_FROM_HIT -> {
-                    "$method (reached from hit, called from ${cluster.reachedFrom.joinToString(", ") { "${it.className}#${it.methodName}" }})"
+                    "$method (reached from hit, called from $callers)"
                 }
 
                 ClusterRootKind.UNCALLED -> {
                     "$method (uncalled)"
                 }
+
+                ClusterRootKind.CLASS_FINDING -> {
+                    val calledFrom = if (callers.isEmpty()) "" else ", called from $callers"
+                    "${cluster.root.className} (class finding: ${cluster.rootFinding?.text}$calledFrom)"
+                }
             }
         val routes = routesByHandler[NodeKey(cluster.root.className, cluster.root.methodName, cluster.root.methodDescriptor)]
         val routesSuffix = routes?.let { " routes=${it.joinToString(", ", "[", "]")}" } ?: ""
         println(
-            "UNREACHED CLUSTER: root $root, ${cluster.members.size} methods, ${cluster.neverLoadedClasses} never-loaded classes$routesSuffix",
+            "UNREACHED CLUSTER: root $root, ${cluster.membersTotal} methods, ${cluster.neverLoadedClasses} never-loaded classes$routesSuffix",
         )
+        cluster.wholeClasses.forEach { whole ->
+            val finding = whole.finding?.let { ", ${it.text}" } ?: ""
+            println("  ${whole.className} (whole class$finding, ${whole.methodsTotal} methods)")
+        }
         cluster.members.forEach { member ->
             val suffix = if (member.neverLoaded) " (never loaded)" else ""
-            println("  ${member.className}#${member.methodName}$suffix")
+            println("  ${methodText(member.className, member.methodName, member.methodDescriptor)}$suffix")
         }
     }
     println("=======================================")
@@ -965,64 +1296,102 @@ private fun routesByHandler(): Map<NodeKey, List<String>> =
 /**
  * Every unreached cluster in the call graph, sorted by member count descending, then by root.
  *
- * The graph holds method nodes and outcome nodes. An outcome node is a judgeable BRANCH probe with
- * no hits, merged across runs by its method and branch index, in a method with hits. A call edge
- * whose guard names an outcome node counts as a call from that outcome node, and any other edge
- * as a call from its method. An outcome node has one caller: the outcome node its site's guard
- * names, or else its method. This stub hears from one build of the demo, so a guard's branch index
- * names one outcome of the caller's class and is looked up there directly.
+ * The graph holds method nodes, outcome nodes and class nodes. An outcome node is a judgeable
+ * BRANCH probe with no hits, merged across runs by its method and branch index, in a method with
+ * hits. A class node is a class that holds a class finding, standing for the never-hit methods the
+ * finding covers, which are never method nodes of their own; a never-loaded class stands for every
+ * method node it has. A call edge whose guard names an outcome node counts as a call from that
+ * outcome node, and any other edge as a call from its method or the class node standing for it.
+ * An edge into a covered method goes into its class node. An outcome node has one caller: the
+ * outcome node its site's guard names, or else its method. This stub hears from one build of the
+ * demo, so a guard's branch index names one outcome of the caller's class and is looked up there
+ * directly.
  *
- * A root is a never-hit node with no caller ([ClusterRootKind.UNCALLED]) or with a caller that is
- * a method with hits. Such a method root is [ClusterRootKind.REACHED_FROM_HIT], and such an
- * outcome node is [ClusterRootKind.UNTAKEN_OUTCOME]. Only methods are members, so an untaken
- * outcome with no method behind it gives no cluster. See ADR 0039.
+ * A root is a never-hit node with no caller or with a caller that is a method with hits. A method
+ * root is [ClusterRootKind.UNCALLED] or [ClusterRootKind.REACHED_FROM_HIT], an outcome root
+ * [ClusterRootKind.UNTAKEN_OUTCOME], and a class root [ClusterRootKind.CLASS_FINDING]. A `<clinit>`
+ * is never a root. An outcome or class root whose cluster holds nothing but itself and outcome
+ * nodes gives no cluster. See ADR 0039 and server ADR 0034.
  */
 private fun computeUnreachedClusters(): List<UnreachedClusterInfo> {
     val graph = computeCallGraph()
 
     fun isHit(key: NodeKey) = (graph.nodes[key]?.hits ?: 0L) > 0L
 
+    val classNodes = buildClassNodes(graph)
+    val coveredBy = classNodes.flatMap { (node, info) -> info.methods.map { it to node } }.toMap()
     val outcomes = buildOutcomeNodes(::isHit)
-    val clusterGraph = buildClusterGraph(graph, outcomes)
+    val clusterGraph = buildClusterGraph(graph, outcomes, coveredBy)
 
-    fun isNeverHit(node: ClusterNode) = if (node.branchIndex != null) node in outcomes else !isHit(node.method)
+    fun isNeverHit(node: ClusterNode) =
+        when {
+            node.isClass -> node in classNodes
+            node.branchIndex != null -> node in outcomes
+            else -> !isHit(node.method) && node.method !in coveredBy
+        }
 
-    val neverHitNodes = graph.nodes.keys.filter { !isHit(it) }.map { ClusterNode(it) } + outcomes.keys
+    val neverHitNodes =
+        graph.nodes.keys
+            .filter { !isHit(it) && it !in coveredBy && it.methodName != CLASS_INIT }
+            .map { ClusterNode(it) } + outcomes.keys + classNodes.keys
     return neverHitNodes
         .mapNotNull { node ->
             val callers = clusterGraph.callersOf[node].orEmpty()
-            val hitCallers = callers.filter { it.branchIndex == null && isHit(it.method) }
+            val hitCallers = callers.filter { it.branchIndex == null && !it.isClass && isHit(it.method) }
+            if (callers.isNotEmpty() && hitCallers.isEmpty()) return@mapNotNull null
             val kind =
                 when {
-                    callers.isEmpty() -> ClusterRootKind.UNCALLED
-                    hitCallers.isEmpty() -> return@mapNotNull null
+                    node.isClass -> ClusterRootKind.CLASS_FINDING
                     node.branchIndex != null -> ClusterRootKind.UNTAKEN_OUTCOME
+                    callers.isEmpty() -> ClusterRootKind.UNCALLED
                     else -> ClusterRootKind.REACHED_FROM_HIT
                 }
             val reachedFrom =
-                if (kind == ClusterRootKind.REACHED_FROM_HIT) {
+                if (kind == ClusterRootKind.REACHED_FROM_HIT || kind == ClusterRootKind.CLASS_FINDING) {
                     hitCallers.map { toClusterMember(graph.nodes.getValue(it.method), it.method) }.sortedWith(clusterMemberComparator)
                 } else {
                     emptyList()
                 }
-            buildUnreachedCluster(graph, clusterGraph, outcomes, node, kind, reachedFrom, ::isNeverHit)
+            buildUnreachedCluster(graph, clusterGraph, outcomes, classNodes, node, kind, reachedFrom, ::isNeverHit)
         }.sortedWith(
-            compareByDescending<UnreachedClusterInfo> { it.members.size }
+            compareByDescending<UnreachedClusterInfo> { it.membersTotal }
                 .thenComparing({ it.root }, clusterMemberComparator)
                 .thenComparing { cluster -> cluster.rootOutcome?.branchIndex ?: -1 },
         )
 }
 
 /**
+ * Every class node, keyed by its [ClusterNode]. A never-initialised or never-instantiated class
+ * stands for the methods [judgeClasses] says it covers. A class whose method nodes all come from a
+ * complete baseline, since no manifest mentioned it, is never loaded and stands for all of them. A
+ * class with no such method has no class node.
+ */
+private fun buildClassNodes(graph: CallGraph): Map<ClusterNode, ClassNodeInfo> {
+    val judgement = judgeClasses()
+    val classNodes = mutableMapOf<ClusterNode, ClassNodeInfo>()
+    for ((className, finding) in judgement.findings) {
+        val methods = judgement.covered[className].orEmpty().filter { (graph.nodes[it]?.hits ?: -1L) == 0L }
+        if (methods.isNotEmpty()) classNodes[classNode(className)] = ClassNodeInfo(finding, methods)
+    }
+    graph.nodes
+        .filter { (key, info) -> info.neverLoaded && key.className !in judgement.findings }
+        .keys
+        .groupBy { it.className }
+        .forEach { (className, methods) -> classNodes[classNode(className)] = ClassNodeInfo(ClassFinding.NEVER_LOADED, methods) }
+    return classNodes
+}
+
+/**
  * Grows [root]'s cluster by fixpoint: repeatedly add a never-hit node reachable from a current
  * member, once every one of that node's callers is itself already in the cluster. A node whose
  * callers sit outside the cluster, or a cycle of never-hit nodes with no outside caller, is never
- * added. Returns null when no method joined, which only an outcome root can give.
+ * added. Returns null for an outcome or class root when nothing but outcome nodes joined it.
  */
 private fun buildUnreachedCluster(
     graph: CallGraph,
     clusterGraph: ClusterGraph,
     outcomes: Map<ClusterNode, OutcomeNode>,
+    classNodes: Map<ClusterNode, ClassNodeInfo>,
     root: ClusterNode,
     rootKind: ClusterRootKind,
     reachedFrom: List<ClusterMember>,
@@ -1043,30 +1412,50 @@ private fun buildUnreachedCluster(
             }
         }
     }
-    val memberList =
-        members
-            .filter { it.branchIndex == null }
-            .map { toClusterMember(graph.nodes.getValue(it.method), it.method) }
-            .sortedWith(clusterMemberComparator)
-    if (memberList.isEmpty()) return null
-    val neverLoadedClasses =
-        memberList
-            .filter { it.neverLoaded }
-            .map { it.className }
-            .distinct()
-            .size
+    if ((root.isClass || root.branchIndex != null) && members.none { it != root && it.branchIndex == null }) return null
+
+    val methodsByClass = mutableMapOf<String, MutableList<NodeKey>>()
+    for (member in members) {
+        when {
+            member.branchIndex != null -> {}
+            member.isClass -> methodsByClass.getOrPut(member.method.className) { mutableListOf() } += classNodes.getValue(member).methods
+            else -> methodsByClass.getOrPut(member.method.className) { mutableListOf() } += member.method
+        }
+    }
+    val classSize = graph.nodes.keys.groupingBy { it.className }.eachCount()
+    val wholeClasses = mutableListOf<WholeClassInfo>()
+    val memberList = mutableListOf<ClusterMember>()
+    var neverLoadedClasses = 0
+    for ((className, keys) in methodsByClass) {
+        val methods = keys.filter { it.methodName != CLASS_INIT }.map { toClusterMember(graph.nodes.getValue(it), it) }
+        if (keys.any { graph.nodes.getValue(it).neverLoaded }) neverLoadedClasses++
+        if (keys.size == classSize[className]) {
+            wholeClasses += WholeClassInfo(className, classNodes[classNode(className)]?.finding, methods.size)
+        } else {
+            memberList += methods
+        }
+    }
     val rootOutcome =
         root.branchIndex?.let { branchIndex ->
             val outcome = outcomes.getValue(root)
             RootOutcome(branchIndex, outcome.line, outcome.site)
         }
+    val rootMember =
+        if (root.isClass) {
+            val methods = classNodes.getValue(root).methods
+            ClusterMember(root.method.className, "", "", methods.all { graph.nodes.getValue(it).neverLoaded })
+        } else {
+            toClusterMember(graph.nodes.getValue(root.method), root.method)
+        }
     return UnreachedClusterInfo(
-        root = toClusterMember(graph.nodes.getValue(root.method), root.method),
+        root = rootMember,
         rootKind = rootKind,
-        members = memberList,
+        members = memberList.sortedWith(clusterMemberComparator),
         neverLoadedClasses = neverLoadedClasses,
         rootOutcome = rootOutcome,
         reachedFrom = reachedFrom,
+        rootFinding = classNodes[root]?.finding,
+        wholeClasses = wholeClasses.sortedBy { it.className },
     )
 }
 
@@ -1101,12 +1490,14 @@ private fun buildOutcomeNodes(isHit: (NodeKey) -> Boolean): Map<ClusterNode, Out
 /**
  * Links every resolved call and every outcome node into the cluster graph. A call whose guard
  * names an outcome node in the caller's method starts at that outcome node, and any other call
- * starts at its method. An outcome node's one caller is the outcome node its site's guard names,
- * when that is another outcome node, and otherwise its method.
+ * starts at its method. A method [coveredBy] names is replaced by its class node at either end, and
+ * a call that then starts and ends at the same node is dropped. An outcome node's one caller is the
+ * outcome node its site's guard names, when that is another outcome node, and otherwise its method.
  */
 private fun buildClusterGraph(
     graph: CallGraph,
     outcomes: Map<ClusterNode, OutcomeNode>,
+    coveredBy: Map<NodeKey, ClusterNode>,
 ): ClusterGraph {
     val callersOf = mutableMapOf<ClusterNode, MutableSet<ClusterNode>>()
     val calleesOf = mutableMapOf<ClusterNode, MutableSet<ClusterNode>>()
@@ -1118,10 +1509,13 @@ private fun buildClusterGraph(
         callersOf.getOrPut(callee) { mutableSetOf() } += caller
         calleesOf.getOrPut(caller) { mutableSetOf() } += callee
     }
+    fun nodeOf(key: NodeKey) = coveredBy[key] ?: ClusterNode(key)
     for ((caller, calls) in graph.calls) {
         for (call in calls) {
             val guardNode = call.guard?.let { ClusterNode(caller, it) }?.takeIf { it in outcomes }
-            link(guardNode ?: ClusterNode(caller), ClusterNode(call.callee))
+            val from = guardNode ?: nodeOf(caller)
+            val to = nodeOf(call.callee)
+            if (from != to) link(from, to)
         }
     }
     for ((node, outcome) in outcomes) {
