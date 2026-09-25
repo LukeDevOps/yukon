@@ -21,8 +21,23 @@ class ConditionInstrumentationTest {
 
     private fun literal(text: String) = ConditionPart(ConditionPartKind.STRING_LITERAL, text)
 
+    /**
+     * The 1-based line of the demo's server source that holds [fragment], so the expected lines
+     * follow the source rather than being pinned. The fragment must appear on exactly one line.
+     */
+    private fun demoLineOf(fragment: String): Int {
+        val source =
+            File(
+                System.getProperty("yukon.demo.serverMainSource")
+                    ?: error("system property yukon.demo.serverMainSource is not set; run tests through the root Gradle build"),
+            )
+        val lines = source.readLines().withIndex().filter { fragment in it.value }
+        check(lines.size == 1) { "expected \"$fragment\" on one line of ${source.name}, found ${lines.size}" }
+        return lines.single().index + 1
+    }
+
     @Test
-    fun `the demo's checkout handler sends the conditions at lines 67 and 74`() {
+    fun `the demo's checkout handler sends each condition at its source line`() {
         val demoClasses =
             File(
                 System.getProperty("yukon.benchmark.corpus.demo.main")
@@ -46,8 +61,9 @@ class ConditionInstrumentationTest {
 
             assertEquals(
                 mapOf(
-                    67 to listOf(code("System.getenv("), literal("ENABLE_LEGACY_DISCOUNT"), code(") == "), literal("true")),
-                    74 to listOf(code("discounted > 100.0")),
+                    demoLineOf("if (System.getenv(\"ENABLE_LEGACY_DISCOUNT\") == \"true\")") to
+                        listOf(code("System.getenv("), literal("ENABLE_LEGACY_DISCOUNT"), code(") == "), literal("true")),
+                    demoLineOf("if (discounted > FREE_SHIPPING_THRESHOLD)") to listOf(code("discounted > 100.0")),
                 ),
                 handler.branchSites.associate { it.line to it.condition },
             )

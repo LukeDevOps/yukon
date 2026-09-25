@@ -387,6 +387,10 @@ tasks.test {
             jvmDefaultDisableFixtureRuntimeClasspath.get().asPath,
         )
         systemProperty("yukon.fixtures.classsam.dir", classSamFixtureClassesDir.get().asFile.absolutePath)
+        systemProperty(
+            "yukon.demo.serverMainSource",
+            project(":demo").file("src/main/kotlin/io/github/lukedevops/demo/server/DemoServerMain.kt").absolutePath,
+        )
     }
 }
 
