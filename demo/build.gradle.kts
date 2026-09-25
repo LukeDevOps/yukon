@@ -395,11 +395,38 @@ fun constructorText(descriptor: String): String {
     return "constructor(${types.joinToString(", ")})"
 }
 
-// A method row or node as `Class#name`, or `Class#constructor(...)` for a constructor.
-fun methodText(node: Map<*, *>): String {
+// The source file a row's class reads as (server ADR 0035): set for a file facade or a
+// multi-file part that has one, null for every other kind. A server that sends no kotlin_kind
+// gives null, so the row reads by its JVM name.
+fun sourceFileNaming(row: Map<*, *>): String? {
+    val sourceFile = (row["source_file"] as? String).orEmpty()
+    val isFileKind = row["kotlin_kind"] == "file_facade" || row["kotlin_kind"] == "multifile_part"
+    return sourceFile.takeIf { isFileKind && it.isNotEmpty() }
+}
+
+// A class row's name: a file facade or a multi-file part as its source file, a multi-file facade
+// by its JVM name with a tag, anything else by its JVM name. The stub collector prints classes
+// the same way.
+fun classText(row: Map<*, *>): String {
+    val className = row["class_name"] as String
+    val tag = if (row["kotlin_kind"] == "multifile_facade") " (multi-file facade)" else ""
+    return sourceFileNaming(row) ?: "$className$tag"
+}
+
+// A method row or node as `Class#name`, or `Class#constructor(...)` for a constructor. A member of
+// a file facade or a multi-file part reads as a top-level function with its file, such as
+// `handleCheckout (DemoServerMain.kt)`, and a line joins the file: `handleCheckout
+// (DemoServerMain.kt:121)`. A member of a multi-file facade carries the facade's tag.
+fun methodText(
+    node: Map<*, *>,
+    line: Any? = null,
+): String {
     val name = node["method_name"] as String
     val shown = if (name == "<init>") constructorText(node["method_descriptor"] as String) else name
-    return "${node["class_name"]}#$shown"
+    val lineSuffix = line?.let { ":$it" } ?: ""
+    sourceFileNaming(node)?.let { return "$shown ($it$lineSuffix)" }
+    val tag = if (node["kotlin_kind"] == "multifile_facade") " (multi-file facade)" else ""
+    return "${node["class_name"]}#$shown$lineSuffix$tag"
 }
 
 // A class finding's name as a report line spells it: "never_initialised" reads
@@ -416,7 +443,7 @@ fun clusterRootText(root: Map<*, *>): String {
         "untaken_outcome" -> {
             val site = root["site"] as Map<*, *>?
             val finding = site?.let { siteFindings(it).firstOrNull() } ?: "an untaken branch"
-            "$finding, in $method:${site?.get("line") ?: root["line"]} (untaken outcome)"
+            "$finding, in ${methodText(root, site?.get("line") ?: root["line"])} (untaken outcome)"
         }
 
         "reached_from_hit" -> {
@@ -425,7 +452,7 @@ fun clusterRootText(root: Map<*, *>): String {
 
         "class_finding" -> {
             val calledFrom = if (callers.isEmpty()) "" else ", called from $callers"
-            "${root["class_name"]} (class finding: ${findingText(root["finding"])}$calledFrom)"
+            "${classText(root)} (class finding: ${findingText(root["finding"])}$calledFrom)"
         }
 
         else -> {
@@ -485,7 +512,7 @@ fun printStackReport() {
         val r = row as Map<*, *>
         val routes = (r["routes"] as List<*>).takeIf { it.isNotEmpty() }?.let { " routes=$it" } ?: ""
         val inlinedFrom = r["inlined_from_class_name"]?.let { " (inlined from $it)" } ?: ""
-        val where = "${methodText(r)}:${r["line"]}"
+        val where = methodText(r, r["line"])
         if (r["kind"] != "branch") {
             val kind = if (r["method_name"] == "<init>") "unused overload" else "method"
             println("    $where ($kind)$inlinedFrom$routes")
@@ -498,14 +525,14 @@ fun printStackReport() {
     println("  NEVER LOADED:")
     for (cls in readApi("/never-loaded$version")["classes"] as List<*>) {
         val c = cls as Map<*, *>
-        println("    ${c["class_name"]} (${(c["methods"] as List<*>).size} methods)")
+        println("    ${classText(c)} (${(c["methods"] as List<*>).size} methods)")
     }
     for (finding in listOf("never-initialised", "never-instantiated")) {
         println("  ${finding.replace('-', ' ').uppercase()}:")
         for (cls in readApi("/$finding$version")["classes"] as List<*>) {
             val c = cls as Map<*, *>
             val names = (c["methods"] as List<*>).joinToString(", ") { if (it == "<init>") "constructor" else "$it" }
-            println("    ${c["class_name"]} (methods: $names) (instances loading: ${c["instances_loading"]})")
+            println("    ${classText(c)} (methods: $names) (instances loading: ${c["instances_loading"]})")
         }
     }
     for (status in listOf("never-supplied", "always-supplied")) {
@@ -528,7 +555,7 @@ fun printStackReport() {
         for (whole in c["whole_classes"] as List<*>) {
             val w = whole as Map<*, *>
             val finding = w["finding"]?.let { ", ${findingText(it)}" } ?: ""
-            println("      ${w["class_name"]} (whole class$finding, ${w["methods_total"]} methods)")
+            println("      ${classText(w)} (whole class$finding, ${w["methods_total"]} methods)")
         }
         for (member in c["members"] as List<*>) {
             val m = member as Map<*, *>

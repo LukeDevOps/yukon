@@ -22,6 +22,7 @@ import io.github.lukedevops.yukon.proto.DependencyLocation as ProtoDependencyLoc
 import io.github.lukedevops.yukon.proto.EndpointDiscoverySource as ProtoEndpointDiscoverySource
 import io.github.lukedevops.yukon.proto.EndpointLocation as ProtoEndpointLocation
 import io.github.lukedevops.yukon.proto.ExternalClass as ProtoExternalClass
+import io.github.lukedevops.yukon.proto.KotlinKind as ProtoKotlinKind
 import io.github.lukedevops.yukon.proto.ProbeDelta as ProtoProbeDelta
 import io.github.lukedevops.yukon.proto.ProbeKind as ProtoProbeKind
 import io.github.lukedevops.yukon.proto.ProbeLocation as ProtoProbeLocation
@@ -337,6 +338,7 @@ class ProtoPayloadCodecTest {
                         probeNamed("withBody", GeneratedBy.DEFAULT_IMPLS),
                         probeNamed("toString", GeneratedBy.RECORD),
                         probeNamed("format", GeneratedBy.JVM_OVERLOADS),
+                        probeNamed("greet", GeneratedBy.MULTIFILE_FACADE),
                     ),
             )
 
@@ -349,6 +351,7 @@ class ProtoPayloadCodecTest {
         assertEquals(GeneratedBy.DEFAULT_IMPLS, decoded.probes.single { it.methodName == "withBody" }.generatedBy)
         assertEquals(GeneratedBy.RECORD, decoded.probes.single { it.methodName == "toString" }.generatedBy)
         assertEquals(GeneratedBy.JVM_OVERLOADS, decoded.probes.single { it.methodName == "format" }.generatedBy)
+        assertEquals(GeneratedBy.MULTIFILE_FACADE, decoded.probes.single { it.methodName == "greet" }.generatedBy)
     }
 
     @Test
@@ -1022,6 +1025,11 @@ class ProtoPayloadCodecTest {
                                         methodDescriptor = "()V",
                                         generatedBy = GeneratedBy.JVM_OVERLOADS,
                                     ),
+                                    DeclaredMethod(
+                                        methodName = "greet",
+                                        methodDescriptor = "()V",
+                                        generatedBy = GeneratedBy.MULTIFILE_FACADE,
+                                    ),
                                 ),
                         ),
                     ),
@@ -1038,6 +1046,7 @@ class ProtoPayloadCodecTest {
         assertEquals(GeneratedBy.DEFAULT_IMPLS, methods.single { it.methodName == "withBody" }.generatedBy)
         assertEquals(GeneratedBy.RECORD, methods.single { it.methodName == "toString" }.generatedBy)
         assertEquals(GeneratedBy.JVM_OVERLOADS, methods.single { it.methodName == "format" }.generatedBy)
+        assertEquals(GeneratedBy.MULTIFILE_FACADE, methods.single { it.methodName == "greet" }.generatedBy)
     }
 
     @Test
@@ -1749,6 +1758,81 @@ class ProtoPayloadCodecTest {
             wire.map { it.bodyKind },
         )
         assertEquals(listOf("", "", "", "Local", ""), wire.map { it.sourceName })
+    }
+
+    @Test
+    fun `a class location's Kotlin kind round-trips through the wire, every kind included`() {
+        val locations =
+            KotlinKind.entries.mapIndexed { index, kind ->
+                ClassLocation(classId = index, superClassName = "java.lang.Object", interfaceNames = emptyList(), kotlinKind = kind)
+            }
+        val manifest =
+            ProbeManifest(
+                resource = ResourceAttributes("checkout", null, "", null, "run-1"),
+                probes = emptyList(),
+                classLocations = locations,
+            )
+
+        val bytes = ProtoPayloadCodec.encode(manifest)
+
+        assertEquals(manifest, ProtoPayloadCodec.decodeProbeManifest(bytes))
+        assertEquals(
+            listOf(
+                ProtoKotlinKind.KOTLIN_KIND_NONE,
+                ProtoKotlinKind.KOTLIN_CLASS,
+                ProtoKotlinKind.FILE_FACADE,
+                ProtoKotlinKind.SYNTHETIC_CLASS,
+                ProtoKotlinKind.MULTIFILE_CLASS_FACADE,
+                ProtoKotlinKind.MULTIFILE_CLASS_PART,
+            ),
+            ProtoProbeManifest.parseFrom(bytes).classLocationsList.map { it.kotlinKind },
+        )
+        assertEquals((0..5).toList(), ProtoProbeManifest.parseFrom(bytes).classLocationsList.map { it.kotlinKindValue })
+    }
+
+    @Test
+    fun `a declared class's Kotlin kind round-trips through the wire, every kind included`() {
+        val baseline =
+            StaticBaseline(
+                resource = ResourceAttributes("checkout", "1.0.0", "instance-1", "prod", "run-1"),
+                declaredClasses =
+                    KotlinKind.entries.map { kind ->
+                        DeclaredClass(className = "com.example.$kind", methods = listOf(DeclaredMethod("f", "()V")), kotlinKind = kind)
+                    },
+                scannedAt = 1000L,
+            )
+
+        val bytes = ProtoPayloadCodec.encode(baseline)
+
+        assertEquals(baseline, ProtoPayloadCodec.decodeStaticBaseline(bytes))
+        assertEquals(
+            KotlinKind.entries.map { it.ordinal },
+            ProtoStaticBaseline.parseFrom(bytes).declaredClassesList.map { it.kotlinKindValue },
+        )
+    }
+
+    @Test
+    fun `a class location and a declared class with no Kotlin kind on the wire decode as NONE`() {
+        val wireManifest =
+            ProtoProbeManifest
+                .newBuilder()
+                .setResource(ProtoResourceAttributes.newBuilder().setServiceName("checkout").setRunId("run-1"))
+                .addClassLocations(ProtoClassLocation.newBuilder().setClassId(0).setSuperClassName("java.lang.Object"))
+                .build()
+
+        assertEquals(KotlinKind.NONE, ProtoPayloadCodec.decodeProbeManifest(wireManifest.toByteArray()).classLocations.single().kotlinKind)
+    }
+
+    @Test
+    fun `an unrecognized Kotlin kind on the wire is rejected`() {
+        val wireManifest =
+            ProtoProbeManifest
+                .newBuilder()
+                .setResource(ProtoResourceAttributes.newBuilder().setServiceName("checkout").setRunId("run-1"))
+                .addClassLocations(ProtoClassLocation.newBuilder().setClassId(0).setKotlinKindValue(99))
+                .build()
+
+        assertFailsWith<IllegalArgumentException> { ProtoPayloadCodec.decodeProbeManifest(wireManifest.toByteArray()) }
     }
 
     @Test

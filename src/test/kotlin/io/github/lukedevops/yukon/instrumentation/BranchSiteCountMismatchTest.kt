@@ -2,6 +2,7 @@ package io.github.lukedevops.yukon.instrumentation
 
 import io.github.lukedevops.yukon.config.AgentConfig
 import io.github.lukedevops.yukon.export.BodyKind
+import io.github.lukedevops.yukon.export.KotlinKind
 import io.github.lukedevops.yukon.export.ResourceAttributes
 import io.github.lukedevops.yukon.registry.ProbeMeta
 import io.github.lukedevops.yukon.registry.ProbeRegistry
@@ -75,6 +76,7 @@ class BranchSiteCountMismatchTest {
             sourceFile: String?,
             bodyKind: BodyKind,
             sourceName: String?,
+            kotlinKind: KotlinKind,
         ): LongArray {
             registered += className
             return super.register(
@@ -88,6 +90,7 @@ class BranchSiteCountMismatchTest {
                 sourceFile,
                 bodyKind,
                 sourceName,
+                kotlinKind,
             )
         }
     }

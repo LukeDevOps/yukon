@@ -8,6 +8,7 @@ import io.github.lukedevops.yukon.export.CallEdgeKind
 import io.github.lukedevops.yukon.export.DisabledEndpointModule
 import io.github.lukedevops.yukon.export.EndpointDiscoverySource
 import io.github.lukedevops.yukon.export.GeneratedBy
+import io.github.lukedevops.yukon.export.KotlinKind
 import io.github.lukedevops.yukon.export.ProbeKind
 import io.github.lukedevops.yukon.export.ProbeManifest
 import io.github.lukedevops.yukon.export.ProtoPayloadCodec
@@ -127,6 +128,7 @@ class YukonTestCollector private constructor(
         val methods: List<DeclaredMethodInfo>,
         val superClassName: String?,
         val interfaceNames: List<String>,
+        val kotlinKind: KotlinKind = KotlinKind.NONE,
     )
 
     /** One node of the call graph [unreachedClusters] resolves: a probed method, by identity alone. */
@@ -316,6 +318,9 @@ class YukonTestCollector private constructor(
 
     /** A class's supertypes, by name, from any manifest. Populated alongside its probes; see [handleManifest]. */
     private val supertypesByClassName = ConcurrentHashMap<String, SupertypesInfo>()
+
+    /** A class's Kotlin kind, by name, from any manifest, populated the same way as [supertypesByClassName]. See ADR 0041. */
+    private val kotlinKindByClassName = ConcurrentHashMap<String, KotlinKind>()
 
     /** Classes a sweep found loaded but unreported, by name, from any manifest. See ADR 0027. */
     private val unreportedByClassName = ConcurrentHashMap<String, UnreportedClass>()
@@ -952,6 +957,16 @@ class YukonTestCollector private constructor(
      * spot itself rather than only its absence from a claim. See ADR 0027.
      */
     fun unreportedClasses(): List<String> = checked { unreportedByClassName.keys.sorted() }
+
+    /**
+     * What kind of class kotlinc says [className] is, from its manifest record or, for a class
+     * that never loaded, a complete static baseline's declaration. [KotlinKind.NONE] for a class
+     * with no `kotlin.Metadata`, such as a Java class. Null when no payload has named the class. A
+     * report names a [KotlinKind.FILE_FACADE] or a [KotlinKind.MULTIFILE_CLASS_PART] by its
+     * source file. See ADR 0041.
+     */
+    fun kotlinKind(className: String): KotlinKind? =
+        checked { kotlinKindByClassName[className] ?: consultedDeclaredClasses[className]?.kotlinKind }
 
     /**
      * Class names declared by a complete static baseline scan that no manifest, from any
@@ -1882,6 +1897,7 @@ class YukonTestCollector private constructor(
         for (classLocation in manifest.classLocations) {
             val className = classNamesByClassId[classLocation.classId] ?: continue
             supertypesByClassName[className] = SupertypesInfo(classLocation.superClassName, classLocation.interfaceNames)
+            kotlinKindByClassName[className] = classLocation.kotlinKind
         }
         for (endpointLocation in manifest.endpoints) {
             val identity = EndpointIdentity(endpointLocation.verb, endpointLocation.routeTemplate)
@@ -1985,6 +2001,7 @@ class YukonTestCollector private constructor(
                         },
                     superClassName = declaredClass.superClassName,
                     interfaceNames = declaredClass.interfaceNames,
+                    kotlinKind = declaredClass.kotlinKind,
                 )
             baselineReferences[InstanceKey(instanceId, declaredClass.className)] =
                 BaselineReferences(declaredClass.referencedClasses, progress.declaredClasses.getValue(declaredClass.className).methods)

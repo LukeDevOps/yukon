@@ -5,6 +5,7 @@ import io.github.lukedevops.yukon.export.CallEdge
 import io.github.lukedevops.yukon.export.CallEdgeKind
 import io.github.lukedevops.yukon.export.ConditionPart
 import io.github.lukedevops.yukon.export.GeneratedBy
+import io.github.lukedevops.yukon.export.KotlinKind
 import io.github.lukedevops.yukon.instrumentation.ScalaClassDetector
 import io.github.lukedevops.yukon.instrumentation.TypeMatchPolicy
 import net.bytebuddy.jar.asm.AnnotationVisitor
@@ -120,6 +121,12 @@ object BranchSiteAnalyzer {
          * such a default straight to its target with no probe. See ADR 0038.
          */
         private val throwingDefaultOrdinalsByMethod: Map<Pair<String, String>, Set<Int>> = emptyMap(),
+        /**
+         * What kind of class kotlinc says this is, from the `k` element of its `kotlin.Metadata`
+         * by [KotlinKind.ofMetadataKind]. [KotlinKind.NONE] when it has none, and on [EMPTY]. See
+         * ADR 0041.
+         */
+        val kotlinKind: KotlinKind = KotlinKind.NONE,
     ) {
         /**
          * Each kept site of [sites], in site index order, with its outcomes numbered, given roles
@@ -551,6 +558,7 @@ object BranchSiteAnalyzer {
         var nextSiteIndex = 0
         var hasLineNumbers = false
         var isKotlinClass = false
+        var kotlinKind = KotlinKind.NONE
         var isScalaClass = false
 
         var internalClassName = ""
@@ -626,8 +634,11 @@ object BranchSiteAnalyzer {
                     descriptor: String,
                     visible: Boolean,
                 ): AnnotationVisitor? {
-                    if (kotlinMetadataDescriptorShape.matches(descriptor)) isKotlinClass = true
-                    return classReferenceCollector.annotation(descriptor, visible)
+                    val references = classReferenceCollector.annotation(descriptor, visible)
+                    if (!kotlinMetadataDescriptorShape.matches(descriptor)) return references
+                    isKotlinClass = true
+                    kotlinKind = KotlinKind.ofMetadataKind(null)
+                    return MetadataKindReader(references) { kotlinKind = KotlinKind.ofMetadataKind(it) }
                 }
 
                 override fun visitTypeAnnotation(
@@ -778,7 +789,8 @@ object BranchSiteAnalyzer {
         val resolvedGetters = scalaGetterSites.mapTo(mutableSetOf()) { it.getterName to it.getterDescriptor }
         val unresolvedScalaGetterSites = getterCandidateNames.filterNot { it in resolvedGetters }
         val hasTypeInitializer = ("<clinit>" to "()V") in methodAccess
-        val generatedByMethod = computeGeneratedBy(classBytes, internalClassName, superInternalName, methodAccess, methodsWithLineNumbers)
+        val generatedByMethod =
+            computeGeneratedBy(classBytes, internalClassName, superInternalName, methodAccess, methodsWithLineNumbers, kotlinKind)
 
         val callEdgeEntryPoints = if (hasTypeInitializer) eligibleMethodKeys + ("<clinit>" to "()V") else eligibleMethodKeys
         val resolvedCalls =
@@ -795,6 +807,7 @@ object BranchSiteAnalyzer {
                 handlerInterfaces = handlerInterfaces,
                 guardsByMethod = guardsByMethod,
                 isOwnClassBodyClass = hasEnclosingMethod,
+                forwarderKeys = generatedByMethod.filterValues { it in PASS_THROUGH_FORWARDERS }.keys,
             )
         val references =
             placeReferences(
@@ -840,8 +853,33 @@ object BranchSiteAnalyzer {
                 .flatMap { it.sites.entries }
                 .associate { it.key to it.value },
             throwingDefaultOrdinalsByMethod,
+            kotlinKind,
         )
     }
+
+    /**
+     * Reads the `k` element of a `kotlin.Metadata` annotation and hands it to [onKind]. It passes
+     * every element on to [delegate] unchanged and decodes nothing else. See ADR 0041.
+     */
+    private class MetadataKindReader(
+        delegate: AnnotationVisitor?,
+        private val onKind: (Int) -> Unit,
+    ) : AnnotationVisitor(Opcodes.ASM9, delegate) {
+        override fun visit(
+            name: String?,
+            value: Any?,
+        ) {
+            if (name == "k" && value is Int) onKind(value)
+            super.visit(name, value)
+        }
+    }
+
+    /**
+     * The generated forwarders a call passes through, per ADR 0041: a call into one records edges
+     * to what the forwarder calls. Each only moves its arguments on to another method. `ENUM`,
+     * `DATA_CLASS` and `RECORD` methods do work of their own, so a call into one stays an edge.
+     */
+    private val PASS_THROUGH_FORWARDERS = setOf(GeneratedBy.JVM_OVERLOADS, GeneratedBy.MULTIFILE_FACADE, GeneratedBy.DEFAULT_IMPLS)
 
     /**
      * Runs [GuardAnalysis] over each recorded method that has at least one kept site. A method
@@ -1257,6 +1295,19 @@ object BranchSiteAnalyzer {
      * is part of the visited key and of the edge, so a callee reached under two guards gives two
      * edges. The forwarder table's walk sets no guard, since its candidates are not an entry
      * point's own.
+     *
+     * A generated forwarder ([PASS_THROUGH_FORWARDERS]: a `JVM_OVERLOADS` overload, a
+     * `MULTIFILE_FACADE` function or a `DEFAULT_IMPLS` method) is a pass-through too, though it
+     * keeps its probe. [forwarderKeys] names this class's own, and [MethodTable.forwarderKeys]
+     * another class's. A call into one records edges to what the forwarder calls, transitively,
+     * and a cross-class one implies its owner's `<clinit>`, the same as any other cross-class
+     * pass-through. So a call to a `@JvmOverloads` overload reaches the full function through its
+     * `$default` twin, and a call to a multi-file facade reaches the part's function. A `<init>`
+     * forwarder of a body class still adds the body-class edges. The forwarder keeps its own
+     * references, since it has a probe to hold them, so none of them are added to the caller. An
+     * entry point that is itself a generated forwarder does not pass through other forwarders:
+     * its own edges name its callees as its bytecode does. A `$default` whose target is a
+     * forwarder, as a multi-file facade's may be, passes through the target too. See ADR 0041.
      */
     private fun resolveCallEdges(
         internalClassName: String,
@@ -1271,6 +1322,7 @@ object BranchSiteAnalyzer {
         handlerInterfaces: Set<String> = emptySet(),
         guardsByMethod: Map<Pair<String, String>, MethodGuards> = emptyMap(),
         isOwnClassBodyClass: Boolean = false,
+        forwarderKeys: Set<Pair<String, String>> = emptySet(),
     ): ResolvedCalls {
         val crossClassMethodTables = mutableMapOf<String, MethodTable?>()
 
@@ -1322,13 +1374,17 @@ object BranchSiteAnalyzer {
         // candidate's guard.
         fun walk(
             candidates: List<RawCandidate>,
-            references: MutableSet<String>,
+            ownReferences: MutableSet<String>,
             passThroughs: MutableSet<Pair<String, String>>,
+            passThroughForwarders: Boolean,
             guardOf: (RawCandidate) -> Int?,
         ): Set<CallEdge> {
             val edges = LinkedHashSet<CallEdge>()
             val visited = mutableSetOf<VisitKey>()
             var guard: Int? = null
+            // Where the pass-throughs the walk reaches put their references. Inside a generated
+            // forwarder this is a set nobody reads, since the forwarder holds its own.
+            var references = ownReferences
 
             fun edge(
                 owner: String,
@@ -1369,13 +1425,23 @@ object BranchSiteAnalyzer {
                     }
                 }
 
+                // Walks a generated forwarder's own candidates in place of an edge to it.
+                fun passThroughForwarder(forwarderCandidates: List<RawCandidate>) {
+                    val outer = references
+                    references = LinkedHashSet()
+                    forwarderCandidates.forEach(::visitInside)
+                    references = outer
+                }
+
                 if (owner == internalClassName) {
                     if (name == "<clinit>") return
                     val access = methodAccess[name to descriptor]
                     val nonVirtual = access != null && access and NON_VIRTUAL_FLAGS != 0
                     val virtual = virtualRaw && !nonVirtual
                     val declaredWithBody = access != null && access and BODYLESS_FLAGS == 0
-                    if ((name to descriptor) in eligibleMethodKeys || !declaredWithBody) {
+                    if (passThroughForwarders && declaredWithBody && (name to descriptor) in forwarderKeys) {
+                        passThroughForwarder(rawCandidatesByMethod[name to descriptor].orEmpty())
+                    } else if ((name to descriptor) in eligibleMethodKeys || !declaredWithBody) {
                         edges += edge(dottedClassName, name, descriptor, virtual, kind, capturedCount)
                     } else {
                         passThroughs += name to descriptor
@@ -1389,10 +1455,15 @@ object BranchSiteAnalyzer {
                 if (!TypeMatchPolicy.isIncluded(dottedOwner, includePackages, excludePackages)) return
 
                 if (isDefaultShaped(name, descriptor)) {
-                    val target = methodTableFor(owner)?.let { resolveCrossClassDefaultTarget(owner, name, descriptor, it) }
+                    val defaultTable = methodTableFor(owner)
+                    val target = defaultTable?.let { resolveCrossClassDefaultTarget(owner, name, descriptor, it) }
                     if (target != null) {
-                        edges += edge(dottedOwner, target.name, target.descriptor, target.virtual, kind, capturedCount)
-                        references += methodTableFor(owner)?.rawReferencesByMethod?.get(name to descriptor).orEmpty()
+                        references += defaultTable.rawReferencesByMethod[name to descriptor].orEmpty()
+                        if (passThroughForwarders && (target.name to target.descriptor) in defaultTable.forwarderKeys) {
+                            visit(owner, target.name, target.descriptor, target.virtual, kind, capturedCount)
+                        } else {
+                            edges += edge(dottedOwner, target.name, target.descriptor, target.virtual, kind, capturedCount)
+                        }
                         return
                     }
                 }
@@ -1426,8 +1497,14 @@ object BranchSiteAnalyzer {
                     return
                 }
 
-                val nonVirtual = access and NON_VIRTUAL_FLAGS != 0
-                edges += edge(dottedOwner, name, descriptor, virtualRaw && !nonVirtual, kind, capturedCount)
+                val isForwarder = passThroughForwarders && declaredWithBody && (name to descriptor) in table.forwarderKeys
+                if (isForwarder) {
+                    passThroughForwarder(table.rawCandidatesByMethod[name to descriptor].orEmpty())
+                    visit(owner, "<clinit>", "()V", false, kind, 0)
+                } else {
+                    val nonVirtual = access and NON_VIRTUAL_FLAGS != 0
+                    edges += edge(dottedOwner, name, descriptor, virtualRaw && !nonVirtual, kind, capturedCount)
+                }
 
                 if (isConstructorOrInitializer && table.hasEnclosingMethod) {
                     for ((bodyKey, bodyAccess) in table.methodAccess) {
@@ -1461,7 +1538,8 @@ object BranchSiteAnalyzer {
                         guards.guardAt(if (createsBody) candidate.newOrdinal else candidate.ordinal)
                     }
                 }
-            val edges = walk(rawCandidatesByMethod[methodKey].orEmpty(), references, reachedPassThroughs, guardOf)
+            val passThroughForwarders = methodKey !in forwarderKeys
+            val edges = walk(rawCandidatesByMethod[methodKey].orEmpty(), references, reachedPassThroughs, passThroughForwarders, guardOf)
             val (selfName, selfDescriptor) = methodKey
             return edges.filterNot { it.className == dottedClassName && it.methodName == selfName && it.methodDescriptor == selfDescriptor }
         }
@@ -1479,7 +1557,7 @@ object BranchSiteAnalyzer {
                     reachedUnprobedBodyClasses,
                     handlerInterfaces,
                     ::methodTableFor,
-                ) { candidates -> walk(candidates, LinkedHashSet(), mutableSetOf()) { null } }
+                ) { candidates -> walk(candidates, LinkedHashSet(), mutableSetOf(), passThroughForwarders = true) { null } }
             }
         return ResolvedCalls(edgesByMethod, referencesByMethod, reachedPassThroughs, handlerForwarders)
     }
@@ -1597,8 +1675,9 @@ object BranchSiteAnalyzer {
      * class from the one declaring it, by descriptor shape alone: the same matching rule
      * [resolveDefaultSites] applies in-class, minus the parts that need the `$default` method's
      * own bytecode (the mask test, its optional-parameter bits), since a call edge only needs the
-     * target's identity and whether it can be overridden. No match, or more than one, returns
-     * null, the same as an unresolved same-class default site.
+     * target's identity and whether it can be overridden. A constructor is never overridden, so
+     * an edge to one is never virtual. No match, or more than one, returns null, the same as an
+     * unresolved same-class default site.
      */
     private fun resolveCrossClassDefaultTarget(
         ownerInternalName: String,
@@ -1638,7 +1717,7 @@ object BranchSiteAnalyzer {
         if (matches.size != 1) return null
         val (targetKey, targetAccess) = matches.single()
         val nonVirtual = targetAccess and NON_VIRTUAL_FLAGS != 0
-        return CrossClassDefaultTarget(targetKey.first, targetKey.second, virtual = !nonVirtual)
+        return CrossClassDefaultTarget(targetKey.first, targetKey.second, virtual = !isConstructor && !nonVirtual)
     }
 
     /** A target with any of these flags can never be overridden, so a call to it is never virtual. See ADR 0024. */
@@ -2283,6 +2362,10 @@ object BranchSiteAnalyzer {
      * overload `@JvmOverloads` adds does, is [GeneratedBy.JVM_OVERLOADS]; see
      * [jvmOverloadsForwarders] and ADR 0040. The body is read only when the class declares a
      * `$default` method or constructor at all, since a forwarder needs one to call.
+     *
+     * In a class whose [kotlinKind] is [KotlinKind.MULTIFILE_CLASS_FACADE], a function that only
+     * forwards to the same function on a part is [GeneratedBy.MULTIFILE_FACADE]; see
+     * [multifileFacadeForwarders] and ADR 0041.
      */
     private fun computeGeneratedBy(
         classBytes: ByteArray,
@@ -2290,6 +2373,7 @@ object BranchSiteAnalyzer {
         superInternalName: String?,
         methodAccess: Map<Pair<String, String>, Int>,
         methodsWithLineNumbers: Set<Pair<String, String>>,
+        kotlinKind: KotlinKind,
     ): Map<Pair<String, String>, GeneratedBy> {
         val result = mutableMapOf<Pair<String, String>, GeneratedBy>()
 
@@ -2320,6 +2404,10 @@ object BranchSiteAnalyzer {
         }
 
         markDataClassMembers(internalClassName, methodAccess, methodsWithLineNumbers, result)
+
+        if (kotlinKind == KotlinKind.MULTIFILE_CLASS_FACADE) {
+            for (key in multifileFacadeForwarders(classBytes, internalClassName)) result.putIfAbsent(key, GeneratedBy.MULTIFILE_FACADE)
+        }
 
         if (methodAccess.keys.any { (name, descriptor) -> isDefaultShaped(name, descriptor) }) {
             for (key in jvmOverloadsForwarders(classBytes, internalClassName)) result.putIfAbsent(key, GeneratedBy.JVM_OVERLOADS)
@@ -2629,18 +2717,78 @@ object BranchSiteAnalyzer {
                     exceptions: Array<out String>?,
                 ): MethodVisitor? {
                     if (access and BODYLESS_FLAGS != 0) return null
-                    val firstSlot = if (access and Opcodes.ACC_STATIC != 0) 0 else 1
-                    val expectedLoads = mutableListOf<Pair<Int, Int>>()
-                    var slot = firstSlot
-                    for (type in parseParameterDescriptors(descriptor)) {
-                        expectedLoads += loadOpcodeFor(type) to slot
-                        slot += slotWidth(type)
-                    }
-                    return ForwarderShapeVisitor(interfaceInternalName, expectedLoads) { forwarders += name to descriptor }
+                    return ForwarderShapeVisitor(
+                        argumentLoads(descriptor, isStatic = access and Opcodes.ACC_STATIC != 0),
+                        allowNullChecks = false,
+                        isForwardingCall = { opcode, owner, _, _ -> opcode == Opcodes.INVOKESTATIC && owner == interfaceInternalName },
+                    ) { forwarders += name to descriptor }
                 }
             }
         ClassReader(classBytes).accept(classVisitor, ClassReader.SKIP_DEBUG or ClassReader.SKIP_FRAMES)
         return forwarders
+    }
+
+    /**
+     * The functions of the multi-file facade [internalClassName] whose body only forwards to a
+     * part. Such a body may first null-check some of its reference parameters, as a
+     * `@JvmOverloads` overload may (see [jvmOverloadsForwarders]). Then it loads each of its
+     * parameters once, in order, and makes one `invokestatic` of the method with its own name and
+     * descriptor on another class in its own package. Then it returns, with one xRETURN. Any other
+     * instruction means the body is not a forwarder. Only a static method that is not synthetic, a
+     * bridge or bodyless is checked.
+     *
+     * kotlinc 2.2.21 emits exactly the loads, the call and the return for a function and a
+     * property getter, with no null check (checked with `javap`): the check sits in the part's
+     * function. The rule stays narrow for the reason [defaultImplsForwarders] gives. The part is not
+     * checked to be a part, since the facade names its parts only in its metadata, which the agent
+     * does not decode. See ADR 0041.
+     */
+    private fun multifileFacadeForwarders(
+        classBytes: ByteArray,
+        internalClassName: String,
+    ): Set<Pair<String, String>> {
+        val ownPackage = internalClassName.substringBeforeLast('/', "")
+        val forwarders = mutableSetOf<Pair<String, String>>()
+        val classVisitor =
+            object : ClassVisitor(Opcodes.ASM9) {
+                override fun visitMethod(
+                    access: Int,
+                    name: String,
+                    descriptor: String,
+                    signature: String?,
+                    exceptions: Array<out String>?,
+                ): MethodVisitor? {
+                    if (access and (BODYLESS_FLAGS or Opcodes.ACC_SYNTHETIC or Opcodes.ACC_BRIDGE) != 0) return null
+                    if (access and Opcodes.ACC_STATIC == 0 || name == "<clinit>") return null
+                    return ForwarderShapeVisitor(
+                        argumentLoads(descriptor, isStatic = true),
+                        allowNullChecks = true,
+                        isForwardingCall = { opcode, owner, calledName, calledDescriptor ->
+                            opcode == Opcodes.INVOKESTATIC &&
+                                owner != internalClassName &&
+                                owner.substringBeforeLast('/', "") == ownPackage &&
+                                calledName == name &&
+                                calledDescriptor == descriptor
+                        },
+                    ) { forwarders += name to descriptor }
+                }
+            }
+        ClassReader(classBytes).accept(classVisitor, ClassReader.SKIP_DEBUG or ClassReader.SKIP_FRAMES)
+        return forwarders
+    }
+
+    /** Each parameter's xLOAD opcode and local slot, in order, for a method with [descriptor]. */
+    private fun argumentLoads(
+        descriptor: String,
+        isStatic: Boolean,
+    ): List<Pair<Int, Int>> {
+        val loads = mutableListOf<Pair<Int, Int>>()
+        var slot = if (isStatic) 0 else 1
+        for (type in parseParameterDescriptors(descriptor)) {
+            loads += loadOpcodeFor(type) to slot
+            slot += slotWidth(type)
+        }
+        return loads
     }
 
     /** The xLOAD opcode that pushes a local of field descriptor [type]. */
@@ -2655,15 +2803,21 @@ object BranchSiteAnalyzer {
 
     /**
      * Walks one method body and calls [onForwarder] at its end when the body is exactly
-     * [expectedLoads], then one `invokestatic` on [interfaceInternalName], then one xRETURN. See
-     * [defaultImplsForwarders].
+     * [expectedLoads], then one call [isForwardingCall] accepts, then one xRETURN. With
+     * [allowNullChecks], kotlinc's parameter null checks may come before the loads: `aload` of a
+     * reference parameter, `ldc` of its name, then `invokestatic` of
+     * `Intrinsics.checkNotNullParameter` or `checkParameterIsNotNull`. Labels, line numbers, frames
+     * and other pseudo-instructions are ignored. See [defaultImplsForwarders] and
+     * [multifileFacadeForwarders].
      */
     private class ForwarderShapeVisitor(
-        private val interfaceInternalName: String,
         private val expectedLoads: List<Pair<Int, Int>>,
+        private val allowNullChecks: Boolean,
+        private val isForwardingCall: (opcode: Int, owner: String, name: String, descriptor: String) -> Boolean,
         private val onForwarder: () -> Unit,
     ) : MethodVisitor(Opcodes.ASM9) {
-        private var loadsSeen = 0
+        private val referenceSlots = expectedLoads.filter { it.first == Opcodes.ALOAD }.mapTo(mutableSetOf()) { it.second }
+        private val pushed = mutableListOf<Pushed>()
         private var invoked = false
         private var returned = false
         private var broken = false
@@ -2676,11 +2830,13 @@ object BranchSiteAnalyzer {
             opcode: Int,
             varIndex: Int,
         ) {
-            if (invoked || loadsSeen >= expectedLoads.size || expectedLoads[loadsSeen] != (opcode to varIndex)) {
-                reject()
-                return
-            }
-            loadsSeen++
+            if (invoked || opcode !in Opcodes.ILOAD..Opcodes.ALOAD) return reject()
+            pushed += Pushed.Load(opcode, varIndex)
+        }
+
+        override fun visitLdcInsn(value: Any?) {
+            if (invoked || !allowNullChecks || value !is String) return reject()
+            pushed += Pushed.StringConstant
         }
 
         override fun visitMethodInsn(
@@ -2690,18 +2846,21 @@ object BranchSiteAnalyzer {
             descriptor: String,
             isInterface: Boolean,
         ) {
-            if (invoked || opcode != Opcodes.INVOKESTATIC || owner != interfaceInternalName || loadsSeen != expectedLoads.size) {
-                reject()
+            if (invoked) return reject()
+            if (allowNullChecks && opcode == Opcodes.INVOKESTATIC && owner.endsWith(INTRINSICS_SUFFIX) && name in parameterNullCheckNames) {
+                val checked = pushed.getOrNull(0) as? Pushed.Load
+                val checksOwnReference = checked != null && checked.opcode == Opcodes.ALOAD && checked.slot in referenceSlots
+                if (pushed.size != 2 || !checksOwnReference || pushed[1] != Pushed.StringConstant) return reject()
+                pushed.clear()
                 return
             }
+            if (!isForwardingCall(opcode, owner, name, descriptor)) return reject()
+            if (pushed != expectedLoads.map { (loadOpcode, slot) -> Pushed.Load(loadOpcode, slot) }) return reject()
             invoked = true
         }
 
         override fun visitInsn(opcode: Int) {
-            if (!invoked || returned || opcode !in Opcodes.IRETURN..Opcodes.RETURN) {
-                reject()
-                return
-            }
+            if (!invoked || returned || opcode !in Opcodes.IRETURN..Opcodes.RETURN) return reject()
             returned = true
         }
 
@@ -2733,8 +2892,6 @@ object BranchSiteAnalyzer {
             opcode: Int,
             label: Label,
         ) = reject()
-
-        override fun visitLdcInsn(value: Any?) = reject()
 
         override fun visitIincInsn(
             varIndex: Int,
@@ -3136,6 +3293,8 @@ object BranchSiteAnalyzer {
      * class, and kotlinc attaches the same attribute to a function reference, a suspend lambda, and
      * an object expression. See ADR 0024's body-class rule. [interfaceInternalNames] says whether a
      * body class implements a handler interface, which the forwarder table needs (ADR 0035).
+     * [kotlinKind] is the class's own, and [forwarderKeys] its generated forwarders that a call
+     * passes through (ADR 0041).
      */
     internal class MethodTable(
         val classAccess: Int,
@@ -3149,6 +3308,8 @@ object BranchSiteAnalyzer {
         val internalName: String = "",
         val superInternalName: String? = null,
         val interfaceInternalNames: List<String> = emptyList(),
+        val kotlinKind: KotlinKind = KotlinKind.NONE,
+        val forwarderKeys: Set<Pair<String, String>> = emptySet(),
     ) {
         /**
          * A body class the type matcher turns away by [TypeMatchPolicy.isTurnedAwayByShape], so
@@ -3162,7 +3323,9 @@ object BranchSiteAnalyzer {
                     TypeMatchPolicy.isTurnedAwayByShape(
                         internalName.replace('/', '.'),
                         classAccess and Opcodes.ACC_SYNTHETIC != 0,
-                    ) { superInternalName?.replace('/', '.') }
+                        { superInternalName?.replace('/', '.') },
+                        { kotlinKind },
+                    )
     }
 
     /**
@@ -3179,6 +3342,7 @@ object BranchSiteAnalyzer {
         var superInternalName: String? = null
         var interfaceInternalNames: List<String> = emptyList()
         var hasEnclosingMethod = false
+        var kotlinKind = KotlinKind.NONE
         val methodAccess = mutableMapOf<Pair<String, String>, Int>()
         val localNames = mutableMapOf<Pair<String, String>, MutableMap<Int, String>>()
         val firstLines = mutableMapOf<Pair<String, String>, Int>()
@@ -3207,6 +3371,15 @@ object BranchSiteAnalyzer {
                     descriptor: String?,
                 ) {
                     hasEnclosingMethod = true
+                }
+
+                override fun visitAnnotation(
+                    descriptor: String,
+                    visible: Boolean,
+                ): AnnotationVisitor? {
+                    if (!kotlinMetadataDescriptorShape.matches(descriptor)) return null
+                    kotlinKind = KotlinKind.ofMetadataKind(null)
+                    return MetadataKindReader(null) { kotlinKind = KotlinKind.ofMetadataKind(it) }
                 }
 
                 override fun visitMethod(
@@ -3245,6 +3418,12 @@ object BranchSiteAnalyzer {
 
         ClassReader(classBytes).accept(classVisitor, ClassReader.SKIP_FRAMES)
         val isScalaClass = ScalaClassDetector.isScalaClass(classBytes)
+        // A method with any line number carries a line-number table, which is all the data-class
+        // rule in computeGeneratedBy asks of methodsWithLineNumbers.
+        val forwarderKeys =
+            computeGeneratedBy(classBytes, internalName, superInternalName, methodAccess, firstLines.keys, kotlinKind)
+                .filterValues { it in PASS_THROUGH_FORWARDERS }
+                .keys
         return MethodTable(
             classAccess,
             methodAccess,
@@ -3257,6 +3436,8 @@ object BranchSiteAnalyzer {
             internalName,
             superInternalName,
             interfaceInternalNames,
+            kotlinKind,
+            forwarderKeys,
         )
     }
 }

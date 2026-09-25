@@ -108,8 +108,23 @@ sees it, which for a plain `if` is the condition the source wrote. The demo's
 two checkout conditions print like this:
 
 ```
-NEVER HIT: io.github.lukedevops.demo.server.DemoServerMainKt#handleCheckout:67 `System.getenv("ENABLE_LEGACY_DISCOUNT") == "true"` was never true, only path to DemoServerMain.kt:68 (instance 7b19f033-7980-4e51-bfbd-c088d2e21533, class 0, probe 10) [BRANCH branch#1]
-NEVER HIT: io.github.lukedevops.demo.server.DemoServerMainKt#handleCheckout:74 `discounted > 100.0` was never true, only path to DemoServerMain.kt:75, partly to DemoServerMain.kt:88 (instance 7b19f033-7980-4e51-bfbd-c088d2e21533, class 0, probe 12) [BRANCH branch#3]
+NEVER HIT: handleCheckout (DemoServerMain.kt:71) `System.getenv("ENABLE_LEGACY_DISCOUNT") == "true"` was never true, only path to DemoServerMain.kt:72 (instance 17e3afc3-76f1-435c-b30a-5e594350530f, class 0, probe 10) [BRANCH branch#1]
+NEVER HIT: handleCheckout (DemoServerMain.kt:78) `discounted > 100.0` was never true, only path to DemoServerMain.kt:79, partly to DemoServerMain.kt:92 (instance 17e3afc3-76f1-435c-b30a-5e594350530f, class 0, probe 12) [BRANCH branch#3]
+```
+
+A top-level function prints with its file, as `handleCheckout
+(DemoServerMain.kt)`, rather than as a member of `DemoServerMainKt`, the
+class kotlinc makes for the file. The agent reads that from the kind kotlinc
+writes into each class's `kotlin.Metadata`, never from the name (ADR 0041).
+The demo also has two files that `@file:JvmMultifileClass` joins into one
+class, `DemoText`. That class holds only forwarders, one per function, and
+the code lives in one part class per file. The checkout handler calls
+`checkoutGreeting` through the forwarder, and the agent follows the call to
+the part, so the forwarder is marked generated and never reported. Nothing
+calls `farewellNote`, so its part never loads and prints by its file:
+
+```
+NEVER LOADED: DemoTextFarewell.kt (methods: farewellNote)
 ```
 
 Some findings are about a whole class, not a method in it (yukon-server's
@@ -136,7 +151,7 @@ overload generated, so it is never reported. Constructors print with their
 parameter types:
 
 ```
-NEVER HIT: io.github.lukedevops.demo.server.Money#constructor(int, int):10 [CONSTRUCTOR, unused overload] (instance 7b19f033-7980-4e51-bfbd-c088d2e21533, class 5, probe 1)
+NEVER HIT: io.github.lukedevops.demo.server.Money#constructor(int, int):10 [CONSTRUCTOR, unused overload] (instance 17e3afc3-76f1-435c-b30a-5e594350530f, class 5, probe 1)
 ```
 
 The last report groups those never-hit probes into unreached clusters: a
@@ -159,7 +174,7 @@ is uncalled rather than reached from hit:
 ```
 UNREACHED CLUSTER: root io.github.lukedevops.demo.server.PromoHandler#handle (uncalled), 4 methods, 1 never-loaded classes routes=[* /promo]
   io.github.lukedevops.demo.server.PromoRepository (whole class, never loaded, 2 methods)
-  io.github.lukedevops.demo.server.DemoServerMainKt#applyPromoCode
+  applyPromoCode (DemoServerMain.kt)
   io.github.lukedevops.demo.server.PromoHandler#handle
 ```
 
@@ -180,7 +195,7 @@ way the never-hit report prints it, followed by the method that holds it.
 Deleting that side of the `if` removes both classes whole:
 
 ```
-UNREACHED CLUSTER: root `System.getenv("ENABLE_LEGACY_DISCOUNT") == "true"` was never true, only path to DemoServerMain.kt:68, in io.github.lukedevops.demo.server.DemoServerMainKt#handleCheckout:67 (untaken outcome), 3 methods, 2 never-loaded classes routes=[* /checkout]
+UNREACHED CLUSTER: root `System.getenv("ENABLE_LEGACY_DISCOUNT") == "true"` was never true, only path to DemoServerMain.kt:72, in handleCheckout (DemoServerMain.kt:71) (untaken outcome), 3 methods, 2 never-loaded classes routes=[* /checkout]
   io.github.lukedevops.demo.server.LegacyDiscountCalculator (whole class, never loaded, 2 methods)
   io.github.lukedevops.demo.server.LegacyRates (whole class, never loaded, 1 methods)
 ```
@@ -252,10 +267,15 @@ YukonTestCollector.start().use { collector ->
 
 Class names are the dotted binary names the manifest carries
 (`com.acme.OrdersKt` for a Kotlin file's top-level functions,
-`com.acme.Outer$Inner` for a nested class).
+`com.acme.Outer$Inner` for a nested class). `kotlinKind` says what kind of
+class kotlinc made, so a test can tell a file facade from a class without
+reading the name. A function in a `@file:JvmMultifileClass` file lives in
+its part class, such as `com.acme.Orders__OrderTotalsKt`, not in the facade
+Kotlin callers name.
 
 Queries cover methods (`wasHit`, `hitCount`, `neverHit`, `skippedClasses`,
-`unreportedClasses`), classes (`neverInitialised`, `neverInstantiated`), endpoints (`wasCalled`, `callCount`, `neverCalled`,
+`unreportedClasses`), classes (`neverInitialised`, `neverInstantiated`,
+`kotlinKind`), endpoints (`wasCalled`, `callCount`, `neverCalled`,
 `endpoints`, `disabledEndpointModules`), optional parameters
 (`omissionCount`, `neverSupplied`, `alwaysSupplied`), the call graph
 (`callEdges`, `unreachedClusters`), a clean shutdown (`endedCleanly`,

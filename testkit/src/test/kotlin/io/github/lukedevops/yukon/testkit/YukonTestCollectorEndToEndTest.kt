@@ -2,8 +2,10 @@ package io.github.lukedevops.yukon.testkit
 
 import io.github.lukedevops.yukon.config.AgentConfig
 import io.github.lukedevops.yukon.export.BranchRole
+import io.github.lukedevops.yukon.export.CallEdge
 import io.github.lukedevops.yukon.export.ExportScheduler
 import io.github.lukedevops.yukon.export.HttpOtlpStyleExporter
+import io.github.lukedevops.yukon.export.KotlinKind
 import io.github.lukedevops.yukon.export.ProbeKind
 import io.github.lukedevops.yukon.instrumentation.YukonInstrumentation
 import io.github.lukedevops.yukon.registry.EndpointRegistry
@@ -302,6 +304,61 @@ class YukonTestCollectorEndToEndTest {
         assertEquals(emptyList(), cluster.wholeClasses)
         assertTrue(clusters.none { it.root.className in setOf("$FIXTURES.AuditTrail", "$FIXTURES.LinePrinter") })
         assertTrue(clusters.all { c -> c.methods.none { it.methodName == "<clinit>" } })
+    }
+
+    @Test
+    fun `a never-hit part function called only through its multi-file facade joins its caller's cluster, observed only through the wire protocol`() {
+        val target = YukonTestCollector.start()
+        collector = target
+
+        val registry = ProbeRegistry()
+        val config =
+            AgentConfig.parse(
+                "includePackages=com.example.testkittarget," +
+                    "endpoint=${target.endpoint}," +
+                    "flushIntervalSeconds=1," +
+                    "serviceName=testkit-e2e," +
+                    "serviceInstanceId=e2e-7",
+            )
+
+        val instrumentation = ByteBuddyAgent.install()
+        val yukon = YukonInstrumentation(config, registry)
+        installedYukon = yukon
+        installedTransformer = yukon.install(instrumentation)
+
+        val callerClass = Class.forName("$FIXTURES.TextCaller", true, fixtureLoader())
+        callerClass.getMethod("exercised").invoke(callerClass.getDeclaredConstructor().newInstance())
+
+        val exporter = HttpOtlpStyleExporter(target.endpoint)
+        val exportScheduler = ExportScheduler(config, TestResources.forConfig(config), registry, EndpointRegistry(), exporter)
+        scheduler = exportScheduler
+        exportScheduler.start()
+
+        val part = "$FIXTURES.TestkitText__TestkitGreetingsKt"
+        target.awaitProbe(part, "partGreeting", Duration.ofSeconds(10))
+        target.awaitProbe("$FIXTURES.TextCaller", "neverCalled", Duration.ofSeconds(10))
+        target.awaitNextFlush(Duration.ofSeconds(10))
+
+        assertEquals(KotlinKind.MULTIFILE_CLASS_PART, target.kotlinKind(part))
+        assertEquals(KotlinKind.MULTIFILE_CLASS_FACADE, target.kotlinKind("$FIXTURES.TestkitText"))
+        assertTrue(target.wasHit(part, "partHello"), "the part is probed though kotlinc marks it synthetic")
+        assertEquals(
+            listOf(CallEdge(part, "partGreeting", "(Ljava/lang/String;)Ljava/lang/String;", virtual = false)),
+            target.callEdges("$FIXTURES.TextCaller", "neverCalled").filter { it.methodName != "<clinit>" },
+        )
+
+        val clusters = target.unreachedClusters()
+        assertTrue(clusters.none { it.root.className == part }, "the part's function is no uncalled root: $clusters")
+        val cluster = clusters.single { it.root.className == "$FIXTURES.TextCaller" && it.root.methodName == "neverCalled" }
+        assertEquals(RootKind.UNCALLED, cluster.rootKind)
+        assertEquals(
+            listOf("$part#partGreeting", "$FIXTURES.TextCaller#neverCalled"),
+            cluster.members.map { "${it.className}#${it.methodName}" },
+        )
+        assertTrue(
+            target.neverHit().none { it.className == "$FIXTURES.TestkitText" },
+            "the facade's forwarders are generated, never rows",
+        )
     }
 
     private companion object {

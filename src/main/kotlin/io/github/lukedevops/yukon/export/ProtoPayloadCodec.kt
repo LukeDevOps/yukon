@@ -24,6 +24,7 @@ import io.github.lukedevops.yukon.proto.EndpointDiscoverySource as ProtoEndpoint
 import io.github.lukedevops.yukon.proto.EndpointLocation as ProtoEndpointLocation
 import io.github.lukedevops.yukon.proto.ExternalClass as ProtoExternalClass
 import io.github.lukedevops.yukon.proto.GeneratedBy as ProtoGeneratedBy
+import io.github.lukedevops.yukon.proto.KotlinKind as ProtoKotlinKind
 import io.github.lukedevops.yukon.proto.LineRange as ProtoLineRange
 import io.github.lukedevops.yukon.proto.ProbeDelta as ProtoProbeDelta
 import io.github.lukedevops.yukon.proto.ProbeKind as ProtoProbeKind
@@ -402,6 +403,7 @@ object ProtoPayloadCodec {
             .setSourceFile(location.sourceFile ?: "")
             .setBodyKind(toProto(location.bodyKind))
             .setSourceName(location.sourceName ?: "")
+            .setKotlinKind(toProto(location.kotlinKind))
             .build()
 
     private fun fromProto(location: ProtoClassLocation): ClassLocation =
@@ -412,7 +414,29 @@ object ProtoPayloadCodec {
             sourceFile = location.sourceFile.ifEmpty { null },
             bodyKind = fromProto(location.bodyKind),
             sourceName = location.sourceName.ifEmpty { null },
+            kotlinKind = fromProto(location.kotlinKind),
         )
+
+    private fun toProto(kind: KotlinKind): ProtoKotlinKind =
+        when (kind) {
+            KotlinKind.NONE -> ProtoKotlinKind.KOTLIN_KIND_NONE
+            KotlinKind.KOTLIN_CLASS -> ProtoKotlinKind.KOTLIN_CLASS
+            KotlinKind.FILE_FACADE -> ProtoKotlinKind.FILE_FACADE
+            KotlinKind.SYNTHETIC_CLASS -> ProtoKotlinKind.SYNTHETIC_CLASS
+            KotlinKind.MULTIFILE_CLASS_FACADE -> ProtoKotlinKind.MULTIFILE_CLASS_FACADE
+            KotlinKind.MULTIFILE_CLASS_PART -> ProtoKotlinKind.MULTIFILE_CLASS_PART
+        }
+
+    private fun fromProto(kind: ProtoKotlinKind): KotlinKind =
+        when (kind) {
+            ProtoKotlinKind.KOTLIN_KIND_NONE -> KotlinKind.NONE
+            ProtoKotlinKind.KOTLIN_CLASS -> KotlinKind.KOTLIN_CLASS
+            ProtoKotlinKind.FILE_FACADE -> KotlinKind.FILE_FACADE
+            ProtoKotlinKind.SYNTHETIC_CLASS -> KotlinKind.SYNTHETIC_CLASS
+            ProtoKotlinKind.MULTIFILE_CLASS_FACADE -> KotlinKind.MULTIFILE_CLASS_FACADE
+            ProtoKotlinKind.MULTIFILE_CLASS_PART -> KotlinKind.MULTIFILE_CLASS_PART
+            ProtoKotlinKind.UNRECOGNIZED -> throw IllegalArgumentException("unrecognized Kotlin kind on the wire: $kind")
+        }
 
     private fun toProto(kind: BodyKind): ProtoBodyKind =
         when (kind) {
@@ -467,6 +491,7 @@ object ProtoPayloadCodec {
             GeneratedBy.DEFAULT_IMPLS -> ProtoGeneratedBy.DEFAULT_IMPLS
             GeneratedBy.RECORD -> ProtoGeneratedBy.RECORD
             GeneratedBy.JVM_OVERLOADS -> ProtoGeneratedBy.JVM_OVERLOADS
+            GeneratedBy.MULTIFILE_FACADE -> ProtoGeneratedBy.MULTIFILE_FACADE
         }
 
     // GENERATED_BY_NONE is a legitimate value on the wire, unlike ProbeKind's own unspecified
@@ -480,6 +505,7 @@ object ProtoPayloadCodec {
             ProtoGeneratedBy.DEFAULT_IMPLS -> GeneratedBy.DEFAULT_IMPLS
             ProtoGeneratedBy.RECORD -> GeneratedBy.RECORD
             ProtoGeneratedBy.JVM_OVERLOADS -> GeneratedBy.JVM_OVERLOADS
+            ProtoGeneratedBy.MULTIFILE_FACADE -> GeneratedBy.MULTIFILE_FACADE
             ProtoGeneratedBy.UNRECOGNIZED -> throw IllegalArgumentException("unrecognized generated-by reason on the wire: $generatedBy")
         }
 
@@ -534,6 +560,7 @@ object ProtoPayloadCodec {
             .setSourceFile(declaredClass.sourceFile ?: "")
             .setBodyKind(toProto(declaredClass.bodyKind))
             .setSourceName(declaredClass.sourceName ?: "")
+            .setKotlinKind(toProto(declaredClass.kotlinKind))
             .build()
 
     private fun fromProto(declaredClass: ProtoDeclaredClass): DeclaredClass =
@@ -546,6 +573,7 @@ object ProtoPayloadCodec {
             sourceFile = declaredClass.sourceFile.ifEmpty { null },
             bodyKind = fromProto(declaredClass.bodyKind),
             sourceName = declaredClass.sourceName.ifEmpty { null },
+            kotlinKind = fromProto(declaredClass.kotlinKind),
         )
 
     private fun toProto(method: DeclaredMethod): ProtoDeclaredMethod =

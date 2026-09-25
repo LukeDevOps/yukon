@@ -39,6 +39,11 @@ enum GeneratedBy {
   // declaration and not on the overloads. The source's own full constructor or function is not
   // marked. See ADR 0040.
   JVM_OVERLOADS = 5;
+  // A function of a multi-file facade, the class @file:JvmMultifileClass makes. Its body only loads
+  // its arguments, calls the static method with the same name and descriptor on a part class in
+  // the same package, and returns. kotlinc's parameter null checks may come first. The part's
+  // function holds the code and is not marked. See ADR 0041.
+  MULTIFILE_FACADE = 6;
 }
 
 // Who sent a payload. DeltaBatch, ProbeManifest and StaticBaseline each carry one, and one process
@@ -342,6 +347,10 @@ message ClassLocation {
   // The name the source gave a LOCAL_CLASS, such as Local for Foo$1Local, read from the class's
   // own InnerClasses entry. Set only for LOCAL_CLASS, and empty for every other kind.
   string source_name = 6;
+  // What kind of class kotlinc says this is, read from the k element of the class's
+  // kotlin.Metadata. KOTLIN_KIND_NONE, the zero value, for a class with no kotlin.Metadata. See
+  // KotlinKind and ADR 0041.
+  KotlinKind kotlin_kind = 7;
 }
 
 // What kind of body class a class is, read from its own class file. A body class exists only to
@@ -373,6 +382,32 @@ enum BodyKind {
   // through it to the function it names.
   reserved 5;
   reserved "REFERENCE";
+}
+
+// What kind of class kotlinc says a class is: the k element of its kotlin.Metadata, which the agent
+// reads as one int and decodes nothing else from. The values match k. A consumer names a file
+// facade or a multi-file part by its source file, not its JVM name. See ADR 0041.
+enum KotlinKind {
+  // No kotlin.Metadata on the class, such as a Java or Scala class. Also a k outside 1 to 5, which
+  // kotlin.Metadata's own documentation says is read as a class that is not Kotlin's. The zero
+  // value.
+  KOTLIN_KIND_NONE = 0;
+  // A class, interface, object, enum or annotation class, or a companion. kotlin.Metadata's k
+  // defaults to 1, so an annotation with no k element is this kind too.
+  KOTLIN_CLASS = 1;
+  // The class kotlinc makes for one source file's top-level functions and properties, such as
+  // DemoServerMainKt for DemoServerMain.kt, or the name @file:JvmName gives it.
+  FILE_FACADE = 2;
+  // A class kotlinc makes that has no Kotlin declaration of its own, such as a lambda class, a
+  // $DefaultImpls class or a $WhenMappings class.
+  SYNTHETIC_CLASS = 3;
+  // The class @file:JvmMultifileClass makes to join several files under one name. It holds only
+  // forwarders to its parts, which GeneratedBy marks MULTIFILE_FACADE. It has no SourceFile
+  // attribute, since it has no one file.
+  MULTIFILE_CLASS_FACADE = 4;
+  // One file's part of a multi-file facade. It holds that file's code, and its source_file names
+  // the file. kotlinc marks it synthetic, but the agent probes it as it probes any other class.
+  MULTIFILE_CLASS_PART = 5;
 }
 
 // A class the JVM has loaded that reached no manifest, neither as a probed
@@ -511,6 +546,9 @@ message DeclaredClass {
   // The same field ClassLocation carries for a loaded class, read the same way. Set only for
   // LOCAL_CLASS, and empty for every other kind. See ADR 0034.
   string source_name = 8;
+  // The same field ClassLocation carries for a loaded class, read the same way. KOTLIN_KIND_NONE
+  // when the class has no kotlin.Metadata, or when its bytes could not be read. See ADR 0041.
+  KotlinKind kotlin_kind = 9;
 }
 
 // A class the static scanner found on the classpath but judged unsafe to

@@ -9,6 +9,7 @@ import io.github.lukedevops.yukon.advice.ProbeIndex
 import io.github.lukedevops.yukon.bootstrap.YukonProbeArrays
 import io.github.lukedevops.yukon.config.AgentConfig
 import io.github.lukedevops.yukon.export.BodyKind
+import io.github.lukedevops.yukon.export.KotlinKind
 import io.github.lukedevops.yukon.export.ProbeKind
 import io.github.lukedevops.yukon.instrumentation.branch.BranchDropCounts
 import io.github.lukedevops.yukon.instrumentation.branch.BranchDropReason
@@ -22,6 +23,7 @@ import io.github.lukedevops.yukon.registry.ExternalClassRegistry
 import io.github.lukedevops.yukon.registry.ProbeMeta
 import io.github.lukedevops.yukon.registry.ProbeRegistry
 import net.bytebuddy.ByteBuddy
+import net.bytebuddy.NamingStrategy
 import net.bytebuddy.agent.builder.AgentBuilder
 import net.bytebuddy.agent.builder.ResettableClassFileTransformer
 import net.bytebuddy.asm.Advice
@@ -51,8 +53,13 @@ import net.bytebuddy.implementation.bytecode.member.FieldAccess
 import net.bytebuddy.implementation.bytecode.member.MethodInvocation
 import net.bytebuddy.jar.asm.MethodVisitor
 import net.bytebuddy.matcher.ElementMatcher
+import net.bytebuddy.matcher.ElementMatchers.any
+import net.bytebuddy.matcher.ElementMatchers.isBootstrapClassLoader
+import net.bytebuddy.matcher.ElementMatchers.isExtensionClassLoader
+import net.bytebuddy.matcher.ElementMatchers.nameStartsWith
 import net.bytebuddy.matcher.ElementMatchers.named
 import net.bytebuddy.matcher.ElementMatchers.none
+import net.bytebuddy.matcher.ElementMatchers.not
 import net.bytebuddy.matcher.ElementMatchers.takesArguments
 import net.bytebuddy.utility.JavaModule
 import java.io.IOException
@@ -165,6 +172,8 @@ class YukonInstrumentation(
             // own explicit matchers (methodMatcher, typeMatcher), so lifting ByteBuddy's blanket
             // exclusion here does not widen what actually gets instrumented.
             .Default(ByteBuddy().ignore(none()))
+            .ignore(any<TypeDescription>(), isBootstrapClassLoader<ClassLoader>().or(isExtensionClassLoader()))
+            .or(ignoredNames())
             // No LoadedTypeInitializer is ever used, so ByteBuddy has nothing to run after load
             // and no reason to inject its Nexus class into the bootstrap loader via Unsafe.
             .with(AgentBuilder.InitializationStrategy.NoOp.INSTANCE)
@@ -173,6 +182,20 @@ class YukonInstrumentation(
             .transform { builder, typeDescription, classLoader, _, _ -> instrument(builder, typeDescription, classLoader) }
             .installOn(instrumentation)
     }
+
+    /**
+     * The names in ByteBuddy's own default ignore matcher: its own package (other than the package
+     * it renames types into) and the reflection internals. With the bootstrap and platform loader
+     * clause beside it in [install], this is `AgentBuilder.Default`'s ignore matcher in byte-buddy
+     * 1.18.12 without its synthetic-type clause. That clause would keep a multi-file part from
+     * [typeMatcher], which takes that one kind of synthetic class and turns away every other (ADR
+     * 0041).
+     */
+    private fun ignoredNames(): ElementMatcher.Junction<TypeDescription> =
+        nameStartsWith<TypeDescription>("net.bytebuddy.")
+            .and(not(nameStartsWith("${NamingStrategy.BYTE_BUDDY_RENAME_PACKAGE}.")))
+            .or(nameStartsWith("sun.reflect."))
+            .or(nameStartsWith("jdk.internal.reflect."))
 
     /** Removes both transformers [install] registered. */
     fun uninstall(
@@ -202,6 +225,7 @@ class YukonInstrumentation(
         val bodyKind: BodyKind,
         val sourceName: String?,
         val handlerForwarders: List<HandlerForwarder>,
+        val kotlinKind: KotlinKind,
     )
 
     /**
@@ -267,6 +291,7 @@ class YukonInstrumentation(
                 sourceFile = pending.sourceFile,
                 bodyKind = pending.bodyKind,
                 sourceName = pending.sourceName,
+                kotlinKind = pending.kotlinKind,
             )
             for ((className, location) in pending.externalClasses) externalClassRegistry.record(className, location)
             pending.handlerForwarders.forEach(handlerForwarders::record)
@@ -552,6 +577,7 @@ class YukonInstrumentation(
                 analysis.bodyKind,
                 analysis.sourceName,
                 analysis.handlerForwarders,
+                analysis.kotlinKind,
             ),
         )
         if (staticBaselineMismatchDetector.shouldWarnAbout(typeDescription.name)) {

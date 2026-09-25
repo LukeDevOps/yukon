@@ -1,5 +1,6 @@
 package io.github.lukedevops.yukon.instrumentation
 
+import io.github.lukedevops.yukon.export.KotlinKind
 import net.bytebuddy.description.annotation.AnnotationDescription
 import net.bytebuddy.description.method.MethodDescription
 import net.bytebuddy.description.type.TypeDescription
@@ -70,7 +71,12 @@ object TypeMatchPolicy {
     ): ElementMatcher.Junction<TypeDescription> =
         any<TypeDescription>().and { typeDescription: TypeDescription ->
             isIncluded(typeDescription.name, instrumentedPackagePrefixes, excludedPackagePrefixes) &&
-                !isTurnedAwayByShape(typeDescription.name, typeDescription.isSynthetic) { superClassNameOf(typeDescription) }
+                !isTurnedAwayByShape(
+                    typeDescription.name,
+                    typeDescription.isSynthetic,
+                    { superClassNameOf(typeDescription) },
+                    { kotlinKindOf(typeDescription) },
+                )
         }
 
     /**
@@ -79,6 +85,11 @@ object TypeMatchPolicy {
      * is a suspend function's own continuation ([isContinuationSuperclass]). [className] and the
      * result of [superClassName] are dotted. [superClassName] is read only when the other tests
      * pass, since a type description may have to resolve it.
+     *
+     * A synthetic class whose [kotlinKind] is [KotlinKind.MULTIFILE_CLASS_PART] is not turned away.
+     * kotlinc marks each part of a multi-file facade synthetic, but the part holds the code of one
+     * source file, and the facade holds only forwarders to it (ADR 0041). [kotlinKind] is read only
+     * for a synthetic class.
      *
      * [io.github.lukedevops.yukon.instrumentation.branch.BranchSiteAnalyzer] asks the same question
      * of a class it reads from bytes, and passes through a body class this turns away. Both call
@@ -89,7 +100,40 @@ object TypeMatchPolicy {
         className: String,
         isSynthetic: Boolean,
         superClassName: () -> String?,
-    ): Boolean = isSynthetic || isRuntimeGenerated(className) || isContinuationSuperclass(superClassName())
+        kotlinKind: () -> KotlinKind,
+    ): Boolean =
+        (isSynthetic && kotlinKind() != KotlinKind.MULTIFILE_CLASS_PART) ||
+            isRuntimeGenerated(className) ||
+            isContinuationSuperclass(superClassName())
+
+    /**
+     * A dotted annotation type name shaped like `kotlin.Metadata`: one package segment, then
+     * `Metadata`. A shape, not a literal, since `shadowJar` rewrites a literal starting with
+     * `kotlin.` in this agent's own code.
+     */
+    private val KOTLIN_METADATA_NAME_SHAPE = Regex("^[^.]+\\.Metadata$")
+
+    /**
+     * The kind kotlinc gives [typeDescription] in the `k` element of its `kotlin.Metadata`, by
+     * [KotlinKind.ofMetadataKind]. [KotlinKind.NONE] when the class carries no such annotation. An
+     * annotation whose `k` cannot be read counts as the element's default, the same as a missing
+     * one. See ADR 0041.
+     */
+    fun kotlinKindOf(typeDescription: TypeDescription): KotlinKind {
+        val metadata =
+            try {
+                typeDescription.declaredAnnotations.firstOrNull { KOTLIN_METADATA_NAME_SHAPE.matches(it.annotationType.name) }
+            } catch (_: Exception) {
+                null
+            } ?: return KotlinKind.NONE
+        val k =
+            try {
+                metadata.getValue("k").resolve() as? Int
+            } catch (_: Exception) {
+                null
+            }
+        return KotlinKind.ofMetadataKind(k)
+    }
 
     /**
      * Markers in the name of a class a framework synthesized in memory, carried in the middle of

@@ -151,6 +151,9 @@ open class LoadedClassSweep(
      * annotation that is illegal on a type. Reading a class's annotations resolves each
      * annotation's own type and can load classes, and a sweep must not load anything in order to
      * look. A class turned away for that reason is recorded as skipped, so it never reaches here.
+     * The same limit applies to a multi-file part. The type matcher takes that one kind of
+     * synthetic class (ADR 0041), but only its `kotlin.Metadata` tells it apart, so the sweep drops
+     * every synthetic class. A part that reached no transformer is not reported.
      */
     private fun isCandidate(loaded: Class<*>): Boolean {
         if (loaded.isArray || loaded.isPrimitive || loaded.isHidden) return false

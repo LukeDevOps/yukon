@@ -46,6 +46,10 @@ private const val FREE_SHIPPING_THRESHOLD = 100.0
  * initialiser, is loaded and never instantiated. [handleCheckout] builds every [Money] from pence,
  * leaving its pounds-and-pence constructor an unused overload, and always passes [Price]'s scale,
  * so the overload `@JvmOverloads` adds never runs and is never reported.
+ *
+ * [checkoutGreeting] and [farewellNote] sit in two files that `@file:JvmMultifileClass` joins into
+ * one facade, `DemoText`, which holds only generated forwarders. [handleCheckout] calls the first,
+ * and nothing calls the second, so its part never loads. Both parts read by their file names.
  */
 fun main() {
     val server = HttpServer.create(InetSocketAddress(DemoPorts.SERVER_PORT), 0)
@@ -77,7 +81,7 @@ private fun handleCheckout(exchange: HttpExchange) {
             "${describeOrder(charged)} does not qualify for free shipping"
         }
     val send: (HttpExchange, String) -> Unit = ::respond
-    send(exchange, message)
+    send(exchange, "${checkoutGreeting()}: $message")
 }
 
 /**

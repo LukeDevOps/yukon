@@ -198,7 +198,15 @@ _Avoid_: synthetic method (kotlinc's bodies are not synthetic), anonymous functi
 A class's superclass and direct interfaces, sent with the class so a collector can widen a virtual call edge to the methods that override or inherit its callee.
 
 **Pass-through**:
-A compiler-generated method with no probe of its own, such as a bridge, an `access$` accessor, Kotlin's `$default`, or any method of a body class the agent does not probe, such as a Kotlin reference class's forwarding `invoke`, whose callees are attributed to whatever references it, in its own class or another. Lambda bodies are not pass-throughs: they hold the adopter's own code and get probes.
+A compiler-generated method with no probe of its own, such as a bridge, an `access$` accessor, Kotlin's `$default`, or any method of a body class the agent does not probe, such as a Kotlin reference class's forwarding `invoke`, whose callees are attributed to whatever references it, in its own class or another. A generated forwarder is a pass-through too, though it keeps a probe for its hits: a `@JvmOverloads` overload, a multi-file facade's function, or a `$DefaultImpls` forwarder. Lambda bodies are not pass-throughs: they hold the adopter's own code and get probes.
+
+**File facade**:
+The class kotlinc makes for a source file's top-level functions and properties, such as `DemoServerMainKt` for `DemoServerMain.kt`. It is named after the file, or by `@file:JvmName`. The agent reads it from the class's `@kotlin.Metadata` kind, never from the name. A person knows it as the file.
+_Avoid_: Kt class, facade class, file class
+
+**Multi-file facade**:
+The class that `@file:JvmMultifileClass` makes to join several files under one name. It holds only forwarders to its parts, one part class per source file, where the code lives.
+_Avoid_: combined facade
 
 **Body class**:
 A class that exists only to carry a body its creator hands to someone else: a function or property reference, a Kotlin lambda compiled to a class (every suspend lambda is one), an object expression, an anonymous or local class. Its creator is treated as the caller of every method it declares. A body class the agent does not probe (a Kotlin function or property reference, a `$sam$` wrapper, a suspend function's continuation) is a pass-through instead, so the creator reaches the function or accessor it names.

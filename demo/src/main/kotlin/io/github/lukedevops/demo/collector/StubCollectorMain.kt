@@ -12,6 +12,7 @@ import io.github.lukedevops.yukon.proto.ConditionPartKind
 import io.github.lukedevops.yukon.proto.DeltaBatch
 import io.github.lukedevops.yukon.proto.EndpointDiscoverySource
 import io.github.lukedevops.yukon.proto.GeneratedBy
+import io.github.lukedevops.yukon.proto.KotlinKind
 import io.github.lukedevops.yukon.proto.LineRange
 import io.github.lukedevops.yukon.proto.ProbeKind
 import io.github.lukedevops.yukon.proto.ProbeManifest
@@ -118,6 +119,15 @@ private data class CallEdgeInfo(
     val creates: Boolean = false,
 )
 
+/**
+ * What a report needs to name a class the way a person knows it: its source file and the kind
+ * kotlinc gives it. See ADR 0041.
+ */
+private data class ClassNaming(
+    val sourceFile: String?,
+    val kotlinKind: KotlinKind,
+)
+
 /** A class's superclass and direct interfaces, as reported by one instance. See ADR 0024. */
 private data class SupertypesInfo(
     val superClassName: String?,
@@ -181,6 +191,10 @@ private val skippedClasses = ConcurrentHashMap<InstanceClassKey, SkippedInfo>()
 // later chunk's cluster logic needs the actual callees, not just how many arrived.
 private val manifestCallEdges = ConcurrentHashMap<InstanceProbeKey, List<CallEdgeInfo>>()
 private val supertypesByClassId = ConcurrentHashMap<InstanceClassIdKey, SupertypesInfo>()
+
+// Each class's naming, by name, from any manifest's class locations or any baseline's declared
+// classes. A class's source file and kind are the same in every run of one build.
+private val classNamingByClassName = ConcurrentHashMap<String, ClassNaming>()
 
 // hits_total is cumulative from process start, not the count since the last flush. Merging with
 // max() is what makes this safe against a re-delivered or reordered batch: applying the same or
@@ -558,9 +572,14 @@ private fun handleManifest(exchange: HttpExchange) {
         skippedClasses[InstanceClassKey(run, skipped.className)] = SkippedInfo(skipped.reason, skipped.skippedAt)
         dynamicallyKnownClassNames += skipped.className
     }
+    // A class's location record is committed with its probes, so this manifest names its class.
+    val classNamesById = manifest.probesList.associate { it.classId to it.className }
     for (classLocation in manifest.classLocationsList) {
         supertypesByClassId[InstanceClassIdKey(run, classLocation.classId)] =
             SupertypesInfo(classLocation.superClassName.ifEmpty { null }, classLocation.interfaceNamesList)
+        classNamesById[classLocation.classId]?.let { className ->
+            classNamingByClassName[className] = ClassNaming(classLocation.sourceFile.ifEmpty { null }, classLocation.kotlinKind)
+        }
     }
     for (endpoint in manifest.endpointsList) {
         manifestEndpoints[InstanceEndpointKey(run, endpoint.endpointId)] =
@@ -613,6 +632,10 @@ private fun handleStaticBaseline(exchange: HttpExchange) {
             BaselineReferences(declaredClass.referencedClassesList.toList(), staticallyDeclaredClasses.getValue(declaredClass.className))
         staticallyDeclaredSupertypes[declaredClass.className] =
             SupertypesInfo(declaredClass.superClassName.ifEmpty { null }, declaredClass.interfaceNamesList)
+        classNamingByClassName.putIfAbsent(
+            declaredClass.className,
+            ClassNaming(declaredClass.sourceFile.ifEmpty { null }, declaredClass.kotlinKind),
+        )
     }
     for (external in baseline.externalClassesList) {
         externalClasses[InstanceClassKey(run, external.className)] =
@@ -722,9 +745,9 @@ private fun printNeverHitReport() {
             val where = "(instance ${key.run.serviceInstanceId}, class ${key.classId}, probe ${key.probeIndex})"
             val branchIndex = info.branchIndex
             if (branchIndex == null) {
-                val method = methodText(info.className, info.methodName, info.methodDescriptor)
+                val method = methodText(info.className, info.methodName, info.methodDescriptor, info.line)
                 val kind = if (info.methodName == CONSTRUCTOR) "CONSTRUCTOR, unused overload" else "${info.kind}"
-                println("  NEVER HIT: $method:${info.line} [$kind]$inlinedFromSuffix $where")
+                println("  NEVER HIT: $method [$kind]$inlinedFromSuffix $where")
             } else {
                 val site =
                     info.siteIndex?.let { siteIndex ->
@@ -732,10 +755,8 @@ private fun printNeverHitReport() {
                             ?.firstOrNull { it.siteIndex == siteIndex }
                     }
                 val description = site?.let { describeNeverHitOutcome(it, branchIndex) } ?: "branch at line ${info.line}"
-                println(
-                    "  NEVER HIT: ${info.className}#${info.methodName}:${info.line} $description$inlinedFromSuffix $where " +
-                        "[${info.kind} branch#$branchIndex]",
-                )
+                val method = methodText(info.className, info.methodName, info.methodDescriptor, info.line)
+                println("  NEVER HIT: $method $description$inlinedFromSuffix $where [${info.kind} branch#$branchIndex]")
             }
         }
     // Kotlin inline functions copy their body into the caller, so their own probe reads near
@@ -754,12 +775,48 @@ private fun printNeverHitReport() {
     println("=====================================")
 }
 
-/** A method as the reports print it: `Class#name`, or `Class#constructor(int, String)` for a constructor. */
-private fun methodText(
+/**
+ * The source file a report names [className] by: set for a file facade or a multi-file part that
+ * has one, and null for every other class. See ADR 0041.
+ */
+private fun sourceFileNaming(className: String): String? {
+    val naming = classNamingByClassName[className] ?: return null
+    val isFileKind = naming.kotlinKind == KotlinKind.FILE_FACADE || naming.kotlinKind == KotlinKind.MULTIFILE_CLASS_PART
+    return naming.sourceFile.takeIf { isFileKind }
+}
+
+/** Whether [className] is a multi-file facade, which a report tags. See ADR 0041. */
+private fun isMultifileFacade(className: String): Boolean =
+    classNamingByClassName[className]?.kotlinKind == KotlinKind.MULTIFILE_CLASS_FACADE
+
+/**
+ * A class as the reports print it (ADR 0041). A file facade or a multi-file part prints as its
+ * source file, such as `DemoServerMain.kt`. A multi-file facade prints by its JVM name with a
+ * `(multi-file facade)` tag. Any other class, or a class whose kind no payload named, prints by
+ * its JVM name.
+ */
+internal fun classText(className: String): String =
+    sourceFileNaming(className) ?: if (isMultifileFacade(className)) "$className (multi-file facade)" else className
+
+/**
+ * A method as the reports print it: `Class#name`, or `Class#constructor(int, String)` for a
+ * constructor. A member of a file facade or a multi-file part prints as a top-level function with
+ * its file, such as `handleCheckout (DemoServerMain.kt)`, and [line], when given, joins the file:
+ * `handleCheckout (DemoServerMain.kt:121)`. A member of a multi-file facade carries the facade's
+ * tag. See ADR 0041.
+ */
+internal fun methodText(
     className: String,
     methodName: String,
     methodDescriptor: String,
-): String = if (methodName == CONSTRUCTOR) "$className#${constructorText(methodDescriptor)}" else "$className#$methodName"
+    line: Int? = null,
+): String {
+    val shown = if (methodName == CONSTRUCTOR) constructorText(methodDescriptor) else methodName
+    val lineSuffix = line?.let { ":$it" } ?: ""
+    sourceFileNaming(className)?.let { return "$shown ($it$lineSuffix)" }
+    val tag = if (isMultifileFacade(className)) " (multi-file facade)" else ""
+    return "$className#$shown$lineSuffix$tag"
+}
 
 /** A constructor's name as source reads it: `constructor(...)` with its parameters' simple type names. */
 private fun constructorText(methodDescriptor: String): String {
@@ -952,7 +1009,8 @@ private fun printClassFindingReport() {
                         .sorted()
                 val instances = probes.keys.map { it.run.serviceInstanceId }.distinct().size
                 println(
-                    "  ${finding.text.uppercase()}: $className (methods: ${methods.joinToString(", ")}) (instances loading: $instances)",
+                    "  ${finding.text.uppercase()}: ${classText(className)} (methods: ${methods.joinToString(", ")}) " +
+                        "(instances loading: $instances)",
                 )
             }
     }
@@ -1185,7 +1243,7 @@ private fun printNeverLoadedReport() {
         .sortedBy { it.key }
         .forEach { (className, methods) ->
             val methodNames = methods.joinToString(", ") { it.methodName }
-            println("  NEVER LOADED: $className (methods: $methodNames)")
+            println("  NEVER LOADED: ${classText(className)} (methods: $methodNames)")
         }
     // A class made only of inline functions is never loaded by a Kotlin caller at all, and the
     // compiler emits a generated method again regardless of what the adopter does, so a class
@@ -1193,7 +1251,7 @@ private fun printNeverLoadedReport() {
     // 0022 and ADR 0026.
     if (allInlineOrGenerated.isNotEmpty()) {
         println("all inline or generated (not judged): ${allInlineOrGenerated.size}")
-        allInlineOrGenerated.sortedBy { it.key }.forEach { (className, _) -> println("  ALL INLINE OR GENERATED: $className") }
+        allInlineOrGenerated.sortedBy { it.key }.forEach { (className, _) -> println("  ALL INLINE OR GENERATED: ${classText(className)}") }
     }
     if (staticallyUnprobedClasses.isNotEmpty()) {
         println("nothing to probe (in scope, but no concrete methods): ${staticallyUnprobedClasses.size}")
@@ -1245,7 +1303,8 @@ private fun printUnreachedClusterReport() {
                 ClusterRootKind.UNTAKEN_OUTCOME -> {
                     val description =
                         outcome?.site?.let { describeNeverHitOutcome(it, outcome.branchIndex) } ?: "branch#${outcome?.branchIndex} never ran"
-                    "$description, in $method:${outcome?.line} (untaken outcome)"
+                    val at = methodText(cluster.root.className, cluster.root.methodName, cluster.root.methodDescriptor, outcome?.line)
+                    "$description, in $at (untaken outcome)"
                 }
 
                 ClusterRootKind.REACHED_FROM_HIT -> {
@@ -1258,7 +1317,7 @@ private fun printUnreachedClusterReport() {
 
                 ClusterRootKind.CLASS_FINDING -> {
                     val calledFrom = if (callers.isEmpty()) "" else ", called from $callers"
-                    "${cluster.root.className} (class finding: ${cluster.rootFinding?.text}$calledFrom)"
+                    "${classText(cluster.root.className)} (class finding: ${cluster.rootFinding?.text}$calledFrom)"
                 }
             }
         val routes = routesByHandler[NodeKey(cluster.root.className, cluster.root.methodName, cluster.root.methodDescriptor)]
@@ -1268,7 +1327,7 @@ private fun printUnreachedClusterReport() {
         )
         cluster.wholeClasses.forEach { whole ->
             val finding = whole.finding?.let { ", ${it.text}" } ?: ""
-            println("  ${whole.className} (whole class$finding, ${whole.methodsTotal} methods)")
+            println("  ${classText(whole.className)} (whole class$finding, ${whole.methodsTotal} methods)")
         }
         cluster.members.forEach { member ->
             val suffix = if (member.neverLoaded) " (never loaded)" else ""

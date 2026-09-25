@@ -7,6 +7,7 @@ import io.github.lukedevops.yukon.export.CallEdgeKind
 import io.github.lukedevops.yukon.export.ConditionPart
 import io.github.lukedevops.yukon.export.ConditionPartKind
 import io.github.lukedevops.yukon.export.GeneratedBy
+import io.github.lukedevops.yukon.export.KotlinKind
 import io.github.lukedevops.yukon.export.ProbeKind
 import io.github.lukedevops.yukon.export.ResourceAttributes
 import io.github.lukedevops.yukon.instrumentation.FixtureClassLoader
@@ -602,6 +603,65 @@ class StaticBaselineScannerTest {
         assertEquals(GeneratedBy.NONE, markOf("<init>", "(ILjava/lang/String;I)V"))
         assertEquals(GeneratedBy.JVM_OVERLOADS, markOf("format", "(I)Ljava/lang/String;"))
         assertEquals(GeneratedBy.NONE, markOf("format", "(ILjava/lang/String;)Ljava/lang/String;"))
+    }
+
+    @Test
+    fun `declares each class with its Kotlin kind, the synthetic multi-file part included`() {
+        fun kotlinClass(simpleName: String) =
+            "com/example/target/$simpleName.class" to classBytes("kotlin/test/com/example/target/$simpleName.class")
+        val root =
+            directoryRoot(
+                kotlinClass("KindClass"),
+                kotlinClass("KindObject"),
+                kotlinClass("KotlinKindTargetKt"),
+                kotlinClass("MultifileText"),
+                kotlinClass("MultifileText__MultifileGreetingKt"),
+                kotlinClass("GeneratedInterface\$DefaultImpls"),
+                "com/example/target/SampleTarget.class" to sampleTargetBytes,
+            )
+        val scanner = StaticBaselineScanner(listOf("com.example.target"))
+
+        val result = scanner.scan(listOf(root))
+
+        val kinds = result.declaredClasses.associate { it.className.removePrefix("com.example.target.") to it.kotlinKind }
+        assertEquals(KotlinKind.KOTLIN_CLASS, kinds["KindClass"])
+        assertEquals(KotlinKind.KOTLIN_CLASS, kinds["KindObject"])
+        assertEquals(KotlinKind.FILE_FACADE, kinds["KotlinKindTargetKt"])
+        assertEquals(KotlinKind.MULTIFILE_CLASS_FACADE, kinds["MultifileText"])
+        assertEquals(KotlinKind.MULTIFILE_CLASS_PART, kinds["MultifileText__MultifileGreetingKt"])
+        assertEquals(KotlinKind.SYNTHETIC_CLASS, kinds["GeneratedInterface\$DefaultImpls"])
+        assertEquals(KotlinKind.NONE, kinds["SampleTarget"])
+    }
+
+    @Test
+    fun `declares a JvmName file facade FILE_FACADE when its annotation type cannot be resolved`() {
+        val root = directoryRoot("com/example/target/WeirdName.class" to weirdNameBytes)
+        val scanner = StaticBaselineScanner(listOf("com.example.target"), supportingTypesLocator = ClassFileLocator.NoOp.INSTANCE)
+
+        val result = scanner.scan(listOf(root))
+
+        assertEquals(KotlinKind.FILE_FACADE, result.declaredClasses.single { it.className == "com.example.target.WeirdName" }.kotlinKind)
+    }
+
+    @Test
+    fun `declares a multi-file facade's forwarders MULTIFILE_FACADE and the part's functions NONE, as the manifest does`() {
+        val root =
+            directoryRoot(
+                "com/example/target/MultifileText.class" to classBytes("kotlin/test/com/example/target/MultifileText.class"),
+                "com/example/target/MultifileText__MultifileGreetingKt.class" to
+                    classBytes("kotlin/test/com/example/target/MultifileText__MultifileGreetingKt.class"),
+            )
+        val scanner = StaticBaselineScanner(listOf("com.example.target"))
+
+        val result = scanner.scan(listOf(root))
+
+        fun methodOf(className: String) =
+            result.declaredClasses
+                .single { it.className == "com.example.target.$className" }
+                .methods
+                .single { it.methodName == "multifileGreeting" }
+        assertEquals(GeneratedBy.MULTIFILE_FACADE, methodOf("MultifileText").generatedBy)
+        assertEquals(GeneratedBy.NONE, methodOf("MultifileText__MultifileGreetingKt").generatedBy)
     }
 
     @Test

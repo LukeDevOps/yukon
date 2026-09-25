@@ -3,6 +3,7 @@ package io.github.lukedevops.yukon.instrumentation.staticscan
 import io.github.lukedevops.yukon.export.BodyKind
 import io.github.lukedevops.yukon.export.DeclaredClass
 import io.github.lukedevops.yukon.export.DeclaredMethod
+import io.github.lukedevops.yukon.export.KotlinKind
 import io.github.lukedevops.yukon.export.StaticallyUnsafeClass
 import io.github.lukedevops.yukon.export.UnprobedClass
 import io.github.lukedevops.yukon.export.UnreadableClass
@@ -271,6 +272,7 @@ class StaticBaselineScanner(
                     scanned.sourceFile,
                     scanned.bodyKind,
                     scanned.sourceName,
+                    scanned.kotlinKind,
                 )
         } catch (e: Exception) {
             // Covers a corrupt class file, or a failure resolving a supporting type (e.g. an
@@ -280,7 +282,10 @@ class StaticBaselineScanner(
         }
     }
 
-    /** [DeclaredMethod]s for one class, plus the supertypes, class-level references, source file and body kind read from the same analysis pass. */
+    /**
+     * [DeclaredMethod]s for one class, plus the supertypes, class-level references, source file,
+     * body kind and Kotlin kind read from the same analysis pass.
+     */
     private class ScannedMethods(
         val methods: List<DeclaredMethod>,
         val superClassName: String?,
@@ -289,6 +294,7 @@ class StaticBaselineScanner(
         val sourceFile: String?,
         val bodyKind: BodyKind,
         val sourceName: String?,
+        val kotlinKind: KotlinKind,
     )
 
     /**
@@ -307,7 +313,8 @@ class StaticBaselineScanner(
      * treated as a non-Scala class, with every method's [DeclaredMethod.inline] and
      * [DeclaredMethod.calls] and references left empty, no method marked as a lambda body,
      * [DeclaredClass.superClassName], [DeclaredClass.sourceFile] and [DeclaredClass.sourceName]
-     * left null, [DeclaredClass.bodyKind] left [BodyKind.NONE], no `<clinit>` entry added, and
+     * left null, [DeclaredClass.bodyKind] left [BodyKind.NONE], [DeclaredClass.kotlinKind] left
+     * [KotlinKind.NONE], no `<clinit>` entry added, and
      * [DeclaredClass.interfaceNames] left empty. This can only happen if the two disagree about
      * what is readable, which no locator this scanner builds does.
      *
@@ -381,6 +388,7 @@ class StaticBaselineScanner(
             analysis.sourceFile,
             analysis.bodyKind,
             analysis.sourceName,
+            analysis.kotlinKind,
         )
     }
 

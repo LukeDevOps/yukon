@@ -1,5 +1,6 @@
 package io.github.lukedevops.yukon.instrumentation
 
+import io.github.lukedevops.yukon.export.KotlinKind
 import net.bytebuddy.ByteBuddy
 import net.bytebuddy.description.modifier.Ownership
 import net.bytebuddy.description.modifier.SyntheticState
@@ -465,29 +466,57 @@ class TypeMatchPolicyTest {
         assertTrue(TypeMatchPolicy.typeNameMatcher(listOf("com.example"), emptyList()).matches(pool.describe(name).resolve()))
     }
 
+    private fun turnedAway(
+        className: String,
+        isSynthetic: Boolean,
+        kotlinKind: KotlinKind = KotlinKind.NONE,
+        superClassName: () -> String? = { "java.lang.Object" },
+    ): Boolean = TypeMatchPolicy.isTurnedAwayByShape(className, isSynthetic, superClassName) { kotlinKind }
+
     @Test
     fun `the shape test turns away a synthetic class, a runtime-generated one and a continuation, and nothing else`() {
-        val plainSuper = { "java.lang.Object" }
-
-        assertTrue(TypeMatchPolicy.isTurnedAwayByShape("com.acme.Foo\$bar\$1", isSynthetic = true, plainSuper))
-        assertTrue(TypeMatchPolicy.isTurnedAwayByShape("com.acme.Foo\$\$SpringCGLIB\$\$0", isSynthetic = false, plainSuper))
-        assertTrue(
-            TypeMatchPolicy.isTurnedAwayByShape("com.acme.FooKt\$bar\$1", isSynthetic = false) {
-                "kotlin.coroutines.jvm.internal.ContinuationImpl"
-            },
-        )
+        assertTrue(turnedAway("com.acme.Foo\$bar\$1", isSynthetic = true))
+        assertTrue(turnedAway("com.acme.Foo\$\$SpringCGLIB\$\$0", isSynthetic = false))
+        assertTrue(turnedAway("com.acme.FooKt\$bar\$1", isSynthetic = false) { "kotlin.coroutines.jvm.internal.ContinuationImpl" })
         assertFalse(
-            TypeMatchPolicy.isTurnedAwayByShape("com.acme.Foo\$bar\$1", isSynthetic = false) {
-                "kotlin.coroutines.jvm.internal.SuspendLambda"
-            },
+            turnedAway("com.acme.Foo\$bar\$1", isSynthetic = false) { "kotlin.coroutines.jvm.internal.SuspendLambda" },
             "a suspend lambda holds the adopter's own body",
         )
-        assertFalse(TypeMatchPolicy.isTurnedAwayByShape("com.acme.Foo", isSynthetic = false, plainSuper))
-        assertFalse(TypeMatchPolicy.isTurnedAwayByShape("com.acme.Foo", isSynthetic = false) { null })
+        assertFalse(turnedAway("com.acme.Foo", isSynthetic = false))
+        assertFalse(turnedAway("com.acme.Foo", isSynthetic = false) { null })
     }
 
     @Test
     fun `the shape test reads no superclass when the class is already turned away`() {
-        assertTrue(TypeMatchPolicy.isTurnedAwayByShape("com.acme.Foo", isSynthetic = true) { error("superclass read") })
+        assertTrue(turnedAway("com.acme.Foo", isSynthetic = true) { error("superclass read") })
+    }
+
+    @Test
+    fun `a synthetic multi-file part is not turned away, and any other synthetic Kotlin class is`() {
+        assertFalse(turnedAway("com.acme.Text__GreetingKt", isSynthetic = true, KotlinKind.MULTIFILE_CLASS_PART))
+        assertTrue(turnedAway("com.acme.Foo\$bar\$1", isSynthetic = true, KotlinKind.SYNTHETIC_CLASS))
+        assertTrue(turnedAway("com.acme.Text", isSynthetic = true, KotlinKind.MULTIFILE_CLASS_FACADE))
+    }
+
+    @Test
+    fun `the shape test reads no Kotlin kind for a class that is not synthetic`() {
+        assertFalse(
+            TypeMatchPolicy.isTurnedAwayByShape("com.acme.Foo", isSynthetic = false, { "java.lang.Object" }) { error("kind read") },
+        )
+    }
+
+    @Test
+    fun `the type matcher takes kotlinc's multi-file part, which is synthetic, and reads each fixture's Kotlin kind`() {
+        val pool = TypePool.Default.of(ClassFileLocator.ForClassLoader.of(javaClass.classLoader))
+        fun describe(name: String) = pool.describe(name).resolve()
+
+        val part = describe("com.example.target.MultifileText__MultifileGreetingKt")
+        assertTrue(part.isSynthetic, "kotlinc marks a part synthetic")
+        assertTrue(TypeMatchPolicy.typeNameMatcher(listOf("com.example.target"), emptyList()).matches(part))
+        assertEquals(KotlinKind.MULTIFILE_CLASS_PART, TypeMatchPolicy.kotlinKindOf(part))
+        assertEquals(KotlinKind.MULTIFILE_CLASS_FACADE, TypeMatchPolicy.kotlinKindOf(describe("com.example.target.MultifileText")))
+        assertEquals(KotlinKind.FILE_FACADE, TypeMatchPolicy.kotlinKindOf(describe("com.example.target.KotlinKindTargetKt")))
+        assertEquals(KotlinKind.KOTLIN_CLASS, TypeMatchPolicy.kotlinKindOf(describe("com.example.target.KindClass")))
+        assertEquals(KotlinKind.NONE, TypeMatchPolicy.kotlinKindOf(describe("com.example.target.SampleTarget")))
     }
 }

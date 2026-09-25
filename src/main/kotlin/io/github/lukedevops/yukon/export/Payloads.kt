@@ -23,7 +23,8 @@ enum class ProbeKind { METHOD, BRANCH, OPTIONAL_ARGUMENT }
  * and whichever of `equals`/`hashCode`/`toString` the adopter did not override (the generated ones
  * have no line-number table), a `$DefaultImpls` method that only forwards to the interface's own
  * default method, a Java record's `equals`/`hashCode`/`toString`, or an overload `@JvmOverloads`
- * adds, whose body only forwards to its own class's `$default` twin. Set on a [ProbeKind.METHOD]
+ * adds, whose body only forwards to its own class's `$default` twin, or a function of a multi-file
+ * facade, whose body only forwards to the same function on a part class (ADR 0041). Set on a [ProbeKind.METHOD]
  * probe and a [DeclaredMethod], on a [ProbeKind.BRANCH] probe as the mark of the method it sits in,
  * and on a [ProbeKind.OPTIONAL_ARGUMENT] probe as its target's own mark. A collector leaves a
  * generated probe out of never-hit, stale-hit, the call graph and the two optional-parameter
@@ -32,7 +33,49 @@ enum class ProbeKind { METHOD, BRANCH, OPTIONAL_ARGUMENT }
  * kept and counted, since a call to a generated method, such as `copy`, is still evidence of use.
  * See ADR 0026.
  */
-enum class GeneratedBy { NONE, ENUM, DATA_CLASS, DEFAULT_IMPLS, RECORD, JVM_OVERLOADS }
+enum class GeneratedBy { NONE, ENUM, DATA_CLASS, DEFAULT_IMPLS, RECORD, JVM_OVERLOADS, MULTIFILE_FACADE }
+
+/**
+ * What kind of class kotlinc says a class is: the `k` element of its `kotlin.Metadata`, the one
+ * int the agent reads from that annotation. The entries are in `k` order, so an entry's ordinal is
+ * its `k`. A consumer names a [FILE_FACADE] or a [MULTIFILE_CLASS_PART] by its source file, not its
+ * JVM name. See ADR 0041.
+ */
+enum class KotlinKind {
+    /** The class has no `kotlin.Metadata`, such as a Java or Scala class, or its `k` is outside 1 to 5. */
+    NONE,
+
+    /** A class, interface, object, enum or annotation class, or a companion. */
+    KOTLIN_CLASS,
+
+    /** The class kotlinc makes for one source file's top-level functions and properties. */
+    FILE_FACADE,
+
+    /** A class kotlinc makes that has no Kotlin declaration of its own, such as a lambda class or a `$DefaultImpls` class. */
+    SYNTHETIC_CLASS,
+
+    /** The class `@file:JvmMultifileClass` makes. It holds only forwarders to its parts. */
+    MULTIFILE_CLASS_FACADE,
+
+    /** One file's part of a multi-file facade, which holds that file's code. */
+    MULTIFILE_CLASS_PART,
+    ;
+
+    companion object {
+        /**
+         * The kind for a `kotlin.Metadata` whose `k` element is [k]. `kotlin.Metadata` declares
+         * `k` with a default of 1, so a null [k] (an annotation without the element) is
+         * [KOTLIN_CLASS]. Any value outside 1 to 5 is [NONE], since the annotation's own
+         * documentation says a class file of an unlisted kind is read as not Kotlin's.
+         */
+        fun ofMetadataKind(k: Int?): KotlinKind =
+            when (k) {
+                null -> KOTLIN_CLASS
+                in 1..5 -> entries[k]
+                else -> NONE
+            }
+    }
+}
 
 /**
  * Who sent a payload. [DeltaBatch], [ProbeManifest] and [StaticBaseline] each carry one, and one
@@ -396,6 +439,9 @@ data class CallEdge(
  * [bodyKind] says what kind of body class this is, or [BodyKind.NONE] when it is not one.
  * [sourceName] is the name the source gave a [BodyKind.LOCAL_CLASS], such as `Local` for
  * `Foo$1Local`, and null for every other kind. See [BodyKind] and ADR 0034.
+ *
+ * [kotlinKind] is what kind of class kotlinc says this is, or [KotlinKind.NONE] when it carries no
+ * `kotlin.Metadata`. See ADR 0041.
  */
 data class ClassLocation(
     val classId: Int,
@@ -404,6 +450,7 @@ data class ClassLocation(
     val sourceFile: String? = null,
     val bodyKind: BodyKind = BodyKind.NONE,
     val sourceName: String? = null,
+    val kotlinKind: KotlinKind = KotlinKind.NONE,
 )
 
 /**
@@ -518,6 +565,9 @@ data class DeclaredMethod(
  * [sourceFile], [bodyKind] and [sourceName] are the same fields [ClassLocation] carries for a
  * loaded class, read the same way. They are null, [BodyKind.NONE] and null when the class's bytes
  * could not be read. See ADR 0034.
+ *
+ * [kotlinKind] is the same field [ClassLocation] carries, read the same way. It is
+ * [KotlinKind.NONE] when the class's bytes could not be read. See ADR 0041.
  */
 data class DeclaredClass(
     val className: String,
@@ -528,6 +578,7 @@ data class DeclaredClass(
     val sourceFile: String? = null,
     val bodyKind: BodyKind = BodyKind.NONE,
     val sourceName: String? = null,
+    val kotlinKind: KotlinKind = KotlinKind.NONE,
 )
 
 /**

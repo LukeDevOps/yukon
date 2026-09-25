@@ -17,6 +17,7 @@ import io.github.lukedevops.yukon.export.EndpointDiscoverySource
 import io.github.lukedevops.yukon.export.EndpointLocation
 import io.github.lukedevops.yukon.export.GeneratedBy
 import io.github.lukedevops.yukon.export.HttpOtlpStyleExporter
+import io.github.lukedevops.yukon.export.KotlinKind
 import io.github.lukedevops.yukon.export.LineRange
 import io.github.lukedevops.yukon.export.ProbeDelta
 import io.github.lukedevops.yukon.export.ProbeKind
@@ -370,6 +371,42 @@ class YukonTestCollectorTest {
 
         val failure = assertFailsWith<UnknownProbeException> { target.wasHit("com.acme.Dead", "m") }
         assertTrue(failure.message!!.contains("never loaded"), failure.message)
+    }
+
+    @Test
+    fun `kotlinKind reads a loaded class's kind from its manifest record and a never-loaded one's from a complete baseline`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+        exporter.exportManifest(
+            ProbeManifest(
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
+                listOf(methodProbe(1, 0, "com.acme.TextKt", "greet", "()V", 1)),
+                classLocations =
+                    listOf(ClassLocation(1, "java.lang.Object", emptyList(), sourceFile = "Text.kt", kotlinKind = KotlinKind.FILE_FACADE)),
+            ),
+        )
+        exporter.exportStaticBaseline(
+            StaticBaseline(
+                resource = ResourceAttributes("svc", null, "i-1", null, "run-1"),
+                declaredClasses =
+                    listOf(
+                        DeclaredClass(
+                            "com.acme.Text__PartKt",
+                            listOf(DeclaredMethod("f", "()V")),
+                            kotlinKind = KotlinKind.MULTIFILE_CLASS_PART,
+                        ),
+                        DeclaredClass("com.acme.JavaThing", listOf(DeclaredMethod("g", "()V"))),
+                    ),
+                scannedAt = 1000L,
+                chunkIndex = 0,
+                chunkCount = 1,
+            ),
+        )
+
+        assertEquals(KotlinKind.FILE_FACADE, target.kotlinKind("com.acme.TextKt"))
+        assertEquals(KotlinKind.MULTIFILE_CLASS_PART, target.kotlinKind("com.acme.Text__PartKt"))
+        assertEquals(KotlinKind.NONE, target.kotlinKind("com.acme.JavaThing"))
+        assertEquals(null, target.kotlinKind("com.acme.Nowhere"))
     }
 
     @Test
