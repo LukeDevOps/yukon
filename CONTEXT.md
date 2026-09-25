@@ -161,7 +161,7 @@ _Avoid_: default argument, defaulted parameter
 One call that left an optional parameter to its default.
 
 **Omission probe**:
-The counter for one optional parameter, incremented in the compiler's default-filling method or default getter when a call omits it. It reports the function the parameter belongs to, not the compiler's method it sits in.
+The counter for one optional parameter, incremented in the compiler's default-filling method or default getter when a call omits it. It reports the function the parameter belongs to, not the compiler's method it sits in. Its line is the line of the parameter's default value.
 _Avoid_: argument probe, default probe
 
 **Default-filling method**:

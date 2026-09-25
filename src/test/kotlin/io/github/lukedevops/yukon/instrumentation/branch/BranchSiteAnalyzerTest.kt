@@ -186,6 +186,23 @@ class BranchSiteAnalyzerTest {
         val site = analysis.defaultSites.singleOrNull { it.defaultName == "f\$default" }
         assertEquals(plain.optionalBits, site?.optionalBits, "the same optional parameters must be found in JaCoCo's output")
         assertEquals(plain.parameterNames, site?.parameterNames)
+        assertEquals(mapOf(1 to 7, 2 to 8, 3 to 9), plain.defaultLines)
+        assertEquals(
+            plain.defaultLines,
+            site?.defaultLines,
+            "JaCoCo's probe sits between the inverted test and the fill block, so each default keeps its own line",
+        )
+    }
+
+    @Test
+    fun `a default method with no line-number table gives every default line -1`() {
+        val writer = ClassWriter(0)
+        ClassReader(readInlineTargetBytes("DefaultArgumentTarget")).accept(writer, ClassReader.SKIP_DEBUG)
+
+        val analysis = BranchSiteAnalyzer.analyze(writer.toByteArray()) { _, _ -> false }
+
+        val site = analysis.defaultSites.single { it.defaultName == "f\$default" }
+        assertEquals(mapOf(1 to -1, 2 to -1, 3 to -1), site.defaultLines)
     }
 
     @Test

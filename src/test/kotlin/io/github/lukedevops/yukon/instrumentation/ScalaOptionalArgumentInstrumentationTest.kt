@@ -312,6 +312,11 @@ class ScalaOptionalArgumentInstrumentationTest {
 
         val forwarder = parameterZeroProbes.single { it.className == "com.example.scalatarget.Cc" }
         assertEquals(null, forwarder.targetClassName, "Cc's own static forwarder resolves in class")
+
+        // Each probe carries its own method's first line. Targets.scala declares Cc on line 71,
+        // and the forwarder on Cc has no line-number table of its own.
+        assertEquals(71, moduleGetter.line)
+        assertEquals(-1, forwarder.line, "the forwarder never borrows the module getter's line")
     }
 
     @Test
@@ -321,6 +326,34 @@ class ScalaOptionalArgumentInstrumentationTest {
     @Test
     fun `scala 2 - Cc's constructor default getter for parameter 0 has both a module probe and its own forwarder probe`() =
         `Cc's constructor default getter for parameter 0 has both a module probe and its own forwarder probe`("scala2")
+
+    /**
+     * `DefaultLines.f` in Targets.scala: `b = 1` on line 113, and `c`'s expression `"x"` on line 115,
+     * the line after `c`'s name. `f`'s own first line is 116, its body.
+     */
+    private fun `each getter's probe carries the getter's own line, not the target's`(module: String) {
+        val registry = ProbeRegistry()
+        install(registry, newConfig())
+        val loader = ScalaFixtures.classLoader(module, javaClass.classLoader)
+
+        Class.forName("com.example.scalatarget.DefaultLines", true, loader)
+
+        val lines =
+            registry
+                .manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
+                .probes
+                .filter { it.className == "com.example.scalatarget.DefaultLines" && it.kind == ProbeKind.OPTIONAL_ARGUMENT }
+                .associate { checkNotNull(it.parameterIndex) to it.line }
+        assertEquals(mapOf(1 to 113, 2 to 115), lines)
+    }
+
+    @Test
+    fun `scala 3 - each getter's probe carries the getter's own line, not the target's`() =
+        `each getter's probe carries the getter's own line, not the target's`("scala3")
+
+    @Test
+    fun `scala 2 - each getter's probe carries the getter's own line, not the target's`() =
+        `each getter's probe carries the getter's own line, not the target's`("scala2")
 
     /**
      * Scala 3 resolves `Cc.apply(...)` through the same constructor default getters as `new

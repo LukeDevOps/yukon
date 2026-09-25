@@ -503,7 +503,7 @@ class YukonInstrumentation(
                                 ProbeKind.OPTIONAL_ARGUMENT,
                                 site.targetName,
                                 site.targetDescriptor,
-                                line = analysis.firstLineOf(site.targetName, site.targetDescriptor),
+                                line = site.defaultLines[bit] ?: -1,
                                 inline = analysis.isInline(site.targetName, site.targetDescriptor),
                                 parameterIndex = bit,
                                 parameterName = site.parameterNames[bit] ?: "",

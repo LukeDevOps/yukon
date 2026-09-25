@@ -102,6 +102,8 @@ message ProbeLocation {
   string class_name = 4;
   string method_name = 5;
   string method_descriptor = 6;
+  // The source line, or -1 when the method has no line-number table. An OPTIONAL_ARGUMENT probe
+  // carries its default value's line, not its target's. See ADR 0044.
   int32 line = 7;
   // Unset for method-level probes; set for branch-level probes.
   optional int32 branch_index = 8;

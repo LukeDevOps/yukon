@@ -10,9 +10,10 @@ package io.github.lukedevops.yukon.instrumentation.branch
  * parameter and the getter's own `N` counts it too.
  *
  * [parameterName] is read from the target's `LocalVariableTable` at that parameter's local
- * variable slot, or the empty string when the target carries no debug info. [line] is the target's
- * own first line, read from the class the target actually lives in: [targetClassName]'s bytes when
- * set, otherwise the getter's own class.
+ * variable slot, or the empty string when the target carries no debug info. [line] is the getter's
+ * own first line, since the getter's body is the default expression. It is -1 when the getter has
+ * no line-number table, as a constructor getter's static forwarder does. It is never the target's
+ * line. See ADR 0044.
  *
  * [targetClassName] is the dotted binary name of the class the target lives in, set only for a
  * constructor default getter declared on a companion module class, whose target `<init>` lives on

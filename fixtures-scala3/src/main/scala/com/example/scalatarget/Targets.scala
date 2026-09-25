@@ -101,3 +101,17 @@ object LambdaHost {
     f(value)
   }
 }
+
+/**
+ * Each default on its own line, apart from the body line `f` itself reports, and `c`'s expression
+ * on the line after its name. An omission probe reports the getter's own line, which is where the
+ * default is written. See ADR 0044.
+ */
+class DefaultLines {
+  def f(
+      a: Int,
+      b: Int = 1,
+      c: String =
+        "x"
+  ): Int = a + b + c.length
+}

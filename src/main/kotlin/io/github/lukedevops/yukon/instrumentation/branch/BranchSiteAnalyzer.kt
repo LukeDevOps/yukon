@@ -232,12 +232,17 @@ object BranchSiteAnalyzer {
         }
     }
 
-    /** One `$default`-shaped method found before its target is resolved. */
+    /**
+     * One `$default`-shaped method found before its target is resolved. [fillLines] maps a mask
+     * bit to the line in effect at the first instruction of that bit's fill block. See
+     * [DefaultSite.defaultLines].
+     */
     private data class DefaultCandidate(
         val defaultName: String,
         val defaultDescriptor: String,
         val optionalBits: Int,
         val higherMaskTested: Boolean,
+        val fillLines: Map<Int, Int> = emptyMap(),
     )
 
     /**
@@ -1986,6 +1991,20 @@ object BranchSiteAnalyzer {
         private var optionalBits = 0
         private var higherMaskTested = false
 
+        /** Each mask bit's fill line, keyed by bit index. See [DefaultCandidate.fillLines]. */
+        private val fillLines = mutableMapOf<Int, Int>()
+
+        /** The mask bit whose fill block starts at the next instruction, or -1 when none does. */
+        private var fillStartsNext = -1
+
+        /**
+         * The label a mask test written as `IFNE` jumps to, where its fill block starts, and that
+         * test's bit. JaCoCo inverts kotlinc's `IFEQ` this way and puts its own probe between the
+         * jump and the label, so the fill does not start at the next instruction.
+         */
+        private var fillLabel: Label? = null
+        private var fillLabelBit = -1
+
         /**
          * Whether this method carries a coroutine state machine of its own: a trailing
          * `Continuation` parameter, or `invokeSuspend` on a class whose direct superclass is a
@@ -2018,6 +2037,10 @@ object BranchSiteAnalyzer {
         private var pendingSuspendedMarkerCall = false
 
         private fun pushInsn(insn: RecentInsn) {
+            if (fillStartsNext >= 0) {
+                fillLines.putIfAbsent(fillStartsNext, currentLine)
+                fillStartsNext = -1
+            }
             recentInsn3 = recentInsn2
             recentInsn2 = recentInsn1
             recentInsn1 = insn
@@ -2036,6 +2059,10 @@ object BranchSiteAnalyzer {
 
         override fun visitLabel(label: Label) {
             lastLabel = label
+            if (label === fillLabel) {
+                fillStartsNext = fillLabelBit
+                fillLabel = null
+            }
         }
 
         override fun visitLineNumber(
@@ -2051,18 +2078,28 @@ object BranchSiteAnalyzer {
             opcode: Int,
             label: Label,
         ) {
+            var testedBit = -1
             if (defaultShaped) {
                 // kotlinc writes the test as IFEQ. A coverage agent registered ahead of this one
                 // (JaCoCo) hands over its own output, where every conditional jump is inverted
                 // around an inserted probe, so the same test arrives as IFNE. Either direction
                 // means "mask bit tested"; the advice reads the mask itself, not the branch.
-                if (phase == 3 && (opcode == Opcodes.IFEQ || opcode == Opcodes.IFNE)) optionalBits = optionalBits or pendingConstant
+                if (phase == 3 && (opcode == Opcodes.IFEQ || opcode == Opcodes.IFNE)) {
+                    optionalBits = optionalBits or pendingConstant
+                    testedBit = Integer.numberOfTrailingZeros(pendingConstant)
+                }
                 resetMaskPhase()
             }
             if (eligible && ConditionalJump.isTracked(opcode)) {
                 recordSite(coroutineMachinery = suspendShaped && isCoroutineMachineryJump(opcode))
             }
             pushInsn(RecentInsn.Other)
+            if (testedBit >= 0 && opcode == Opcodes.IFEQ) {
+                fillStartsNext = testedBit
+            } else if (testedBit >= 0) {
+                fillLabel = label
+                fillLabelBit = testedBit
+            }
         }
 
         override fun visitTableSwitchInsn(
@@ -2349,7 +2386,7 @@ object BranchSiteAnalyzer {
 
         override fun visitEnd() {
             if (defaultShaped && optionalBits != 0) {
-                onDefaultCandidate(DefaultCandidate(name, descriptor, optionalBits, higherMaskTested))
+                onDefaultCandidate(DefaultCandidate(name, descriptor, optionalBits, higherMaskTested, fillLines.toMap()))
             }
         }
     }
@@ -3167,6 +3204,7 @@ object BranchSiteAnalyzer {
                 overridable = overridable,
                 maskParameterIndex = maskStartParamIndex,
                 parameterNames = parameterNamesOf(candidate, targetDescriptor, targetIsStatic, localNames[targetKey] ?: emptyMap()),
+                defaultLines = candidate.fillLines,
             )
         }
     }
@@ -3223,6 +3261,9 @@ object BranchSiteAnalyzer {
      * No survivor, or more than one, leaves the getter unresolved. scalac forbids two overloads of
      * one name both declaring defaults, so ambiguity here can only come from an overload with no
      * defaults of its own.
+     *
+     * Each site's line is the getter's own first line in [firstLines], never the target's. The
+     * getter's body is the default expression, so its line is where the default is written.
      */
     private fun resolveScalaGetterSites(
         ownInternalClassName: String,
@@ -3233,7 +3274,7 @@ object BranchSiteAnalyzer {
         candidateNames: List<Pair<String, String>>,
         lookupCompanionBytes: (String) -> ByteArray?,
     ): List<ScalaGetterSite> {
-        val ownNamespace = GetterTargetNamespace(methodAccess, localNames, firstLines, classAccess, targetClassName = null)
+        val ownNamespace = GetterTargetNamespace(methodAccess, localNames, classAccess, targetClassName = null)
         val companionNamespaces = mutableMapOf<String, GetterTargetNamespace?>()
 
         // Memoised by containsKey rather than getOrPut, which treats a null value as absent: an
@@ -3286,7 +3327,7 @@ object BranchSiteAnalyzer {
             var slot = if (targetIsStatic) 0 else 1
             for (i in 0 until parameterIndex) slot += slotWidth(targetParams[i])
             val parameterName = namespace.localNames[targetKey]?.get(slot) ?: ""
-            val line = namespace.firstLines[targetKey] ?: -1
+            val line = firstLines[getterName to getterDescriptor] ?: -1
 
             ScalaGetterSite(
                 getterName = getterName,
@@ -3309,7 +3350,6 @@ object BranchSiteAnalyzer {
     private class GetterTargetNamespace(
         val methodAccess: Map<Pair<String, String>, Int>,
         val localNames: Map<Pair<String, String>, Map<Int, String>>,
-        val firstLines: Map<Pair<String, String>, Int>,
         val classAccess: Int,
         val targetClassName: String?,
     )
@@ -3334,7 +3374,6 @@ object BranchSiteAnalyzer {
         return GetterTargetNamespace(
             table.methodAccess,
             table.localNames,
-            table.firstLines,
             table.classAccess,
             targetClassName = companionInternalName.replace('/', '.'),
         )

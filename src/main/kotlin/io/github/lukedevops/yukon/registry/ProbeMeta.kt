@@ -14,8 +14,9 @@ import io.github.lukedevops.yukon.export.ProbeKind
  *
  * [parameterIndex], [parameterName], and [overridable] apply only to an [ProbeKind.OPTIONAL_ARGUMENT]
  * probe. [methodName] and [methodDescriptor] on such a probe name the target function the
- * parameter belongs to, not the synthetic `$default` method the probe actually sits in; [line] is
- * the target's first line, and [inline] is the target's own inline flag. See ADR 0021.
+ * parameter belongs to, not the synthetic `$default` method the probe actually sits in, and
+ * [inline] is the target's own inline flag. See ADR 0021. [line] on such a probe is the line of the
+ * parameter's default value, not the target's line. See ADR 0044.
  *
  * [targetClassName] is set only for an [ProbeKind.OPTIONAL_ARGUMENT] probe whose target lives in a
  * different class from the probe's own, the cross-class shape a Scala constructor default getter

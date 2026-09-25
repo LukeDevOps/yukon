@@ -179,4 +179,62 @@ class OptionalArgumentInstrumentationTest {
         assertTrue(probes.all { it.inline }, "both the method probe and its omission probe carry the target's inline flag")
         assertTrue(probes.any { it.kind == ProbeKind.OPTIONAL_ARGUMENT })
     }
+
+    /**
+     * Loads [className] through the transform and returns the lines of its omission probes on
+     * [methodName], keyed by parameter index.
+     */
+    private fun omissionLines(
+        className: String,
+        methodName: String,
+    ): Map<Int, Int> {
+        val registry = ProbeRegistry()
+        install(registry, AgentConfig.parse("includePackages=com.example.target"))
+
+        Class.forName(className, true, fixtureLoader())
+
+        return registry
+            .manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
+            .probes
+            .filter { it.className == className && it.kind == ProbeKind.OPTIONAL_ARGUMENT && it.methodName == methodName }
+            .associate { checkNotNull(it.parameterIndex) to it.line }
+    }
+
+    @Test
+    fun `each default on its own line gives its omission probe that line, not the function's`() {
+        // DefaultArgumentTarget.kt: b = 1 on line 7, c = "x" on line 8, d = 2L on line 9. f's own
+        // first line is 10, its body.
+        assertEquals(
+            mapOf(1 to 7, 2 to 8, 3 to 9),
+            omissionLines("com.example.target.DefaultArgumentTarget", "f"),
+        )
+    }
+
+    @Test
+    fun `two defaults on one line both read that line`() {
+        // DefaultLineTarget.kt line 8. kotlinc writes one line-number entry for the whole of
+        // sameLine$default, so neither fill block has an entry of its own.
+        assertEquals(
+            mapOf(0 to 8, 1 to 8),
+            omissionLines("com.example.target.DefaultLineTargetKt", "sameLine"),
+        )
+    }
+
+    @Test
+    fun `a constructor's default reads its own line, not the constructor's`() {
+        // DefaultArgumentTarget.kt: b = 7 on line 22; the class header is on line 20.
+        assertEquals(
+            mapOf(1 to 22),
+            omissionLines("com.example.target.ConstructedWithDefault", "<init>"),
+        )
+    }
+
+    @Test
+    fun `a default whose expression is on the next line reads the expression's line`() {
+        // DefaultLineTarget.kt: label's name is on line 13 and its expression on line 14.
+        assertEquals(
+            mapOf(1 to 14),
+            omissionLines("com.example.target.DefaultLineTargetKt", "wrappedDefault"),
+        )
+    }
 }
