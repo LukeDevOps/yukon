@@ -141,6 +141,41 @@ class GeneratedMethodMarkingTest {
     }
 
     @Test
+    fun `the overloads JvmOverloads adds are JVM_OVERLOADS and keep their probes, and the full constructor and function are NONE`() {
+        val registry = ProbeRegistry()
+        val config = AgentConfig.parse("includePackages=com.example.target")
+        install(registry, config)
+
+        val target = Class.forName("com.example.target.Price", true, fixtureLoader())
+        val instance = target.getDeclaredConstructor(Int::class.java).newInstance(5)
+        target.getMethod("format", Int::class.java).invoke(instance, 1)
+
+        val probes =
+            registry
+                .manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
+                .probes
+                .filter { it.className == "com.example.target.Price" && it.kind == ProbeKind.METHOD }
+
+        fun markOf(
+            name: String,
+            descriptor: String,
+        ) = probes.single { it.methodName == name && it.methodDescriptor == descriptor }.generatedBy
+        assertEquals(GeneratedBy.JVM_OVERLOADS, markOf("<init>", "(I)V"))
+        assertEquals(GeneratedBy.JVM_OVERLOADS, markOf("<init>", "(ILjava/lang/String;)V"))
+        assertEquals(GeneratedBy.NONE, markOf("<init>", "(ILjava/lang/String;I)V"))
+        assertEquals(GeneratedBy.JVM_OVERLOADS, markOf("format", "(I)Ljava/lang/String;"))
+        assertEquals(GeneratedBy.NONE, markOf("format", "(ILjava/lang/String;)Ljava/lang/String;"))
+
+        val hits =
+            registry
+                .computeDeltaBatch(ResourceAttributes("test", null, "i-1", null, "run-1"))
+                .batch.deltas
+                .associate { it.probeIndex to it.hitsTotal }
+        val forwarder = probes.single { it.methodName == "<init>" && it.methodDescriptor == "(I)V" }
+        assertEquals(1L, hits[forwarder.probeIndex], "a generated overload that ran still counts its hit")
+    }
+
+    @Test
     fun `a default-mode DefaultImpls method that only forwards to the interface is marked DEFAULT_IMPLS`() {
         val registry = ProbeRegistry()
         val config = AgentConfig.parse("includePackages=com.example.target")

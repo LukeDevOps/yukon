@@ -47,6 +47,10 @@ import io.github.lukedevops.yukon.export.ProbeKind
  * [branchSites] is set only for a [ProbeKind.METHOD] probe: the method's kept branch sites, in
  * site index order. [siteIndex] is set only for a [ProbeKind.BRANCH] probe and names its site. See
  * [io.github.lukedevops.yukon.export.ProbeLocation.branchSites] and ADR 0037.
+ *
+ * [static] is set only for a [ProbeKind.METHOD] probe whose method has `ACC_STATIC`. It is false
+ * for a constructor and for the type initializer's probe. See
+ * [io.github.lukedevops.yukon.export.ProbeLocation.static] and ADR 0040.
  */
 data class ProbeMeta(
     val kind: ProbeKind,
@@ -67,4 +71,5 @@ data class ProbeMeta(
     val lambdaBody: Boolean = false,
     val branchSites: List<BranchSite> = emptyList(),
     val siteIndex: Int? = null,
+    val static: Boolean = false,
 )

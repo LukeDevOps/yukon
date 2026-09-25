@@ -22,7 +22,8 @@ enum class ProbeKind { METHOD, BRANCH, OPTIONAL_ARGUMENT }
  * shape alone: an enum's `values`/`valueOf`/`getEntries`, a data class's `componentN` and `copy`
  * and whichever of `equals`/`hashCode`/`toString` the adopter did not override (the generated ones
  * have no line-number table), a `$DefaultImpls` method that only forwards to the interface's own
- * default method, or a Java record's `equals`/`hashCode`/`toString`. Set on a [ProbeKind.METHOD]
+ * default method, a Java record's `equals`/`hashCode`/`toString`, or an overload `@JvmOverloads`
+ * adds, whose body only forwards to its own class's `$default` twin. Set on a [ProbeKind.METHOD]
  * probe and a [DeclaredMethod], on a [ProbeKind.BRANCH] probe as the mark of the method it sits in,
  * and on a [ProbeKind.OPTIONAL_ARGUMENT] probe as its target's own mark. A collector leaves a
  * generated probe out of never-hit, stale-hit, the call graph and the two optional-parameter
@@ -31,7 +32,7 @@ enum class ProbeKind { METHOD, BRANCH, OPTIONAL_ARGUMENT }
  * kept and counted, since a call to a generated method, such as `copy`, is still evidence of use.
  * See ADR 0026.
  */
-enum class GeneratedBy { NONE, ENUM, DATA_CLASS, DEFAULT_IMPLS, RECORD }
+enum class GeneratedBy { NONE, ENUM, DATA_CLASS, DEFAULT_IMPLS, RECORD, JVM_OVERLOADS }
 
 /**
  * Who sent a payload. [DeltaBatch], [ProbeManifest] and [StaticBaseline] each carry one, and one
@@ -154,6 +155,10 @@ data class DeltaBatch(
  *
  * [siteIndex] is set only for a [ProbeKind.BRANCH] probe. It names the site this outcome belongs
  * to, which the METHOD probe of the same method lists in [branchSites]. See ADR 0037.
+ *
+ * [static] is set only for a [ProbeKind.METHOD] probe. It is true when the method has
+ * `ACC_STATIC`, and false for a constructor and for the type initializer's probe, whose meaning a
+ * consumer takes from its name. See ADR 0040.
  */
 data class ProbeLocation(
     val classId: Int,
@@ -177,6 +182,7 @@ data class ProbeLocation(
     val lambdaBody: Boolean = false,
     val branchSites: List<BranchSite> = emptyList(),
     val siteIndex: Int? = null,
+    val static: Boolean = false,
 )
 
 /** What one outcome of a [BranchSite] is within its site. See ADR 0037. */
@@ -481,6 +487,9 @@ data class ProbeManifest(
  *
  * [branchSites] follows the same rule as [ProbeLocation.branchSites], read from the same class.
  * Always empty for the class's own `<clinit>` entry. See ADR 0037.
+ *
+ * [static] follows the same rule as [ProbeLocation.static]. Always false for a constructor and for
+ * the class's own `<clinit>` entry. See ADR 0040.
  */
 data class DeclaredMethod(
     val methodName: String,
@@ -491,6 +500,7 @@ data class DeclaredMethod(
     val referencedClasses: List<String> = emptyList(),
     val lambdaBody: Boolean = false,
     val branchSites: List<BranchSite> = emptyList(),
+    val static: Boolean = false,
 )
 
 /**

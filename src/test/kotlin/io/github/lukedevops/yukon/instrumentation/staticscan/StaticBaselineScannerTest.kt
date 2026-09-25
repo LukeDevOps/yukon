@@ -61,6 +61,8 @@ class StaticBaselineScannerTest {
     private val generatedInterfaceDefaultImplsBytes =
         classBytes("kotlin/test/com/example/target/GeneratedInterface\$DefaultImpls.class")
     private val recordTargetBytes = classBytes("java/test/com/example/target/RecordTarget.class")
+    private val staticFlagTargetBytes = classBytes("java/test/com/example/target/StaticFlagTarget.class")
+    private val priceBytes = classBytes("kotlin/test/com/example/target/Price.class")
     private val referenceTargetBytes = classBytes("java/test/com/example/target/ReferenceTarget.class")
 
     /** The fixture root [CallEdgeAnalyzerTest][io.github.lukedevops.yukon.instrumentation.branch.CallEdgeAnalyzerTest] exercises directly. */
@@ -566,6 +568,40 @@ class StaticBaselineScannerTest {
         assertEquals(GeneratedBy.RECORD, record.single { it.methodName == "toString" }.generatedBy)
         assertEquals(GeneratedBy.NONE, record.single { it.methodName == "x" }.generatedBy)
         assertEquals(GeneratedBy.NONE, record.single { it.methodName == "extra" }.generatedBy)
+    }
+
+    @Test
+    fun `declares a static method static, and a constructor, an instance method and clinit not`() {
+        val root = directoryRoot("com/example/target/StaticFlagTarget.class" to staticFlagTargetBytes)
+        val scanner = StaticBaselineScanner(listOf("com.example.target"))
+
+        val result = scanner.scan(listOf(root))
+
+        val methods = result.declaredClasses.single { it.className == "com.example.target.StaticFlagTarget" }.methods
+        assertTrue(methods.single { it.methodName == "twice" }.static)
+        assertFalse(methods.single { it.methodName == "plusOne" }.static)
+        assertFalse(methods.single { it.methodName == "<init>" }.static)
+        assertFalse(methods.single { it.methodName == "<clinit>" }.static)
+    }
+
+    @Test
+    fun `declares the overloads JvmOverloads adds JVM_OVERLOADS, as the manifest does`() {
+        val root = directoryRoot("com/example/target/Price.class" to priceBytes)
+        val scanner = StaticBaselineScanner(listOf("com.example.target"))
+
+        val result = scanner.scan(listOf(root))
+
+        val methods = result.declaredClasses.single { it.className == "com.example.target.Price" }.methods
+
+        fun markOf(
+            name: String,
+            descriptor: String,
+        ) = methods.single { it.methodName == name && it.methodDescriptor == descriptor }.generatedBy
+        assertEquals(GeneratedBy.JVM_OVERLOADS, markOf("<init>", "(I)V"))
+        assertEquals(GeneratedBy.JVM_OVERLOADS, markOf("<init>", "(ILjava/lang/String;)V"))
+        assertEquals(GeneratedBy.NONE, markOf("<init>", "(ILjava/lang/String;I)V"))
+        assertEquals(GeneratedBy.JVM_OVERLOADS, markOf("format", "(I)Ljava/lang/String;"))
+        assertEquals(GeneratedBy.NONE, markOf("format", "(ILjava/lang/String;)Ljava/lang/String;"))
     }
 
     @Test

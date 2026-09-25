@@ -591,6 +591,7 @@ open class ProbeRegistry(
                         lambdaBody = meta.lambdaBody,
                         branchSites = meta.branchSites,
                         siteIndex = meta.siteIndex,
+                        static = meta.static,
                     )
                 }
             }
@@ -739,6 +740,7 @@ open class ProbeRegistry(
                         lambdaBody = meta.lambdaBody,
                         branchSites = meta.branchSites,
                         siteIndex = meta.siteIndex,
+                        static = meta.static,
                     )
             }
             classLocations += classLocationOf(entry)

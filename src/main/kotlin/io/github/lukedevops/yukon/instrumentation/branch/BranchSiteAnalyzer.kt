@@ -2278,6 +2278,11 @@ object BranchSiteAnalyzer {
      * Once the shape matches, `componentN` and `copy` are [GeneratedBy.DATA_CLASS], and each of
      * `equals`, `hashCode` and `toString` is [GeneratedBy.DATA_CLASS] only when it is absent from
      * [methodsWithLineNumbers]; see [markDataClassMembers].
+     *
+     * A constructor or method that only forwards to its own class's `$default` twin, the way an
+     * overload `@JvmOverloads` adds does, is [GeneratedBy.JVM_OVERLOADS]; see
+     * [jvmOverloadsForwarders] and ADR 0040. The body is read only when the class declares a
+     * `$default` method or constructor at all, since a forwarder needs one to call.
      */
     private fun computeGeneratedBy(
         classBytes: ByteArray,
@@ -2315,10 +2320,285 @@ object BranchSiteAnalyzer {
         }
 
         markDataClassMembers(internalClassName, methodAccess, methodsWithLineNumbers, result)
+
+        if (methodAccess.keys.any { (name, descriptor) -> isDefaultShaped(name, descriptor) }) {
+            for (key in jvmOverloadsForwarders(classBytes, internalClassName)) result.putIfAbsent(key, GeneratedBy.JVM_OVERLOADS)
+        }
         return result
     }
 
     private const val DEFAULT_IMPLS_SUFFIX = "\$DefaultImpls"
+
+    /**
+     * The owner of kotlinc's parameter null checks, matched by suffix. Spelled without its
+     * `kotlin/` prefix so that `shadowJar` does not rewrite it in this agent's relocated copy.
+     */
+    private const val INTRINSICS_SUFFIX = "/jvm/internal/Intrinsics"
+
+    /** The two names kotlinc has given the null check it puts at the top of a method. */
+    private val parameterNullCheckNames = setOf("checkNotNullParameter", "checkParameterIsNotNull")
+
+    /**
+     * The constructors and methods of [internalClassName] whose body has the shape of an overload
+     * `@JvmOverloads` adds. Such a body does four things in order:
+     *
+     * 1. It may null-check some of its reference parameters: `aload`, `ldc` of the name, then
+     *    `invokestatic` of `Intrinsics.checkNotNullParameter` or `checkParameterIsNotNull`.
+     * 2. It pushes the twin's arguments. That is `this` for a constructor or an instance method.
+     *    Then, for each of the full parameter list's values, either its own next parameter or the
+     *    zero value of that type (`aconst_null`, `iconst_0`, `lconst_0`, `fconst_0`, `dconst_0`).
+     *    Its own parameters are each loaded once, in order, and have the same types as the values
+     *    they fill. Then one `int` constant per mask word, with exactly the omitted values' bits
+     *    set. Then `aconst_null` for the trailing marker.
+     * 3. It calls the twin. For a constructor, that is `invokespecial` of an `<init>` in the same
+     *    class whose descriptor ends in `DefaultConstructorMarker;)V`. For a method, it is
+     *    `invokestatic` of `name$default` in the same class, under the forwarder's own name. For an
+     *    instance method, the twin's first parameter is the class itself.
+     * 4. It returns, with one xRETURN.
+     *
+     * At least one value must be omitted, so the source's full constructor or function, which
+     * holds the real body, never matches. Nor does a secondary constructor that passes every
+     * argument to the full `<init>`, or a method under another name that calls a `$default` twin.
+     * Any other instruction means the body is not a forwarder. The rule is narrow on purpose, for
+     * the reason [defaultImplsForwarders] gives. kotlinc 2.2.21 emits this shape for a constructor,
+     * an instance method and a top-level function (checked with `javap`). It never reads the
+     * annotation, which sits on the full declaration and not on the overloads. See ADR 0040.
+     *
+     * The source can write the same bytecode by hand. A secondary constructor or a same-named
+     * overload that calls the full one with named arguments and leaves some out, such as
+     * `constructor(a: Int, r: Int) : this(amount = a, rounding = r)`, compiles to this shape and
+     * is marked too (checked with `javap`). Without named arguments, such a call resolves to the
+     * overload itself, which kotlinc rejects as a cycle or which recurses.
+     */
+    private fun jvmOverloadsForwarders(
+        classBytes: ByteArray,
+        internalClassName: String,
+    ): Set<Pair<String, String>> {
+        val forwarders = mutableSetOf<Pair<String, String>>()
+        val classVisitor =
+            object : ClassVisitor(Opcodes.ASM9) {
+                override fun visitMethod(
+                    access: Int,
+                    name: String,
+                    descriptor: String,
+                    signature: String?,
+                    exceptions: Array<out String>?,
+                ): MethodVisitor? {
+                    if (access and (BODYLESS_FLAGS or Opcodes.ACC_SYNTHETIC or Opcodes.ACC_BRIDGE) != 0) return null
+                    if (name == "<clinit>" || isDefaultShaped(name, descriptor)) return null
+                    val isStatic = access and Opcodes.ACC_STATIC != 0
+                    return OverloadForwarderVisitor(internalClassName, name, descriptor, isStatic) { forwarders += name to descriptor }
+                }
+            }
+        ClassReader(classBytes).accept(classVisitor, ClassReader.SKIP_DEBUG or ClassReader.SKIP_FRAMES)
+        return forwarders
+    }
+
+    /** One value an [OverloadForwarderVisitor] saw pushed before the call. */
+    private sealed interface Pushed {
+        data class Load(
+            val opcode: Int,
+            val slot: Int,
+        ) : Pushed
+
+        data class IntConstant(
+            val value: Int,
+        ) : Pushed
+
+        /** `aconst_null`, `lconst_0`, `fconst_0` or `dconst_0`. */
+        data class ZeroConstant(
+            val opcode: Int,
+        ) : Pushed
+
+        data object StringConstant : Pushed
+    }
+
+    /**
+     * Walks one body and calls [onForwarder] at its end when the body has the shape
+     * [jvmOverloadsForwarders] describes.
+     */
+    private class OverloadForwarderVisitor(
+        private val internalClassName: String,
+        private val name: String,
+        descriptor: String,
+        private val isStatic: Boolean,
+        private val onForwarder: () -> Unit,
+    ) : MethodVisitor(Opcodes.ASM9) {
+        private val ownParameters = parseParameterDescriptors(descriptor)
+        private val ownSlots =
+            ownParameters
+                .runningFold(if (isStatic) 0 else 1) { slot, type -> slot + slotWidth(type) }
+                .dropLast(1)
+        private val pushed = mutableListOf<Pushed>()
+        private var twinDescriptor: String? = null
+        private var returned = false
+        private var broken = false
+
+        private fun reject() {
+            broken = true
+        }
+
+        private fun push(value: Pushed) {
+            if (twinDescriptor != null) reject() else pushed += value
+        }
+
+        override fun visitVarInsn(
+            opcode: Int,
+            varIndex: Int,
+        ) {
+            if (opcode in Opcodes.ILOAD..Opcodes.ALOAD) push(Pushed.Load(opcode, varIndex)) else reject()
+        }
+
+        override fun visitInsn(opcode: Int) {
+            when {
+                twinDescriptor != null && !returned && opcode in Opcodes.IRETURN..Opcodes.RETURN -> returned = true
+                opcode in Opcodes.ICONST_M1..Opcodes.ICONST_5 -> push(Pushed.IntConstant(opcode - Opcodes.ICONST_0))
+                opcode == Opcodes.ACONST_NULL || opcode == Opcodes.LCONST_0 || opcode == Opcodes.FCONST_0 || opcode == Opcodes.DCONST_0 ->
+                    push(Pushed.ZeroConstant(opcode))
+                else -> reject()
+            }
+        }
+
+        override fun visitIntInsn(
+            opcode: Int,
+            operand: Int,
+        ) {
+            if (opcode == Opcodes.BIPUSH || opcode == Opcodes.SIPUSH) push(Pushed.IntConstant(operand)) else reject()
+        }
+
+        override fun visitLdcInsn(value: Any?) {
+            when (value) {
+                is Int -> push(Pushed.IntConstant(value))
+                is String -> push(Pushed.StringConstant)
+                else -> reject()
+            }
+        }
+
+        override fun visitMethodInsn(
+            opcode: Int,
+            owner: String,
+            name: String,
+            descriptor: String,
+            isInterface: Boolean,
+        ) {
+            if (twinDescriptor != null) return reject()
+            when {
+                opcode == Opcodes.INVOKESTATIC && owner.endsWith(INTRINSICS_SUFFIX) && name in parameterNullCheckNames -> {
+                    val checked = pushed.getOrNull(0) as? Pushed.Load
+                    val isOwnReferenceParameter = checked != null && checked.opcode == Opcodes.ALOAD && checked.slot in ownSlots
+                    if (pushed.size != 2 || !isOwnReferenceParameter || pushed[1] != Pushed.StringConstant) return reject()
+                    pushed.clear()
+                }
+                owner != internalClassName -> reject()
+                this.name == "<init>" && opcode == Opcodes.INVOKESPECIAL && name == "<init>" && isDefaultShaped(name, descriptor) ->
+                    twinDescriptor = descriptor
+                this.name != "<init>" && opcode == Opcodes.INVOKESTATIC && name == this.name + "\$default" -> twinDescriptor = descriptor
+                else -> reject()
+            }
+        }
+
+        override fun visitTypeInsn(
+            opcode: Int,
+            type: String,
+        ) = reject()
+
+        override fun visitFieldInsn(
+            opcode: Int,
+            owner: String,
+            name: String,
+            descriptor: String,
+        ) = reject()
+
+        override fun visitInvokeDynamicInsn(
+            name: String,
+            descriptor: String,
+            bootstrapMethodHandle: Handle,
+            vararg bootstrapMethodArguments: Any?,
+        ) = reject()
+
+        override fun visitJumpInsn(
+            opcode: Int,
+            label: Label,
+        ) = reject()
+
+        override fun visitIincInsn(
+            varIndex: Int,
+            increment: Int,
+        ) = reject()
+
+        override fun visitTableSwitchInsn(
+            min: Int,
+            max: Int,
+            dflt: Label,
+            vararg labels: Label,
+        ) = reject()
+
+        override fun visitLookupSwitchInsn(
+            dflt: Label,
+            keys: IntArray,
+            labels: Array<out Label>,
+        ) = reject()
+
+        override fun visitMultiANewArrayInsn(
+            descriptor: String,
+            numDimensions: Int,
+        ) = reject()
+
+        override fun visitTryCatchBlock(
+            start: Label,
+            end: Label,
+            handler: Label,
+            type: String?,
+        ) = reject()
+
+        override fun visitEnd() {
+            val twin = twinDescriptor
+            if (!broken && twin != null && returned && argumentsMatch(twin)) onForwarder()
+        }
+
+        private fun argumentsMatch(twin: String): Boolean {
+            val twinParameters = parseParameterDescriptors(twin)
+            val values = twinParameters.toMutableList()
+            if (values.removeLastOrNull() == null) return false
+            if (name != "<init>" && !isStatic && values.removeFirstOrNull() != "L$internalClassName;") return false
+            val maskCount = resolveMaskIntCount(values.size)
+            if (maskCount > values.size) return false
+            repeat(maskCount) { values.removeAt(values.lastIndex) }
+
+            var next = 0
+            if (!isStatic) {
+                if (pushed.getOrNull(next++) != Pushed.Load(Opcodes.ALOAD, 0)) return false
+            }
+            if (pushed.size != next + values.size + maskCount + 1) return false
+
+            var ownLoaded = 0
+            val omitted = IntArray(maskCount)
+            for ((index, type) in values.withIndex()) {
+                val value = pushed[next++]
+                val ownType = ownParameters.getOrNull(ownLoaded)
+                when {
+                    ownType == type && value == Pushed.Load(loadOpcodeFor(type), ownSlots[ownLoaded]) -> ownLoaded++
+                    value == zeroValueOf(type) -> omitted[index / Int.SIZE_BITS] = omitted[index / Int.SIZE_BITS] or (1 shl (index % Int.SIZE_BITS))
+                    else -> return false
+                }
+            }
+            if (ownLoaded != ownParameters.size || omitted.all { it == 0 }) return false
+            for (word in omitted) {
+                if (pushed[next++] != Pushed.IntConstant(word)) return false
+            }
+            return pushed[next] == Pushed.ZeroConstant(Opcodes.ACONST_NULL)
+        }
+
+        /** What kotlinc pushes for an omitted value of field descriptor [type]. */
+        private fun zeroValueOf(type: String): Pushed =
+            when (type[0]) {
+                'J' -> Pushed.ZeroConstant(Opcodes.LCONST_0)
+                'F' -> Pushed.ZeroConstant(Opcodes.FCONST_0)
+                'D' -> Pushed.ZeroConstant(Opcodes.DCONST_0)
+                'L', '[' -> Pushed.ZeroConstant(Opcodes.ACONST_NULL)
+                else -> Pushed.IntConstant(0)
+            }
+    }
 
     /**
      * The methods of a `$DefaultImpls` class whose body only forwards to [interfaceInternalName]:

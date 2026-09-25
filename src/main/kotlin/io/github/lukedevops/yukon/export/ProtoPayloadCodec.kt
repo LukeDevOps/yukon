@@ -196,6 +196,7 @@ object ProtoPayloadCodec {
                 .addAllReferencedClasses(location.referencedClasses)
                 .setLambdaBody(location.lambdaBody)
                 .addAllBranchSites(location.branchSites.map { toProto(it) })
+                .setStatic(location.static)
         location.branchIndex?.let { builder.branchIndex = it }
         location.parameterIndex?.let { builder.parameterIndex = it }
         location.branchKey?.let { builder.branchKey = it }
@@ -229,6 +230,7 @@ object ProtoPayloadCodec {
             lambdaBody = location.lambdaBody,
             branchSites = location.branchSitesList.map { fromProto(it) },
             siteIndex = if (location.hasSiteIndex()) location.siteIndex else null,
+            static = location.static,
         )
     }
 
@@ -464,6 +466,7 @@ object ProtoPayloadCodec {
             GeneratedBy.DATA_CLASS -> ProtoGeneratedBy.DATA_CLASS
             GeneratedBy.DEFAULT_IMPLS -> ProtoGeneratedBy.DEFAULT_IMPLS
             GeneratedBy.RECORD -> ProtoGeneratedBy.RECORD
+            GeneratedBy.JVM_OVERLOADS -> ProtoGeneratedBy.JVM_OVERLOADS
         }
 
     // GENERATED_BY_NONE is a legitimate value on the wire, unlike ProbeKind's own unspecified
@@ -476,6 +479,7 @@ object ProtoPayloadCodec {
             ProtoGeneratedBy.DATA_CLASS -> GeneratedBy.DATA_CLASS
             ProtoGeneratedBy.DEFAULT_IMPLS -> GeneratedBy.DEFAULT_IMPLS
             ProtoGeneratedBy.RECORD -> GeneratedBy.RECORD
+            ProtoGeneratedBy.JVM_OVERLOADS -> GeneratedBy.JVM_OVERLOADS
             ProtoGeneratedBy.UNRECOGNIZED -> throw IllegalArgumentException("unrecognized generated-by reason on the wire: $generatedBy")
         }
 
@@ -555,6 +559,7 @@ object ProtoPayloadCodec {
             .addAllReferencedClasses(method.referencedClasses)
             .setLambdaBody(method.lambdaBody)
             .addAllBranchSites(method.branchSites.map { toProto(it) })
+            .setStatic(method.static)
             .build()
 
     private fun fromProto(method: ProtoDeclaredMethod): DeclaredMethod =
@@ -567,6 +572,7 @@ object ProtoPayloadCodec {
             referencedClasses = method.referencedClassesList,
             lambdaBody = method.lambdaBody,
             branchSites = method.branchSitesList.map { fromProto(it) },
+            static = method.static,
         )
 
     private fun toProto(unsafeClass: StaticallyUnsafeClass): ProtoStaticallyUnsafeClass =

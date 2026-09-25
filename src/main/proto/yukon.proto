@@ -21,17 +21,24 @@ enum ProbeKind {
 // What compiled a method into existence rather than the adopter writing its body: an enum's
 // values/valueOf/getEntries, a data class's componentN/copy and whichever of
 // equals/hashCode/toString the adopter did not override (the generated ones have no line-number
-// table), a $DefaultImpls method that only forwards to the interface's own default method, or a
-// Java record's equals/hashCode/toString. A branch probe carries the mark of the method it sits
-// in. A collector leaves a generated probe out of never-hit, stale-hit, and the call graph by
-// default, since the compiler will emit the method again regardless of what the adopter does; its
-// hit count is still evidence, so the probe itself is kept rather than dropped. See ADR 0026.
+// table), a $DefaultImpls method that only forwards to the interface's own default method, a
+// Java record's equals/hashCode/toString, or an overload @JvmOverloads adds. A branch probe
+// carries the mark of the method it sits in. A collector leaves a generated probe out of never-hit,
+// stale-hit, and the call graph by default, since the compiler will emit the method again
+// regardless of what the adopter does; its hit count is still evidence, so the probe itself is
+// kept rather than dropped. See ADR 0026.
 enum GeneratedBy {
   GENERATED_BY_NONE = 0;
   ENUM = 1;
   DATA_CLASS = 2;
   DEFAULT_IMPLS = 3;
   RECORD = 4;
+  // An overload kotlinc adds for a @JvmOverloads constructor or function. Its body only passes its
+  // own arguments, a zero value for each omitted one and the mask to the $default twin in its own
+  // class. The agent reads this from the body, never from the annotation, which sits on the source
+  // declaration and not on the overloads. The source's own full constructor or function is not
+  // marked. See ADR 0040.
+  JVM_OVERLOADS = 5;
 }
 
 // Who sent a payload. DeltaBatch, ProbeManifest and StaticBaseline each carry one, and one process
@@ -159,6 +166,9 @@ message ProbeLocation {
   // METHOD probe of the same method lists in branch_sites. This probe's branch_index picks its
   // outcome in that site. See ADR 0037.
   optional int32 site_index = 21;
+  // Set only for a METHOD probe: true when the method has ACC_STATIC. False for a constructor and
+  // for the <clinit> probe, whose meaning a consumer takes from its name. See ADR 0040.
+  bool static = 22;
 }
 
 // What one outcome of a branch site is within its site. See ADR 0037.
@@ -469,6 +479,9 @@ message DeclaredMethod {
   // same class. Empty for the class's own <clinit> entry. A site's branch_index values resolve
   // without any BRANCH probe. See ADR 0037.
   repeated BranchSite branch_sites = 8;
+  // The same rule as ProbeLocation.static: true when the method has ACC_STATIC. False for a
+  // constructor and for the class's own <clinit> entry. See ADR 0040.
+  bool static = 9;
 }
 
 message DeclaredClass {

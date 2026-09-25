@@ -20,6 +20,8 @@ class BranchSiteAnalyzerTest {
         const val DISABLED_INTERFACE_DESCRIPTOR = "Lcom/example/target/jvmdefaultdisable/DisabledDefaultInterface;"
         const val ASM_INTERFACE = "com/example/target/AsmShape"
         const val ASM_METHOD_DESCRIPTOR = "(L$ASM_INTERFACE;J)J"
+        const val ASM_OVERLOADS = "com/example/target/AsmOverloads"
+        const val ASM_OVERLOADS_TWIN_DESCRIPTOR = "(L$ASM_OVERLOADS;ILjava/lang/String;ILjava/lang/Object;)Ljava/lang/String;"
     }
 
     private fun readFixtureBytes(): ByteArray = File("build/classes/java/test/com/example/target/BranchTarget.class").readBytes()
@@ -505,6 +507,172 @@ class BranchSiteAnalyzerTest {
         val start = Label()
         mv.visitLabel(start)
         mv.visitLineNumber(7, start)
+        body(mv)
+        mv.visitMaxs(0, 0)
+        mv.visitEnd()
+        writer.visitEnd()
+        return writer.toByteArray()
+    }
+
+    @Test
+    fun `the overloads a JvmOverloads constructor adds are JVM_OVERLOADS, and the full and default-filling constructors are NONE`() {
+        val analysis = BranchSiteAnalyzer.analyze(readInlineTargetBytes("Price")) { _, _ -> true }
+
+        assertEquals(GeneratedBy.JVM_OVERLOADS, analysis.generatedBy("<init>", "(I)V"))
+        assertEquals(GeneratedBy.JVM_OVERLOADS, analysis.generatedBy("<init>", "(ILjava/lang/String;)V"))
+        assertEquals(GeneratedBy.NONE, analysis.generatedBy("<init>", "(ILjava/lang/String;I)V"))
+        assertEquals(
+            GeneratedBy.NONE,
+            analysis.generatedBy("<init>", "(ILjava/lang/String;IILkotlin/jvm/internal/DefaultConstructorMarker;)V"),
+        )
+    }
+
+    @Test
+    fun `the overload a JvmOverloads member function adds is JVM_OVERLOADS, and the full function and its default twin are NONE`() {
+        val analysis = BranchSiteAnalyzer.analyze(readInlineTargetBytes("Price")) { _, _ -> true }
+
+        assertEquals(GeneratedBy.JVM_OVERLOADS, analysis.generatedBy("format", "(I)Ljava/lang/String;"))
+        assertEquals(GeneratedBy.NONE, analysis.generatedBy("format", "(ILjava/lang/String;)Ljava/lang/String;"))
+        assertEquals(
+            GeneratedBy.NONE,
+            analysis.generatedBy("format\$default", "(Lcom/example/target/Price;ILjava/lang/String;ILjava/lang/Object;)Ljava/lang/String;"),
+        )
+        assertEquals(GeneratedBy.NONE, analysis.generatedBy("getAmount", "()I"))
+    }
+
+    @Test
+    fun `the static overloads a top-level JvmOverloads function adds are JVM_OVERLOADS, long and double values included`() {
+        val analysis = BranchSiteAnalyzer.analyze(readInlineTargetBytes("GeneratedTargetKt")) { _, _ -> true }
+
+        assertEquals(GeneratedBy.JVM_OVERLOADS, analysis.generatedBy("formatPrice", "(J)Ljava/lang/String;"))
+        assertEquals(GeneratedBy.JVM_OVERLOADS, analysis.generatedBy("formatPrice", "(JLjava/lang/String;)Ljava/lang/String;"))
+        assertEquals(GeneratedBy.NONE, analysis.generatedBy("formatPrice", "(JLjava/lang/String;D)Ljava/lang/String;"))
+    }
+
+    @Test
+    fun `a hand-written secondary constructor and a differently named caller of a default twin are NONE`() {
+        val analysis = BranchSiteAnalyzer.analyze(readInlineTargetBytes("HandWrittenPrice")) { _, _ -> true }
+
+        assertEquals(GeneratedBy.NONE, analysis.generatedBy("<init>", "(J)V"))
+        assertEquals(GeneratedBy.NONE, analysis.generatedBy("<init>", "(ILjava/lang/String;I)V"))
+        assertEquals(GeneratedBy.NONE, analysis.generatedBy("formatShort", "(I)Ljava/lang/String;"))
+        assertEquals(GeneratedBy.NONE, analysis.generatedBy("format", "(ILjava/lang/String;)Ljava/lang/String;"))
+    }
+
+    @Test
+    fun `Java overloads that pass fixed values to the full constructor or method are NONE`() {
+        val analysis = BranchSiteAnalyzer.analyze(readJavaTargetBytes("JavaOverloads")) { _, _ -> true }
+
+        assertEquals(GeneratedBy.NONE, analysis.generatedBy("<init>", "(I)V"))
+        assertEquals(GeneratedBy.NONE, analysis.generatedBy("<init>", "(ILjava/lang/String;)V"))
+        assertEquals(GeneratedBy.NONE, analysis.generatedBy("<init>", "(ILjava/lang/String;I)V"))
+        assertEquals(GeneratedBy.NONE, analysis.generatedBy("format", "(I)Ljava/lang/String;"))
+        assertEquals(GeneratedBy.NONE, analysis.generatedBy("format", "(ILjava/lang/String;)Ljava/lang/String;"))
+    }
+
+    @Test
+    fun `a hand-built overload forwarding with the omitted value's mask bit is JVM_OVERLOADS`() {
+        val bytes =
+            asmOverloadsClass { mv ->
+                mv.visitVarInsn(Opcodes.ALOAD, 0)
+                mv.visitVarInsn(Opcodes.ILOAD, 1)
+                mv.visitInsn(Opcodes.ACONST_NULL)
+                mv.visitInsn(Opcodes.ICONST_2)
+                mv.visitInsn(Opcodes.ACONST_NULL)
+                mv.visitMethodInsn(Opcodes.INVOKESTATIC, ASM_OVERLOADS, "f\$default", ASM_OVERLOADS_TWIN_DESCRIPTOR, false)
+                mv.visitInsn(Opcodes.ARETURN)
+            }
+
+        assertEquals(GeneratedBy.JVM_OVERLOADS, BranchSiteAnalyzer.analyze(bytes) { _, _ -> true }.generatedBy("f", "(I)Ljava/lang/String;"))
+    }
+
+    @Test
+    fun `a hand-built overload whose mask does not name exactly the omitted values is NONE`() {
+        val bytes =
+            asmOverloadsClass { mv ->
+                mv.visitVarInsn(Opcodes.ALOAD, 0)
+                mv.visitVarInsn(Opcodes.ILOAD, 1)
+                mv.visitInsn(Opcodes.ACONST_NULL)
+                mv.visitInsn(Opcodes.ICONST_3)
+                mv.visitInsn(Opcodes.ACONST_NULL)
+                mv.visitMethodInsn(Opcodes.INVOKESTATIC, ASM_OVERLOADS, "f\$default", ASM_OVERLOADS_TWIN_DESCRIPTOR, false)
+                mv.visitInsn(Opcodes.ARETURN)
+            }
+
+        assertEquals(GeneratedBy.NONE, BranchSiteAnalyzer.analyze(bytes) { _, _ -> true }.generatedBy("f", "(I)Ljava/lang/String;"))
+    }
+
+    @Test
+    fun `a hand-built overload that passes a value other than the zero value for an omitted one is NONE`() {
+        val bytes =
+            asmOverloadsClass { mv ->
+                mv.visitVarInsn(Opcodes.ALOAD, 0)
+                mv.visitVarInsn(Opcodes.ILOAD, 1)
+                mv.visitLdcInsn("y")
+                mv.visitInsn(Opcodes.ICONST_2)
+                mv.visitInsn(Opcodes.ACONST_NULL)
+                mv.visitMethodInsn(Opcodes.INVOKESTATIC, ASM_OVERLOADS, "f\$default", ASM_OVERLOADS_TWIN_DESCRIPTOR, false)
+                mv.visitInsn(Opcodes.ARETURN)
+            }
+
+        assertEquals(GeneratedBy.NONE, BranchSiteAnalyzer.analyze(bytes) { _, _ -> true }.generatedBy("f", "(I)Ljava/lang/String;"))
+    }
+
+    @Test
+    fun `a hand-built overload calling a default twin on another class is NONE`() {
+        val bytes =
+            asmOverloadsClass { mv ->
+                mv.visitVarInsn(Opcodes.ALOAD, 0)
+                mv.visitVarInsn(Opcodes.ILOAD, 1)
+                mv.visitInsn(Opcodes.ACONST_NULL)
+                mv.visitInsn(Opcodes.ICONST_2)
+                mv.visitInsn(Opcodes.ACONST_NULL)
+                mv.visitMethodInsn(Opcodes.INVOKESTATIC, "com/example/target/SomewhereElse", "f\$default", ASM_OVERLOADS_TWIN_DESCRIPTOR, false)
+                mv.visitInsn(Opcodes.ARETURN)
+            }
+
+        assertEquals(GeneratedBy.NONE, BranchSiteAnalyzer.analyze(bytes) { _, _ -> true }.generatedBy("f", "(I)Ljava/lang/String;"))
+    }
+
+    @Test
+    fun `a hand-built overload with one extra instruction before its return is NONE`() {
+        val bytes =
+            asmOverloadsClass { mv ->
+                mv.visitVarInsn(Opcodes.ALOAD, 0)
+                mv.visitVarInsn(Opcodes.ILOAD, 1)
+                mv.visitInsn(Opcodes.ACONST_NULL)
+                mv.visitInsn(Opcodes.ICONST_2)
+                mv.visitInsn(Opcodes.ACONST_NULL)
+                mv.visitMethodInsn(Opcodes.INVOKESTATIC, ASM_OVERLOADS, "f\$default", ASM_OVERLOADS_TWIN_DESCRIPTOR, false)
+                mv.visitTypeInsn(Opcodes.CHECKCAST, "java/lang/String")
+                mv.visitInsn(Opcodes.ARETURN)
+            }
+
+        assertEquals(GeneratedBy.NONE, BranchSiteAnalyzer.analyze(bytes) { _, _ -> true }.generatedBy("f", "(I)Ljava/lang/String;"))
+    }
+
+    /**
+     * A class [ASM_OVERLOADS] declaring `public String f(int)`, whose body [body] writes, beside
+     * the `$default` twin of a `f(int, String)` whose second value has a default.
+     */
+    private fun asmOverloadsClass(body: (MethodVisitor) -> Unit): ByteArray {
+        val writer = ClassWriter(ClassWriter.COMPUTE_MAXS)
+        writer.visit(Opcodes.V1_8, Opcodes.ACC_PUBLIC or Opcodes.ACC_FINAL, ASM_OVERLOADS, null, "java/lang/Object", null)
+        val twin =
+            writer.visitMethod(
+                Opcodes.ACC_PUBLIC or Opcodes.ACC_STATIC or Opcodes.ACC_SYNTHETIC,
+                "f\$default",
+                ASM_OVERLOADS_TWIN_DESCRIPTOR,
+                null,
+                null,
+            )
+        twin.visitCode()
+        twin.visitInsn(Opcodes.ACONST_NULL)
+        twin.visitInsn(Opcodes.ARETURN)
+        twin.visitMaxs(0, 0)
+        twin.visitEnd()
+        val mv = writer.visitMethod(Opcodes.ACC_PUBLIC or Opcodes.ACC_FINAL, "f", "(I)Ljava/lang/String;", null, null)
+        mv.visitCode()
         body(mv)
         mv.visitMaxs(0, 0)
         mv.visitEnd()

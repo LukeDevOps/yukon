@@ -428,6 +428,7 @@ class YukonInstrumentation(
                         referencedClasses = references.keep(analysis.referencesOf(it.internalName, it.descriptor)),
                         lambdaBody = analysis.isLambdaBody(it.internalName, it.descriptor),
                         branchSites = analysis.branchSitesOf(it.internalName, it.descriptor),
+                        static = it.isStatic,
                     )
                 }
             }

@@ -77,3 +77,56 @@ class GeneratedInterfaceImpl : GeneratedInterface
 class NotDefaultImpls {
     fun withBody(): Int = 7
 }
+
+/**
+ * `@JvmOverloads` on a constructor and a member function. kotlinc adds `<init>(I)V`,
+ * `<init>(ILjava/lang/String;)V` and `format(I)` beside the source's own full constructor and
+ * function, each only forwarding to its `$default` twin. ADR 0040 marks those three
+ * [io.github.lukedevops.yukon.export.GeneratedBy.JVM_OVERLOADS] and leaves the full pair
+ * [io.github.lukedevops.yukon.export.GeneratedBy.NONE].
+ */
+class Price
+    @JvmOverloads
+    constructor(
+        val amount: Int,
+        val currency: String = "GBP",
+        val rounding: Int = 2,
+    ) {
+        @JvmOverloads
+        fun format(
+            a: Int,
+            b: String = "x",
+        ): String = "$amount $currency $a $b $rounding"
+    }
+
+/**
+ * A top-level `@JvmOverloads` function, whose generated overload is static and forwards to a
+ * static `$default` twin with no owner parameter.
+ */
+@JvmOverloads
+fun formatPrice(
+    amount: Long,
+    currency: String = "GBP",
+    wide: Double = 1.0,
+): String = "$amount $currency $wide"
+
+/**
+ * A secondary constructor written in the source that passes every argument to the full
+ * constructor. It calls the full `<init>`, not the `$default` one, so it stays
+ * [io.github.lukedevops.yukon.export.GeneratedBy.NONE].
+ */
+class HandWrittenPrice(
+    val amount: Int,
+    val currency: String = "GBP",
+    val rounding: Int = 2,
+) {
+    constructor(a: Long) : this(a.toInt(), "GBP", 2)
+
+    /** Calls [format]'s `$default` twin under another name, so it is not a forwarder. */
+    fun formatShort(a: Int): String = format(a)
+
+    fun format(
+        a: Int,
+        b: String = "x",
+    ): String = "$amount $currency $a $b $rounding"
+}

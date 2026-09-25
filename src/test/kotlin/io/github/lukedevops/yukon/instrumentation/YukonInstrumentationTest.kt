@@ -283,6 +283,29 @@ class YukonInstrumentationTest {
     }
 
     @Test
+    fun `only a static method's METHOD probe is static, never a constructor, an instance method, clinit or a branch`() {
+        val registry = ProbeRegistry()
+        val config = AgentConfig.parse("includePackages=com.example.target")
+        install(registry, config)
+
+        Class.forName("com.example.target.StaticFlagTarget", true, fixtureLoader())
+
+        val probes =
+            registry
+                .manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
+                .probes
+                .filter { it.className == "com.example.target.StaticFlagTarget" }
+        val methodProbes = probes.filter { it.kind == ProbeKind.METHOD }
+        assertTrue(methodProbes.single { it.methodName == "twice" }.static)
+        assertFalse(methodProbes.single { it.methodName == "plusOne" }.static)
+        assertFalse(methodProbes.single { it.methodName == "<init>" }.static)
+        assertFalse(methodProbes.single { it.methodName == "<clinit>" }.static)
+        val branchProbes = probes.filter { it.kind == ProbeKind.BRANCH }
+        assertEquals(2, branchProbes.size, "twice's one conditional is a two-outcome site")
+        branchProbes.forEach { assertFalse(it.static) }
+    }
+
+    @Test
     fun `a class loaded without being initialised has its clinit probe present at zero`() {
         val registry = ProbeRegistry()
         val config = AgentConfig.parse("includePackages=com.example.target")

@@ -336,6 +336,7 @@ class ProtoPayloadCodecTest {
                         probeNamed("copy", GeneratedBy.DATA_CLASS),
                         probeNamed("withBody", GeneratedBy.DEFAULT_IMPLS),
                         probeNamed("toString", GeneratedBy.RECORD),
+                        probeNamed("format", GeneratedBy.JVM_OVERLOADS),
                     ),
             )
 
@@ -347,6 +348,7 @@ class ProtoPayloadCodecTest {
         assertEquals(GeneratedBy.DATA_CLASS, decoded.probes.single { it.methodName == "copy" }.generatedBy)
         assertEquals(GeneratedBy.DEFAULT_IMPLS, decoded.probes.single { it.methodName == "withBody" }.generatedBy)
         assertEquals(GeneratedBy.RECORD, decoded.probes.single { it.methodName == "toString" }.generatedBy)
+        assertEquals(GeneratedBy.JVM_OVERLOADS, decoded.probes.single { it.methodName == "format" }.generatedBy)
     }
 
     @Test
@@ -1015,6 +1017,11 @@ class ProtoPayloadCodecTest {
                                         generatedBy = GeneratedBy.DEFAULT_IMPLS,
                                     ),
                                     DeclaredMethod(methodName = "toString", methodDescriptor = "()V", generatedBy = GeneratedBy.RECORD),
+                                    DeclaredMethod(
+                                        methodName = "format",
+                                        methodDescriptor = "()V",
+                                        generatedBy = GeneratedBy.JVM_OVERLOADS,
+                                    ),
                                 ),
                         ),
                     ),
@@ -1030,6 +1037,7 @@ class ProtoPayloadCodecTest {
         assertEquals(GeneratedBy.DATA_CLASS, methods.single { it.methodName == "copy" }.generatedBy)
         assertEquals(GeneratedBy.DEFAULT_IMPLS, methods.single { it.methodName == "withBody" }.generatedBy)
         assertEquals(GeneratedBy.RECORD, methods.single { it.methodName == "toString" }.generatedBy)
+        assertEquals(GeneratedBy.JVM_OVERLOADS, methods.single { it.methodName == "format" }.generatedBy)
     }
 
     @Test
@@ -1631,6 +1639,47 @@ class ProtoPayloadCodecTest {
 
         assertEquals(manifest, decoded)
         assertEquals(listOf(true, false), decoded.probes.map { it.lambdaBody })
+    }
+
+    @Test
+    fun `a probe location's static flag round-trips through the wire, and an unset one decodes as false`() {
+        val manifest =
+            ProbeManifest(
+                resource = ResourceAttributes("checkout", null, "", null, "run-1"),
+                probes = listOf(methodProbe().copy(static = true), methodProbe().copy(probeIndex = 1, methodName = "baz")),
+            )
+
+        val decoded = ProtoPayloadCodec.decodeProbeManifest(ProtoPayloadCodec.encode(manifest))
+
+        assertEquals(manifest, decoded)
+        assertEquals(listOf(true, false), decoded.probes.map { it.static })
+        val onTheWire = ProtoProbeManifest.parseFrom(ProtoPayloadCodec.encode(manifest))
+        assertEquals(listOf(true, false), onTheWire.probesList.map { it.static })
+    }
+
+    @Test
+    fun `a declared method's static flag round-trips through the wire`() {
+        val baseline =
+            StaticBaseline(
+                resource = ResourceAttributes("checkout", "1.0.0", "instance-1", "prod", "run-1"),
+                declaredClasses =
+                    listOf(
+                        DeclaredClass(
+                            className = "com.example.Foo",
+                            methods =
+                                listOf(
+                                    DeclaredMethod(methodName = "twice", methodDescriptor = "(I)I", static = true),
+                                    DeclaredMethod(methodName = "<init>", methodDescriptor = "()V"),
+                                ),
+                        ),
+                    ),
+                scannedAt = 1000L,
+            )
+
+        val decoded = ProtoPayloadCodec.decodeStaticBaseline(ProtoPayloadCodec.encode(baseline))
+
+        assertEquals(baseline, decoded)
+        assertEquals(listOf(true, false), decoded.declaredClasses.single().methods.map { it.static })
     }
 
     @Test
