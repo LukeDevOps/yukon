@@ -15,7 +15,7 @@ import kotlin.test.assertTrue
 /**
  * Proves [BranchSiteAnalyzer]'s ADR 0034 facts on real kotlinc and javac output: the kind and
  * captured count of each creation edge, which methods are lambda bodies, and the class's source
- * file.
+ * file. Also proves the interface each creation edge names (ADR 0042).
  */
 class CreationEdgeAnalyzerTest {
     private val includePackages = listOf("com.example.target")
@@ -50,12 +50,16 @@ class CreationEdgeAnalyzerTest {
     private val kotlinOwner = "com.example.target.CreationEdgeTarget"
     private val javaOwner = "com.example.target.CreationEdgeJavaTarget"
 
+    /** The interface kotlinc gives a lambda of type `(Int) -> Int`. */
+    private val function1 = "kotlin.jvm.functions.Function1"
+
     @Test
     fun `a Kotlin lambda is a creation edge with nothing captured, and its body is a lambda body`() {
         val analysis = kotlinTarget()
 
         assertTrue(
-            CallEdge(kotlinOwner, "plain\$lambda\$0", "(I)I", virtual = false, kind = CallEdgeKind.CREATES) in analysis.callsOf("plain", "()I"),
+            CallEdge(kotlinOwner, "plain\$lambda\$0", "(I)I", virtual = false, kind = CallEdgeKind.CREATES, implementedInterface = function1) in
+                analysis.callsOf("plain", "()I"),
         )
         assertTrue(
             CallEdge("com.example.target.CallEdgeTargetKt", "applyOp", "(Lkotlin/jvm/functions/Function1;I)I", virtual = false) in
@@ -71,8 +75,15 @@ class CreationEdgeAnalyzerTest {
         val analysis = kotlinTarget()
 
         assertTrue(
-            CallEdge(kotlinOwner, "capturing\$lambda\$0", "(II)I", virtual = false, kind = CallEdgeKind.CREATES, capturedCount = 1) in
-                analysis.callsOf("capturing", "(I)I"),
+            CallEdge(
+                kotlinOwner,
+                "capturing\$lambda\$0",
+                "(II)I",
+                virtual = false,
+                kind = CallEdgeKind.CREATES,
+                capturedCount = 1,
+                implementedInterface = function1,
+            ) in analysis.callsOf("capturing", "(I)I"),
         )
         assertTrue(
             CallEdge(
@@ -82,6 +93,7 @@ class CreationEdgeAnalyzerTest {
                 virtual = false,
                 kind = CallEdgeKind.CREATES,
                 capturedCount = 1,
+                implementedInterface = function1,
             ) in analysis.callsOf("capturingThis", "()I"),
         )
         assertTrue(analysis.isLambdaBody("capturing\$lambda\$0", "(II)I"))
@@ -93,11 +105,21 @@ class CreationEdgeAnalyzerTest {
         val analysis = kotlinTarget()
 
         val nestedEdges = analysis.callsOf("nested", "()I")
-        assertTrue(CallEdge(kotlinOwner, "nested\$lambda\$0", "(I)I", virtual = false, kind = CallEdgeKind.CREATES) in nestedEdges)
+        assertTrue(
+            CallEdge(kotlinOwner, "nested\$lambda\$0", "(I)I", virtual = false, kind = CallEdgeKind.CREATES, implementedInterface = function1) in
+                nestedEdges,
+        )
         assertTrue(nestedEdges.none { it.methodName == "nested\$lambda\$0\$0" })
         assertTrue(
-            CallEdge(kotlinOwner, "nested\$lambda\$0\$0", "(II)I", virtual = false, kind = CallEdgeKind.CREATES, capturedCount = 1) in
-                analysis.callsOf("nested\$lambda\$0", "(I)I"),
+            CallEdge(
+                kotlinOwner,
+                "nested\$lambda\$0\$0",
+                "(II)I",
+                virtual = false,
+                kind = CallEdgeKind.CREATES,
+                capturedCount = 1,
+                implementedInterface = function1,
+            ) in analysis.callsOf("nested\$lambda\$0", "(I)I"),
         )
         assertTrue(analysis.isLambdaBody("nested\$lambda\$0", "(I)I"))
         assertTrue(analysis.isLambdaBody("nested\$lambda\$0\$0", "(II)I"))
@@ -108,7 +130,16 @@ class CreationEdgeAnalyzerTest {
         val analysis = kotlinTarget()
 
         assertEquals(
-            listOf(CallEdge(kotlinOwner, "twice", "(I)I", virtual = false, kind = CallEdgeKind.CREATES)),
+            listOf(
+                CallEdge(
+                    kotlinOwner,
+                    "twice",
+                    "(I)I",
+                    virtual = false,
+                    kind = CallEdgeKind.CREATES,
+                    implementedInterface = "java.util.function.IntUnaryOperator",
+                ),
+            ),
             analysis.callsOf("samReference", "()I").filter { it.className == kotlinOwner },
         )
         assertFalse(analysis.isLambdaBody("twice", "(I)I"))
@@ -120,7 +151,14 @@ class CreationEdgeAnalyzerTest {
 
         assertEquals(
             listOf(
-                CallEdge(kotlinOwner, "withDefault\$lambda\$0", "(I)I", virtual = false, kind = CallEdgeKind.CREATES),
+                CallEdge(
+                    kotlinOwner,
+                    "withDefault\$lambda\$0",
+                    "(I)I",
+                    virtual = false,
+                    kind = CallEdgeKind.CREATES,
+                    implementedInterface = function1,
+                ),
                 CallEdge(kotlinOwner, "withDefault", "(Lkotlin/jvm/functions/Function1;)I", virtual = false),
             ),
             analysis.callsOf("callsDefault", "()I"),
@@ -151,11 +189,30 @@ class CreationEdgeAnalyzerTest {
         val analysis = javaTarget()
 
         assertEquals(
-            listOf(CallEdge(javaOwner, "lambda\$capturing\$0", "(II)I", virtual = false, kind = CallEdgeKind.CREATES, capturedCount = 1)),
+            listOf(
+                CallEdge(
+                    javaOwner,
+                    "lambda\$capturing\$0",
+                    "(II)I",
+                    virtual = false,
+                    kind = CallEdgeKind.CREATES,
+                    capturedCount = 1,
+                    implementedInterface = "java.util.function.IntUnaryOperator",
+                ),
+            ),
             analysis.callsOf("capturing", "(I)I"),
         )
         assertEquals(
-            listOf(CallEdge(javaOwner, "lambda\$capturingThis\$1", "(I)I", virtual = false, kind = CallEdgeKind.CREATES)),
+            listOf(
+                CallEdge(
+                    javaOwner,
+                    "lambda\$capturingThis\$1",
+                    "(I)I",
+                    virtual = false,
+                    kind = CallEdgeKind.CREATES,
+                    implementedInterface = "java.util.function.IntUnaryOperator",
+                ),
+            ),
             analysis.callsOf("capturingThis", "()I"),
         )
         assertTrue(analysis.isLambdaBody("lambda\$capturing\$0", "(II)I"))
@@ -167,15 +224,37 @@ class CreationEdgeAnalyzerTest {
         val analysis = javaTarget()
         val name = CallEdge(javaOwner, "name", "()Ljava/lang/String;", virtual = true, kind = CallEdgeKind.CREATES)
 
-        assertEquals(listOf(name), analysis.callsOf("boundReference", "()Ljava/util/function/Supplier;"))
-        assertEquals(listOf(name), analysis.callsOf("unboundReference", "()Ljava/util/function/Function;"))
         assertEquals(
-            listOf(CallEdge(javaOwner, "constant", "()I", virtual = false, kind = CallEdgeKind.CREATES)),
+            listOf(name.copy(implementedInterface = "java.util.function.Supplier")),
+            analysis.callsOf("boundReference", "()Ljava/util/function/Supplier;"),
+        )
+        assertEquals(
+            listOf(name.copy(implementedInterface = "java.util.function.Function")),
+            analysis.callsOf("unboundReference", "()Ljava/util/function/Function;"),
+        )
+        assertEquals(
+            listOf(
+                CallEdge(
+                    javaOwner,
+                    "constant",
+                    "()I",
+                    virtual = false,
+                    kind = CallEdgeKind.CREATES,
+                    implementedInterface = "java.util.function.IntSupplier",
+                ),
+            ),
             analysis.callsOf("staticReference", "()Ljava/util/function/IntSupplier;"),
         )
         assertEquals(
             listOf(
-                CallEdge("com.example.target.CreationEdgeJavaTarget\$Box", "<init>", "(Ljava/lang/String;)V", virtual = false, kind = CallEdgeKind.CREATES),
+                CallEdge(
+                    "com.example.target.CreationEdgeJavaTarget\$Box",
+                    "<init>",
+                    "(Ljava/lang/String;)V",
+                    virtual = false,
+                    kind = CallEdgeKind.CREATES,
+                    implementedInterface = "java.util.function.Function",
+                ),
             ),
             analysis.callsOf("nestedConstructorReference", "()Ljava/util/function/Function;"),
         )
@@ -194,6 +273,7 @@ class CreationEdgeAnalyzerTest {
                 "()Lcom/example/target/CreationEdgeJavaTarget\$Inner;",
                 virtual = false,
                 kind = CallEdgeKind.CREATES,
+                implementedInterface = "java.util.function.Supplier",
             ),
             analysis.callsOf("innerConstructorReference", "()Ljava/util/function/Supplier;").single(),
         )
@@ -245,5 +325,156 @@ class CreationEdgeAnalyzerTest {
         val analysis = BranchSiteAnalyzer.analyze(writer.toByteArray(), includePackages = includePackages) { _, _ -> true }
 
         assertNull(analysis.sourceFile)
+    }
+
+    private val interfaceOwner = "com.example.target.ImplementedInterfaceTarget"
+    private val javaInterfaceOwner = "com.example.target.ImplementedInterfaceJavaTarget"
+
+    private fun interfaceTarget() = analyze("build/classes/kotlin/test", "ImplementedInterfaceTarget")
+
+    private fun javaInterfaceTarget() = analyze("build/classes/java/test", "ImplementedInterfaceJavaTarget")
+
+    @Test
+    fun `each kotlinc creation edge names the interface its call site returns, Kotlin function types included`() {
+        val analysis = interfaceTarget()
+
+        assertEquals(
+            listOf(
+                CallEdge(
+                    interfaceOwner,
+                    "register\$lambda\$0",
+                    "(Lcom/sun/net/httpserver/HttpExchange;)V",
+                    virtual = false,
+                    kind = CallEdgeKind.CREATES,
+                    implementedInterface = "com.sun.net.httpserver.HttpHandler",
+                ),
+            ),
+            analysis.callsOf("register", "(Lcom/sun/net/httpserver/HttpServer;)V"),
+        )
+        assertEquals(
+            listOf(
+                CallEdge(
+                    interfaceOwner,
+                    "startsThread\$lambda\$0",
+                    "(Lcom/example/target/ImplementedInterfaceTarget;)V",
+                    virtual = false,
+                    kind = CallEdgeKind.CREATES,
+                    capturedCount = 1,
+                    implementedInterface = "java.lang.Runnable",
+                ),
+            ),
+            analysis.callsOf("startsThread", "()Ljava/lang/Thread;"),
+        )
+        assertTrue(
+            CallEdge(
+                interfaceOwner,
+                "funInterface\$lambda\$0",
+                "(I)I",
+                virtual = false,
+                kind = CallEdgeKind.CREATES,
+                implementedInterface = "com.example.target.IntStep",
+            ) in analysis.callsOf("funInterface", "()I"),
+        )
+        assertEquals(
+            listOf(
+                CallEdge(
+                    interfaceOwner,
+                    "functionType\$lambda\$0",
+                    "(I)I",
+                    virtual = false,
+                    kind = CallEdgeKind.CREATES,
+                    implementedInterface = "kotlin.jvm.functions.Function1",
+                ),
+            ),
+            analysis.callsOf("functionType", "()I"),
+        )
+    }
+
+    @Test
+    fun `a body class created with new names no interface, and no CALL edge names one`() {
+        val analysis = interfaceTarget()
+
+        assertEquals(
+            listOf(
+                CallEdge(
+                    "com.example.target.ImplementedInterfaceTarget\$objectExpression\$1",
+                    "<init>",
+                    "(Lcom/example/target/ImplementedInterfaceTarget;)V",
+                    virtual = false,
+                ),
+                CallEdge(
+                    "com.example.target.ImplementedInterfaceTarget\$objectExpression\$1",
+                    "run",
+                    "()V",
+                    virtual = true,
+                    kind = CallEdgeKind.CREATES,
+                ),
+            ),
+            analysis.callsOf("objectExpression", "()Ljava/lang/Runnable;"),
+        )
+        val calls =
+            listOf("funInterface" to "()I", "startsThread\$lambda\$0" to "(Lcom/example/target/ImplementedInterfaceTarget;)V")
+                .flatMap { (name, descriptor) -> analysis.callsOf(name, descriptor) }
+                .filter { it.kind == CallEdgeKind.CALL }
+        assertTrue(calls.isNotEmpty(), "the call to step and the call to touch are CALL edges")
+        assertTrue(calls.all { it.implementedInterface == null })
+    }
+
+    @Test
+    fun `a javac lambda names its interface, and an anonymous class created with new names none`() {
+        val analysis = javaInterfaceTarget()
+
+        assertEquals(
+            listOf(
+                CallEdge(
+                    javaInterfaceOwner,
+                    "lambda\$lambda\$0",
+                    "()V",
+                    virtual = false,
+                    kind = CallEdgeKind.CREATES,
+                    implementedInterface = "java.lang.Runnable",
+                ),
+            ),
+            analysis.callsOf("lambda", "()Ljava/lang/Runnable;"),
+        )
+        assertEquals(
+            listOf(
+                CallEdge(
+                    "com.example.target.ImplementedInterfaceJavaTarget\$1",
+                    "<init>",
+                    "(Lcom/example/target/ImplementedInterfaceJavaTarget;)V",
+                    virtual = false,
+                ),
+                CallEdge("com.example.target.ImplementedInterfaceJavaTarget\$1", "run", "()V", virtual = true, kind = CallEdgeKind.CREATES),
+            ),
+            analysis.callsOf("anonymous", "()Ljava/lang/Runnable;"),
+        )
+    }
+
+    @Test
+    fun `one method handed to two interfaces gives two creation edges`() {
+        val analysis = javaInterfaceTarget()
+
+        assertEquals(
+            listOf(
+                CallEdge(
+                    javaInterfaceOwner,
+                    "touch",
+                    "()I",
+                    virtual = true,
+                    kind = CallEdgeKind.CREATES,
+                    implementedInterface = "java.util.function.IntSupplier",
+                ),
+                CallEdge(
+                    javaInterfaceOwner,
+                    "touch",
+                    "()I",
+                    virtual = true,
+                    kind = CallEdgeKind.CREATES,
+                    implementedInterface = "java.util.function.Supplier",
+                ),
+            ),
+            analysis.callsOf("twoInterfaces", "()[Ljava/lang/Object;"),
+        )
     }
 }

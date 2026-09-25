@@ -140,7 +140,14 @@ class CallEdgeAnalyzerTest {
 
         assertEquals(
             setOf(
-                CallEdge("com.example.target.CallEdgeTarget", "callsLambda\$lambda\$0", "(I)I", virtual = false, kind = CallEdgeKind.CREATES),
+                CallEdge(
+                    "com.example.target.CallEdgeTarget",
+                    "callsLambda\$lambda\$0",
+                    "(I)I",
+                    virtual = false,
+                    kind = CallEdgeKind.CREATES,
+                    implementedInterface = "kotlin.jvm.functions.Function1",
+                ),
                 CallEdge("com.example.target.CallEdgeTargetKt", "applyOp", "(Lkotlin/jvm/functions/Function1;I)I", virtual = false),
             ),
             analysis.callsOf("callsLambda", "()I").toSet(),
@@ -153,11 +160,29 @@ class CallEdgeAnalyzerTest {
         val analysis = BranchSiteAnalyzer.analyze(bytes, includePackages = includePackages) { _, _ -> true }
 
         assertEquals(
-            listOf(CallEdge("com.example.target.LambdaTarget", "lambda\$classifyViaLambda\$0", "(I)I", virtual = false, kind = CallEdgeKind.CREATES)),
+            listOf(
+                CallEdge(
+                    "com.example.target.LambdaTarget",
+                    "lambda\$classifyViaLambda\$0",
+                    "(I)I",
+                    virtual = false,
+                    kind = CallEdgeKind.CREATES,
+                    implementedInterface = "java.util.function.IntUnaryOperator",
+                ),
+            ),
             analysis.callsOf("classifyViaLambda", "(I)I"),
         )
         assertEquals(
-            listOf(CallEdge("com.example.target.LambdaTarget", "ship", "()Ljava/lang/String;", virtual = true, kind = CallEdgeKind.CREATES)),
+            listOf(
+                CallEdge(
+                    "com.example.target.LambdaTarget",
+                    "ship",
+                    "()Ljava/lang/String;",
+                    virtual = true,
+                    kind = CallEdgeKind.CREATES,
+                    implementedInterface = "java.util.function.Supplier",
+                ),
+            ),
             analysis.callsOf("shipViaMethodReference", "()Ljava/lang/String;"),
         )
     }

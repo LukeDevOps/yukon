@@ -11,6 +11,7 @@ import io.github.lukedevops.yukon.export.KotlinKind
 import io.github.lukedevops.yukon.export.ProbeKind
 import io.github.lukedevops.yukon.export.ResourceAttributes
 import io.github.lukedevops.yukon.instrumentation.FixtureClassLoader
+import io.github.lukedevops.yukon.instrumentation.ImplementedInterfaceFixtures
 import io.github.lukedevops.yukon.instrumentation.JvmDefaultDisableFixtures
 import io.github.lukedevops.yukon.instrumentation.YukonInstrumentation
 import io.github.lukedevops.yukon.registry.ProbeRegistry
@@ -429,6 +430,37 @@ class StaticBaselineScannerTest {
                 .toSet(),
         )
         assertEquals("CreationEdgeTarget.kt", declared.sourceFile)
+    }
+
+    @Test
+    fun `declares each creation edge from an invokedynamic with its interface, as the manifest does, and no other edge with one`() {
+        val root =
+            directoryRoot(
+                *listOf(
+                    "kotlin/test/com/example/target/ImplementedInterfaceTarget.class",
+                    "kotlin/test/com/example/target/ImplementedInterfaceTarget\$objectExpression\$1.class",
+                    "kotlin/test/com/example/target/IntStep.class",
+                    "java/test/com/example/target/ImplementedInterfaceJavaTarget.class",
+                    "java/test/com/example/target/ImplementedInterfaceJavaTarget\$1.class",
+                ).map { it.substringAfter("test/") to classBytes(it) }
+                    .toTypedArray(),
+            )
+
+        val declaredClasses = StaticBaselineScanner(listOf("com.example.target")).scan(listOf(root)).declaredClasses
+
+        for ((className, expected) in ImplementedInterfaceFixtures.creationEdges) {
+            val methods = declaredClasses.single { it.className == className }.methods
+            assertEquals(
+                expected,
+                methods
+                    .associate { method -> method.methodName to method.calls.filter { it.kind == CallEdgeKind.CREATES } }
+                    .filterValues { it.isNotEmpty() },
+                className,
+            )
+            val callEdges = methods.flatMap { it.calls }.filter { it.kind == CallEdgeKind.CALL }
+            assertTrue(callEdges.isNotEmpty(), "$className has CALL edges to check")
+            assertTrue(callEdges.all { it.implementedInterface == null }, "$className: a CALL edge names no interface")
+        }
     }
 
     @Test

@@ -187,7 +187,7 @@ One caller method's static reference to one callee method, or its use of a class
 _Avoid_: call site (one invoke instruction; never on the wire), edge (one outcome of a branch site), dependency (a jar, never an edge)
 
 **Creation edge**:
-A call edge from a method to a body it hands to someone else to run: a lambda body, a method passed by reference, or a method of a body class. It reaches its target the way a call does, since the body can only run after its creator ran.
+A call edge from a method to a body it hands to someone else to run: a lambda body, a method passed by reference, or a method of a body class. It reaches its target the way a call does, since the body can only run after its creator ran. One made by an `invokedynamic` names the interface the body implements, such as `Runnable`. One made by creating a body class names none, since that class states its own interfaces.
 _Avoid_: defines edge, lambda edge
 
 **Lambda body**:

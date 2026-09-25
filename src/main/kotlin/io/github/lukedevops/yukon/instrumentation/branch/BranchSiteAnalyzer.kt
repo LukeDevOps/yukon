@@ -276,7 +276,7 @@ object BranchSiteAnalyzer {
      *
      * [functionalInterface] is the internal name of the interface such an `invokedynamic` makes a
      * lambda for, the return type of its `invokedType`, and null for every other candidate. The
-     * forwarder table keys on it (ADR 0035).
+     * forwarder table keys on it (ADR 0035), and the creation edge carries it (ADR 0042).
      *
      * [ordinal] is the [InstructionRecorder] ordinal of the instruction that recorded the
      * candidate, and [newOrdinal] that of the `new` an `<init>` call completes. Each is -1 when
@@ -1275,6 +1275,11 @@ object BranchSiteAnalyzer {
      * captured count included, so a method that both calls and creates the same target keeps
      * both edges.
      *
+     * The implemented interface (ADR 0042) travels with the kind the same way the captured count
+     * does. A `LambdaMetafactory` candidate brings its [RawCandidate.functionalInterface], and every
+     * edge that takes its kind from that candidate keeps it. A body-class edge has none. It is part
+     * of the visited key and of the edge, so one body created for two interfaces gives two edges.
+     *
      * References (ADR 0030) ride the same walk, unfiltered: an entry point starts with its own, and
      * every pass-through substituted into it, same-class or cross-class, adds its own, so a
      * reference is attributed exactly where the pass-through's callees are. A cross-class `$default`
@@ -1393,9 +1398,10 @@ object BranchSiteAnalyzer {
                 virtual: Boolean,
                 kind: CallEdgeKind,
                 capturedCount: Int,
+                implementedInterface: String?,
             ): CallEdge {
                 val captured = if (capturedCount == 0) 0 else capturedCount.coerceAtMost(parseParameterDescriptors(descriptor).size)
-                return CallEdge(owner, name, descriptor, virtual, kind, captured, guard)
+                return CallEdge(owner, name, descriptor, virtual, kind, captured, guard, implementedInterface?.replace('/', '.'))
             }
 
             fun visit(
@@ -1405,8 +1411,9 @@ object BranchSiteAnalyzer {
                 virtualRaw: Boolean,
                 kind: CallEdgeKind,
                 capturedCount: Int,
+                implementedInterface: String?,
             ) {
-                if (!visited.add(VisitKey(owner, name, descriptor, kind, capturedCount, guard))) return
+                if (!visited.add(VisitKey(owner, name, descriptor, kind, capturedCount, guard, implementedInterface))) return
 
                 // A candidate inside a pass-through keeps its own kind when it creates something,
                 // and otherwise takes the kind the pass-through was reached with.
@@ -1419,9 +1426,18 @@ object BranchSiteAnalyzer {
                             candidate.virtualRaw,
                             CallEdgeKind.CREATES,
                             candidate.capturedCount,
+                            candidate.functionalInterface,
                         )
                     } else {
-                        visit(candidate.owner, candidate.name, candidate.descriptor, candidate.virtualRaw, kind, capturedCount)
+                        visit(
+                            candidate.owner,
+                            candidate.name,
+                            candidate.descriptor,
+                            candidate.virtualRaw,
+                            kind,
+                            capturedCount,
+                            implementedInterface,
+                        )
                     }
                 }
 
@@ -1442,7 +1458,7 @@ object BranchSiteAnalyzer {
                     if (passThroughForwarders && declaredWithBody && (name to descriptor) in forwarderKeys) {
                         passThroughForwarder(rawCandidatesByMethod[name to descriptor].orEmpty())
                     } else if ((name to descriptor) in eligibleMethodKeys || !declaredWithBody) {
-                        edges += edge(dottedClassName, name, descriptor, virtual, kind, capturedCount)
+                        edges += edge(dottedClassName, name, descriptor, virtual, kind, capturedCount, implementedInterface)
                     } else {
                         passThroughs += name to descriptor
                         references += rawReferencesByMethod[name to descriptor].orEmpty()
@@ -1460,9 +1476,10 @@ object BranchSiteAnalyzer {
                     if (target != null) {
                         references += defaultTable.rawReferencesByMethod[name to descriptor].orEmpty()
                         if (passThroughForwarders && (target.name to target.descriptor) in defaultTable.forwarderKeys) {
-                            visit(owner, target.name, target.descriptor, target.virtual, kind, capturedCount)
+                            visit(owner, target.name, target.descriptor, target.virtual, kind, capturedCount, implementedInterface)
                         } else {
-                            edges += edge(dottedOwner, target.name, target.descriptor, target.virtual, kind, capturedCount)
+                            edges +=
+                                edge(dottedOwner, target.name, target.descriptor, target.virtual, kind, capturedCount, implementedInterface)
                         }
                         return
                     }
@@ -1471,7 +1488,7 @@ object BranchSiteAnalyzer {
                 val table = methodTableFor(owner)
                 val access = table?.methodAccess?.get(name to descriptor)
                 if (table == null || access == null) {
-                    edges += edge(dottedOwner, name, descriptor, virtualRaw, kind, capturedCount)
+                    edges += edge(dottedOwner, name, descriptor, virtualRaw, kind, capturedCount, implementedInterface)
                     return
                 }
 
@@ -1485,7 +1502,7 @@ object BranchSiteAnalyzer {
                         for ((bodyKey, bodyAccess) in table.methodAccess) {
                             val (bodyName, bodyDescriptor) = bodyKey
                             if (bodyName == "<init>" || bodyName == "<clinit>" || bodyAccess and BODYLESS_FLAGS != 0) continue
-                            visit(owner, bodyName, bodyDescriptor, bodyAccess and NON_VIRTUAL_FLAGS == 0, CallEdgeKind.CREATES, 0)
+                            visit(owner, bodyName, bodyDescriptor, bodyAccess and NON_VIRTUAL_FLAGS == 0, CallEdgeKind.CREATES, 0, null)
                         }
                     }
                     return
@@ -1493,17 +1510,17 @@ object BranchSiteAnalyzer {
                 if (declaredWithBody && !isConstructorOrInitializer && wouldNotBeProbedByMethodTier(access, name, table.isScalaClass)) {
                     references += table.rawReferencesByMethod[name to descriptor].orEmpty()
                     table.rawCandidatesByMethod[name to descriptor].orEmpty().forEach(::visitInside)
-                    visit(owner, "<clinit>", "()V", false, kind, 0)
+                    visit(owner, "<clinit>", "()V", false, kind, 0, null)
                     return
                 }
 
                 val isForwarder = passThroughForwarders && declaredWithBody && (name to descriptor) in table.forwarderKeys
                 if (isForwarder) {
                     passThroughForwarder(table.rawCandidatesByMethod[name to descriptor].orEmpty())
-                    visit(owner, "<clinit>", "()V", false, kind, 0)
+                    visit(owner, "<clinit>", "()V", false, kind, 0, null)
                 } else {
                     val nonVirtual = access and NON_VIRTUAL_FLAGS != 0
-                    edges += edge(dottedOwner, name, descriptor, virtualRaw && !nonVirtual, kind, capturedCount)
+                    edges += edge(dottedOwner, name, descriptor, virtualRaw && !nonVirtual, kind, capturedCount, implementedInterface)
                 }
 
                 if (isConstructorOrInitializer && table.hasEnclosingMethod) {
@@ -1520,7 +1537,15 @@ object BranchSiteAnalyzer {
 
             for (candidate in candidates) {
                 guard = guardOf(candidate)
-                visit(candidate.owner, candidate.name, candidate.descriptor, candidate.virtualRaw, candidate.kind, candidate.capturedCount)
+                visit(
+                    candidate.owner,
+                    candidate.name,
+                    candidate.descriptor,
+                    candidate.virtualRaw,
+                    candidate.kind,
+                    candidate.capturedCount,
+                    candidate.functionalInterface,
+                )
             }
             return edges
         }
@@ -1648,7 +1673,10 @@ object BranchSiteAnalyzer {
         return forwarders
     }
 
-    /** One step of [resolveCallEdges]'s walk: a callee, with the kind, captured count and guard it was reached with. */
+    /**
+     * One step of [resolveCallEdges]'s walk: a callee, with the kind, captured count, guard and
+     * implemented interface it was reached with.
+     */
     private data class VisitKey(
         val owner: String,
         val name: String,
@@ -1656,6 +1684,7 @@ object BranchSiteAnalyzer {
         val kind: CallEdgeKind,
         val capturedCount: Int,
         val guard: Int?,
+        val implementedInterface: String?,
     )
 
     /**

@@ -1607,6 +1607,71 @@ class ProtoPayloadCodecTest {
 
         assertEquals(CallEdgeKind.CALL, edge.kind)
         assertEquals(0, edge.capturedCount)
+        assertEquals(null, edge.implementedInterface)
+    }
+
+    @Test
+    fun `a creation edge's implemented interface round-trips through the manifest and the baseline, and an edge with none is empty on the wire`() {
+        val calls =
+            listOf(
+                CallEdge(
+                    "com.example.Foo",
+                    "bar\$lambda\$0",
+                    "(Lcom/sun/net/httpserver/HttpExchange;)V",
+                    virtual = false,
+                    kind = CallEdgeKind.CREATES,
+                    implementedInterface = "com.sun.net.httpserver.HttpHandler",
+                ),
+                CallEdge(
+                    "com.example.Foo",
+                    "bar\$lambda\$1",
+                    "(I)I",
+                    virtual = false,
+                    kind = CallEdgeKind.CREATES,
+                    implementedInterface = "kotlin.jvm.functions.Function1",
+                ),
+                CallEdge("com.example.Foo\$bar\$1", "run", "()V", virtual = true, kind = CallEdgeKind.CREATES),
+                CallEdge("com.example.Baz", "qux", "()I", virtual = true),
+            )
+        val manifest =
+            ProbeManifest(
+                resource = ResourceAttributes("checkout", null, "", null, "run-1"),
+                probes = listOf(methodProbe(calls = calls)),
+            )
+        val baseline =
+            StaticBaseline(
+                resource = ResourceAttributes("checkout", null, "instance-1", null, "run-1"),
+                declaredClasses =
+                    listOf(DeclaredClass(className = "com.example.Foo", methods = listOf(DeclaredMethod("bar", "()V", calls = calls)))),
+                scannedAt = 1000L,
+            )
+
+        val manifestBytes = ProtoPayloadCodec.encode(manifest)
+        val baselineBytes = ProtoPayloadCodec.encode(baseline)
+
+        assertEquals(manifest, ProtoPayloadCodec.decodeProbeManifest(manifestBytes))
+        assertEquals(baseline, ProtoPayloadCodec.decodeStaticBaseline(baselineBytes))
+        val expectedOnWire = listOf("com.sun.net.httpserver.HttpHandler", "kotlin.jvm.functions.Function1", "", "")
+        assertEquals(
+            expectedOnWire,
+            ProtoProbeManifest
+                .parseFrom(manifestBytes)
+                .probesList
+                .single()
+                .callsList
+                .map { it.implementedInterface },
+        )
+        assertEquals(
+            expectedOnWire,
+            ProtoStaticBaseline
+                .parseFrom(baselineBytes)
+                .declaredClassesList
+                .single()
+                .methodsList
+                .single()
+                .callsList
+                .map { it.implementedInterface },
+        )
     }
 
     @Test

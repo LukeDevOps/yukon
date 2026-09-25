@@ -20,7 +20,8 @@ import kotlin.test.assertTrue
  * a METHOD probe carries its own in-scope call edges, a BRANCH probe carries none, and the class
  * gets its own [io.github.lukedevops.yukon.export.ClassLocation] record. Also proves the ADR 0034
  * facts on the same path: an edge's kind and captured count, a method's lambda body flag, and the
- * class's source file, body kind and source name.
+ * class's source file, body kind and source name. Also proves that a creation edge's interface
+ * (ADR 0042) reaches the manifest.
  */
 class CallEdgeInstrumentationTest {
     private var installedTransformer: ResettableClassFileTransformer? = null
@@ -163,11 +164,19 @@ class CallEdgeInstrumentationTest {
                 virtual = false,
                 kind = CallEdgeKind.CREATES,
                 capturedCount = 1,
+                implementedInterface = "kotlin.jvm.functions.Function1",
             ) in methodProbes.single { it.methodName == "capturing" }.calls,
         )
         assertEquals(
             listOf(
-                CallEdge("com.example.target.CreationEdgeTarget", "withDefault\$lambda\$0", "(I)I", virtual = false, kind = CallEdgeKind.CREATES),
+                CallEdge(
+                    "com.example.target.CreationEdgeTarget",
+                    "withDefault\$lambda\$0",
+                    "(I)I",
+                    virtual = false,
+                    kind = CallEdgeKind.CREATES,
+                    implementedInterface = "kotlin.jvm.functions.Function1",
+                ),
                 CallEdge("com.example.target.CreationEdgeTarget", "withDefault", "(Lkotlin/jvm/functions/Function1;)I", virtual = false),
             ),
             methodProbes.single { it.methodName == "callsDefault" }.calls,
@@ -209,7 +218,14 @@ class CallEdgeInstrumentationTest {
         )
         assertEquals(
             listOf(
-                CallEdge("com.example.target.CreationEdgeJavaTarget", "name", "()Ljava/lang/String;", virtual = true, kind = CallEdgeKind.CREATES),
+                CallEdge(
+                    "com.example.target.CreationEdgeJavaTarget",
+                    "name",
+                    "()Ljava/lang/String;",
+                    virtual = true,
+                    kind = CallEdgeKind.CREATES,
+                    implementedInterface = "java.util.function.Supplier",
+                ),
             ),
             methodProbes.single { it.methodName == "boundReference" }.calls,
         )
@@ -289,5 +305,37 @@ class CallEdgeInstrumentationTest {
                 FixtureClassLoader(arrayOf(File("build/classes/kotlin/test").toURI().toURL()), javaClass.classLoader),
             ),
         )
+    }
+
+    @Test
+    fun `through the real matcher, each creation edge from an invokedynamic carries its interface and no other edge carries one`() {
+        val registry = ProbeRegistry()
+        install(registry, AgentConfig.parse("includePackages=com.example.target"))
+
+        val loader =
+            FixtureClassLoader(
+                arrayOf(File("build/classes/kotlin/test").toURI().toURL(), File("build/classes/java/test").toURI().toURL()),
+                javaClass.classLoader,
+            )
+        for (className in ImplementedInterfaceFixtures.creationEdges.keys) Class.forName(className, true, loader)
+
+        val methodProbes =
+            registry
+                .manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
+                .probes
+                .filter { it.kind == ProbeKind.METHOD }
+        for ((className, expected) in ImplementedInterfaceFixtures.creationEdges) {
+            val probes = methodProbes.filter { it.className == className }
+            assertEquals(
+                expected,
+                probes
+                    .associate { probe -> probe.methodName to probe.calls.filter { it.kind == CallEdgeKind.CREATES } }
+                    .filterValues { it.isNotEmpty() },
+                className,
+            )
+            val callEdges = probes.flatMap { it.calls }.filter { it.kind == CallEdgeKind.CALL }
+            assertTrue(callEdges.isNotEmpty(), "$className has CALL edges to check")
+            assertTrue(callEdges.all { it.implementedInterface == null }, "$className: a CALL edge names no interface")
+        }
     }
 }

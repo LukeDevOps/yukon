@@ -108,7 +108,8 @@ private data class InstanceMethodKey(
  * One call edge read from a METHOD probe's own bytecode. See ADR 0024. [guard] is the branch index,
  * in the caller's class, of the innermost outcome that must run before the call, or null when none
  * does. See ADR 0037. [creates] is true for a CREATES edge, which hands the callee to someone else
- * to run. See ADR 0028.
+ * to run. See ADR 0028. [implementedInterface] is the dotted interface a CREATES edge from an
+ * invokedynamic implements, or null. See ADR 0042.
  */
 private data class CallEdgeInfo(
     val className: String,
@@ -117,6 +118,7 @@ private data class CallEdgeInfo(
     val virtual: Boolean,
     val guard: Int? = null,
     val creates: Boolean = false,
+    val implementedInterface: String? = null,
 )
 
 /**
@@ -671,6 +673,7 @@ private fun callEdgeInfo(edge: CallEdge): CallEdgeInfo =
         edge.virtual,
         if (edge.hasGuard()) edge.guard else null,
         edge.kind == CallEdgeKind.CREATES,
+        edge.implementedInterface.ifEmpty { null },
     )
 
 private fun respondOk(exchange: HttpExchange) {

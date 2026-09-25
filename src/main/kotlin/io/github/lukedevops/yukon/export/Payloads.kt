@@ -412,6 +412,13 @@ enum class CallEdgeKind {
  * or the `getstatic` or `putstatic` that stands for an initializer. An edge that takes the place of
  * a pass-through keeps the guard of the call to the pass-through. Edges are distinct by every
  * field, so one callee reached under two guards gives two edges. See ADR 0037.
+ *
+ * [implementedInterface] is set only on a [CallEdgeKind.CREATES] edge from an `invokedynamic`: the
+ * dotted name of the interface the call site returns, the return type of its `invokedType`, such as
+ * `java.lang.Runnable`. Kotlin's function types are sent too. It travels with the kind, so an edge
+ * that takes the place of a pass-through keeps the interface of the edge it takes its kind from.
+ * Null on a [CallEdgeKind.CALL] edge and on a creation edge from a body class's `new` or
+ * `getstatic INSTANCE`. One body created for two interfaces gives two edges. See ADR 0042.
  */
 data class CallEdge(
     val className: String,
@@ -421,6 +428,7 @@ data class CallEdge(
     val kind: CallEdgeKind = CallEdgeKind.CALL,
     val capturedCount: Int = 0,
     val guard: Int? = null,
+    val implementedInterface: String? = null,
 )
 
 /**

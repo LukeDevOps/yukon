@@ -166,10 +166,11 @@ class LambdaInstrumentationTest {
                             "(I)Ljava/lang/String;",
                             virtual = false,
                             kind = CallEdgeKind.CREATES,
+                            implementedInterface = "scala.Function1",
                         ),
                     ),
                     methodProbes.single { it.methodName == "classify" }.calls,
-                    "$module names the forwarder in the invokedynamic, and the forwarder's call keeps the CREATES kind",
+                    "$module names the forwarder in the invokedynamic, and the forwarder's call keeps the CREATES kind and its interface",
                 )
                 assertEquals("Targets.scala", manifest.classLocations.single { it.classId == methodProbes.first().classId }.sourceFile)
             } finally {

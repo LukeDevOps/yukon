@@ -366,6 +366,7 @@ object ProtoPayloadCodec {
                 .setVirtual(edge.virtual)
                 .setKind(toProto(edge.kind))
                 .setCapturedCount(edge.capturedCount)
+                .setImplementedInterface(edge.implementedInterface.orEmpty())
         edge.guard?.let { builder.guard = it }
         return builder.build()
     }
@@ -379,6 +380,7 @@ object ProtoPayloadCodec {
             kind = fromProto(edge.kind),
             capturedCount = edge.capturedCount,
             guard = if (edge.hasGuard()) edge.guard else null,
+            implementedInterface = edge.implementedInterface.ifEmpty { null },
         )
 
     private fun toProto(kind: CallEdgeKind): ProtoCallEdgeKind =
