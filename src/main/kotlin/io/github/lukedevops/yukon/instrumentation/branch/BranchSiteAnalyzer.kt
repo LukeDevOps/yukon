@@ -540,6 +540,33 @@ object BranchSiteAnalyzer {
     ): Boolean = name.endsWith("\$default") || (name == "<init>" && descriptor.endsWith("DefaultConstructorMarker;)V"))
 
     /**
+     * Whether `<init>`[descriptor], default-shaped by [isDefaultShaped], is instead the synthetic
+     * accessor kotlinc gives a private constructor that another class, such as the companion,
+     * calls: `<init>(params..., DefaultConstructorMarker)`, whose body [candidates] makes exactly
+     * one call to a constructor of this class, `<init>(params...)`, its own descriptor less the
+     * marker. A default-filling constructor calls its target with the mask ints dropped as well, so
+     * the two never agree, and one whose default value constructs this class makes two such calls.
+     * In a class's own analysis a constructor that tested a mask is a default site whatever else
+     * its body does, so no false match can hide one. The descriptor alone cannot tell an accessor
+     * from a default-filling constructor: a private `(int, int)` constructor's accessor and the
+     * default-filling constructor of an `(int)` one are both
+     * `(IILkotlin/jvm/internal/DefaultConstructorMarker;)V`. Every companion object and every
+     * sealed class has one of these accessors. Confirmed with `javap` against Kotlin 2.2.21 output.
+     * An accessor is an ordinary synthetic pass-through, never a default site.
+     */
+    private fun isConstructorAccessor(
+        ownerInternalName: String,
+        descriptor: String,
+        candidates: List<RawCandidate>,
+    ): Boolean {
+        val params = parseParameterDescriptors(descriptor)
+        if (params.isEmpty()) return false
+        val forwardedDescriptor = params.dropLast(1).joinToString("", "(", ")V")
+        val ownConstructorCalls = candidates.filter { it.owner == ownerInternalName && it.name == "<init>" }
+        return ownConstructorCalls.singleOrNull()?.descriptor == forwardedDescriptor
+    }
+
+    /**
      * A class-level annotation descriptor shaped like `kotlin.Metadata`'s own: `L`, one package
      * segment with no further `/`, then `/Metadata;`. Shape, not a literal, so this source file
      * never spells out a string starting with `kotlin/`, which `shadowJar` would otherwise rewrite
@@ -816,9 +843,16 @@ object BranchSiteAnalyzer {
                 throwableTest(internalClassName, superInternalName, readClass),
             )
 
+        val maskTested = defaultCandidates.mapTo(mutableSetOf()) { it.defaultName to it.defaultDescriptor }
+        val constructorAccessors =
+            defaultShapedNames.filterTo(mutableSetOf()) { (name, descriptor) ->
+                name == "<init>" &&
+                    (name to descriptor) !in maskTested &&
+                    isConstructorAccessor(internalClassName, descriptor, rawCandidatesByMethod[name to descriptor].orEmpty())
+            }
         val defaultSites = resolveDefaultSites(internalClassName, classAccess, methodAccess, localNames, defaultCandidates)
         val resolved = defaultSites.mapTo(mutableSetOf()) { it.defaultName to it.defaultDescriptor }
-        val unresolvedDefaultSites = defaultShapedNames.distinct().filterNot { it in resolved }
+        val unresolvedDefaultSites = defaultShapedNames.distinct().filterNot { it in resolved || it in constructorAccessors }
 
         val getterCandidateNames =
             methodAccess.entries
@@ -1351,24 +1385,26 @@ object BranchSiteAnalyzer {
      * stay verbatim edges, since the abstract case is exactly the template-method edge a collector
      * widens to the implementers.
      *
-     * A cross-class candidate shaped like a Kotlin `$default` method is resolved against the
-     * target class's own bytecode fetched through [lookup], the same mechanism
-     * [resolveScalaGetterSites] already uses for a Scala constructor getter's cross-class target;
-     * a `$default` whose target the descriptor cannot name falls through to the general rule
-     * below, since its body invokes the target anyway. Any cross-class candidate whose owner
-     * declares it with a body the method tier would not probe
-     * (a bridge, an `access$` accessor, any other synthetic method that is not a probed lambda
-     * body, a Hibernate enhancement method, or a suspend lambda's `create` or `invoke`, see
-     * [wouldNotBeProbedByMethodTier]) is a pass-through the same way: its own raw
-     * candidates, read from the owner's bytes via [readMethodTable], are substituted transitively.
-     * Invoking a cross-class pass-through is itself a use of its owner, so it also adds an edge to
-     * that owner's `<clinit>`, the same as a static field read or write on that owner (see
-     * [CallCandidateMethodVisitor]); this edge is never gated on the owner actually declaring a
-     * `<clinit>`, since the collector already drops an edge with no matching node. A cross-class
-     * candidate that owner's bytes cannot resolve, or that the owner does not declare at all (an
-     * inherited method), stays a verbatim edge with its original virtual flag; one the owner
-     * declares and the method tier would probe keeps its name and descriptor but has its virtual
-     * flag corrected the same way a same-class target's is.
+     * A cross-class candidate shaped like a Kotlin `$default` method is resolved against the target
+     * class's own bytecode fetched through [lookup], the same mechanism [resolveScalaGetterSites]
+     * already uses for a Scala constructor getter's cross-class target; a `$default` whose target
+     * the descriptor cannot name falls through to the general rule below, since its body invokes
+     * the target anyway. A default-shaped constructor that is kotlinc's accessor for a private
+     * constructor ([isConstructorAccessor]) is never resolved that way: it is synthetic and never
+     * probed, so it passes through to the constructor it forwards to, although the general rule
+     * keeps every other constructor as an edge. Any cross-class candidate whose owner declares it
+     * with a body the method tier would not probe (a bridge, an `access$` accessor, any other
+     * synthetic method that is not a probed lambda body, a Hibernate enhancement method, or a
+     * suspend lambda's `create` or `invoke`, see [wouldNotBeProbedByMethodTier]) is a pass-through
+     * the same way: its own raw candidates, read from the owner's bytes via [readMethodTable], are
+     * substituted transitively. Invoking a cross-class pass-through is itself a use of its owner,
+     * so it also adds an edge to that owner's `<clinit>`, the same as a static field read or write
+     * on that owner (see [CallCandidateMethodVisitor]); this edge is never gated on the owner
+     * actually declaring a `<clinit>`, since the collector already drops an edge with no matching
+     * node. A cross-class candidate that owner's bytes cannot resolve, or that the owner does not
+     * declare at all (an inherited method), stays a verbatim edge with its original virtual flag;
+     * one the owner declares and the method tier would probe keeps its name and descriptor but has
+     * its virtual flag corrected the same way a same-class target's is.
      *
      * A candidate named `<init>` or `<clinit>` whose owner's [MethodTable.hasEnclosingMethod] is
      * true names a body class: a suspend lambda, an object expression, or an anonymous or local
@@ -1611,6 +1647,12 @@ object BranchSiteAnalyzer {
 
                 if (isDefaultShaped(name, descriptor)) {
                     val defaultTable = methodTableFor(owner)
+                    val accessorCandidates = defaultTable?.rawCandidatesByMethod?.get(name to descriptor).orEmpty()
+                    if (defaultTable != null && name == "<init>" && isConstructorAccessor(owner, descriptor, accessorCandidates)) {
+                        references += defaultTable.rawReferencesByMethod[name to descriptor].orEmpty()
+                        accessorCandidates.forEach(::visitInside)
+                        return
+                    }
                     val target = defaultTable?.let { resolveCrossClassDefaultTarget(owner, name, descriptor, it) }
                     if (target != null) {
                         references += defaultTable.rawReferencesByMethod[name to descriptor].orEmpty()

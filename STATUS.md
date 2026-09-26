@@ -90,10 +90,18 @@ adopter's collector forwards to one multi-tenant backend.
      from it not count or dropping it from the graph. Server graph and
      store, the testkit's `unreachedClusters()` and the stub collector all
      apply it.
-   - The agent logs "looks like a Kotlin default-argument method" at INFO for
-     the synthetic accessor kotlinc adds when a companion calls its class's
-     private constructor (`Tariff#<init>(String, double,
-     DefaultConstructorMarker)`), which is not a `$default` method.
+   - The accessor log bullet landed on 2026-09-26 (ADR 0021, amended).
+     kotlinc's accessor for a private constructor, `<init>(params...,
+     DefaultConstructorMarker)`, was read as a default-filling constructor.
+     Every companion object and sealed class has one, so each logged the
+     INFO line. Worse, a call from another class was resolved by dropping
+     the accessor's last value parameter: an edge to the wrong constructor
+     when the class had one of that descriptor, otherwise a verbatim edge to
+     the unprobed accessor, leaving the private constructor with no caller.
+     An accessor is now told by its body (exactly one call to a constructor
+     of its class, `this(params...)` with only the marker dropped), is no
+     default site and not logged, and passes through to the private
+     constructor.
    - Not seen in these runs, still open: a named class implementing a
      framework interface reads as an uncalled root (the ADR 0024 gap);
      kotlin-stdlib always reads as used, through `kotlin.Metadata`; a class

@@ -521,6 +521,71 @@ class CallEdgeAnalyzerTest {
     }
 
     @Test
+    fun `a call to kotlinc's private-constructor accessor reaches the private constructor, not a same-shaped public one`() {
+        val analysis = analyzeTarget("AccessorPair\$Companion")
+
+        assertEquals(
+            listOf(CallEdge("com.example.target.AccessorPair", "<init>", "(II)V", virtual = false)),
+            analysis.callsOf("make", "()Lcom/example/target/AccessorPair;").filter { it.methodName == "<init>" },
+        )
+    }
+
+    @Test
+    fun `kotlinc's private-constructor accessor is neither a default site nor an unresolved one`() {
+        for (simpleName in listOf("AccessorPair", "AccessorName", "AccessorPair\$Companion", "AccessorShape")) {
+            val analysis = analyzeTarget(simpleName)
+
+            assertEquals(emptyList(), analysis.defaultSites.map { it.defaultName to it.defaultDescriptor }, simpleName)
+            assertEquals(emptyList(), analysis.unresolvedDefaultSites, simpleName)
+        }
+        assertEquals(
+            listOf(CallEdge("com.example.target.AccessorName", "<init>", "(Ljava/lang/String;)V", virtual = false)),
+            analyzeTarget("AccessorName\$Companion")
+                .callsOf("of", "(Ljava/lang/String;)Lcom/example/target/AccessorName;")
+                .filter { it.methodName == "<init>" },
+        )
+    }
+
+    @Test
+    fun `a private constructor with a default keeps its default site beside its accessor, and both calls reach it`() {
+        val analysis = analyzeTarget("AccessorDefaults")
+
+        assertEquals(
+            listOf(listOf<Any>("(Ljava/lang/String;IILkotlin/jvm/internal/DefaultConstructorMarker;)V", "(Ljava/lang/String;I)V", 0b10)),
+            analysis.defaultSites.map { listOf(it.defaultDescriptor, it.targetDescriptor, it.optionalBits) },
+        )
+        assertEquals(emptyList(), analysis.unresolvedDefaultSites)
+        val companion = analyzeTarget("AccessorDefaults\$Companion")
+        for (method in listOf("full", "omitting")) {
+            assertEquals(
+                listOf(CallEdge("com.example.target.AccessorDefaults", "<init>", "(Ljava/lang/String;I)V", virtual = false)),
+                companion.callsOf(method, "()Lcom/example/target/AccessorDefaults;").filter { it.methodName == "<init>" },
+                method,
+            )
+        }
+    }
+
+    @Test
+    fun `a default-filling constructor whose default constructs its own class is not taken for an accessor`() {
+        assertEquals(
+            listOf(CallEdge("com.example.target.SelfDefault", "<init>", "(ILcom/example/target/SelfDefault;)V", virtual = false)),
+            analyzeTarget("SelfDefaultUser").callsOf("make", "()Lcom/example/target/SelfDefault;").filter { it.methodName == "<init>" },
+        )
+    }
+
+    @Test
+    fun `a sealed subclass and a companion's creator reach the private constructor behind the accessor`() {
+        assertEquals(
+            listOf(CallEdge("com.example.target.AccessorShape", "<init>", "()V", virtual = false)),
+            analyzeTarget("AccessorShape\$Circle").callsOf("<init>", "()V"),
+        )
+        assertEquals(
+            listOf(CallEdge("com.example.target.AccessorPair\$Companion", "<init>", "()V", virtual = false)),
+            analyzeTarget("AccessorPair").callsOf("<clinit>", "()V").filter { it.methodName == "<init>" },
+        )
+    }
+
+    @Test
     fun `an object expression is a body class, joined by its constructor edge to its overridden run`() {
         val analysis = analyzeTarget("ObjectExpressionTarget")
 
