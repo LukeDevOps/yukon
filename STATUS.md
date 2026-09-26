@@ -238,7 +238,8 @@ Open from these:
 - The testkit and stub collector do not fold the sites under a
   never-hit method, which the server does (its ADR 0031).
 - `runDemoStack`'s printer still prints JVM names on its endpoint and
-  optional-parameter lines.
+  optional-parameter lines, and an any-verb route as `* /checkout`
+  where `yukon-server` shows `ANY /checkout`.
 
 ### Nothing is published anywhere
 
