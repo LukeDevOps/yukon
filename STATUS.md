@@ -50,7 +50,8 @@ adopter's collector forwards to one multi-tenant backend.
      and `Unit` elements, symbolic names, value-class elements, aliased
      superclass parameters, local case classes that capture a value, and
      Scala versions other than 2.13 and 3.3.
-   - The two coroutine bullets landed on 2026-09-26 under ADR 0025, amended.
+   - The two coroutine bullets landed on 2026-09-26 under ADR 0025, amended
+     (`c1b59c5`).
      The stack form of the suspended-marker compare (`dup; invokestatic
      getCOROUTINE_SUSPENDED; if_acmpne`: the debug-probe hook in an inlined
      `suspendCoroutine`, and a `Unit` function's tail-call return) is
@@ -67,7 +68,7 @@ adopter's collector forwards to one multi-tenant backend.
      reason. A `runShapesStack` rerun under a fresh version shows neither
      row; the shapes report's branch sites are the three the adopter wrote.
    - The Scala 3 lambda-body bullet landed on 2026-09-26 (ADR 0034,
-     amended). Scala 3 names a body owned by a method `<method>$$anonfun$N`
+     amended; `4152a99`). Scala 3 names a body owned by a method `<method>$$anonfun$N`
      (`LambdaLift.newName`, 3.3.4), which the scalac name rule did not know.
      The by-name closure `callByName$$anonfun$1` is not synthetic, so it was
      probed but unflagged; worse, a lambda written in a method or a class
@@ -82,7 +83,7 @@ adopter's collector forwards to one multi-tenant backend.
      and `NestedLambdaHost` pin both compilers; `runShapesStack` shows the
      Scala 3 by-name closure folded into `callByName`, as Scala 2's is.
    - The utility-class constructor bullet landed on 2026-09-26 (server ADR
-     0034, amended). A never-hit `<init>` of a class no run constructed and
+     0034, amended; server `48783b9`, agent `d7af7d4`). A never-hit `<init>` of a class no run constructed and
      no class finding covers, the report's `unjudged_constructors`, is
      treated in the cluster graph as `<clinit>` is: reached through, never
      a root, never listed or counted, and its class can be listed whole
@@ -90,7 +91,8 @@ adopter's collector forwards to one multi-tenant backend.
      from it not count or dropping it from the graph. Server graph and
      store, the testkit's `unreachedClusters()` and the stub collector all
      apply it.
-   - The accessor log bullet landed on 2026-09-26 (ADR 0021, amended).
+   - The accessor log bullet landed on 2026-09-26 (ADR 0021, amended;
+     `bf47594`).
      kotlinc's accessor for a private constructor, `<init>(params...,
      DefaultConstructorMarker)`, was read as a default-filling constructor.
      Every companion object and sealed class has one, so each logged the
@@ -111,7 +113,21 @@ adopter's collector forwards to one multi-tenant backend.
      `x$0` parameter names. A data class property's getter reads as never
      hit when only `copy`, `toString` and the class's own methods read the
      field; that is true, and noisy.
-3. **Settle the one-way doors before anything is published.**
+3. **Settle the one-way doors before anything is published.** Next up
+   (2026-09-26): every item 2 bullet from the real runs has landed; what
+   is left there is marked not seen in these runs, or naming after
+   release. Item 3 is decisions, so it starts with a grill, one sub-item
+   at a time. Facts gathered so far: the testkit's public surface is
+   `YukonTestCollector` (about 40 public functions, from `awaitNextFlush`
+   and `wasHit` to `unreachedClusters` and the dependency queries), the
+   top-level types beside it (`ProbeRef`, `ClassFindingRef`,
+   `UnreachedCluster`, `WholeClass`, `OptionalParameterRef`, `EndpointRef`,
+   `DependencyStatus` and its parts, three `Unknown…Exception`s, and the
+   `RootKind`, `ClassFinding` and `DependencyUsage` enums), and
+   `junit5/YukonExtension`. The per-instance question is written up under
+   "Generators other than Spring and Hibernate are not recognised" below.
+   Not yet read: ADR 0016, `AgentConfig`'s option list, and the Gradle
+   publishing, group id and licence state of each repo.
    - Review the testkit's query API, which publishing freezes. Include
      whether `neverHit()` judges per instance or across instances (see the
      runtime-generated classes entry below).
