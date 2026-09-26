@@ -208,7 +208,11 @@ class YukonTestCollectorEndToEndTest {
         installedTransformer = yukon.install(instrumentation)
 
         val loader = fixtureLoader()
-        fun load(simpleName: String, initialise: Boolean) = Class.forName("$FIXTURES.$simpleName", initialise, loader)
+
+        fun load(
+            simpleName: String,
+            initialise: Boolean,
+        ) = Class.forName("$FIXTURES.$simpleName", initialise, loader)
         load("AuditTrail", initialise = false)
         load("LinePrinter", initialise = false)
         load("Greeter", initialise = false)
@@ -269,7 +273,11 @@ class YukonTestCollectorEndToEndTest {
     fun `neverHit folds class findings, keeps static methods and lists only unused overloads, observed only through the wire protocol`() {
         val target = collectClassFindingShapes("e2e-5")
 
-        val rows = target.neverHit().filter { it.kind == ProbeKind.METHOD }.map { "${it.className.removePrefix("$FIXTURES.")}#${it.methodName}${it.methodDescriptor}" }
+        val rows =
+            target
+                .neverHit()
+                .filter { it.kind == ProbeKind.METHOD }
+                .map { "${it.className.removePrefix("$FIXTURES.")}#${it.methodName}${it.methodDescriptor}" }
         assertTrue("Amount#<init>(II)V" in rows, "Amount's unused overload is a row: $rows")
         assertTrue("ReportWriter#footer()Ljava/lang/String;" in rows, "a never-instantiated class keeps its static methods: $rows")
         assertTrue("Counters#unused()I" in rows, "an initialised object's never-hit method is a row: $rows")
@@ -307,7 +315,7 @@ class YukonTestCollectorEndToEndTest {
     }
 
     @Test
-    fun `a never-hit part function called only through its multi-file facade joins its caller's cluster, observed only through the wire protocol`() {
+    fun `a never-hit part function called only through its facade joins its caller's cluster, observed only through the wire protocol`() {
         val target = YukonTestCollector.start()
         collector = target
 
@@ -361,7 +369,125 @@ class YukonTestCollectorEndToEndTest {
         )
     }
 
+    /**
+     * Runs `SiteFolds` under a real agent that reports to a fresh collector: one instance, every
+     * method called but `neverCalled`, with the arguments each method's KDoc names. Returns the
+     * collector once every method's probes have arrived and settled.
+     */
+    private fun collectSiteFolds(instanceId: String): YukonTestCollector {
+        val target = YukonTestCollector.start()
+        collector = target
+
+        val registry = ProbeRegistry()
+        val config =
+            AgentConfig.parse(
+                "includePackages=com.example.testkittarget," +
+                    "endpoint=${target.endpoint}," +
+                    "flushIntervalSeconds=1," +
+                    "serviceName=testkit-e2e," +
+                    "serviceInstanceId=$instanceId",
+            )
+
+        val instrumentation = ByteBuddyAgent.install()
+        val yukon = YukonInstrumentation(config, registry)
+        installedYukon = yukon
+        installedTransformer = yukon.install(instrumentation)
+
+        val foldsClass = Class.forName(SITE_FOLDS, true, fixtureLoader())
+        val folds = foldsClass.getDeclaredConstructor().newInstance()
+        val flag = Boolean::class.javaPrimitiveType
+        foldsClass.getMethod("nested", flag, flag, flag).invoke(folds, false, false, false)
+        foldsClass.getMethod("guardRan", flag, flag).invoke(folds, true, false)
+        foldsClass.getMethod("behindRoutine", Integer::class.java, flag).invoke(folds, 7, true)
+
+        val exporter = HttpOtlpStyleExporter(target.endpoint)
+        val exportScheduler = ExportScheduler(config, TestResources.forConfig(config), registry, EndpointRegistry(), exporter)
+        scheduler = exportScheduler
+        exportScheduler.start()
+
+        for (methodName in listOf("neverCalled", "nested", "guardRan", "behindRoutine")) {
+            target.awaitProbe(SITE_FOLDS, methodName, Duration.ofSeconds(10))
+        }
+        target.awaitSettled(Duration.ofSeconds(10))
+        return target
+    }
+
+    /** `method:line` for each of [SITE_FOLDS]'s rows in [rows], BRANCH rows only unless [methods] is set. */
+    private fun siteFoldRows(
+        rows: List<ProbeRef>,
+        methods: Boolean = false,
+    ): List<String> =
+        rows
+            .filter { it.className == SITE_FOLDS && (methods || it.kind == ProbeKind.BRANCH) }
+            .map { "${it.methodName}:${it.line}${if (it.kind == ProbeKind.METHOD) " METHOD" else ""}" }
+
+    @Test
+    fun `a never-called method's sites fold into its row, routine outcomes included, observed only through the wire protocol`() {
+        val target = collectSiteFolds("e2e-fold-1")
+
+        val neverCalledRows = siteFoldRows(target.neverHit(), methods = true).filter { it.startsWith("neverCalled:") }
+        assertEquals(listOf("neverCalled:14 METHOD"), neverCalledRows, "only the method row is listed")
+        assertEquals(
+            emptyList(),
+            siteFoldRows(target.neverHitRoutineOutcomes()).filter { it.startsWith("neverCalled:") },
+            "the routine null side of `?:` folds with its method",
+        )
+    }
+
+    @Test
+    fun `a site behind a never-taken outcome folds and the outcome is listed, observed only through the wire protocol`() {
+        val target = collectSiteFolds("e2e-fold-2")
+
+        val nestedRows = siteFoldRows(target.neverHit()).filter { it.startsWith("nested:") }
+        assertTrue("nested:28" in nestedRows, "the never-taken side of `if (outer)` is listed: $nestedRows")
+        assertTrue(nestedRows.none { it == "nested:30" }, "the `middle` site behind it folds: $nestedRows")
+    }
+
+    @Test
+    fun `a site two levels under a never-taken outcome folds through the folded site between, observed only through the wire protocol`() {
+        val target = collectSiteFolds("e2e-fold-3")
+
+        val nestedRows = siteFoldRows(target.neverHit()).filter { it.startsWith("nested:") }
+        assertEquals(listOf("nested:28"), nestedRows, "the `inner` site folds into the never-hit `middle` outcome")
+    }
+
+    @Test
+    fun `a site behind a never-taken routine outcome stays listed, observed only through the wire protocol`() {
+        val target = collectSiteFolds("e2e-fold-4")
+
+        assertEquals(
+            listOf("behindRoutine:58"),
+            siteFoldRows(target.neverHitRoutineOutcomes()).filter { it.startsWith("behindRoutine:") },
+            "the null side of `?:` is the method's one routine outcome",
+        )
+        assertEquals(
+            listOf("behindRoutine:58", "behindRoutine:58"),
+            siteFoldRows(target.neverHit()).filter { it.startsWith("behindRoutine:") },
+            "a routine outcome is in no finding, so both outcomes of the `flag` site behind it stay listed",
+        )
+    }
+
+    @Test
+    fun `a never-hit outcome of a site with no guard in a method that ran is listed, observed only through the wire protocol`() {
+        val target = collectSiteFolds("e2e-fold-5")
+
+        val rows = siteFoldRows(target.neverHit())
+        assertTrue("guardRan:44" in rows, "the skip side of `if (first)` is listed: $rows")
+        assertTrue("nested:28" in rows, "the entering side of `if (outer)` is listed: $rows")
+    }
+
+    @Test
+    fun `a site whose guard outcome ran is listed when its own outcome never ran, observed only through the wire protocol`() {
+        val target = collectSiteFolds("e2e-fold-6")
+
+        assertEquals(
+            listOf("guardRan:44", "guardRan:46"),
+            siteFoldRows(target.neverHit()).filter { it.startsWith("guardRan:") },
+        )
+    }
+
     private companion object {
         const val FIXTURES = "com.example.testkittarget"
+        const val SITE_FOLDS = "$FIXTURES.SiteFolds"
     }
 }

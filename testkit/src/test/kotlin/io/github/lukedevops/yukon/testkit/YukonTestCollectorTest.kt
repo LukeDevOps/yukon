@@ -452,7 +452,7 @@ class YukonTestCollectorTest {
             DeltaBatch(
                 ResourceAttributes("svc", null, "i-1", null, "run-1"),
                 listOf(
-                    ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 2L),
+                    ProbeDelta(1, 1, ProbeKind.METHOD, 1L, 2L),
                     ProbeDelta(1, 2, ProbeKind.BRANCH, 1L, 1L),
                 ),
             ),
@@ -461,7 +461,7 @@ class YukonTestCollectorTest {
         val neverHit = target.neverHit()
 
         assertEquals(2, neverHit.size)
-        assertEquals("b", neverHit[0].methodName)
+        assertEquals("a", neverHit[0].methodName)
         assertEquals(ProbeKind.METHOD, neverHit[0].kind)
         assertEquals("b", neverHit[1].methodName)
         assertEquals(ProbeKind.BRANCH, neverHit[1].kind)
@@ -2380,6 +2380,8 @@ class YukonTestCollectorTest {
                 // An interface: a default method and no constructor.
                 methodProbe(3, 0, "com.acme.Greeter", "greet", "()V", 1),
             ),
+            // make ran, so its never-taken branch is not folded into a never-hit method row.
+            1 to 3,
         )
 
         val printer = target.neverInstantiated().single()
@@ -2388,9 +2390,9 @@ class YukonTestCollectorTest {
         assertEquals(listOf("<init>", "make", "print"), printer.methods)
         assertEquals(emptyList(), target.neverInitialised())
         assertEquals(
-            listOf("Greeter#greet", "Printer#make", "Printer#make/1", "Utils#name"),
+            listOf("Greeter#greet", "Printer#make/1", "Utils#name"),
             target.neverHit().map { it.id() },
-            "a static method of a never-instantiated class stays, with its branches; a lone constructor is never a row",
+            "a static method's branches stay out of a never-instantiated class's finding; a lone constructor is never a row",
         )
     }
 
@@ -2451,7 +2453,15 @@ class YukonTestCollectorTest {
                 methodProbe(1, 0, "com.acme.Audit", "<clinit>", "()V", 1),
                 methodProbe(1, 1, "com.acme.Audit", "record", "()V", 2, static = true),
                 methodProbe(2, 0, "com.acme.Printer", "<init>", "()V", 1),
-                methodProbe(2, 1, "com.acme.Printer", "print", "()V", 2, calls = listOf(CallEdge("com.acme.Helper", "format", "()V", false))),
+                methodProbe(
+                    2,
+                    1,
+                    "com.acme.Printer",
+                    "print",
+                    "()V",
+                    2,
+                    calls = listOf(CallEdge("com.acme.Helper", "format", "()V", false)),
+                ),
                 methodProbe(3, 0, "com.acme.Helper", "<init>", "()V", 1),
                 methodProbe(3, 1, "com.acme.Helper", "format", "()V", 2),
             ),
@@ -2467,10 +2477,22 @@ class YukonTestCollectorTest {
         assertFalse(cluster.root.neverLoaded)
         assertEquals(emptyList(), cluster.reachedFrom)
         assertEquals(
-            listOf(WholeClass("com.acme.Printer", ClassFinding.NEVER_INSTANTIATED, cluster.methods.filter { it.className == "com.acme.Printer" })),
+            listOf(
+                WholeClass(
+                    "com.acme.Printer",
+                    ClassFinding.NEVER_INSTANTIATED,
+                    cluster.methods.filter { it.className == "com.acme.Printer" },
+                ),
+            ),
             cluster.wholeClasses,
         )
-        assertEquals(listOf("Printer#<init>", "Printer#print"), cluster.wholeClasses.single().methods.map { it.id() })
+        assertEquals(
+            listOf("Printer#<init>", "Printer#print"),
+            cluster.wholeClasses
+                .single()
+                .methods
+                .map { it.id() },
+        )
         assertEquals(listOf("Helper#format"), cluster.members.map { it.id() }, "Helper's constructor ran, so Helper is not whole")
         assertEquals(3, cluster.membersTotal)
     }
@@ -2543,7 +2565,10 @@ class YukonTestCollectorTest {
             collect(target, printer(printCallsMake = true))
             val cluster = target.unreachedClusters().single()
             assertEquals(RootKind.CLASS_FINDING, cluster.rootKind)
-            assertEquals(listOf("com.acme.Printer" to ClassFinding.NEVER_INSTANTIATED), cluster.wholeClasses.map { it.className to it.finding })
+            assertEquals(
+                listOf("com.acme.Printer" to ClassFinding.NEVER_INSTANTIATED),
+                cluster.wholeClasses.map { it.className to it.finding },
+            )
             assertEquals(emptyList(), cluster.members)
             assertEquals(3, cluster.membersTotal)
         }
@@ -2605,7 +2630,15 @@ class YukonTestCollectorTest {
         collect(
             target,
             listOf(
-                methodProbe(1, 0, "com.acme.App", "run", "()V", 1, calls = listOf(creates("com.acme.App", "shared"), creates("com.acme.App", "ran"))),
+                methodProbe(
+                    1,
+                    0,
+                    "com.acme.App",
+                    "run",
+                    "()V",
+                    1,
+                    calls = listOf(creates("com.acme.App", "shared"), creates("com.acme.App", "ran")),
+                ),
                 methodProbe(1, 1, "com.acme.App", "job", "()V", 2, calls = listOf(creates("com.acme.App", "shared"))),
                 lambdaProbe(1, 2, "com.acme.App", "ran"),
                 lambdaProbe(1, 3, "com.acme.App", "shared"),

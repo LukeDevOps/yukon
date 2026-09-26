@@ -32,9 +32,6 @@ adopter's collector forwards to one multi-tenant backend.
    - A class that failed to load reads as unreferenced.
 3. **Settle the one-way doors before anything is published.**
    - Review the testkit's query API, which publishing freezes.
-   - Make the testkit and the stub collector fold sites under a never-hit
-     method (server ADR 0031). A published testkit must agree with the
-     server's findings.
    - Review the agent option names, which ADR 0016 makes a compatibility
      surface.
    - Settle versioning: the agent is `1.0-SNAPSHOT`, and no repo has
@@ -102,10 +99,11 @@ Open from this chunk:
   recognised. Kotlin's `use {}` holds no site of its own.
 - A `Throwable` is resolved through the analyser's class lookup. A class it
   cannot read counts as one when its name ends in `Exception` or `Error`.
-- The demo's stub collector does not fold sites inside never-hit methods
-  (server ADR 0031), so it lists `PromoHandler.handle`'s `query ?: ""` null
-  side as a fifth routine outcome, where the server counts that site under
-  never-hit code.
+- The testkit and the stub collector fold sites as server ADR 0031 does
+  (2026-09-26): a site folds into its method's never-hit row, or into its
+  guard outcome when that outcome is never hit and not routine. The stub
+  lists four routine outcomes, and `PromoHandler.handle`'s `query ?: ""`
+  site folds into the method's row.
 
 The rest landed the same day: collector bindings (`f827a13`), the server
 (`b1294fe`) and the web UI (`1831561`). Checked end to end: the headline
@@ -382,8 +380,6 @@ Open from these:
   close it.
 - A receiver lambda whose captured values come first gets no
   `extension_receiver` flag, since only the first parameter is read.
-- The testkit and stub collector do not fold the sites under a
-  never-hit method, which the server does (its ADR 0031).
 - `runDemoStack`'s printer still prints JVM names on its endpoint and
   optional-parameter lines, and an any-verb route as `* /checkout`
   where `yukon-server` shows `ANY /checkout`.

@@ -669,8 +669,9 @@ private fun handleStaticBaseline(exchange: HttpExchange) {
         scans.computeIfAbsent(ScanKey(run, baseline.scannedAt)) { ScanProgress(baseline.chunkCount) }
     progress.received += baseline.chunkIndex
     val callEdgeCount = baseline.declaredClassesList.sumOf { c -> c.methodsList.sumOf { it.callsList.size } }
+    val namespace = namespaceField(baseline.resource)
     println(
-        "[static-baseline] service=${baseline.resource.serviceName}${namespaceField(baseline.resource)} chunk=${baseline.chunkIndex + 1}/${baseline.chunkCount} " +
+        "[static-baseline] service=${baseline.resource.serviceName}$namespace chunk=${baseline.chunkIndex + 1}/${baseline.chunkCount} " +
             "declared_classes=${baseline.declaredClassesList.size} " +
             "statically_unsafe=${baseline.staticallyUnsafeClassesList.size} unreadable=${baseline.unreadableClassesList.size} " +
             "unprobed=${baseline.unprobedClassesList.size} call_edges=$callEdgeCount",
@@ -718,11 +719,20 @@ private fun respondBadRequest(
  * never-hit methods listed here is not a row either, and neither is a branch in it. The report
  * counts each kind of folded probe apart.
  *
+ * A branch site inside code a row already stands for folds into that row, as server ADR 0031 has
+ * it, and its BRANCH probes are counted apart as branches in never-hit code. A site folds when its
+ * method's METHOD probe is a row, or when its guard (ADR 0037) is a never-hit outcome that is not
+ * routine and would be a row but for this fold, so a site two levels under a never-taken outcome
+ * folds too. A routine guard folds nothing, and neither does a guard that ran. The dead percentage
+ * keeps folded probes in its denominator, as it does for probes a class finding covers.
+ *
  * A routine outcome is not a row and is not in the headline, as server ADR 0039 has it. The fold
  * rules above run first, so a routine outcome inside folded code counts with that code. The rest
  * are counted apart and listed with their kind under ROUTINE OUTCOMES. See ADR 0046.
+ *
+ * `internal` so a test can capture what it prints.
  */
-private fun printNeverHitReport() {
+internal fun printNeverHitReport() {
     // An optional-argument probe reading zero means its parameter is never omitted, which is
     // ALWAYS SUPPLIED, not dead code, so it is excluded here entirely and reported by
     // printOmissionReport instead. See ADR 0021.
@@ -749,7 +759,8 @@ private fun printNeverHitReport() {
                     else -> true
                 }
         }
-    val (routine, judgeable) = rowsAndRoutine.partition { routineOf(it) != RoutineKind.ROUTINE_KIND_NONE }
+    val folded = foldedSiteProbes(rowsAndRoutine)
+    val (routine, judgeable) = (rowsAndRoutine - folded).partition { routineOf(it) != RoutineKind.ROUTINE_KIND_NONE }
     val judgeableTotal =
         judgeableKeys.count { key ->
             val probe = manifestProbes[key]
@@ -781,6 +792,7 @@ private fun printNeverHitReport() {
     println("generated (not judged): ${generatedNeverHit.size}")
     println("in class findings (reported by class): ${inClassFindings.size}")
     println("in never-hit methods (lambda bodies reported with their creator): ${inNeverHitCode.size}")
+    println("branches in never-hit code (reported with their method or guard): ${folded.size}")
     println("static initialisers and lone constructors (not listed): ${classStates.size}")
     println("ROUTINE OUTCOMES (not judged): ${routine.size}")
     sortedForReport(routine).forEach { (key, info) ->
@@ -795,6 +807,40 @@ private fun printNeverHitReport() {
             .forEach { (key, info) -> println("  SKIPPED: ${key.className} (instance ${key.run.serviceInstanceId}) - ${info.reason}") }
     }
     println("=====================================")
+}
+
+/**
+ * The BRANCH probes among [candidates] whose site folds, under server ADR 0031, into a row that
+ * already stands for it. [candidates] are every probe that is a never-hit row or a routine outcome
+ * by every other rule of [printNeverHitReport]. A site folds when its method's METHOD probe in the
+ * same run is among them, or when the outcome its site names as guard is a BRANCH probe among them
+ * that is not routine.
+ */
+private fun foldedSiteProbes(candidates: List<InstanceProbeKey>): Set<InstanceProbeKey> {
+    val methodRows = HashSet<InstanceMethodKey>()
+    val guardOutcomes = HashSet<Pair<InstanceMethodKey, Int>>()
+    for (key in candidates) {
+        val info = manifestProbes[key] ?: continue
+        val method = InstanceMethodKey(key.run, key.classId, info.methodName, info.methodDescriptor)
+        val branchIndex = info.branchIndex
+        when {
+            info.kind == ProbeKind.METHOD -> {
+                methodRows += method
+            }
+
+            info.kind == ProbeKind.BRANCH && branchIndex != null && routineOf(key) == RoutineKind.ROUTINE_KIND_NONE -> {
+                guardOutcomes += method to branchIndex
+            }
+        }
+    }
+    return candidates
+        .filter { key ->
+            val info = manifestProbes[key] ?: return@filter false
+            if (info.kind != ProbeKind.BRANCH) return@filter false
+            val method = InstanceMethodKey(key.run, key.classId, info.methodName, info.methodDescriptor)
+            val site = siteOf(key, info)
+            method in methodRows || (site != null && site.hasGuard() && (method to site.guard) in guardOutcomes)
+        }.toSet()
 }
 
 /** [keys] with their probes, in the order the never-hit report lists them. */
@@ -964,7 +1010,10 @@ private fun judgeClasses(): ClassJudgement {
             classMethods
                 .filter { (key, facts) ->
                     facts.hits == 0L &&
-                        (finding == ClassFinding.NEVER_INITIALISED || key.methodName == CONSTRUCTOR || (key.methodName != CLASS_INIT && !facts.static))
+                        (
+                            finding == ClassFinding.NEVER_INITIALISED || key.methodName == CONSTRUCTOR ||
+                                (key.methodName != CLASS_INIT && !facts.static)
+                        )
                 }.map { it.key }
     }
     val (intoClassFindings, inNeverHitCode) = foldLambdaBodies(methods, findings, covered.values.flatten().toSet(), constructed)
@@ -1075,7 +1124,11 @@ private fun printClassFindingReport() {
                         .map { if (it.methodName == CONSTRUCTOR) "constructor" else it.methodName }
                         .distinct()
                         .sorted()
-                val instances = probes.keys.map { it.run.serviceInstanceId }.distinct().size
+                val instances =
+                    probes.keys
+                        .map { it.run.serviceInstanceId }
+                        .distinct()
+                        .size
                 println(
                     "  ${finding.text.uppercase()}: ${classText(className)} (methods: ${methods.joinToString(", ")}) " +
                         "(instances loading: $instances)",
@@ -1370,7 +1423,8 @@ private fun printUnreachedClusterReport() {
             when (cluster.rootKind) {
                 ClusterRootKind.UNTAKEN_OUTCOME -> {
                     val description =
-                        outcome?.site?.let { describeNeverHitOutcome(it, outcome.branchIndex) } ?: "branch#${outcome?.branchIndex} never ran"
+                        outcome?.site?.let { describeNeverHitOutcome(it, outcome.branchIndex) }
+                            ?: "branch#${outcome?.branchIndex} never ran"
                     val at = methodText(cluster.root.className, cluster.root.methodName, cluster.root.methodDescriptor, outcome?.line)
                     "$description, in $at (untaken outcome)"
                 }
@@ -1545,11 +1599,20 @@ private fun buildUnreachedCluster(
     for (member in members) {
         when {
             member.branchIndex != null -> {}
-            member.isClass -> methodsByClass.getOrPut(member.method.className) { mutableListOf() } += classNodes.getValue(member).methods
-            else -> methodsByClass.getOrPut(member.method.className) { mutableListOf() } += member.method
+
+            member.isClass -> {
+                methodsByClass.getOrPut(member.method.className) { mutableListOf() } += classNodes.getValue(member).methods
+            }
+
+            else -> {
+                methodsByClass.getOrPut(member.method.className) { mutableListOf() } += member.method
+            }
         }
     }
-    val classSize = graph.nodes.keys.groupingBy { it.className }.eachCount()
+    val classSize =
+        graph.nodes.keys
+            .groupingBy { it.className }
+            .eachCount()
     val wholeClasses = mutableListOf<WholeClassInfo>()
     val memberList = mutableListOf<ClusterMember>()
     var neverLoadedClasses = 0
@@ -1640,6 +1703,7 @@ private fun buildClusterGraph(
         callersOf.getOrPut(callee) { mutableSetOf() } += caller
         calleesOf.getOrPut(caller) { mutableSetOf() } += callee
     }
+
     fun nodeOf(key: NodeKey) = coveredBy[key] ?: ClusterNode(key)
     for ((caller, calls) in graph.calls) {
         for (call in calls) {

@@ -702,6 +702,14 @@ class YukonTestCollector private constructor(
      * such a method or a never-hit method listed here. A BRANCH probe in a method left out this way
      * is left out too.
      *
+     * A branch site inside code a row already stands for folds into that row, as server ADR 0031
+     * has it: every BRANCH probe of the site is left out. A site folds when its method's METHOD
+     * probe is a row here, or when its guard, the innermost outcome in the same method that must
+     * run before the site is reached (ADR 0037), is a never-hit outcome that would be a row but for
+     * this fold. A guard outcome whose own site folded still counts, so a site two levels under a
+     * never-taken outcome folds too. A routine guard folds nothing, since a routine outcome is in no
+     * finding, and neither does a guard that ran.
+     *
      * A routine outcome is left out too, as server ADR 0039 has it: the agent read from the
      * bytecode that the outcome only yields a null default, only throws, or is the exception-path
      * copy of a `finally` body. [neverHitRoutineOutcomes] lists those. See ADR 0046.
@@ -712,6 +720,10 @@ class YukonTestCollector private constructor(
      * Every never-hit BRANCH probe that [neverHit] leaves out only because its outcome is routine,
      * each with its [ProbeRef.routine] kind, sorted as [neverHit] sorts. Server ADR 0039 counts
      * these apart and lists them only on request. See ADR 0046.
+     *
+     * A routine outcome of a site that folds into its method's row or its guard's row, by the rule
+     * [neverHit] gives from server ADR 0031, is not listed here either: a site folds before any of
+     * its outcomes can count as routine.
      */
     fun neverHitRoutineOutcomes(): List<ProbeRef> = checked { neverHitRows().filter { it.routine != RoutineKind.NONE } }
 
@@ -719,15 +731,73 @@ class YukonTestCollector private constructor(
     private fun neverHitRows(): List<ProbeRef> {
         val judgement = judgeClasses()
         val routineKinds = routineKinds()
-        return probesByKey.entries
-            .filter { (key, probe) ->
+        val candidates =
+            probesByKey.entries.filter { (key, probe) ->
                 !probe.inline &&
                     probe.generatedBy == GeneratedBy.NONE &&
                     probe.kind != ProbeKind.OPTIONAL_ARGUMENT &&
                     (hitsByKey[key] ?: 0L) <= 0L &&
                     isNeverHitRow(probe, judgement)
-            }.map { (key, probe) -> neverHitRef(key, probe, routineOf(key, probe, routineKinds)) }
+            }
+        val folded = foldedSiteProbes(candidates, routineKinds)
+        return candidates
+            .filter { (key, _) -> key !in folded }
+            .map { (key, probe) -> neverHitRef(key, probe, routineOf(key, probe, routineKinds)) }
             .sortedWith(compareBy({ it.className }, { it.methodName }, { it.line }, { it.branchIndex ?: -1 }))
+    }
+
+    /**
+     * The BRANCH probes among [candidates] whose site folds, under server ADR 0031, into a row that
+     * already stands for it. [candidates] are every probe that is a never-hit row or routine
+     * outcome by every other rule. A site folds when its method's METHOD probe in the same instance
+     * is among them, or when its guard outcome is a BRANCH probe among them that is not routine.
+     */
+    private fun foldedSiteProbes(
+        candidates: List<Map.Entry<ProbeKey, StoredProbe>>,
+        routineKinds: Map<OutcomeKey, RoutineKind>,
+    ): Set<ProbeKey> {
+        val methodRows = HashSet<InstanceKey<NodeKey>>()
+        val guardOutcomes = HashSet<OutcomeKey>()
+        for ((key, probe) in candidates) {
+            val method = NodeKey(probe.className, probe.methodName, probe.methodDescriptor)
+            val branchIndex = probe.branchIndex
+            when {
+                probe.kind == ProbeKind.METHOD -> {
+                    methodRows += InstanceKey(key.serviceInstanceId, method)
+                }
+
+                probe.kind == ProbeKind.BRANCH && branchIndex != null && routineOf(key, probe, routineKinds) == RoutineKind.NONE -> {
+                    guardOutcomes += OutcomeKey(key.serviceInstanceId, method, branchIndex)
+                }
+            }
+        }
+        val guards = siteGuards()
+        return candidates
+            .filter { (key, probe) ->
+                val branchIndex = probe.branchIndex
+                if (probe.kind != ProbeKind.BRANCH || branchIndex == null) return@filter false
+                val method = NodeKey(probe.className, probe.methodName, probe.methodDescriptor)
+                val guard = guards[OutcomeKey(key.serviceInstanceId, method, branchIndex)]
+                InstanceKey(key.serviceInstanceId, method) in methodRows ||
+                    (guard != null && OutcomeKey(key.serviceInstanceId, method, guard) in guardOutcomes)
+            }.mapTo(HashSet()) { it.key }
+    }
+
+    /**
+     * The guard of each outcome's site, from the sites each instance's METHOD probes list. An
+     * outcome absent from the map is in a site with no guard, or in no listed site. See ADR 0037.
+     */
+    private fun siteGuards(): Map<OutcomeKey, Int> {
+        val guards = HashMap<OutcomeKey, Int>()
+        for ((key, probe) in probesByKey) {
+            if (probe.kind != ProbeKind.METHOD) continue
+            val method = NodeKey(probe.className, probe.methodName, probe.methodDescriptor)
+            for (site in probe.branchSites) {
+                val guard = site.guard ?: continue
+                for (outcome in site.outcomes) guards[OutcomeKey(key.serviceInstanceId, method, outcome.branchIndex)] = guard
+            }
+        }
+        return guards
     }
 
     /**
@@ -741,7 +811,8 @@ class YukonTestCollector private constructor(
             val method = NodeKey(probe.className, probe.methodName, probe.methodDescriptor)
             for (site in probe.branchSites) {
                 for (outcome in site.outcomes) {
-                    if (outcome.routine != RoutineKind.NONE) kinds[OutcomeKey(key.serviceInstanceId, method, outcome.branchIndex)] = outcome.routine
+                    if (outcome.routine == RoutineKind.NONE) continue
+                    kinds[OutcomeKey(key.serviceInstanceId, method, outcome.branchIndex)] = outcome.routine
                 }
             }
         }
@@ -1194,11 +1265,21 @@ class YukonTestCollector private constructor(
         for (member in members) {
             when {
                 member.branchIndex != null -> {}
-                member.isClass -> methodsByClass.getOrPut(member.method.className) { mutableListOf() } += classNodes.getValue(member).methods
-                else -> methodsByClass.getOrPut(member.method.className) { mutableListOf() } += member.method
+
+                member.isClass -> {
+                    methodsByClass.getOrPut(member.method.className) { mutableListOf() } +=
+                        classNodes.getValue(member).methods
+                }
+
+                else -> {
+                    methodsByClass.getOrPut(member.method.className) { mutableListOf() } += member.method
+                }
             }
         }
-        val classSize = graph.nodes.keys.groupingBy { it.className }.eachCount()
+        val classSize =
+            graph.nodes.keys
+                .groupingBy { it.className }
+                .eachCount()
         val wholeClasses = mutableListOf<WholeClass>()
         val memberRefs = mutableListOf<ProbeRef>()
         var neverLoadedClasses = 0
@@ -1303,8 +1384,7 @@ class YukonTestCollector private constructor(
                 isHit(node.method) &&
                     entries.sumOf { (key, _) -> hitsByKey[key] ?: 0L } == 0L &&
                     entries.all { (key, probe) -> routineOf(key, probe, routineKinds) == RoutineKind.NONE }
-            }
-            .mapValues { (node, entries) ->
+            }.mapValues { (node, entries) ->
                 val (key, probe) = entries.first()
                 val site = sitesByMethod[node.method]?.firstOrNull { site -> site.outcomes.any { it.branchIndex == node.branchIndex } }
                 OutcomeNode(neverHitRef(key, probe), site)
@@ -1334,6 +1414,7 @@ class YukonTestCollector private constructor(
             callersOf.getOrPut(callee) { mutableSetOf() } += caller
             calleesOf.getOrPut(caller) { mutableSetOf() } += callee
         }
+
         fun nodeOf(key: NodeKey) = coveredBy[key] ?: ClusterNode(key)
         for ((caller, calls) in graph.calls) {
             for (call in calls) {
@@ -1344,7 +1425,11 @@ class YukonTestCollector private constructor(
             }
         }
         for ((node, outcome) in outcomes) {
-            val guardNode = outcome.site?.guard?.let { ClusterNode(node.method, it) }?.takeIf { it != node && it in outcomes }
+            val guardNode =
+                outcome.site
+                    ?.guard
+                    ?.let { ClusterNode(node.method, it) }
+                    ?.takeIf { it != node && it in outcomes }
             link(guardNode ?: ClusterNode(node.method), node)
         }
         return ClusterGraph(callersOf, calleesOf)
