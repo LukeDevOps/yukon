@@ -208,8 +208,10 @@ data class DeltaBatch(
  * [lambdaBody] is set only for a [ProbeKind.METHOD] probe. It is true when an `invokedynamic` in
  * the method's own class names it as the `LambdaMetafactory` implementation, directly or through
  * the boxing forwarder scalac puts in between, and its name is one a compiler gives a body the
- * source never named. A named method passed by reference is not a lambda body. See
- * [io.github.lukedevops.yukon.instrumentation.TypeMatchPolicy.isLambdaBodyName] and ADR 0034.
+ * source never named. A body Scala 3 lifted out of a nested class, whose creator stays in that
+ * class, is marked by its expanded name alone. A named method passed by reference is not a lambda
+ * body. See [io.github.lukedevops.yukon.instrumentation.TypeMatchPolicy.isLambdaBodyName] and
+ * ADR 0034.
  *
  * [branchSites] is set only for a [ProbeKind.METHOD] probe: the method's kept branch sites, in
  * [BranchSite.siteIndex] order. A dropped site is not listed, and the type initializer's probe

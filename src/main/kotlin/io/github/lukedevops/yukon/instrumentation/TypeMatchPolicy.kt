@@ -390,14 +390,17 @@ object TypeMatchPolicy {
      * duplicate a probe already on the method it forwards to or, for a bridge, read zero forever
      * whenever callers use the exact signature and so never invoke it. Two synthetic shapes are
      * the adopter's own code and stay eligible: a lambda body, which javac names
-     * `lambda$<method>$N`, and a lambda body scalac names `$anonfun$<method>$N`, only inside a
+     * `lambda$<method>$N`, and a lambda body scalac names (`$anonfun$<method>$N` in Scala 2,
+     * `<owner>$$anonfun$N` or `$anonfun$N` in Scala 3, see [isLambdaBodyName]), only inside a
      * class scalac itself compiled ([isScalaClass], from [ScalaClassDetector]) so an unrelated
-     * synthetic method of the same shape on a non-Scala class stays excluded. This is the same
-     * allow-list JaCoCo's `SyntheticFilter` applies, with one refinement: Scala 2 emits a boxing
-     * forwarder `$anonfun$<method>$N$adapted` beside each body without marking it as a bridge,
-     * where Scala 3 marks its `$anonfun$adapted$N` as one, so the `$adapted` suffix is excluded
-     * explicitly and both compilers yield one probe per lambda. Kotlin needs no entry here, since
-     * its lambda bodies are plain private static methods, never synthetic.
+     * synthetic method of the same shape on a non-Scala class stays excluded. JaCoCo's
+     * `SyntheticFilter` admits `lambda$` and, in a Scala class, the `$anonfun$` prefix only, so
+     * this list is wider by Scala 3's owner-prefixed names. Scala 2 emits a boxing forwarder
+     * `$anonfun$<method>$N$adapted` beside each body without marking it as a bridge, so the
+     * `$adapted` suffix is excluded explicitly; Scala 3 marks its forwarder
+     * (`$anonfun$adapted$N`, `<owner>$$anonfun$adapted$N`) as a bridge. Both compilers yield one
+     * probe per lambda. Kotlin needs no entry here, since its lambda bodies are plain private
+     * static methods, never synthetic.
      *
      * A method Hibernate's bytecode enhancement added ([isEnhancementMethod]) is left out the same
      * way, though it is not synthetic. See ADR 0047. So are the `create` and `invoke` kotlinc gives
@@ -482,23 +485,53 @@ object TypeMatchPolicy {
      * Whether [name] is one a compiler gives a lambda body the source never named. The three
      * compiler shapes are:
      * - javac: `lambda$<method>$N`, private and synthetic;
-     * - scalac: `$anonfun$...`, synthetic, but never the `$adapted` boxing forwarder Scala 2 emits
-     *   beside a body;
+     * - scalac 2: `$anonfun$<method>$N`, synthetic, but never the `$adapted` boxing forwarder
+     *   emitted beside a body;
+     * - scalac 3: `<owner>$$anonfun$N` for a body whose owner is a method, nesting as
+     *   `<owner>$$anonfun$N$$anonfun$M` (`LambdaLift.newName` in the 3.3.4 compiler). The owner
+     *   can be `$init$` for a lambda in a class-body `val` or statement, which the `Constructors`
+     *   phase moves into the constructor first, or a lazy val's initializer. Only a lambda owned
+     *   by a `val` local to a method keeps a plain `$anonfun$N`. A lambda the source wrote is
+     *   synthetic; a closure the compiler makes itself, such as a by-name argument's, is not, so
+     *   only the name and the `invokedynamic` say what it is. The boxing forwarder is a bridge,
+     *   so the method tier leaves it out before its name is read;
      * - kotlinc: `<method>$lambda$N`, private static and not synthetic, with one more `$N` for each
      *   level of nesting (`main$lambda$0$0` for a lambda inside `main$lambda$0`).
      *
      * The name alone proves nothing, since kotlinc's shape is not marked synthetic and a person can
      * write a method with a `$` in its name. So [io.github.lukedevops.yukon.instrumentation.branch.BranchSiteAnalyzer]
-     * also requires an `invokedynamic` in the method's own class to name it as the implementation.
-     * A named method passed by reference passes that test and fails this one. The compiler fixtures
-     * pin each shape. See ADR 0034.
+     * also requires an `invokedynamic` in the method's own class to name it as the implementation,
+     * except for Scala 3's lifted shape ([isScala3LiftedLambdaName]), whose creator is in
+     * another class. A named method passed by reference passes that test and fails this one. The
+     * compiler fixtures pin each shape. See ADR 0034.
      */
     fun isLambdaBodyName(name: String): Boolean =
         isJavacLambdaBodyName(name) || isScalacLambdaBodyName(name) || KOTLINC_LAMBDA_BODY_NAME.matches(name)
 
     private fun isJavacLambdaBodyName(name: String): Boolean = name.startsWith("lambda\$")
 
-    private fun isScalacLambdaBodyName(name: String): Boolean = name.startsWith("\$anonfun\$") && !name.endsWith("\$adapted")
+    private fun isScalacLambdaBodyName(name: String): Boolean =
+        (name.startsWith("\$anonfun\$") && !name.endsWith("\$adapted")) || SCALA3_METHOD_OWNED_LAMBDA_BODY_NAME.matches(name)
+
+    /**
+     * Whether [name] is scalac 3's name for the method a nested class calls to create a lambda
+     * that scalac 3 moved out of it into the top-level class: the encoded name of the class the
+     * lambda was written in, `$$`, one `_$` per term in its original owner chain, then the
+     * method's own name. That method is the body itself (`com$acme$Outer$Inner$$_$bump$$anonfun$1`)
+     * or, when the lambda boxes a primitive, the boxing bridge in front of it
+     * (`com$acme$Outer$Inner$$_$show$$anonfun$adapted$1`), whose body stays private under its
+     * short name (`show$$anonfun$1`). The method is made public so the nested class can call it,
+     * and `SymDenotation.ensureNotPrivate` gives it this expanded name (`fullNameSeparated` in the
+     * 3.3.4 compiler). The `invokedynamic` that creates it stays in the nested class, so a class
+     * sees no call naming it. `$$_$` is the compiler's filler, not a name a person writes, so in a
+     * Scala class the name stands in for that call. See ADR 0034.
+     */
+    fun isScala3LiftedLambdaName(name: String): Boolean = SCALA3_LIFTED_LAMBDA_NAME.matches(name)
+
+    private val SCALA3_LIFTED_LAMBDA_NAME = Regex("^.+\\\$\\\$(_\\\$)+.*\\\$anonfun\\\$(adapted\\\$)?\\d+$")
+
+    /** scalac 3's name for a lambda body owned by a method: `<owner>$` then `$anonfun$N`. See [isLambdaBodyName]. */
+    private val SCALA3_METHOD_OWNED_LAMBDA_BODY_NAME = Regex("^.+\\\$\\\$anonfun\\\$\\d+$")
 
     private val KOTLINC_LAMBDA_BODY_NAME = Regex("^.+\\\$lambda\\\$\\d+(\\\$\\d+)*$")
 

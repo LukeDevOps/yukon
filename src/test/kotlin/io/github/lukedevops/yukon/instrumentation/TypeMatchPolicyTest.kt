@@ -162,7 +162,10 @@ class TypeMatchPolicyTest {
     fun `each compiler's lambda body name passes the lambda-body name rule`() {
         assertTrue(TypeMatchPolicy.isLambdaBodyName("lambda\$classifyViaLambda\$0"), "javac")
         assertTrue(TypeMatchPolicy.isLambdaBodyName("\$anonfun\$classify\$1"), "Scala 2")
-        assertTrue(TypeMatchPolicy.isLambdaBodyName("\$anonfun\$1"), "Scala 3")
+        assertTrue(TypeMatchPolicy.isLambdaBodyName("\$anonfun\$1"), "Scala 3, owned by a val")
+        assertTrue(TypeMatchPolicy.isLambdaBodyName("label\$\$anonfun\$1"), "Scala 3, owned by a method")
+        assertTrue(TypeMatchPolicy.isLambdaBodyName("nested\$\$anonfun\$1\$\$anonfun\$1"), "Scala 3, nested")
+        assertTrue(TypeMatchPolicy.isLambdaBodyName("\$plus\$\$anonfun\$2"), "Scala 3, owned by a symbolic method")
         assertTrue(TypeMatchPolicy.isLambdaBodyName("main\$lambda\$0"), "kotlinc")
         assertTrue(TypeMatchPolicy.isLambdaBodyName("main\$lambda\$0\$0"), "kotlinc, nested")
         assertTrue(TypeMatchPolicy.isLambdaBodyName("main\$lambda\$12\$3\$0"), "kotlinc, nested twice")
@@ -171,11 +174,28 @@ class TypeMatchPolicyTest {
     @Test
     fun `a forwarder or a name a person could write fails the lambda-body name rule`() {
         assertFalse(TypeMatchPolicy.isLambdaBodyName("\$anonfun\$classify\$1\$adapted"), "Scala 2's boxing forwarder")
+        assertFalse(TypeMatchPolicy.isLambdaBodyName("label\$\$anonfun\$adapted\$1"), "Scala 3's boxing bridge, owned by a method")
+        assertFalse(TypeMatchPolicy.isLambdaBodyName("label\$\$anonfun"), "no number after the marker")
+        assertFalse(TypeMatchPolicy.isLambdaBodyName("label\$\$anonfun\$1x"))
+        assertFalse(TypeMatchPolicy.isLambdaBodyName("\$\$anonfun\$1"), "no owner before the separator")
         assertFalse(TypeMatchPolicy.isLambdaBodyName("twice"))
         assertFalse(TypeMatchPolicy.isLambdaBodyName("main\$lambda"), "no number after the marker")
         assertFalse(TypeMatchPolicy.isLambdaBodyName("\$lambda\$0"), "no method name before the marker")
         assertFalse(TypeMatchPolicy.isLambdaBodyName("main\$lambda\$0x"))
         assertFalse(TypeMatchPolicy.isLambdaBodyName("access\$000"))
+    }
+
+    @Test
+    fun `only scalac 3's expanded name for a lambda lifted out of a nested class is a lifted lambda name`() {
+        assertTrue(TypeMatchPolicy.isScala3LiftedLambdaName("com\$acme\$Outer\$Inner\$\$_\$bump\$\$anonfun\$1"))
+        assertTrue(TypeMatchPolicy.isScala3LiftedLambdaName("com\$acme\$Outer\$Inner\$\$_\$_\$\$anonfun\$2"), "owned by a local val")
+        assertTrue(TypeMatchPolicy.isScala3LiftedLambdaName("Outer\$Inner\$\$_\$bump\$\$anonfun\$1\$\$anonfun\$1"), "nested")
+        assertTrue(TypeMatchPolicy.isScala3LiftedLambdaName("Outer\$Inner\$\$_\$show\$\$anonfun\$adapted\$1"), "the boxing bridge")
+
+        assertFalse(TypeMatchPolicy.isScala3LiftedLambdaName("bump\$\$anonfun\$1"), "a body in the class that creates it")
+        assertFalse(TypeMatchPolicy.isScala3LiftedLambdaName("\$anonfun\$bump\$1"), "Scala 2")
+        assertFalse(TypeMatchPolicy.isScala3LiftedLambdaName("Outer\$Inner\$\$_\$rec\$1"), "a lifted local def")
+        assertFalse(TypeMatchPolicy.isScala3LiftedLambdaName("com\$acme\$Outer\$\$bump"), "an expanded private name with no lambda")
     }
 
     /** Builds a type with one static synthetic method named [name], returning `int`, taking no arguments. */
@@ -193,16 +213,18 @@ class TypeMatchPolicyTest {
 
     @Test
     fun `a dollar-anonfun-named synthetic method is only eligible inside a Scala class`() {
-        val type = typeWithSyntheticMethod("com.example.target.GeneratedAnonfunHost", "\$anonfun\$notScala\$1")
+        for (name in listOf("\$anonfun\$notScala\$1", "notScala\$\$anonfun\$1")) {
+            val type = typeWithSyntheticMethod("com.example.target.GeneratedAnonfunHost", name)
 
-        val matchedNotScala = type.declaredMethods.filter(TypeMatchPolicy.methodMatcher(isScalaClass = false)).map { it.name }
-        val matchedScala = type.declaredMethods.filter(TypeMatchPolicy.methodMatcher(isScalaClass = true)).map { it.name }
+            val matchedNotScala = type.declaredMethods.filter(TypeMatchPolicy.methodMatcher(isScalaClass = false)).map { it.name }
+            val matchedScala = type.declaredMethods.filter(TypeMatchPolicy.methodMatcher(isScalaClass = true)).map { it.name }
 
-        assertTrue(
-            "\$anonfun\$notScala\$1" !in matchedNotScala,
-            "an unrelated synthetic method named like a Scala lambda body must stay excluded outside a Scala class",
-        )
-        assertTrue("\$anonfun\$notScala\$1" in matchedScala)
+            assertTrue(
+                name !in matchedNotScala,
+                "an unrelated synthetic method named like a Scala lambda body must stay excluded outside a Scala class: $name",
+            )
+            assertTrue(name in matchedScala, name)
+        }
     }
 
     @Test
@@ -213,7 +235,7 @@ class TypeMatchPolicyTest {
         val matchedScala = type.declaredMethods.filter(TypeMatchPolicy.methodMatcher(isScalaClass = true)).map { it.name }
 
         assertTrue("access\$000" !in matchedNotScala)
-        assertTrue("access\$000" !in matchedScala, "isScalaClass only widens eligibility for \$anonfun\$-named methods, nothing else")
+        assertTrue("access\$000" !in matchedScala, "isScalaClass only widens eligibility for scalac lambda-body names, nothing else")
     }
 
     @Test

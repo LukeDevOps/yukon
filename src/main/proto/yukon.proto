@@ -176,12 +176,15 @@ message ProbeLocation {
   // and instances, compared only for equality. Unset when the agent cannot name the outcome
   // safely. A collector treats a missing key as an outcome it has never seen. See ADR 0031.
   optional string branch_key = 18;
-  // Set only for a METHOD probe. True when an invokedynamic in this method's own class names it as
-  // the LambdaMetafactory implementation, directly or through the boxing forwarder scalac puts in
-  // between, and its name is one a compiler gives a body the source never named: javac's lambda$...,
-  // scalac's $anonfun$... (never an $adapted forwarder), or kotlinc's ...$lambda$N, nested ones
-  // included. False for a named method passed by reference, and for every other method. The
-  // method that creates the body is the source of its CREATES edge. See ADR 0034.
+  // Set only for a METHOD probe. True when the method is a lambda body: an invokedynamic in its own
+  // class names it as the LambdaMetafactory implementation (directly or through scalac's boxing
+  // forwarder), and its name is one a compiler gives a body the source never named (javac's
+  // lambda$..., scalac's $anonfun$... or Scala 3's <owner>$$anonfun$N, never an $adapted
+  // forwarder, or kotlinc's ...$lambda$N, nested ones included). A body Scala 3 lifted out of a
+  // nested class, whose creator stays in that class, is marked by its name alone, Scala 3's
+  // expanded <class>$$_$...$$anonfun$N. False for a named method passed by reference, and for
+  // every other method. The method that creates the body is the source of its CREATES edge. See
+  // ADR 0034.
   bool lambda_body = 19;
   // Set only for a METHOD probe: the method's kept branch sites, in site_index order, each with its
   // outcomes listed inside it. A dropped site (coroutine machinery, an inlined copy from

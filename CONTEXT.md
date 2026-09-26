@@ -211,7 +211,7 @@ A call edge from a method to a body it hands to someone else to run: a lambda bo
 _Avoid_: defines edge, lambda edge
 
 **Lambda body**:
-A method the compiler made from a lambda the source never named, such as kotlinc's `main$lambda$0` or javac's `lambda$main$0`. It holds the adopter's own code, is probed like any method, and is named after the method that creates it.
+A method the compiler made from a lambda, or from an argument passed by name, that the source never named, such as kotlinc's `main$lambda$0`, javac's `lambda$main$0` or Scala 3's `label$$anonfun$1`. A by-name argument's body runs only when the callee evaluates the argument. It holds the adopter's own code, is probed like any method, and is shown as a lambda in the method that creates it.
 _Avoid_: synthetic method (kotlinc's bodies are not synthetic), anonymous function
 
 **Supertypes**:

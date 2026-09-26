@@ -8,6 +8,7 @@ import net.bytebuddy.jar.asm.Opcodes
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
@@ -490,6 +491,33 @@ class CallEdgeAnalyzerTest {
                 .callsOf("call", "(L$lambda;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;")
                 .map { "${it.className}.${it.methodName}${it.methodDescriptor} ${it.kind}" },
         )
+    }
+
+    @Test
+    fun `a Scala 3 lifted lambda name marks a lambda body only in a class scalac compiled`() {
+        // A class with a method named like a lambda body scalac 3 lifted out of a nested class, and
+        // no invokedynamic naming it. Without a Scala attribute nothing may flag it.
+        val name = "com\$example\$Outer\$Inner\$\$_\$bump\$\$anonfun\$1"
+        val writer = ClassWriter(ClassWriter.COMPUTE_MAXS)
+        writer.visit(
+            Opcodes.V17,
+            Opcodes.ACC_PUBLIC or Opcodes.ACC_SUPER,
+            "com/example/target/NotScalaHost",
+            null,
+            "java/lang/Object",
+            null,
+        )
+        val method = writer.visitMethod(Opcodes.ACC_PUBLIC or Opcodes.ACC_STATIC, name, "()I", null, null)
+        method.visitCode()
+        method.visitInsn(Opcodes.ICONST_1)
+        method.visitInsn(Opcodes.IRETURN)
+        method.visitMaxs(0, 0)
+        method.visitEnd()
+        writer.visitEnd()
+
+        val analysis = BranchSiteAnalyzer.analyze(writer.toByteArray(), lookup, includePackages, emptyList()) { _, _ -> true }
+
+        assertFalse(analysis.isLambdaBody(name, "()I"))
     }
 
     @Test

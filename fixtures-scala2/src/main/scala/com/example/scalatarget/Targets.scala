@@ -137,3 +137,30 @@ object Written {
 
 /** Not a case class, so its `toString`, though it returns the class's name, is ordinary code. */
 class NotCase(val a: Int) { override def toString: String = "NotCase" }
+
+/**
+ * Lambdas written inline inside a method rather than assigned to a local `val`: Scala 3 names such
+ * a body after the method that owns it and marks it synthetic, where a local `val`'s lambda gets a
+ * plain `$anonfun$N`. [[viaHelper]]'s eta-expansion gets a body of its own under both compilers.
+ */
+object InlineLambdaHost {
+  def label(values: List[Int]): List[String] = values.map(v => if (v > 0) "positive" else "other")
+
+  def nested(values: List[Int]): List[Int] = values.flatMap(v => List(v).map(w => w + v))
+
+  def viaHelper(values: List[Int]): List[Int] = values.map(double)
+
+  private def double(v: Int): Int = v * 2
+}
+
+/**
+ * A lambda inside a class nested in an object. Scala 3 lifts a lambda that does not capture
+ * `this` into the top-level class, while the call that creates it stays in the nested class.
+ */
+object NestedLambdaHost {
+  class Inner {
+    def bump(values: List[Int]): List[Int] = values.map(v => if (v > 0) v + 1 else v)
+
+    def show(values: List[Int]): List[String] = values.map(v => v.toString)
+  }
+}

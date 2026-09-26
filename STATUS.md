@@ -66,9 +66,21 @@ adopter's collector forwards to one multi-tenant backend.
      about `create` (`invoke` calls it); the choice stands on the corrected
      reason. A `runShapesStack` rerun under a fresh version shows neither
      row; the shapes report's branch sites are the three the adopter wrote.
-   - A Scala 3 lambda body, `callByName$$anonfun$1`, is not folded with the
-     method that creates it and shows its raw name; Scala 2's
-     `$anonfun$callByName$1` folds.
+   - The Scala 3 lambda-body bullet landed on 2026-09-26 (ADR 0034,
+     amended). Scala 3 names a body owned by a method `<method>$$anonfun$N`
+     (`LambdaLift.newName`, 3.3.4), which the scalac name rule did not know.
+     The by-name closure `callByName$$anonfun$1` is not synthetic, so it was
+     probed but unflagged; worse, a lambda written in a method or a class
+     body (`label$$anonfun$1`, `$init$$$anonfun$1`) is synthetic, so it was
+     not probed at all and its branches went uncounted, a gap no fixture
+     covered. The rule takes the Scala 3 shape. A lambda Scala 3 lifts out
+     of a nested class into the top-level class
+     (`…$Inner$$_$bump$$anonfun$1`, created from the nested class) is
+     flagged by that expanded name, settled with Luke; a boxing one is
+     reached through its expanded bridge (`…$$_$show$$anonfun$adapted$1`)
+     to its short-named body. `InlineLambdaHost`
+     and `NestedLambdaHost` pin both compilers; `runShapesStack` shows the
+     Scala 3 by-name closure folded into `callByName`, as Scala 2's is.
    - A Java utility class's private constructor roots an uncalled cluster,
      though the never-hit list leaves it out.
    - The agent logs "looks like a Kotlin default-argument method" at INFO for

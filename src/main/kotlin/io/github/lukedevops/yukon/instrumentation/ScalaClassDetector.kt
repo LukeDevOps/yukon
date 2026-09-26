@@ -11,9 +11,9 @@ import net.bytebuddy.jar.asm.Opcodes
  * handling for either name, so a class carrying one still reaches [ClassVisitor.visitAttribute] as
  * a generic, unparsed attribute; only its type name is read here.
  *
- * [TypeMatchPolicy.methodMatcher] uses this to tell a scalac lambda body (`$anonfun$...`) apart
- * from an unrelated synthetic method of the same shape on a class scalac never compiled, which
- * must stay excluded.
+ * [TypeMatchPolicy.methodMatcher] uses this to tell a scalac lambda body (`$anonfun$...`, or
+ * Scala 3's `<owner>$$anonfun$N`) apart from an unrelated synthetic method of the same shape on a
+ * class scalac never compiled, which must stay excluded.
  */
 object ScalaClassDetector {
     private val SCALA_ATTRIBUTE_TYPES = setOf("Scala", "ScalaSig")

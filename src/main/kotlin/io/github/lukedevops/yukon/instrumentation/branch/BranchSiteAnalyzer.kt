@@ -872,7 +872,7 @@ object BranchSiteAnalyzer {
                 excludePackages = excludePackages,
             )
 
-        val lambdaBodies = findLambdaBodies(internalClassName, methodAccess, rawCandidatesByMethod, eligibleMethodKeys)
+        val lambdaBodies = findLambdaBodies(internalClassName, methodAccess, rawCandidatesByMethod, eligibleMethodKeys, isScalaClass)
         val bodyClass = BodyKindRule.classify(hasEnclosingMethod, superInternalName, ownInnerClassEntry, isKotlinClass)
 
         return Analysis(
@@ -1016,14 +1016,21 @@ object BranchSiteAnalyzer {
      * When the implementation is a same-class pass-through (declared with a body, not probed), the
      * same-class methods it calls are tested in its place, transitively. Scala 2 and Scala 3 both name
      * an `$adapted` boxing forwarder as the implementation whenever the body takes or returns a
-     * primitive, and the forwarder calls the real `$anonfun$` body. Without this step no such
+     * primitive, and the forwarder calls the real body. Without this step no such
      * body would be flagged.
+     *
+     * In a class scalac compiled ([isScalaClass]), a method whose name is Scala 3's lifted shape
+     * ([TypeMatchPolicy.isScala3LiftedLambdaName]) is walked as though an `invokedynamic` here
+     * named it: scalac 3 moves a lambda that does not capture `this` out of a nested class into
+     * the top-level class, and the call that creates it stays in the nested class. The method is
+     * the body itself, or a boxing bridge the walk passes through to reach it.
      */
     private fun findLambdaBodies(
         internalClassName: String,
         methodAccess: Map<Pair<String, String>, Int>,
         rawCandidatesByMethod: Map<Pair<String, String>, List<RawCandidate>>,
         eligibleMethodKeys: Set<Pair<String, String>>,
+        isScalaClass: Boolean,
     ): Set<Pair<String, String>> {
         val pending =
             ArrayDeque(
@@ -1032,6 +1039,7 @@ object BranchSiteAnalyzer {
                     .filter { it.kind == CallEdgeKind.CREATES && it.owner == internalClassName }
                     .map { it.name to it.descriptor },
             )
+        if (isScalaClass) pending += methodAccess.keys.filter { TypeMatchPolicy.isScala3LiftedLambdaName(it.first) }
         val named = mutableSetOf<Pair<String, String>>()
         while (pending.isNotEmpty()) {
             val key = pending.removeFirst()
