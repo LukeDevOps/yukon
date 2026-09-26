@@ -5,6 +5,70 @@ history covers that. `CLAUDE.md` holds the design in long form, `docs/adr/`
 one record per decision, and `CONTEXT.md` the glossary. Where this file and
 `CLAUDE.md` disagree about the state of the code, this one is right.
 
+## Pre-release checklist
+
+Drawn up 2026-09-26 from every open item in the three repos' STATUS files,
+READMEs and CI. It covers all three repos, since a release ships them
+together. The order: what is hard to undo once published, and what would
+make an adopter's first report wrong, comes before polish. The release
+publishes the agent (with its testkit) and the collector as open source.
+`yukon-server` stays closed source and hosted (server ADR 0001), so every
+adopter's collector forwards to one multi-tenant backend.
+
+1. **Run on a real Spring Boot service.** The demo is Kotlin on the JDK
+   HTTP server only. Run `runSpringDemo` against the real collector and
+   server (a `runSpringDemoStack` is not written yet) and the `fixtures-*`
+   modules. Then read the UI for Java anonymous classes, Scala,
+   `Companion`, data classes, coroutines and Spring (server STATUS, "Not
+   yet checked"). About fifteen items here and in the server are deferred
+   "until a real service shows it"; this run says which are real.
+2. **Fix the false findings a typical Spring app will hit.** These are
+   likely to show up in step 1:
+   - `$ByteBuddy$`, javassist `_$$_jvst` and JDK `$Proxy` generated
+     classes are not recognised.
+   - Hibernate's `$$_hibernate_` methods: it is not checked whether they
+     are synthetic.
+   - A named class that implements a framework interface reads as an
+     uncalled root (the ADR 0024 gap).
+   - kotlin-stdlib always reads as used, through `kotlin.Metadata`.
+   - A class that failed to load reads as unreferenced.
+3. **Settle the one-way doors before anything is published.**
+   - Review the testkit's query API, which publishing freezes.
+   - Make the testkit and the stub collector fold sites under a never-hit
+     method (server ADR 0031). A published testkit must agree with the
+     server's findings.
+   - Review the agent option names, which ADR 0016 makes a compatibility
+     surface.
+   - Run `buf breaking` on push to master too, not only on pull requests,
+     since every push publishes to the Buf registry.
+   - Settle versioning: the agent is `1.0-SNAPSHOT`, and no repo has
+     tags. Add Maven publishing, signing, and licence metadata in the
+     poms.
+4. **Security basics, sized to how the server is hosted.**
+   - Server: it is hosted for many tenants, so check at login that the
+     tenant that issued the login is the user's tenant, and give each
+     tenant its own identity provider (the server STATUS lists this first
+     under browser auth).
+   - Server: add a Content-Security-Policy.
+   - Collector: a TLS listener, or a README line saying it must sit behind
+     a TLS proxy. Add several valid tokens for rotation, and `_FILE` token
+     variables.
+5. **Close the collector's shutdown race.** `enqueue` checks `closed` and
+   then sends without a lock. So a request racing `Shutdown` can be
+   answered 202 and never forwarded. It is a small lock fix.
+6. **Release mechanics.**
+   - Collector: publish the image to GHCR with tags. Build it with the Go
+     version `go.mod` pins (the Dockerfile uses 1.27, `go.mod` pins 1.26),
+     and add a HEALTHCHECK like the server's.
+   - Agent: publish the jar and the testkit.
+   - Server: it is not published; decide where its image is built and
+     deployed from for the hosted service.
+
+After release: naming polish (`this$0`, facade names, the demo printer),
+the perf deferrals, gzip, a collector config file, agent-level redaction
+(parked in the server's STATUS, item 18, with its trigger), and the
+routine and OpenTelemetry edge cases in the entries below.
+
 ## TODO
 
 ### Routine outcomes: landed in all three repos
@@ -275,9 +339,11 @@ only path to `DemoServerMain.kt:59`. The browser shows the same rows, and the
 graph's `totalParam` node lists its four conditions with a true and false
 marker each.
 
-Left for later, in `yukon-server`'s STATUS: folding a dead method's branches
-into its row, rooting clusters at a never-taken outcome, telling
-real-but-uninteresting outcomes apart, and redaction at the server's ingest.
+The follow-ups this left in `yukon-server`'s STATUS have since landed there:
+folding a dead method's branches into its row (item 2), rooting clusters at
+a never-taken outcome (item 3), and routine outcomes (item 17, with ADR 0046
+here). Redaction stays out of the server; agent-level redaction is parked
+there as item 18.
 
 ### Readable names and findings, UI items 3 and 6 to 10: landed in both repos
 
@@ -917,7 +983,8 @@ dispatch for the other modules.
   self-disabling modules cover everything known so far; this is only worth
   building if an adopter needs to turn one module off by hand.
 
-OpenAPI import was settled as `yukon-server` work and is tracked there.
+OpenAPI as a source of endpoints was set aside (ADR 0017). A contract-diff
+feature built on it is parked in `yukon-server`'s STATUS.
 
 ## Parked
 
@@ -995,10 +1062,10 @@ until the reader knows whether the window is 90 days or three years.
 The age gap this once waited on is closed. `yukon-server` keeps location
 dates once per service (its "Service-wide dates" entry), so a method's age no
 longer stops at the oldest in-scope instance or the retention window, and
-every reply carries `watched_since`. Branch-level ages are still capped
-there until the server keys branch rows on ADR 0031's branch key, so a first
-cut of the manifest is method level, which the JaCoCo join below already
-assumes.
+every reply carries `watched_since`. The server also keeps service-wide
+dates for each keyed branch outcome (its ADR 0025), so branch-level ages are
+there too; only a keyless outcome stays capped. A first cut of the manifest
+can still be method level, which the JaCoCo join below already assumes.
 
 Phase two, JaCoCo for the vacuous test case. Needed only for the surviving
 case above, and only once the manifest stands on its own. JaCoCo's runtime
@@ -1018,8 +1085,8 @@ the per-test dump cost and lines the two sets up by construction.
 
 Open before any of this is built:
 
-- Branch-level ages, which wait on the server keying branch rows on the
-  branch key.
+- How the manifest shows a keyless branch outcome, whose dates stay capped
+  (server ADR 0025).
 - What the manifest says about a finding whose observation window has holes,
   an instance absent for a month.
 - Whether the manifest carries the exclusions the server already tracks
