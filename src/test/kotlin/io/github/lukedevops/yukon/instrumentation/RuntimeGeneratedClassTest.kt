@@ -9,12 +9,14 @@ import net.bytebuddy.NamingStrategy
 import net.bytebuddy.agent.ByteBuddyAgent
 import net.bytebuddy.agent.builder.ResettableClassFileTransformer
 import net.bytebuddy.dynamic.loading.ClassLoadingStrategy
+import net.bytebuddy.utility.RandomString
 import java.io.File
 import java.lang.instrument.ClassFileTransformer
 import java.lang.instrument.Instrumentation
 import java.lang.reflect.InvocationHandler
 import java.lang.reflect.Proxy
 import java.security.ProtectionDomain
+import java.util.Random
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -34,7 +36,6 @@ class RuntimeGeneratedClassTest {
         const val PACKAGE = "com.example.target"
         const val BASE = "$PACKAGE.SampleTarget"
         const val PACKAGE_PRIVATE_INTERFACE = "$PACKAGE.PackagePrivateGreeter"
-        const val NAMING_PROPERTY = "net.bytebuddy.naming"
     }
 
     private val instrumentation: Instrumentation = ByteBuddyAgent.install()
@@ -47,6 +48,20 @@ class RuntimeGeneratedClassTest {
         installedTransformer?.let { yukon?.uninstall(instrumentation, it) }
         watcher?.let { instrumentation.removeTransformer(it) }
     }
+
+    /**
+     * ByteBuddy's `SuffixingRandom` with [prefix], with the random tail seeded. A default instance
+     * names its types this way; Mockito builds the same shape itself, with `String.format` and
+     * `RandomString.make()`. A default tail reads as a word about once in five hundred names, and
+     * the rule keeps those as the adopter's; a seed keeps the test from depending on that chance.
+     */
+    private fun seeded(prefix: String) =
+        NamingStrategy.SuffixingRandom(
+            prefix,
+            NamingStrategy.Suffixing.BaseNameResolver.ForUnnamedType.INSTANCE,
+            "net.bytebuddy.renamed",
+            RandomString(RandomString.DEFAULT_LENGTH, Random(7L)),
+        )
 
     @Test
     fun `classes ByteBuddy, Mockito, javassist and the JDK generate are offered to the agent and left alone`() {
@@ -80,13 +95,14 @@ class RuntimeGeneratedClassTest {
 
         val byteBuddy =
             ByteBuddy()
+                .with(seeded("ByteBuddy"))
                 .subclass(base)
                 .make()
                 .load(loader, ClassLoadingStrategy.Default.WRAPPER)
                 .loaded
         val mockitoShaped =
             ByteBuddy()
-                .with(NamingStrategy.SuffixingRandom("MockitoMock"))
+                .with(seeded("MockitoMock"))
                 .subclass(base)
                 .make()
                 .load(loader, ClassLoadingStrategy.Default.WRAPPER)
@@ -124,9 +140,10 @@ class RuntimeGeneratedClassTest {
     /**
      * Under `-Dnet.bytebuddy.naming=fixed` a default `ByteBuddy` instance names its types with
      * `NamingStrategy.Suffixing("ByteBuddy", ForUnnamedType, "net.bytebuddy.renamed")`, which gives
-     * `<base>$ByteBuddy` with no tail. The strategy is used directly here, since this JVM's own
-     * `ByteBuddy` class read the property long before the test ran. The class is left alone while
-     * the property selects that mode, and woven as the adopter's own when it does not.
+     * `<base>$ByteBuddy` with no tail. The strategy is used directly here, and the agent's one
+     * reading of the property is set directly, since both this JVM's `ByteBuddy` class and the
+     * agent read the property long before the test ran. The class is left alone while the agent
+     * saw that mode, and woven as the adopter's own when it did not.
      */
     @Test
     fun `a class ByteBuddy names under the fixed naming mode is left alone only while that mode is on`() {
@@ -153,20 +170,18 @@ class RuntimeGeneratedClassTest {
         }
 
         val woven = defineFixedNamed()
-        val previous = System.setProperty(NAMING_PROPERTY, "fixed")
+        val previous = TypeMatchPolicy.byteBuddyNaming
+        TypeMatchPolicy.byteBuddyNaming = "fixed"
         val leftAlone =
             try {
                 defineFixedNamed()
             } finally {
-                if (previous == null) System.clearProperty(NAMING_PROPERTY) else System.setProperty(NAMING_PROPERTY, previous)
+                TypeMatchPolicy.byteBuddyNaming = previous
             }
 
         assertTrue(woven.name == "$BASE\$ByteBuddy" && leftAlone.name == woven.name, "${woven.name} ${leftAlone.name}")
-        val probes =
-            registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1")).probes.filter {
-                it.className ==
-                    woven.name
-            }
+        val manifest = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
+        val probes = manifest.probes.filter { it.className == woven.name }
         assertEquals(1, probes.map { it.classId }.distinct().size, "exactly one of the two copies is woven: $probes")
     }
 }

@@ -29,7 +29,9 @@ adopter's collector forwards to one multi-tenant backend.
    - kotlin-stdlib always reads as used, through `kotlin.Metadata`.
    - A class that failed to load reads as unreferenced.
 3. **Settle the one-way doors before anything is published.**
-   - Review the testkit's query API, which publishing freezes.
+   - Review the testkit's query API, which publishing freezes. Include
+     whether `neverHit()` judges per instance or across instances (see the
+     runtime-generated classes entry below).
    - Review the agent option names, which ADR 0016 makes a compatibility
      surface.
    - Settle versioning: the agent is `1.0-SNAPSHOT`, and no repo has
@@ -835,14 +837,38 @@ scratch program driving hibernate-core 7.4.10's own generators under the agent
 showed all four kinds woven before the rule and none after.
 
 ByteBuddy, Mockito, javassist and JDK proxy classes were added on 2026-09-26;
-ADR 0029's consequences hold the spellings and sources. Review of that chunk
-narrowed ByteBuddy's and Mockito's markers to a random-shaped tail and dropped
-ByteBuddy's `$auxiliary$`, whose tail could be a Kotlin local class name. Not
-covered: ByteBuddy's auxiliary types, Mockito's named-module helpers
-(`$MockitoModuleProbe$`, `InjectionBase$<n>`), and Weld's proxies, whose
-naming has not been read from Weld's source. ByteBuddy's fixed and caller
-naming modes, which end the name at `$ByteBuddy`, were added the same day,
-recognised only while the JVM's own `net.bytebuddy.naming` selects them.
+ADR 0029's consequences hold the spellings and sources. Three review rounds
+narrowed ByteBuddy's and Mockito's markers to a tail of exactly eight or
+fifteen letters and digits that does not read as one word, so a body class
+kotlinc names after a function (`Power$ByteBuddy$1`) or a one-word class
+nested under an adopter's `ByteBuddy` (`Config$ByteBuddy$Settings`) is kept.
+ByteBuddy's fixed and caller naming modes, which end the name at
+`$ByteBuddy`, are recognised when the JVM's own `net.bytebuddy.naming`
+selects them, read once at agent start. Not covered: ByteBuddy's auxiliary
+types in any mode (their tail has the shape of a Kotlin local class in a
+function called `auxiliary`), an eight- or fifteen-character class
+nested under an adopter's `ByteBuddy` or `MockitoMock` whose name is not one
+word (`HttpPort`, `V2Config`: turned away, not kept), Mockito's named-module helpers (`$MockitoModuleProbe$`,
+`InjectionBase$<n>`), and Weld's proxies, whose naming has not been read from
+Weld's source.
+
+The testkit judges a never-hit row once per instance and name, summing the
+hits of every copy of a class two loaders defined in that instance; it used to
+list each copy's probes on their own. Open from that, found at review:
+
+- `neverHit()` judges each instance on its own hits, where the server merges
+  every in-scope instance, and so do the testkit's own class findings,
+  clusters and `hitCount`. With two instances, one that ran `Foo(1)` and one
+  that loaded `Foo` and ran nothing, `neverHit()` lists the second instance's
+  constructors and methods. Rare in a test JVM, which reports as one
+  instance; settle it with the testkit query API review (checklist item 3),
+  since it changes which instance a `ProbeRef` names.
+- A branch row groups copies by `branch_index`; the server groups by
+  `branch_key` when one is set. Two different builds of one class in one
+  instance (two webapps in one Tomcat) would have their outcomes summed by
+  index. The testkit's cluster code groups the same way.
+- The demo's stub collector still judges each class copy on its own. It is
+  the demo's printer and loads one copy.
 
 Hibernate's bytecode enhancement adds public, non-synthetic `$$_hibernate_`
 methods to the entity class the adopter wrote. Settled 2026-09-26 in ADR 0047:

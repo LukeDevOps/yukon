@@ -73,38 +73,56 @@ fire. `demo-spring`'s `PricingConfiguration` is fully hit with the rule in place
   own source and run end to end. The cost of a missing marker is the noise above, which is visible
   and loud, not a silent wrong claim.
 - ByteBuddy, Mockito, javassist and JDK proxies were added on 2026-09-26, ahead of release rather
-  than waiting for an adopter to show one. ByteBuddy names a type from a default `ByteBuddy`
-  instance `<base>$ByteBuddy$<random>`, and Mockito names a subclass mock
-  `<mocked>$MockitoMock$<random>`, in the mocked type's package, so a test JVM mocking an adopter's
-  interface puts one inside the include prefix. The tail is `RandomString.make()`'s eight letters
-  and digits, or fifteen for Mockito under GraalVM. javassist's `ProxyFactory` appends
+  than waiting for an adopter to show one. A default `ByteBuddy` instance names a type
+  `<base>$ByteBuddy$<random>`, and Mockito names a subclass mock `<mocked>$MockitoMock$<random>`,
+  in the mocked type's package, so a test JVM mocking an adopter's interface puts one inside the
+  include prefix. The tail is `RandomString.make()`'s eight characters from all 62 letters and
+  digits, or fifteen for Mockito under GraalVM. javassist's `ProxyFactory` appends
   `_$$_jvst<hex>_<hex counter>`. The JDK names a proxy `$Proxy<n>` and puts it in the package of a
   non-public interface it implements, otherwise in `jdk.proxyN`; a proxy class is final and not
   synthetic. Read out of ByteBuddy 1.18.12, mockito-core 5.14.2, javassist 3.30.2-GA and
-  `java.lang.reflect.Proxy` in JDK 11, 21 and 22. The JDK's is matched as the whole simple name.
-  ByteBuddy's and Mockito's are matched as a whole part followed by a part of eight or more letters
-  and digits, because kotlinc names a body class after its enclosing function: `fun ByteBuddy()`
-  holding an object expression gives `Power$ByteBuddy$1`, which is kept. `RuntimeGeneratedClassTest`
-  has ByteBuddy, javassist and the JDK each define a class in the fixture package under the
-  installed agent, confirms the transformer is offered it, and checks it is neither woven, skipped
-  nor swept. Mockito is not a test dependency; its name shape is made with ByteBuddy's own
-  `SuffixingRandom("MockitoMock")`.
-- Not covered, by choice: ByteBuddy's auxiliary types, `<instrumented>$auxiliary$<suffix>`, since
-  the suffix (seven to fifteen letters and digits, from `RandomString.hashOf` and flag characters)
-  has the shape of a local class name, and `fun auxiliary()` holding a local class `Handler` gives
-  `Power$auxiliary$Handler`. A first cut matched them and would have turned that class away. Also
-  not covered: Mockito's named-module helpers (`$MockitoModuleProbe$`, `InjectionBase$<n>`). Weld
-  names its own proxies and was not read.
+  `java.lang.reflect.Proxy` in JDK 11, 21 and 22.
+- The JDK's name is matched as the whole simple name. ByteBuddy's and Mockito's markers are matched
+  as a whole part followed by a part of exactly eight or fifteen letters and digits that does not
+  read as one word (an optional capital, then lower-case letters). kotlinc names a body class after
+  its enclosing function, so `fun ByteBuddy()` holding an object expression gives
+  `Power$ByteBuddy$1`, and a class nested in one the adopter named `ByteBuddy` gives
+  `Config$ByteBuddy$Settings`; both are kept. A random tail reads as one word about once in five
+  hundred names (analytically about 1 in 522), and that miss is visible noise. A name of two or more
+  words of the right length (`Config$ByteBuddy$HttpPort`) is still turned away: about one random
+  tail in thirty takes that shape, too many to let through, and it needs a class the adopter named
+  `ByteBuddy` or `MockitoMock` to begin with.
+- The rule took three review rounds on 2026-09-26. The first cut took any part after the marker and
+  turned `Power$auxiliary$1` away; the second took eight or more characters and turned
+  `Config$ByteBuddy$Settings` away; the third added the word-shape rule and would have brought
+  `$auxiliary$` back, until the review found it turned away `Power$auxiliary$UserInfo`.
+- ByteBuddy's auxiliary types, `<instrumented>$auxiliary$<tail>`, are not covered in any naming
+  mode. The default tail is eight random letters and digits
+  (`AuxiliaryType.NamingStrategy.SuffixingRandom`, which the `ByteBuddy` constructor uses when no
+  property is set); under the fixed, caller or numeric mode it is the type's own `getSuffix()`,
+  seven to fifteen characters. `fun auxiliary()` is a plausible name, and a local class in it,
+  `Power$auxiliary$UserInfo`, has the same shape, so matching the marker would turn the adopter's
+  code away.
+- `RuntimeGeneratedClassTest` has ByteBuddy, javassist and the JDK each define a class in the
+  fixture package under the installed agent, confirms the transformer is offered it, and checks it
+  is neither woven, skipped nor swept. Mockito is not a test dependency; its name shape is made with
+  ByteBuddy's own `SuffixingRandom("MockitoMock")`. The test seeds the random tails, so it does not
+  depend on the one-in-five-hundred chance.
+- Not covered either: Mockito's named-module helpers (`$MockitoModuleProbe$`, `InjectionBase$<n>`).
+  Weld names its own proxies and was not read.
 - ByteBuddy's fixed and caller naming modes, which a JVM selects with `-Dnet.bytebuddy.naming=fixed`
   or `caller`, name a type `<base>$ByteBuddy`, the caller mode with the calling class and method
   between as parts of their own, and no random tail (`ByteBuddy`'s static initialiser and
   `NamingStrategy.Suffixing.BaseNameResolver.WithCallerSuffix`, 1.18.12). That shape is also a
-  nested class an adopter could name `ByteBuddy`, so a last part of `ByteBuddy` counts only while
+  nested class an adopter could name `ByteBuddy`, so a last part of `ByteBuddy` counts only when
   the JVM's own property selects one of those modes; the agent runs in the same JVM and reads the
-  same property. A numeric value seeds the default random tail, already covered. GraalVM native
-  images pick the caller mode too, but a Java agent never runs in one. The property name is put
-  together at runtime, since the shaded jar relocates `net.bytebuddy` and would rewrite the literal
-  into the agent's own relocated property.
+  same property. It reads it once, while the agent starts, so the type matcher, the baseline scan
+  and the sweep never disagree about a class. ByteBuddy reads it later, when its own class first
+  initialises, so a value the application sets in code before that is seen by ByteBuddy and not by
+  the agent, which then weaves those classes: visible noise. A numeric value seeds the main type's
+  random tail, already covered. GraalVM native images pick the caller mode too, but a Java agent
+  never runs in one. The property name is put together at runtime, since the shaded jar relocates
+  `net.bytebuddy` and would rewrite the literal into the agent's own relocated property.
 - Hibernate (added 2026-09-23) generates four kinds of class beside an entity: the lazy-loading
   proxy, the basic proxy, the instantiator and the access optimizer (with, in 6.6 and later, the
   optimizer's bridge). 6.6 and 7.4 name the first three `<Entity>$HibernateProxy`,

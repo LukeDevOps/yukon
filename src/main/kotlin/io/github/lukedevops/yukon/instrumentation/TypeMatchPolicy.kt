@@ -159,22 +159,33 @@ object TypeMatchPolicy {
      * mock. Read out of `NamingStrategy` and `ByteBuddy` in ByteBuddy 1.18.12, and
      * `SubclassBytecodeGenerator` in mockito-core 5.14.2.
      *
-     * ByteBuddy's `$auxiliary$<suffix>` is left out: its suffix is seven to fifteen letters and
-     * digits, which is also the shape of a local class kotlinc names after a function called
-     * `auxiliary` (`Power$auxiliary$Handler`), and turning away the adopter's code is the worse
-     * way to be wrong. The fixed and caller naming modes, which end the name at `$ByteBuddy` with
-     * no tail, are recognised separately, and only while the JVM's own property selects them
-     * ([isUntailedByteBuddyNaming]).
+     * ByteBuddy's auxiliary types, `<instrumented>$auxiliary$<tail>`, are left out. The default tail
+     * is eight random letters and digits, and under any other naming mode it is the type's own
+     * `getSuffix()`, seven to fifteen characters. A local class kotlinc names after a function called
+     * `auxiliary` has the same shape (`Power$auxiliary$UserInfo`), and the name is a plausible one,
+     * so matching it would turn away the adopter's code, the worse way to be wrong.
      */
     private val RANDOM_TAILED_PARTS = setOf("ByteBuddy", "MockitoMock")
 
     /**
      * The shape of the tail after a [RANDOM_TAILED_PARTS] marker: `RandomString.make()`'s eight
-     * letters and digits, or Mockito's fifteen under GraalVM (two `RandomString.hashOf` values and a
-     * flag). kotlinc's own tails after a function name (`$1`, `$lambda$0`) are shorter. Read out of
-     * `RandomString` in ByteBuddy 1.18.12.
+     * letters and digits, or Mockito's fifteen under GraalVM (two seven-character
+     * `RandomString.hashOf` values and a flag). Read out of `RandomString` in ByteBuddy 1.18.12,
+     * whose alphabet is all 62 letters and digits.
      */
-    private val RANDOM_TAIL = Regex("[0-9A-Za-z]{8,}")
+    private val RANDOM_TAIL = Regex("[0-9A-Za-z]{8}|[0-9A-Za-z]{15}")
+
+    /**
+     * A tail that reads as a word: an optional capital, then lower-case letters only. That is how an
+     * adopter names a nested or local class (`Config$ByteBuddy$Settings`), and a random tail takes
+     * this shape about once in five hundred names, so such a tail is left to the adopter. Missing
+     * one generated class that way is visible noise; turning away the adopter's class is not seen.
+     * Any other tail of the right length is not protected, a name of two or more words (`HttpPort`),
+     * one with a digit (`V2Config`) or one in capitals included: about one random tail in thirty
+     * reads as several words, too many to let through, and a class nested under one the adopter
+     * named `ByteBuddy` or `MockitoMock` is rare enough to accept the gap.
+     */
+    private val WORD_SHAPED = Regex("[A-Z]?[a-z]+")
 
     /**
      * The simple name the JDK gives a dynamic proxy class: `$Proxy` and a counter, straight after
@@ -250,7 +261,7 @@ object TypeMatchPolicy {
      * random-shaped tail after it or, under ByteBuddy's fixed or caller naming mode, by a last part
      * of `ByteBuddy`, and JDK proxies by their whole simple name.
      */
-    fun isRuntimeGenerated(className: String): Boolean = isRuntimeGenerated(className, byteBuddyNamingMode())
+    fun isRuntimeGenerated(className: String): Boolean = isRuntimeGenerated(className, byteBuddyNaming)
 
     /** [isRuntimeGenerated] with the JVM's ByteBuddy naming mode given as [byteBuddyNaming]. */
     internal fun isRuntimeGenerated(
@@ -271,7 +282,16 @@ object TypeMatchPolicy {
      */
     internal val BYTE_BUDDY_NAMING_PROPERTY = listOf("net", "bytebuddy", "naming").joinToString(".")
 
-    private fun byteBuddyNamingMode(): String? =
+    /**
+     * The value of [BYTE_BUDDY_NAMING_PROPERTY], read once when this object is first used, which is
+     * while the agent starts. One reading keeps the type matcher, the static baseline scan and the
+     * loaded-class sweep in agreement about every class for the life of the process. ByteBuddy
+     * reads the property once too, but later, when its own class first initialises, so a value the
+     * application sets in code before that is seen by ByteBuddy and not here, and its tail-less
+     * classes are woven: visible noise, not a missing class. A test sets it directly.
+     */
+    @Volatile
+    internal var byteBuddyNaming: String? =
         try {
             System.getProperty(BYTE_BUDDY_NAMING_PROPERTY)
         } catch (_: SecurityException) {
@@ -283,7 +303,7 @@ object TypeMatchPolicy {
      * case as ByteBuddy compares it. Both name a type `<base>$ByteBuddy`, the caller mode with the
      * calling class and method in between as parts of their own
      * (`NamingStrategy.Suffixing.BaseNameResolver.WithCallerSuffix`), and no random tail. A number
-     * seeds the default random tail instead, which [isRandomTailed] already covers. Read out of
+     * seeds the main type's random tail instead, which [isRandomTailed] already covers. Read out of
      * `ByteBuddy`'s static initialiser in ByteBuddy 1.18.12.
      */
     private fun isUntailedByteBuddyNaming(byteBuddyNaming: String?): Boolean =
@@ -301,10 +321,11 @@ object TypeMatchPolicy {
 
     /**
      * Whether a part of [className]'s simple name after the first is one of [RANDOM_TAILED_PARTS]
-     * and the part right after it has the shape of [RANDOM_TAIL]. Matched as a whole part, as
-     * Hibernate's suffixes are, so an adopter's `Config$ByteBuddySettings` is kept, and only with a
-     * random-shaped tail, so a nested class the adopter named `ByteBuddy`, or a body class kotlinc
-     * named after a function called `ByteBuddy` (`Power$ByteBuddy$1`), is kept too.
+     * and the part right after it has the shape of [RANDOM_TAIL] without being [WORD_SHAPED].
+     * Matched as a whole part, as Hibernate's suffixes are, so an adopter's `Config$ByteBuddySettings`
+     * is kept, and only with a random-shaped tail, so a nested class the adopter named `ByteBuddy`, a
+     * one-word class nested in it, or a body class kotlinc named after a function called `ByteBuddy`
+     * (`Power$ByteBuddy$1`) is kept too.
      */
     private fun isRandomTailed(className: String): Boolean =
         className
@@ -312,7 +333,7 @@ object TypeMatchPolicy {
             .split('$')
             .drop(1)
             .zipWithNext()
-            .any { (part, next) -> part in RANDOM_TAILED_PARTS && RANDOM_TAIL.matches(next) }
+            .any { (part, next) -> part in RANDOM_TAILED_PARTS && RANDOM_TAIL.matches(next) && !WORD_SHAPED.matches(next) }
 
     /**
      * A dotted suffix of a suspend function's own continuation class's direct superclass. Matched
