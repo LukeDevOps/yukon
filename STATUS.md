@@ -81,8 +81,15 @@ adopter's collector forwards to one multi-tenant backend.
      to its short-named body. `InlineLambdaHost`
      and `NestedLambdaHost` pin both compilers; `runShapesStack` shows the
      Scala 3 by-name closure folded into `callByName`, as Scala 2's is.
-   - A Java utility class's private constructor roots an uncalled cluster,
-     though the never-hit list leaves it out.
+   - The utility-class constructor bullet landed on 2026-09-26 (server ADR
+     0034, amended). A never-hit `<init>` of a class no run constructed and
+     no class finding covers, the report's `unjudged_constructors`, is
+     treated in the cluster graph as `<clinit>` is: reached through, never
+     a root, never listed or counted, and its class can be listed whole
+     without it. Settled with Luke over the alternatives of letting a call
+     from it not count or dropping it from the graph. Server graph and
+     store, the testkit's `unreachedClusters()` and the stub collector all
+     apply it.
    - The agent logs "looks like a Kotlin default-argument method" at INFO for
      the synthetic accessor kotlinc adds when a companion calls its class's
      private constructor (`Tariff#<init>(String, double,

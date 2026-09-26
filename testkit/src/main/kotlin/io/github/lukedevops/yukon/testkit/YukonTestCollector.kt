@@ -1191,7 +1191,10 @@ class YukonTestCollector private constructor(
      * A root is a never-hit node with no caller or with a caller that is a method with hits. A method
      * root with no caller is [RootKind.UNCALLED], and one with a caller that has hits is
      * [RootKind.REACHED_FROM_HIT]. An outcome root is [RootKind.UNTAKEN_OUTCOME], and a class root is
-     * [RootKind.CLASS_FINDING]. A `<clinit>` is never a root. The cluster is the root plus every
+     * [RootKind.CLASS_FINDING]. A `<clinit>` is never a root, and neither is an unjudged constructor:
+     * a never-hit `<init>` of a class no instance constructed that no class finding covers, such as
+     * a utility class's private constructor. Like `<clinit>`, it is reached through but never
+     * listed or counted, and a class is listed whole without it. The cluster is the root plus every
      * never-hit node reachable from it whose every caller is already in the cluster. An outcome or
      * class root whose cluster holds no method or class node besides the root gives no cluster,
      * since the root's own finding already says all there is.
@@ -1208,8 +1211,14 @@ class YukonTestCollector private constructor(
 
         fun isHit(key: NodeKey) = (graph.nodes[key]?.hits ?: 0L) > 0L
 
-        val classNodes = buildClassNodes(graph)
+        val judgement = judgeClasses()
+        val classNodes = buildClassNodes(graph, judgement)
         val coveredBy = classNodes.flatMap { (node, info) -> info.methods.map { it to node } }.toMap()
+        val unjudged =
+            graph.nodes
+                .filter { (key, info) ->
+                    key.methodName == CONSTRUCTOR && !info.neverLoaded && key !in coveredBy && key.className !in judgement.constructed
+                }.keys
         val outcomes = buildOutcomeNodes(::isHit)
         val clusterGraph = buildClusterGraph(graph, outcomes, coveredBy)
 
@@ -1222,7 +1231,7 @@ class YukonTestCollector private constructor(
 
         val neverHitNodes =
             graph.nodes.keys
-                .filter { !isHit(it) && it !in coveredBy && it.methodName != CLASS_INIT }
+                .filter { !isHit(it) && it !in coveredBy && it.methodName != CLASS_INIT && it !in unjudged }
                 .map { ClusterNode(it) } + outcomes.keys + classNodes.keys
         return neverHitNodes
             .mapNotNull { node ->
@@ -1242,7 +1251,7 @@ class YukonTestCollector private constructor(
                     } else {
                         emptyList()
                     }
-                buildCluster(graph, clusterGraph, outcomes, classNodes, node, kind, reachedFrom, ::isNeverHit)
+                buildCluster(graph, clusterGraph, outcomes, classNodes, unjudged, node, kind, reachedFrom, ::isNeverHit)
             }.sortedWith(compareByDescending<UnreachedCluster> { it.membersTotal }.thenComparing({ it.root }, probeRefComparator))
     }
 
@@ -1252,13 +1261,15 @@ class YukonTestCollector private constructor(
      * consequences of this rule, pinned by tests: a node whose callers sit in two different
      * clusters is added to neither, and a cycle of never-hit nodes with no outside caller produces
      * no root at all, so it never reaches this method in the first place. Returns null for an
-     * outcome or class root when nothing but outcome nodes joined it.
+     * outcome or class root when nothing it would list joined it: an outcome node, a `<clinit>` or a
+     * member in [unjudged] is never listed, and class sizes leave out a member in [unjudged].
      */
     private fun buildCluster(
         graph: CallGraph,
         clusterGraph: ClusterGraph,
         outcomes: Map<ClusterNode, OutcomeNode>,
         classNodes: Map<ClusterNode, ClassNode>,
+        unjudged: Set<NodeKey>,
         root: ClusterNode,
         rootKind: RootKind,
         reachedFrom: List<ProbeRef>,
@@ -1279,7 +1290,12 @@ class YukonTestCollector private constructor(
                 }
             }
         }
-        if ((root.isClass || root.branchIndex != null) && members.none { it != root && it.branchIndex == null }) return null
+        val listsMoreThanRoot =
+            members.any {
+                it != root && it.branchIndex == null &&
+                    (it.isClass || (it.method.methodName != CLASS_INIT && it.method !in unjudged))
+            }
+        if ((root.isClass || root.branchIndex != null) && !listsMoreThanRoot) return null
 
         val methodsByClass = mutableMapOf<String, MutableList<NodeKey>>()
         for (member in members) {
@@ -1291,6 +1307,8 @@ class YukonTestCollector private constructor(
                         classNodes.getValue(member).methods
                 }
 
+                member.method in unjudged -> {}
+
                 else -> {
                     methodsByClass.getOrPut(member.method.className) { mutableListOf() } += member.method
                 }
@@ -1298,6 +1316,7 @@ class YukonTestCollector private constructor(
         }
         val classSize =
             graph.nodes.keys
+                .filter { it !in unjudged }
                 .groupingBy { it.className }
                 .eachCount()
         val wholeClasses = mutableListOf<WholeClass>()
@@ -1362,12 +1381,14 @@ class YukonTestCollector private constructor(
 
     /**
      * Every class node, keyed by its [ClusterNode]. A never-initialised or never-instantiated class
-     * stands for the methods [judgeClasses] says it covers. A class whose method nodes all come
-     * from a complete baseline, since no manifest mentioned it, is never loaded and stands for all
-     * of them. A class with no such method has no class node.
+     * stands for the methods [judgement], from [judgeClasses], says it covers. A class whose method
+     * nodes all come from a complete baseline, since no manifest mentioned it, is never loaded and
+     * stands for all of them. A class with no such method has no class node.
      */
-    private fun buildClassNodes(graph: CallGraph): Map<ClusterNode, ClassNode> {
-        val judgement = judgeClasses()
+    private fun buildClassNodes(
+        graph: CallGraph,
+        judgement: ClassJudgement,
+    ): Map<ClusterNode, ClassNode> {
         val classNodes = mutableMapOf<ClusterNode, ClassNode>()
         for ((className, finding) in judgement.findings) {
             val methods = judgement.covered[className].orEmpty().filter { (graph.nodes[it]?.hits ?: -1L) == 0L }
@@ -2397,8 +2418,9 @@ data class ClassFindingRef(
 
 /**
  * One class an [UnreachedCluster] holds whole: every method node of the class, its `<clinit>`
- * included when it has one, is in the cluster. [finding] is the class's finding when it holds one,
- * and null otherwise. [methods] lists its methods other than `<clinit>`, sorted the same way
+ * included when it has one and a never-run constructor of a never-constructed class with no finding
+ * aside, is in the cluster. [finding] is the class's finding when it holds one, and null otherwise.
+ * [methods] lists its methods other than `<clinit>` and such a constructor, sorted the same way
  * [YukonTestCollector.neverHit] sorts its results.
  */
 data class WholeClass(
@@ -2422,7 +2444,8 @@ data class WholeClass(
  *
  * [wholeClasses] lists each class the cluster holds whole, sorted by class name. [members] lists
  * every other method, sorted the same way [YukonTestCollector.neverHit] sorts its results. Neither
- * lists `<clinit>`. A method root is in its own cluster, and so are a class root's methods; an
+ * lists `<clinit>`, or a never-run constructor of a never-constructed class with no finding (server
+ * ADR 0034). A method root is in its own cluster, and so are a class root's methods; an
  * outcome root is not. [membersTotal] counts every method the cluster holds, and [methods] lists
  * them all. [neverLoadedClasses] counts the distinct classes with a method in the cluster that
  * exists only because a complete static baseline declared it; see [ProbeRef.neverLoaded].

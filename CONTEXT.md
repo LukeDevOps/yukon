@@ -241,7 +241,7 @@ A root plus every never-hit method reachable from it through call edges whose ev
 _Avoid_: dead cluster, dead code (a collector's verdict, not an observation)
 
 **Root**:
-The never-hit code that starts an unreached cluster. A method root is *reached from hit* when one of its callers has hits, and names those callers; it is *uncalled* when nothing in scope calls it. An *untaken outcome* root is a never-hit outcome in a method that ran, with at least one method behind it. See ADR 0039. A *class finding* root is a class that holds a class finding, with no caller or a caller that has hits. Its cluster is listed only when it holds a method or class besides the methods the finding folds. A `<clinit>` is never a root. See yukon-server ADR 0034.
+The never-hit code that starts an unreached cluster. A method root is *reached from hit* when one of its callers has hits, and names those callers; it is *uncalled* when nothing in scope calls it. An *untaken outcome* root is a never-hit outcome in a method that ran, with at least one method behind it. See ADR 0039. A *class finding* root is a class that holds a class finding, with no caller or a caller that has hits. Its cluster is listed only when it holds a method or class besides the methods the finding folds. A `<clinit>` is never a root, and neither is a never-run constructor of a class nothing constructed that holds no class finding, such as a utility class's private constructor; the cluster reaches through it but never lists it. See yukon-server ADR 0034.
 _Avoid_: entry point (a root may be deep inside the code), node
 
 ### Dependencies

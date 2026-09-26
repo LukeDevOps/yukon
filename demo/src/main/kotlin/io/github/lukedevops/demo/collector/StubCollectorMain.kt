@@ -398,7 +398,8 @@ private data class ClusterMember(
  * for a class root the class alone, with an empty method name and descriptor. [rootOutcome] is set
  * only for an untaken outcome root, and [rootFinding] only for a class root. [reachedFrom] lists the
  * methods with hits that call a root reached from hit or a class root. [wholeClasses] lists each
- * class the cluster holds whole, and [members] every other method. Neither lists `<clinit>`.
+ * class the cluster holds whole, and [members] every other method. Neither lists `<clinit>`, or a
+ * never-run constructor of a never-constructed class with no finding (server ADR 0034).
  */
 private data class UnreachedClusterInfo(
     val root: ClusterMember,
@@ -410,11 +411,14 @@ private data class UnreachedClusterInfo(
     val rootFinding: ClassFinding? = null,
     val wholeClasses: List<WholeClassInfo> = emptyList(),
 ) {
-    /** How many methods the cluster holds, never counting `<clinit>`. */
+    /** How many methods the cluster lists, never counting `<clinit>` or such a constructor. */
     val membersTotal: Int get() = members.size + wholeClasses.sumOf { it.methodsTotal }
 }
 
-/** One class a cluster holds whole: every method node of it. [finding] is null when it holds none. */
+/**
+ * One class a cluster holds whole: every method node of it, a never-run constructor of a
+ * never-constructed class with no finding aside. [finding] is null when it holds none.
+ */
 private data class WholeClassInfo(
     val className: String,
     val finding: ClassFinding?,
@@ -1496,7 +1500,10 @@ private fun routesByHandler(): Map<NodeKey, List<String>> =
  * A root is a never-hit node with no caller or with a caller that is a method with hits. A method
  * root is [ClusterRootKind.UNCALLED] or [ClusterRootKind.REACHED_FROM_HIT], an outcome root
  * [ClusterRootKind.UNTAKEN_OUTCOME], and a class root [ClusterRootKind.CLASS_FINDING]. A `<clinit>`
- * is never a root. An outcome or class root whose cluster holds nothing but itself and outcome
+ * is never a root, and neither is an unjudged constructor: a never-hit `<init>` of a class nothing
+ * constructed that no class finding covers, such as a utility class's private constructor. Like
+ * `<clinit>`, it is reached through but never listed or counted, and a class is listed whole
+ * without it. An outcome or class root whose cluster holds nothing but itself and outcome
  * nodes gives no cluster. See ADR 0039 and server ADR 0034.
  */
 private fun computeUnreachedClusters(): List<UnreachedClusterInfo> {
@@ -1504,8 +1511,14 @@ private fun computeUnreachedClusters(): List<UnreachedClusterInfo> {
 
     fun isHit(key: NodeKey) = (graph.nodes[key]?.hits ?: 0L) > 0L
 
-    val classNodes = buildClassNodes(graph)
+    val judgement = judgeClasses()
+    val classNodes = buildClassNodes(graph, judgement)
     val coveredBy = classNodes.flatMap { (node, info) -> info.methods.map { it to node } }.toMap()
+    val unjudged =
+        graph.nodes
+            .filter { (key, info) ->
+                key.methodName == CONSTRUCTOR && !info.neverLoaded && key !in coveredBy && key.className !in judgement.constructed
+            }.keys
     val outcomes = buildOutcomeNodes(::isHit)
     val clusterGraph = buildClusterGraph(graph, outcomes, coveredBy)
 
@@ -1518,7 +1531,7 @@ private fun computeUnreachedClusters(): List<UnreachedClusterInfo> {
 
     val neverHitNodes =
         graph.nodes.keys
-            .filter { !isHit(it) && it !in coveredBy && it.methodName != CLASS_INIT }
+            .filter { !isHit(it) && it !in coveredBy && it.methodName != CLASS_INIT && it !in unjudged }
             .map { ClusterNode(it) } + outcomes.keys + classNodes.keys
     return neverHitNodes
         .mapNotNull { node ->
@@ -1538,7 +1551,7 @@ private fun computeUnreachedClusters(): List<UnreachedClusterInfo> {
                 } else {
                     emptyList()
                 }
-            buildUnreachedCluster(graph, clusterGraph, outcomes, classNodes, node, kind, reachedFrom, ::isNeverHit)
+            buildUnreachedCluster(graph, clusterGraph, outcomes, classNodes, unjudged, node, kind, reachedFrom, ::isNeverHit)
         }.sortedWith(
             compareByDescending<UnreachedClusterInfo> { it.membersTotal }
                 .thenComparing({ it.root }, clusterMemberComparator)
@@ -1548,12 +1561,14 @@ private fun computeUnreachedClusters(): List<UnreachedClusterInfo> {
 
 /**
  * Every class node, keyed by its [ClusterNode]. A never-initialised or never-instantiated class
- * stands for the methods [judgeClasses] says it covers. A class whose method nodes all come from a
- * complete baseline, since no manifest mentioned it, is never loaded and stands for all of them. A
- * class with no such method has no class node.
+ * stands for the methods [judgement], from [judgeClasses], says it covers. A class whose method
+ * nodes all come from a complete baseline, since no manifest mentioned it, is never loaded and
+ * stands for all of them. A class with no such method has no class node.
  */
-private fun buildClassNodes(graph: CallGraph): Map<ClusterNode, ClassNodeInfo> {
-    val judgement = judgeClasses()
+private fun buildClassNodes(
+    graph: CallGraph,
+    judgement: ClassJudgement,
+): Map<ClusterNode, ClassNodeInfo> {
     val classNodes = mutableMapOf<ClusterNode, ClassNodeInfo>()
     for ((className, finding) in judgement.findings) {
         val methods = judgement.covered[className].orEmpty().filter { (graph.nodes[it]?.hits ?: -1L) == 0L }
@@ -1571,13 +1586,16 @@ private fun buildClassNodes(graph: CallGraph): Map<ClusterNode, ClassNodeInfo> {
  * Grows [root]'s cluster by fixpoint: repeatedly add a never-hit node reachable from a current
  * member, once every one of that node's callers is itself already in the cluster. A node whose
  * callers sit outside the cluster, or a cycle of never-hit nodes with no outside caller, is never
- * added. Returns null for an outcome or class root when nothing but outcome nodes joined it.
+ * added. Returns null for an outcome or class root when nothing it would list joined it: an
+ * outcome node, a `<clinit>` or a member in [unjudged] is never listed, and class sizes leave out a
+ * member in [unjudged].
  */
 private fun buildUnreachedCluster(
     graph: CallGraph,
     clusterGraph: ClusterGraph,
     outcomes: Map<ClusterNode, OutcomeNode>,
     classNodes: Map<ClusterNode, ClassNodeInfo>,
+    unjudged: Set<NodeKey>,
     root: ClusterNode,
     rootKind: ClusterRootKind,
     reachedFrom: List<ClusterMember>,
@@ -1598,7 +1616,11 @@ private fun buildUnreachedCluster(
             }
         }
     }
-    if ((root.isClass || root.branchIndex != null) && members.none { it != root && it.branchIndex == null }) return null
+    val listsMoreThanRoot =
+        members.any {
+            it != root && it.branchIndex == null && (it.isClass || (it.method.methodName != CLASS_INIT && it.method !in unjudged))
+        }
+    if ((root.isClass || root.branchIndex != null) && !listsMoreThanRoot) return null
 
     val methodsByClass = mutableMapOf<String, MutableList<NodeKey>>()
     for (member in members) {
@@ -1609,6 +1631,8 @@ private fun buildUnreachedCluster(
                 methodsByClass.getOrPut(member.method.className) { mutableListOf() } += classNodes.getValue(member).methods
             }
 
+            member.method in unjudged -> {}
+
             else -> {
                 methodsByClass.getOrPut(member.method.className) { mutableListOf() } += member.method
             }
@@ -1616,6 +1640,7 @@ private fun buildUnreachedCluster(
     }
     val classSize =
         graph.nodes.keys
+            .filter { it !in unjudged }
             .groupingBy { it.className }
             .eachCount()
     val wholeClasses = mutableListOf<WholeClassInfo>()

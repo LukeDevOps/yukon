@@ -2049,6 +2049,113 @@ class YukonTestCollectorTest {
         assertEquals("record", cluster.root.methodName)
     }
 
+    /**
+     * Server ADR 0034's unjudged constructor in the cluster rule. Util and Dead hold only static
+     * methods and were never constructed, so neither holds a class finding and neither private
+     * constructor roots a cluster. Util.parse ran and Util.format did not, so format roots its own
+     * cluster. No Dead method ran, so Dead.only roots a cluster holding Dead whole, its constructor
+     * left out. A never-run factory still reaches through a never-constructed class's constructor
+     * to the helper only it calls, and lists neither constructor.
+     */
+    @Test
+    fun `an unjudged constructor is never a root, is never listed, and is still reached through`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+        val resource = ResourceAttributes("svc", null, "i-1", null, "run-1")
+        exporter.exportManifest(
+            ProbeManifest(
+                resource,
+                probes =
+                    listOf(
+                        methodProbe(1, 0, "com.acme.Util", "<init>", "()V", 3),
+                        methodProbe(1, 1, "com.acme.Util", "format", "()V", 4, static = true),
+                        methodProbe(1, 2, "com.acme.Util", "parse", "()V", 5, static = true),
+                        methodProbe(2, 0, "com.acme.Dead", "<init>", "()V", 3),
+                        methodProbe(2, 1, "com.acme.Dead", "only", "()V", 4, static = true),
+                        methodProbe(
+                            3,
+                            0,
+                            "com.acme.Factory",
+                            "make",
+                            "()V",
+                            7,
+                            calls = listOf(CallEdge("com.acme.Thing", "<init>", "()V", virtual = false)),
+                            static = true,
+                        ),
+                        methodProbe(
+                            4,
+                            0,
+                            "com.acme.Thing",
+                            "<init>",
+                            "()V",
+                            9,
+                            calls = listOf(CallEdge("com.acme.Helper", "build", "()V", virtual = false)),
+                        ),
+                        methodProbe(5, 0, "com.acme.Helper", "build", "()V", 11, static = true),
+                    ),
+            ),
+        )
+        exporter.exportDeltaBatch(DeltaBatch(resource, listOf(ProbeDelta(1, 2, ProbeKind.METHOD, 1L, 5L))))
+
+        val clusters = target.unreachedClusters()
+
+        assertEquals(
+            listOf("com.acme.Dead.only", "com.acme.Factory.make", "com.acme.Util.format"),
+            clusters.map { "${it.root.className}.${it.root.methodName}" }.sorted(),
+        )
+        val dead = clusters.single { it.root.className == "com.acme.Dead" }
+        assertEquals(listOf("com.acme.Dead"), dead.wholeClasses.map { it.className })
+        assertEquals(listOf("only"), dead.methods.map { it.methodName })
+        val factory = clusters.single { it.root.className == "com.acme.Factory" }
+        assertEquals(
+            listOf("Factory.make", "Helper.build"),
+            factory.methods
+                .map {
+                    "${it.className.substringAfterLast('.')}.${it.methodName}"
+                }.sorted(),
+        )
+        assertTrue(clusters.flatMap { it.methods }.none { it.methodName == "<init>" }, "no constructor is listed")
+    }
+
+    /**
+     * An untaken outcome whose cluster would hold only an unjudged constructor besides itself gives
+     * no cluster: MyEx has only its constructor and was never constructed, so the cluster would list
+     * nothing.
+     */
+    @Test
+    fun `an untaken outcome reaching only an unjudged constructor gives no cluster`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+        val resource = ResourceAttributes("svc", null, "i-1", null, "run-1")
+        val site = ifSite(siteIndex = 0, line = 11, takenIndex = 0, fallThroughIndex = 1, condition = "broken")
+        exporter.exportManifest(
+            ProbeManifest(
+                resource,
+                probes =
+                    listOf(
+                        methodProbe(
+                            1,
+                            0,
+                            "com.acme.Svc",
+                            "run",
+                            "()V",
+                            10,
+                            calls = listOf(CallEdge("com.acme.MyEx", "<init>", "()V", virtual = false, guard = 1)),
+                            branchSites = listOf(site),
+                        ),
+                        branchProbe(1, 1, "com.acme.Svc", "run", "()V", 11, branchIndex = 0, siteIndex = 0),
+                        branchProbe(1, 2, "com.acme.Svc", "run", "()V", 11, branchIndex = 1, siteIndex = 0),
+                        methodProbe(2, 0, "com.acme.MyEx", "<init>", "()V", 3),
+                    ),
+            ),
+        )
+        exporter.exportDeltaBatch(
+            DeltaBatch(resource, listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 5L), ProbeDelta(1, 1, ProbeKind.BRANCH, 1L, 5L))),
+        )
+
+        assertEquals(emptyList(), target.unreachedClusters())
+    }
+
     @Test
     fun `an untaken outcome roots the cluster of the methods only it calls`() {
         val target = startCollector()
