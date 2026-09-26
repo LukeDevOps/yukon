@@ -13,6 +13,7 @@ import io.github.lukedevops.yukon.export.ProbeKind
 import io.github.lukedevops.yukon.export.ProbeManifest
 import io.github.lukedevops.yukon.export.ProtoPayloadCodec
 import io.github.lukedevops.yukon.export.ResourceAttributes
+import io.github.lukedevops.yukon.export.RoutineKind
 import io.github.lukedevops.yukon.export.SkippedClass
 import io.github.lukedevops.yukon.export.UnreportedClass
 import io.github.lukedevops.yukon.registry.RouteTemplateNormalizer
@@ -178,6 +179,13 @@ class YukonTestCollector private constructor(
         val method: NodeKey,
         val branchIndex: Int? = null,
         val isClass: Boolean = false,
+    )
+
+    /** One outcome of one instance's method, by its branch index. */
+    private data class OutcomeKey(
+        val serviceInstanceId: String,
+        val method: NodeKey,
+        val branchIndex: Int,
     )
 
     /**
@@ -693,20 +701,64 @@ class YukonTestCollector private constructor(
      * [neverInstantiated]) is left out, and so is a never-hit lambda body whose every creator is
      * such a method or a never-hit method listed here. A BRANCH probe in a method left out this way
      * is left out too.
+     *
+     * A routine outcome is left out too, as server ADR 0039 has it: the agent read from the
+     * bytecode that the outcome only yields a null default, only throws, or is the exception-path
+     * copy of a `finally` body. [neverHitRoutineOutcomes] lists those. See ADR 0046.
      */
-    fun neverHit(): List<ProbeRef> =
-        checked {
-            val judgement = judgeClasses()
-            probesByKey.entries
-                .filter { (key, probe) ->
-                    !probe.inline &&
-                        probe.generatedBy == GeneratedBy.NONE &&
-                        probe.kind != ProbeKind.OPTIONAL_ARGUMENT &&
-                        (hitsByKey[key] ?: 0L) <= 0L &&
-                        isNeverHitRow(probe, judgement)
-                }.map { (key, probe) -> neverHitRef(key, probe) }
-                .sortedWith(compareBy({ it.className }, { it.methodName }, { it.line }, { it.branchIndex ?: -1 }))
+    fun neverHit(): List<ProbeRef> = checked { neverHitRows().filter { it.routine == RoutineKind.NONE } }
+
+    /**
+     * Every never-hit BRANCH probe that [neverHit] leaves out only because its outcome is routine,
+     * each with its [ProbeRef.routine] kind, sorted as [neverHit] sorts. Server ADR 0039 counts
+     * these apart and lists them only on request. See ADR 0046.
+     */
+    fun neverHitRoutineOutcomes(): List<ProbeRef> = checked { neverHitRows().filter { it.routine != RoutineKind.NONE } }
+
+    /** Every [neverHit] row with routine outcomes still in. */
+    private fun neverHitRows(): List<ProbeRef> {
+        val judgement = judgeClasses()
+        val routineKinds = routineKinds()
+        return probesByKey.entries
+            .filter { (key, probe) ->
+                !probe.inline &&
+                    probe.generatedBy == GeneratedBy.NONE &&
+                    probe.kind != ProbeKind.OPTIONAL_ARGUMENT &&
+                    (hitsByKey[key] ?: 0L) <= 0L &&
+                    isNeverHitRow(probe, judgement)
+            }.map { (key, probe) -> neverHitRef(key, probe, routineOf(key, probe, routineKinds)) }
+            .sortedWith(compareBy({ it.className }, { it.methodName }, { it.line }, { it.branchIndex ?: -1 }))
+    }
+
+    /**
+     * The kind of every routine outcome, from the sites each instance's METHOD probes list. An
+     * outcome absent from the map is not routine. See ADR 0046.
+     */
+    private fun routineKinds(): Map<OutcomeKey, RoutineKind> {
+        val kinds = HashMap<OutcomeKey, RoutineKind>()
+        for ((key, probe) in probesByKey) {
+            if (probe.kind != ProbeKind.METHOD) continue
+            val method = NodeKey(probe.className, probe.methodName, probe.methodDescriptor)
+            for (site in probe.branchSites) {
+                for (outcome in site.outcomes) {
+                    if (outcome.routine != RoutineKind.NONE) kinds[OutcomeKey(key.serviceInstanceId, method, outcome.branchIndex)] = outcome.routine
+                }
+            }
         }
+        return kinds
+    }
+
+    /** The routine kind of [probe], a BRANCH probe of [key]'s instance, or [RoutineKind.NONE] for any other probe. */
+    private fun routineOf(
+        key: ProbeKey,
+        probe: StoredProbe,
+        routineKinds: Map<OutcomeKey, RoutineKind>,
+    ): RoutineKind {
+        val branchIndex = probe.branchIndex
+        if (probe.kind != ProbeKind.BRANCH || branchIndex == null) return RoutineKind.NONE
+        val method = NodeKey(probe.className, probe.methodName, probe.methodDescriptor)
+        return routineKinds[OutcomeKey(key.serviceInstanceId, method, branchIndex)] ?: RoutineKind.NONE
+    }
 
     /**
      * Whether a judgeable never-hit [probe] is a [neverHit] row under server ADR 0034. A `<clinit>`
@@ -925,6 +977,7 @@ class YukonTestCollector private constructor(
     private fun neverHitRef(
         key: ProbeKey,
         probe: StoredProbe,
+        routine: RoutineKind = RoutineKind.NONE,
     ): ProbeRef =
         ProbeRef(
             serviceInstanceId = key.serviceInstanceId,
@@ -938,6 +991,7 @@ class YukonTestCollector private constructor(
             inlinedFromClassName = probe.inlinedFromClassName,
             generatedBy = probe.generatedBy,
             branchKey = probe.branchKey,
+            routine = routine,
         )
 
     /** Every class reported as matched but not instrumented by any manifest, distinct by class name, sorted by name. */
@@ -1230,8 +1284,12 @@ class YukonTestCollector private constructor(
      * Every outcome node, keyed by its [ClusterNode]: a BRANCH probe that is neither inline nor
      * generated, whose hits summed across instances are zero, in a method [isHit] says has hits. Its
      * site is looked up by branch index in the sites its method's METHOD probes list. See ADR 0039.
+     *
+     * A routine outcome is never a node, as server ADR 0039 has it, so a call it guards starts at
+     * its method. See ADR 0046.
      */
     private fun buildOutcomeNodes(isHit: (NodeKey) -> Boolean): Map<ClusterNode, OutcomeNode> {
+        val routineKinds = routineKinds()
         val sitesByMethod =
             probesByKey.values
                 .filter { it.kind == ProbeKind.METHOD && it.branchSites.isNotEmpty() }
@@ -1241,7 +1299,11 @@ class YukonTestCollector private constructor(
             .filter { (_, probe) ->
                 probe.kind == ProbeKind.BRANCH && probe.branchIndex != null && !probe.inline && probe.generatedBy == GeneratedBy.NONE
             }.groupBy { (_, probe) -> ClusterNode(NodeKey(probe.className, probe.methodName, probe.methodDescriptor), probe.branchIndex) }
-            .filter { (node, entries) -> isHit(node.method) && entries.sumOf { (key, _) -> hitsByKey[key] ?: 0L } == 0L }
+            .filter { (node, entries) ->
+                isHit(node.method) &&
+                    entries.sumOf { (key, _) -> hitsByKey[key] ?: 0L } == 0L &&
+                    entries.all { (key, probe) -> routineOf(key, probe, routineKinds) == RoutineKind.NONE }
+            }
             .mapValues { (node, entries) ->
                 val (key, probe) = entries.first()
                 val site = sitesByMethod[node.method]?.firstOrNull { site -> site.outcomes.any { it.branchIndex == node.branchIndex } }
@@ -2143,7 +2205,8 @@ class YukonTestCollector private constructor(
  * [ProbeKind.OPTIONAL_ARGUMENT] probe as its target's mark; see ADR 0026.
  * [branchKey] is set only for a [ProbeKind.BRANCH] probe: an opaque lowercase hex token naming
  * this outcome across builds and instances, null when the agent could not name it safely. See
- * ADR 0031.
+ * ADR 0031. [routine] is set only for a [ProbeKind.BRANCH] probe whose outcome the agent marked
+ * routine; see ADR 0046.
  */
 data class ProbeRef(
     val serviceInstanceId: String,
@@ -2162,6 +2225,7 @@ data class ProbeRef(
     val inlinedFromClassName: String? = null,
     val generatedBy: GeneratedBy = GeneratedBy.NONE,
     val branchKey: String? = null,
+    val routine: RoutineKind = RoutineKind.NONE,
 )
 
 /**

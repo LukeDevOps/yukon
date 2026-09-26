@@ -212,6 +212,26 @@ enum BranchRole {
   DEFAULT = 4;
 }
 
+// Why a kept branch outcome is real but not worth a person's time when it never runs. The agent
+// reads it from the bytecode of the outcome's path. A collector keeps the probe and its count, but
+// leaves a routine outcome out of every never-hit finding and counts it apart. See ADR 0046.
+enum RoutineKind {
+  // Not routine: the outcome is judged like any other.
+  ROUTINE_KIND_NONE = 0;
+  // The null side of a null check whose path calls nothing before it rejoins the other side or
+  // leaves the method. It only yields null, a constant or a local, or returns early, as the null
+  // side of `value?.length`, `?: 0.0` and `?: return` do.
+  NULL_DEFAULT = 1;
+  // The path only builds an exception and throws it. It may create the exception, build its
+  // message and call the exception's constructor, and nothing else. A lateinit check and the
+  // throwing else of an exhaustive when are routine this way.
+  THROW_ONLY = 2;
+  // An outcome of a site inside the exception-path copy of a finally body: a catch-any handler
+  // that stores what it caught and ends by throwing it again. The normal path's copy of the same
+  // body is not routine, and neither is a site in a typed catch block.
+  FINALLY_COPY = 3;
+}
+
 // One outcome of a BranchSite.
 message BranchOutcome {
   // The outcome's branch_index, the same value its BRANCH probe carries in a manifest.
@@ -236,6 +256,8 @@ message BranchOutcome {
   // is one CODE part, and a string is one STRING_LITERAL part, so collector redaction covers it.
   // Such a CASE has no case_key. See ADR 0038.
   repeated ConditionPart case_label = 6;
+  // Why this outcome is routine, or ROUTINE_KIND_NONE when it is not. See ADR 0046.
+  RoutineKind routine = 7;
 }
 
 // A run of consecutive source lines in one file, both ends inclusive. See ADR 0037.

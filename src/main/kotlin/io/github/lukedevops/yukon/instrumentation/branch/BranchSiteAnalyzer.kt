@@ -804,7 +804,16 @@ object BranchSiteAnalyzer {
             droppedOrdinalsByMethod,
             throwingDefaultOrdinalsByMethod,
         )
-        val guardsByMethod = analyzeGuards(sites, instructionsByMethod, sourceFile, smap, includePackages, excludePackages)
+        val guardsByMethod =
+            analyzeGuards(
+                sites,
+                instructionsByMethod,
+                sourceFile,
+                smap,
+                includePackages,
+                excludePackages,
+                throwableTest(internalClassName, superInternalName, lookup),
+            )
 
         val defaultSites = resolveDefaultSites(internalClassName, classAccess, methodAccess, localNames, defaultCandidates)
         val resolved = defaultSites.mapTo(mutableSetOf()) { it.defaultName to it.defaultDescriptor }
@@ -923,6 +932,9 @@ object BranchSiteAnalyzer {
      * class has none. A line inside an inlined copy whose origin class is in scope is named at its
      * origin line in the origin's own file, through [smap]. A line from an out-of-scope origin is
      * not named. See ADR 0037.
+     *
+     * The same pass gives each kept outcome its routine kind, and [isThrowable] is what it asks
+     * about the classes a throw path creates. See ADR 0046.
      */
     private fun analyzeGuards(
         sites: List<BranchSite>,
@@ -931,6 +943,7 @@ object BranchSiteAnalyzer {
         smap: KotlinSmap,
         includePackages: List<String>,
         excludePackages: List<String>,
+        isThrowable: (internalName: String) -> Boolean,
     ): Map<Pair<String, String>, MethodGuards> {
         if (sites.none { it.dropReason == null }) return emptyMap()
         val firstBranchIndexes = KeptBranchSite.firstBranchIndexes(sites)
@@ -952,7 +965,9 @@ object BranchSiteAnalyzer {
             val instructions = instructionsByMethod[methodKey]?.invoke() ?: continue
             val methodSites = positions.map { sites[it] }
             val methodFirstIndexes = IntArray(positions.size) { firstBranchIndexes[positions[it]] }
-            GuardAnalysis.analyze(instructions, methodSites, methodFirstIndexes, ::sourceLineOf)?.let { result[methodKey] = it }
+            GuardAnalysis
+                .analyze(instructions, methodSites, methodFirstIndexes, ::sourceLineOf, isThrowable)
+                ?.let { result[methodKey] = it }
         }
         return result
     }
@@ -1100,6 +1115,52 @@ object BranchSiteAnalyzer {
                 access != null && access and Opcodes.ACC_ENUM != 0
             }
         }
+    }
+
+    /**
+     * Whether a class, by internal name, is `java.lang.Throwable` or extends it. The class being
+     * analysed answers from its own [ownSuperName]. Any other class is read through [lookup] and
+     * never loaded, and only its superclass name is parsed. The walk climbs superclasses until it
+     * reaches `Throwable` or `Object`.
+     *
+     * A class the lookup cannot read, or throws on, is judged by its name: it counts as a
+     * `Throwable` when the name ends in `Exception` or `Error`. The lookup of a static baseline
+     * scan often cannot read JDK classes, and this keeps a throw of `IllegalArgumentException` or of
+     * an adopter's class that extends it routine there too. See ADR 0046.
+     */
+    private fun throwableTest(
+        ownInternalName: String,
+        ownSuperName: String?,
+        lookup: (internalName: String) -> ByteArray?,
+    ): (String) -> Boolean {
+        val answers = HashMap<String, Boolean>()
+
+        // The empty name stands for a class the lookup could not read, since no class has it.
+        fun superNameOf(internalName: String): String? {
+            if (internalName == ownInternalName) return ownSuperName
+            return try {
+                val bytes = lookup(internalName) ?: return UNREADABLE
+                ClassReader(bytes).superName
+            } catch (_: Exception) {
+                UNREADABLE
+            }
+        }
+
+        fun resolve(internalName: String): Boolean {
+            var current = internalName
+            val seen = HashSet<String>()
+            while (seen.add(current)) {
+                answers[current]?.let { return it }
+                if (current == THROWABLE_INTERNAL_NAME) return true
+                if (current == OBJECT_INTERNAL_NAME) return false
+                val superName = superNameOf(current) ?: return false
+                if (superName == UNREADABLE) return current.endsWith("Exception") || current.endsWith("Error")
+                current = superName
+            }
+            return false
+        }
+
+        return { internalName -> answers.getOrPut(internalName) { resolve(internalName) } }
     }
 
     private fun conditionOf(
@@ -2515,6 +2576,9 @@ object BranchSiteAnalyzer {
      * `kotlin/` prefix so that `shadowJar` does not rewrite it in this agent's relocated copy.
      */
     private const val INTRINSICS_SUFFIX = "/jvm/internal/Intrinsics"
+    private const val THROWABLE_INTERNAL_NAME = "java/lang/Throwable"
+    private const val OBJECT_INTERNAL_NAME = "java/lang/Object"
+    private const val UNREADABLE = ""
 
     /** The two names kotlinc has given the null check it puts at the top of a method. */
     private val parameterNullCheckNames = setOf("checkNotNullParameter", "checkParameterIsNotNull")

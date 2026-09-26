@@ -28,6 +28,7 @@ import io.github.lukedevops.yukon.proto.ProbeKind as ProtoProbeKind
 import io.github.lukedevops.yukon.proto.ProbeLocation as ProtoProbeLocation
 import io.github.lukedevops.yukon.proto.ProbeManifest as ProtoProbeManifest
 import io.github.lukedevops.yukon.proto.ResourceAttributes as ProtoResourceAttributes
+import io.github.lukedevops.yukon.proto.RoutineKind as ProtoRoutineKind
 import io.github.lukedevops.yukon.proto.StaticBaseline as ProtoStaticBaseline
 
 class ProtoPayloadCodecTest {
@@ -929,6 +930,98 @@ class ProtoPayloadCodecTest {
             wireOutcomes.map { it.caseLabelList.single().kind },
         )
         assertEquals("open", wireOutcomes[0].caseLabelList.single().text, "a string label goes out unquoted, as a literal part")
+    }
+
+    @Test
+    fun `each outcome's routine kind round-trips through the manifest and the baseline`() {
+        val site =
+            BranchSite(
+                siteIndex = 2,
+                siteKey = null,
+                line = 12,
+                outcomes =
+                    listOf(
+                        BranchOutcome(0, BranchRole.TAKEN, routine = RoutineKind.NULL_DEFAULT),
+                        BranchOutcome(1, BranchRole.FALL_THROUGH),
+                        BranchOutcome(2, BranchRole.CASE, caseKey = 1, routine = RoutineKind.THROW_ONLY),
+                        BranchOutcome(3, BranchRole.DEFAULT, routine = RoutineKind.FINALLY_COPY),
+                    ),
+            )
+        val manifest =
+            ProbeManifest(
+                resource = ResourceAttributes("checkout", "1.0.0", "", null, "run-1"),
+                probes =
+                    listOf(
+                        ProbeLocation(
+                            classId = 0,
+                            probeIndex = 0,
+                            kind = ProbeKind.METHOD,
+                            className = "com.example.Foo",
+                            methodName = "bar",
+                            methodDescriptor = "(Ljava/lang/String;)I",
+                            line = 12,
+                            branchIndex = null,
+                            branchSites = listOf(site),
+                        ),
+                    ),
+            )
+        val baseline =
+            StaticBaseline(
+                resource = ResourceAttributes("checkout", null, "instance-1", null, "run-1"),
+                declaredClasses =
+                    listOf(
+                        DeclaredClass(
+                            className = "com.example.Foo",
+                            methods = listOf(DeclaredMethod("bar", "(Ljava/lang/String;)I", branchSites = listOf(site))),
+                        ),
+                    ),
+                scannedAt = 1000L,
+            )
+
+        val bytes = ProtoPayloadCodec.encode(manifest)
+
+        assertEquals(manifest, ProtoPayloadCodec.decodeProbeManifest(bytes))
+        assertEquals(baseline, ProtoPayloadCodec.decodeStaticBaseline(ProtoPayloadCodec.encode(baseline)))
+        assertEquals(
+            listOf(ProtoRoutineKind.NULL_DEFAULT, ProtoRoutineKind.ROUTINE_KIND_NONE, ProtoRoutineKind.THROW_ONLY, ProtoRoutineKind.FINALLY_COPY),
+            ProtoProbeManifest
+                .parseFrom(bytes)
+                .probesList
+                .single()
+                .branchSitesList
+                .single()
+                .outcomesList
+                .map { it.routine },
+        )
+    }
+
+    @Test
+    fun `an outcome with no routine kind on the wire decodes as not routine`() {
+        val wire =
+            ProtoProbeManifest
+                .newBuilder()
+                .setResource(ProtoResourceAttributes.newBuilder().setServiceName("checkout").setRunId("run-1"))
+                .addProbes(
+                    ProtoProbeLocation
+                        .newBuilder()
+                        .setKind(ProtoProbeKind.METHOD)
+                        .addBranchSites(
+                            ProtoBranchSite
+                                .newBuilder()
+                                .addOutcomes(ProtoBranchOutcome.newBuilder().setRole(ProtoBranchRole.TAKEN)),
+                        ),
+                ).build()
+
+        val outcome =
+            ProtoPayloadCodec
+                .decodeProbeManifest(wire.toByteArray())
+                .probes
+                .single()
+                .branchSites
+                .single()
+                .outcomes
+                .single()
+        assertEquals(RoutineKind.NONE, outcome.routine)
     }
 
     @Test

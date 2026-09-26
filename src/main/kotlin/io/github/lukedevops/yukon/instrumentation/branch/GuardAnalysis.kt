@@ -1,6 +1,7 @@
 package io.github.lukedevops.yukon.instrumentation.branch
 
 import io.github.lukedevops.yukon.export.LineRange
+import io.github.lukedevops.yukon.export.RoutineKind
 import net.bytebuddy.jar.asm.Handle
 import net.bytebuddy.jar.asm.Label
 import net.bytebuddy.jar.asm.MethodVisitor
@@ -33,6 +34,9 @@ internal class InstructionRecorder(
 
     /** Per ordinal, a jump's target [Label], a switch's [SwitchLabels], or null. */
     private var branchTargets = arrayOfNulls<Any>(INITIAL_CAPACITY)
+
+    /** Per ordinal, the operand [MethodInstructions.operands] describes, or null. */
+    private var operands = arrayOfNulls<Any>(INITIAL_CAPACITY)
     private val tryCatchBlocks = mutableListOf<TryCatchLabels>()
     private var hasSubroutine = false
 
@@ -46,6 +50,7 @@ internal class InstructionRecorder(
             opcodes = opcodes.copyOf(ordinal * 2)
             lines = lines.copyOf(ordinal * 2)
             branchTargets = branchTargets.copyOf(ordinal * 2)
+            operands = operands.copyOf(ordinal * 2)
         }
         opcodes[ordinal] = opcode
         lines[ordinal] = currentLine
@@ -73,7 +78,7 @@ internal class InstructionRecorder(
         handler: Label,
         type: String?,
     ) {
-        tryCatchBlocks += TryCatchLabels(start, end, handler)
+        tryCatchBlocks += TryCatchLabels(start, end, handler, type)
         super.visitTryCatchBlock(start, end, handler, type)
     }
 
@@ -96,6 +101,7 @@ internal class InstructionRecorder(
     ) {
         if (opcode == Opcodes.RET) hasSubroutine = true
         record(opcode)
+        operands[lastOrdinal] = varIndex
         super.visitVarInsn(opcode, varIndex)
     }
 
@@ -104,6 +110,7 @@ internal class InstructionRecorder(
         type: String,
     ) {
         record(opcode)
+        operands[lastOrdinal] = type
         super.visitTypeInsn(opcode, type)
     }
 
@@ -125,6 +132,7 @@ internal class InstructionRecorder(
         isInterface: Boolean,
     ) {
         record(opcode)
+        operands[lastOrdinal] = CalledMethod(owner, name, descriptor)
         super.visitMethodInsn(opcode, owner, name, descriptor, isInterface)
     }
 
@@ -135,6 +143,7 @@ internal class InstructionRecorder(
         vararg bootstrapMethodArguments: Any,
     ) {
         record(Opcodes.INVOKEDYNAMIC)
+        operands[lastOrdinal] = CalledMethod(bootstrapMethodHandle.owner, bootstrapMethodHandle.name, descriptor)
         super.visitInvokeDynamicInsn(name, descriptor, bootstrapMethodHandle, *bootstrapMethodArguments)
     }
 
@@ -221,9 +230,17 @@ internal class InstructionRecorder(
                 val start = visitedOrdinal(block.start) ?: return@mapNotNull null
                 val end = visitedOrdinal(block.end) ?: return@mapNotNull null
                 val handler = ordinalOf(block.handler).takeIf { it >= 0 } ?: return@mapNotNull null
-                TryCatch(start, end.coerceAtMost(size), handler)
+                TryCatch(start, end.coerceAtMost(size), handler, block.type)
             }
-        return MethodInstructions(opcodes.copyOf(size), lines.copyOf(size), targets, caseDefaults, tryCatches, hasSubroutine)
+        return MethodInstructions(
+            opcodes.copyOf(size),
+            lines.copyOf(size),
+            targets,
+            caseDefaults,
+            tryCatches,
+            hasSubroutine,
+            operands.copyOf(size),
+        )
     }
 
     private class SwitchLabels(
@@ -235,6 +252,7 @@ internal class InstructionRecorder(
         val start: Label,
         val end: Label,
         val handler: Label,
+        val type: String?,
     )
 
     private companion object {
@@ -242,11 +260,27 @@ internal class InstructionRecorder(
     }
 }
 
-/** One `try` range: real instructions from [start] up to, not including, [end] can throw to [handler]. */
+/**
+ * One `try` range: real instructions from [start] up to, not including, [end] can throw to [handler].
+ * [type] is the internal name of the exception type the handler catches, or null for a catch-any
+ * handler, which is how compilers copy a `finally` body onto the exception path.
+ */
 internal class TryCatch(
     val start: Int,
     val end: Int,
     val handler: Int,
+    val type: String? = null,
+)
+
+/**
+ * The method an invoke instruction calls, as its owner, name and descriptor. For an
+ * `invokedynamic`, [owner] and [name] are the bootstrap method's, and [descriptor] is the call
+ * site's own.
+ */
+internal class CalledMethod(
+    val owner: String,
+    val name: String,
+    val descriptor: String,
 )
 
 /**
@@ -258,6 +292,11 @@ internal class TryCatch(
  * when its label never came before an instruction. [caseDefaults] marks, per switch, which label
  * array entries are the default label itself. [hasSubroutine] is true when the method holds a
  * `JSR` or `RET`.
+ *
+ * [operands] holds, per ordinal, what [RoutineClassifier] reads from an instruction: the local
+ * variable index of a load, store or `RET` as an [Int], the type of a `NEW`, `CHECKCAST`,
+ * `INSTANCEOF` or `ANEWARRAY` as its internal name, and the [CalledMethod] of an invoke. It is null
+ * for every other instruction.
  */
 internal class MethodInstructions(
     val opcodes: IntArray,
@@ -266,6 +305,7 @@ internal class MethodInstructions(
     val caseDefaults: Array<BooleanArray?>,
     val tryCatches: List<TryCatch>,
     val hasSubroutine: Boolean,
+    val operands: Array<Any?> = arrayOfNulls(opcodes.size),
 ) {
     val size: Int get() = opcodes.size
 
@@ -287,12 +327,13 @@ internal data class SourceLine(
 
 /**
  * What [GuardAnalysis] finds for one kept site: its [guard], and per outcome offset its guarded and
- * partly guarded line ranges. See ADR 0037.
+ * partly guarded line ranges (ADR 0037) and its routine kind (ADR 0046).
  */
 class SiteGuards internal constructor(
     val guard: Int?,
     val guardedLines: List<List<LineRange>>,
     val partlyGuardedLines: List<List<LineRange>>,
+    val routineKinds: List<RoutineKind> = emptyList(),
 )
 
 /**
@@ -323,6 +364,8 @@ internal object GuardAnalysis {
      * The guards of [instructions], whose tracked jumps and switches are [sites] in the same order.
      * [firstBranchIndexes] holds each site's first branch index, in [sites] order. [sourceLineOf]
      * names an output line's source line, or returns null for a line that is not listed.
+     * [isThrowable] tells whether a class, by internal name, is a `Throwable`, for
+     * [RoutineClassifier].
      *
      * Returns null when the method holds a `JSR` or `RET`, or when its tracked instructions do not
      * match [sites] one for one. The method then has no guarded code and no guards.
@@ -332,6 +375,7 @@ internal object GuardAnalysis {
         sites: List<BranchSite>,
         firstBranchIndexes: IntArray,
         sourceLineOf: (Int) -> SourceLine?,
+        isThrowable: (internalName: String) -> Boolean = { false },
     ): MethodGuards? {
         if (instructions.hasSubroutine) return null
         val realCount = instructions.size
@@ -350,6 +394,7 @@ internal object GuardAnalysis {
 
         val instructionGuards = IntArray(realCount) { graph.branchIndexOf(dominance.outcomeAbove(it)) }
         val lines = LineTable(instructions, realCount, dominance, sourceLineOf)
+        val routine = RoutineClassifier(instructions, graph, dominance, isThrowable)
 
         val siteGuards = HashMap<Int, SiteGuards>()
         for ((position, site) in sites.withIndex()) {
@@ -363,16 +408,18 @@ internal object GuardAnalysis {
                 partlyGuarded += part
             }
             val guard = instructionGuards[siteOrdinals[position]].takeIf { it >= 0 }
-            siteGuards[site.siteIndex] = SiteGuards(guard, guarded, partlyGuarded)
+            val routineKinds = List(site.probedOutcomeCount) { routine.kindOf(siteOrdinals[position], firstNode + it, it) }
+            siteGuards[site.siteIndex] = SiteGuards(guard, guarded, partlyGuarded, routineKinds)
         }
         return MethodGuards(siteGuards, instructionGuards)
     }
 
     /**
      * The augmented control-flow graph: nodes `0 until realCount` are real instructions, and each
-     * kept site's outcomes follow as consecutive nodes from [firstOutcomeNode].
+     * kept site's outcomes follow as consecutive nodes from [firstOutcomeNode]. [successors]
+     * includes each `try` range's edges to its handler, and [normalSuccessors] leaves them out.
      */
-    private class Graph(
+    internal class Graph(
         instructions: MethodInstructions,
         sites: List<BranchSite>,
         siteOrdinals: IntArray,
@@ -384,6 +431,8 @@ internal object GuardAnalysis {
         val firstOutcomeNode = IntArray(sites.size) { -1 }
 
         val successors: Array<IntArray>
+
+        val normalSuccessors: Array<IntArray>
 
         private val outcomeBranchIndexes: IntArray
 
@@ -409,6 +458,7 @@ internal object GuardAnalysis {
                         siteSuccessors(instructions, ordinal, sites[position], position, firstBranchIndexes[position], edges)
                     }
             }
+            normalSuccessors = Array(nodeCount) { edges[it] ?: NO_SUCCESSORS }
             for (tryCatch in instructions.tryCatches) {
                 for (ordinal in tryCatch.start until tryCatch.end) edges[ordinal] = edges[ordinal]!! + tryCatch.handler
             }
@@ -486,7 +536,7 @@ internal object GuardAnalysis {
      * Harvey and Kennedy, and a preorder of the dominator tree so each node's dominated set is one
      * interval of [preorder]. Nodes from [firstOutcomeNode] on are outcome nodes.
      */
-    private class Dominance(
+    internal class Dominance(
         successors: Array<IntArray>,
         entry: Int,
         firstOutcomeNode: Int,
@@ -534,6 +584,16 @@ internal object GuardAnalysis {
         }
 
         fun isReachable(node: Int): Boolean = postIndex[node] >= 0
+
+        /** Whether [dominator] dominates [node]. A node dominates itself. False when either is unreachable. */
+        fun dominates(
+            dominator: Int,
+            node: Int,
+        ): Boolean {
+            val start = preorderIndex[dominator]
+            val index = preorderIndex[node]
+            return start >= 0 && index >= start && index < start + subtreeSize[dominator]
+        }
 
         /** The nearest outcome node strictly above [node] in the dominator tree, or -1. */
         fun outcomeAbove(node: Int): Int = nearestOutcome[node]

@@ -28,6 +28,10 @@ _Avoid_: decision
 One way out of a branch site. A conditional's two are the taken jump and the fall-through; a switch's are its case entries and its default. Each kept outcome gets one probe.
 _Avoid_: edge, branch (alone), arm
 
+**Routine outcome**:
+A kept branch outcome that is real but not worth a person's time when it never runs: the null side of a null check when it calls nothing (it only yields null, a constant or an early return), a path that only builds and throws an exception, or the exception-path copy of a `finally` body. It is probed and reported with its kind, but it is never a finding.
+_Avoid_: noise, false positive, uninteresting branch, defensive branch
+
 **Condition**:
 The expression a branch site tests, written out by the agent in the source language, the way the fall-through side reads it. Absent when the agent cannot write it in source terms.
 _Avoid_: test, predicate

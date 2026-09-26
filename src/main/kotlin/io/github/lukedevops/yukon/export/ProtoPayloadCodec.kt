@@ -31,6 +31,7 @@ import io.github.lukedevops.yukon.proto.ProbeKind as ProtoProbeKind
 import io.github.lukedevops.yukon.proto.ProbeLocation as ProtoProbeLocation
 import io.github.lukedevops.yukon.proto.ProbeManifest as ProtoProbeManifest
 import io.github.lukedevops.yukon.proto.ResourceAttributes as ProtoResourceAttributes
+import io.github.lukedevops.yukon.proto.RoutineKind as ProtoRoutineKind
 import io.github.lukedevops.yukon.proto.SkippedClass as ProtoSkippedClass
 import io.github.lukedevops.yukon.proto.StaticBaseline as ProtoStaticBaseline
 import io.github.lukedevops.yukon.proto.StaticallyUnsafeClass as ProtoStaticallyUnsafeClass
@@ -309,6 +310,7 @@ object ProtoPayloadCodec {
                 .addAllGuardedLines(outcome.guardedLines.map { toProto(it) })
                 .addAllPartlyGuardedLines(outcome.partlyGuardedLines.map { toProto(it) })
                 .addAllCaseLabel(outcome.caseLabel.map { toProto(it) })
+                .setRoutine(toProto(outcome.routine))
         outcome.caseKey?.let { builder.caseKey = it }
         return builder.build()
     }
@@ -321,7 +323,25 @@ object ProtoPayloadCodec {
             guardedLines = outcome.guardedLinesList.map { fromProto(it) },
             partlyGuardedLines = outcome.partlyGuardedLinesList.map { fromProto(it) },
             caseLabel = outcome.caseLabelList.map { fromProto(it) },
+            routine = fromProto(outcome.routine),
         )
+
+    private fun toProto(routine: RoutineKind): ProtoRoutineKind =
+        when (routine) {
+            RoutineKind.NONE -> ProtoRoutineKind.ROUTINE_KIND_NONE
+            RoutineKind.NULL_DEFAULT -> ProtoRoutineKind.NULL_DEFAULT
+            RoutineKind.THROW_ONLY -> ProtoRoutineKind.THROW_ONLY
+            RoutineKind.FINALLY_COPY -> ProtoRoutineKind.FINALLY_COPY
+        }
+
+    private fun fromProto(routine: ProtoRoutineKind): RoutineKind =
+        when (routine) {
+            ProtoRoutineKind.ROUTINE_KIND_NONE -> RoutineKind.NONE
+            ProtoRoutineKind.NULL_DEFAULT -> RoutineKind.NULL_DEFAULT
+            ProtoRoutineKind.THROW_ONLY -> RoutineKind.THROW_ONLY
+            ProtoRoutineKind.FINALLY_COPY -> RoutineKind.FINALLY_COPY
+            ProtoRoutineKind.UNRECOGNIZED -> throw IllegalArgumentException("unrecognized routine kind on the wire: $routine")
+        }
 
     private fun toProto(range: LineRange): ProtoLineRange =
         ProtoLineRange

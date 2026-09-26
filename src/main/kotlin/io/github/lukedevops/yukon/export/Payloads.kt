@@ -261,6 +261,31 @@ enum class BranchRole {
 }
 
 /**
+ * Why a kept branch outcome is real but not worth a person's time when it never runs, read from
+ * the bytecode of the outcome's path. A collector keeps the probe and its count, but leaves a
+ * routine outcome out of every never-hit finding and counts it apart. See ADR 0046.
+ */
+enum class RoutineKind {
+    /** Not routine: the outcome is judged like any other. */
+    NONE,
+
+    /**
+     * The null side of a null check whose path calls nothing before it rejoins the other side or
+     * leaves the method. It only yields null, a constant or a local, or returns early.
+     */
+    NULL_DEFAULT,
+
+    /** The path only builds an exception and throws it. */
+    THROW_ONLY,
+
+    /**
+     * An outcome of a site inside the exception-path copy of a `finally` body: a catch-any handler
+     * that stores what it caught and ends by throwing it again.
+     */
+    FINALLY_COPY,
+}
+
+/**
  * A run of consecutive source lines in one file, both ends inclusive. [sourceFile] is a file name
  * as the class's `SourceFile` attribute or its SMAP names it, never a path, and empty when the
  * class has no `SourceFile`. See ADR 0037.
@@ -286,6 +311,8 @@ data class LineRange(
  * enum lowering: the label the source names, as one part. An enum constant, a class pattern, an
  * integer or `null` is one [ConditionPartKind.CODE] part, and a string is one
  * [ConditionPartKind.STRING_LITERAL] part. Such a case has no [caseKey]. See ADR 0038.
+ *
+ * [routine] says why the outcome is routine, or is [RoutineKind.NONE] when it is not. See ADR 0046.
  */
 data class BranchOutcome(
     val branchIndex: Int,
@@ -294,6 +321,7 @@ data class BranchOutcome(
     val guardedLines: List<LineRange> = emptyList(),
     val partlyGuardedLines: List<LineRange> = emptyList(),
     val caseLabel: List<ConditionPart> = emptyList(),
+    val routine: RoutineKind = RoutineKind.NONE,
 )
 
 /**

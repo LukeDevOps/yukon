@@ -154,6 +154,19 @@ NEVER HIT: handleCheckout (DemoServerMain.kt:71) `System.getenv("ENABLE_LEGACY_D
 NEVER HIT: handleCheckout (DemoServerMain.kt:78) `discounted > 100.0` was never true, only path to DemoServerMain.kt:79, partly to DemoServerMain.kt:92 (instance 17e3afc3-76f1-435c-b30a-5e594350530f, class 0, probe 12) [BRANCH branch#3]
 ```
 
+Some outcomes are real but not worth a person's time when they never run.
+The agent reads each outcome's path in the bytecode and marks it with a
+routine kind (ADR 0046): the null side of a null check that calls nothing
+(`default never used`), a path that only builds and throws an exception
+(`only throws`), or the exception-path copy of a `finally` body (`finally
+copy`). The report keeps these out of the never-hit list and the headline,
+and lists them apart under `ROUTINE OUTCOMES`. The demo client always sends
+a total, so the null checks in `totalParam` never see null and print there:
+
+```
+ROUTINE [default never used]: totalParam (DemoServerMain.kt:136) `value != null` was never false, guards no code of its own (instance 4aef3090-5d33-4ab7-897e-f6170b0ab9a5, class 0, probe 17) [branch#14]
+```
+
 A top-level function prints with its file, as `handleCheckout
 (DemoServerMain.kt)`, rather than as a member of `DemoServerMainKt`, the
 class kotlinc makes for the file. The agent reads that from the kind kotlinc

@@ -25,6 +25,7 @@ import io.github.lukedevops.yukon.export.ProbeLocation
 import io.github.lukedevops.yukon.export.ProbeManifest
 import io.github.lukedevops.yukon.export.ProtoPayloadCodec
 import io.github.lukedevops.yukon.export.ResourceAttributes
+import io.github.lukedevops.yukon.export.RoutineKind
 import io.github.lukedevops.yukon.export.SkippedClass
 import io.github.lukedevops.yukon.export.StaticBaseline
 import io.github.lukedevops.yukon.export.StaticallyUnsafeClass
@@ -1995,6 +1996,57 @@ class YukonTestCollectorTest {
         val cluster = target.unreachedClusters().single()
         assertEquals(RootKind.REACHED_FROM_HIT, cluster.rootKind)
         assertEquals("n", cluster.root.methodName)
+    }
+
+    @Test
+    fun `a routine outcome is listed apart from never hit and roots no cluster`() {
+        val target = startCollector()
+        val exporter = exporterFor(target)
+        val resource = ResourceAttributes("svc", null, "i-1", null, "run-1")
+        val site =
+            BranchSite(
+                siteIndex = 0,
+                siteKey = null,
+                line = 11,
+                outcomes =
+                    listOf(
+                        BranchOutcome(0, BranchRole.TAKEN),
+                        BranchOutcome(1, BranchRole.FALL_THROUGH, routine = RoutineKind.THROW_ONLY),
+                    ),
+            )
+        exporter.exportManifest(
+            ProbeManifest(
+                resource,
+                probes =
+                    listOf(
+                        methodProbe(
+                            1,
+                            0,
+                            "com.acme.App",
+                            "handle",
+                            "()V",
+                            10,
+                            calls = listOf(CallEdge("com.acme.Audit", "record", "()V", virtual = false, guard = 1)),
+                            branchSites = listOf(site),
+                        ),
+                        branchProbe(1, 1, "com.acme.App", "handle", "()V", 11, branchIndex = 0, siteIndex = 0),
+                        branchProbe(1, 2, "com.acme.App", "handle", "()V", 11, branchIndex = 1, siteIndex = 0),
+                        methodProbe(2, 0, "com.acme.Audit", "record", "()V", 3, static = true),
+                    ),
+            ),
+        )
+        exporter.exportDeltaBatch(
+            DeltaBatch(resource, listOf(ProbeDelta(1, 0, ProbeKind.METHOD, 1L, 5L), ProbeDelta(1, 1, ProbeKind.BRANCH, 1L, 5L))),
+        )
+
+        assertEquals(listOf("record"), target.neverHit().map { it.methodName }, "the routine outcome is not a never-hit row")
+        val routine = target.neverHitRoutineOutcomes().single()
+        assertEquals(listOf<Any?>("handle", 1, RoutineKind.THROW_ONLY), listOf(routine.methodName, routine.branchIndex, routine.routine))
+        // The call the routine outcome guards starts at handle, which ran, so record roots a
+        // cluster reached from a hit method rather than one behind an untaken outcome.
+        val cluster = target.unreachedClusters().single()
+        assertEquals(RootKind.REACHED_FROM_HIT, cluster.rootKind)
+        assertEquals("record", cluster.root.methodName)
     }
 
     @Test

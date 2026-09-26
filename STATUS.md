@@ -7,6 +7,47 @@ one record per decision, and `CONTEXT.md` the glossary. Where this file and
 
 ## TODO
 
+### Routine outcomes: agent chunk landed
+
+Settled 2026-09-26 in a grilling session with `yukon-server`: ADR 0046 here,
+server ADR 0039, server STATUS item 17. Some outcomes are real but not worth
+a person's time when they never run, and the agent reads them exactly from
+the bytecode, where a backend would have to guess from condition text.
+
+Chunk 1, the agent: `RoutineKind` and `BranchOutcome.routine` (field 7) on
+the wire. `RoutineClassifier` runs inside the guard analysis on each kept
+outcome's path, the code its outcome node dominates, and gives it
+`FINALLY_COPY` (a site in a catch-any handler that stores what it caught and
+throws it again), else `THROW_ONLY` (the path only builds an exception and
+throws it), else `NULL_DEFAULT` (the null side of a null check whose path
+calls nothing before it rejoins or returns). The testkit and the stub
+collector leave routine outcomes out of never-hit, the headline and the
+cluster graph; the testkit lists them through `neverHitRoutineOutcomes`, and
+the stub prints them under `ROUTINE OUTCOMES` with their kind. In the demo,
+the four null paths of `totalParam` and the null side of `/promo`'s `?: ""`
+are `NULL_DEFAULT`, and the two checkout conditions are not routine.
+
+Every shape was confirmed with `javap` on Kotlin 2.2.21 and javac 21 output
+(`RoutineTarget.kt`, `RoutineJavaTarget.java`) before it was coded.
+
+Open from this chunk:
+
+- `NULL_DEFAULT` is the null side only. The non-null side of `x ?: load()`
+  also calls nothing, but it yields the value itself, not a default, so it
+  stays a finding.
+- A throw path whose message reads a Kotlin property of another class calls
+  its getter, so it is not `THROW_ONLY`. Neither is one that formats its
+  message with `String.format`. Only the calls `RoutineClassifier`'s doc
+  lists count as building a message.
+- javac's try-with-resources catches `Throwable`, a typed catch, so nothing
+  in its handler is a finally copy. The resource's null check is
+  `NULL_DEFAULT` on its null side on both paths; the rest of its shape is not
+  recognised. Kotlin's `use {}` holds no site of its own.
+- A `Throwable` is resolved through the analyser's class lookup. A class it
+  cannot read counts as one when its name ends in `Exception` or `Error`.
+- The collector's bindings, the server, the web UI and an end-to-end run are
+  the next chunks.
+
 ### A service's namespace, and OpenTelemetry's own settings: agent chunk landed
 
 Settled 2026-09-26 in a grilling session across all three repos: ADR 0045,
@@ -805,15 +846,12 @@ preinstalled; the 1.5.0 release binary from GitHub works.
 
 ### Follow-ups the branch-probe round left open
 
-Each is recorded rather than started. The first needs evidence before it can
-be designed; the rest are small and wait for a reason to touch the code.
+Each is recorded rather than started. They are small and wait for a reason
+to touch the code.
 
-- The true-but-uninteresting classification: the null path of a safe call or
-  an elvis, `!!` and `lateinit` checks, `when` exhaustiveness throws, and
-  `finally` copies on the exception path are all branches an adopter did not
-  write in any useful sense. ADR 0025 dropped the two categories that could
-  be measured; this one waits for a report from a real service to show how
-  much of what remains is this shape.
+- The true-but-uninteresting classification is decided in ADR 0046 and its
+  agent chunk is built: see "Routine outcomes" above. What it leaves open is
+  listed there.
 - Kotlin `value class` `-impl` methods and kotlinx.serialization's generated
   output as further `GeneratedBy` values.
 - javac's string-switch and try-with-resources shapes, which were zero in

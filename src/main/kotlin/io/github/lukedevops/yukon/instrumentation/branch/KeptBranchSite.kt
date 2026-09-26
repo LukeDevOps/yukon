@@ -4,6 +4,7 @@ import io.github.lukedevops.yukon.export.BranchOutcome
 import io.github.lukedevops.yukon.export.BranchRole
 import io.github.lukedevops.yukon.export.ConditionPart
 import io.github.lukedevops.yukon.export.LineRange
+import io.github.lukedevops.yukon.export.RoutineKind
 import io.github.lukedevops.yukon.export.BranchSite as BranchSitePayload
 
 /**
@@ -14,6 +15,9 @@ import io.github.lukedevops.yukon.export.BranchSite as BranchSitePayload
  *
  * [caseLabel] is the source's label for a [BranchRole.CASE] of a rebuilt switch, and empty
  * otherwise. Such a case has no [caseKey]. See ADR 0038.
+ *
+ * [routine] is the outcome's routine kind from [RoutineClassifier], or [RoutineKind.NONE]. See ADR
+ * 0046.
  */
 data class KeptBranchOutcome(
     val branchIndex: Int,
@@ -23,6 +27,7 @@ data class KeptBranchOutcome(
     val guardedLines: List<LineRange> = emptyList(),
     val partlyGuardedLines: List<LineRange> = emptyList(),
     val caseLabel: List<ConditionPart> = emptyList(),
+    val routine: RoutineKind = RoutineKind.NONE,
 )
 
 /**
@@ -51,6 +56,7 @@ data class KeptBranchSite(
                         it.guardedLines,
                         it.partlyGuardedLines,
                         it.caseLabel,
+                        it.routine,
                     )
                 },
             guard = guard,
@@ -62,7 +68,7 @@ data class KeptBranchSite(
          * The kept sites of [sites], one class's analysed branch sites in [BranchSite.siteIndex]
          * order, with each outcome numbered and keyed. [className] is the class's own name,
          * dotted. [guards] holds what [GuardAnalysis] found for each site, by site index. A site
-         * it has no entry for has no guard and guards no lines.
+         * it has no entry for has no guard, guards no lines, and has no routine outcome.
          *
          * Each site's first branch index comes from [firstBranchIndexes]. A dropped site is not
          * listed, and neither is a throwing default (ADR 0038), whose branch index stays unused.
@@ -89,6 +95,7 @@ data class KeptBranchSite(
                             siteGuards?.guardedLines?.getOrNull(offset).orEmpty(),
                             siteGuards?.partlyGuardedLines?.getOrNull(offset).orEmpty(),
                             role.caseLabel,
+                            siteGuards?.routineKinds?.getOrNull(offset) ?: RoutineKind.NONE,
                         )
                     }
                 kept += KeptBranchSite(site, siteKeys[site.siteIndex], outcomes, siteGuards?.guard)

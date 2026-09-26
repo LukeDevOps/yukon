@@ -17,6 +17,7 @@ import io.github.lukedevops.yukon.proto.LineRange
 import io.github.lukedevops.yukon.proto.ProbeKind
 import io.github.lukedevops.yukon.proto.ProbeManifest
 import io.github.lukedevops.yukon.proto.ResourceAttributes
+import io.github.lukedevops.yukon.proto.RoutineKind
 import io.github.lukedevops.yukon.proto.StaticBaseline
 import java.net.InetSocketAddress
 import java.util.Collections
@@ -716,6 +717,10 @@ private fun respondBadRequest(
  * is not a row: [printClassFindingReport] reports the class instead. A lambda body that folds into
  * never-hit methods listed here is not a row either, and neither is a branch in it. The report
  * counts each kind of folded probe apart.
+ *
+ * A routine outcome is not a row and is not in the headline, as server ADR 0039 has it. The fold
+ * rules above run first, so a routine outcome inside folded code counts with that code. The rest
+ * are counted apart and listed with their kind under ROUTINE OUTCOMES. See ADR 0046.
  */
 private fun printNeverHitReport() {
     // An optional-argument probe reading zero means its parameter is never omitted, which is
@@ -734,7 +739,7 @@ private fun printNeverHitReport() {
     fun methodOf(key: InstanceProbeKey) = manifestProbes.getValue(key).let { NodeKey(it.className, it.methodName, it.methodDescriptor) }
     val (inClassFindings, notInClassFindings) = judgeableNeverHit.partition { methodOf(it) in judgement.coveredMethods }
     val (inNeverHitCode, notFolded) = notInClassFindings.partition { methodOf(it) in judgement.inNeverHitCode }
-    val (judgeable, classStates) =
+    val (rowsAndRoutine, classStates) =
         notFolded.partition { key ->
             val info = manifestProbes.getValue(key)
             info.kind != ProbeKind.METHOD ||
@@ -744,10 +749,12 @@ private fun printNeverHitReport() {
                     else -> true
                 }
         }
+    val (routine, judgeable) = rowsAndRoutine.partition { routineOf(it) != RoutineKind.ROUTINE_KIND_NONE }
     val judgeableTotal =
         judgeableKeys.count { key ->
             val probe = manifestProbes[key]
-            probe != null && !probe.inline && probe.generatedBy == GeneratedBy.GENERATED_BY_NONE
+            probe != null && !probe.inline && probe.generatedBy == GeneratedBy.GENERATED_BY_NONE &&
+                routineOf(key) == RoutineKind.ROUTINE_KIND_NONE
         }
     println()
     println("=== yukon demo: dead code report ===")
@@ -756,28 +763,18 @@ private fun printNeverHitReport() {
     if (judgeableTotal > 0) {
         println("dead: %.1f%%".format(100.0 * judgeable.size / judgeableTotal))
     }
-    judgeable
-        .mapNotNull { key -> manifestProbes[key]?.let { key to it } }
-        .sortedWith(compareBy({ it.second.className }, { it.second.methodName }, { it.second.line }, { it.second.branchIndex ?: -1 }))
-        .forEach { (key, info) ->
-            val inlinedFromSuffix = info.inlinedFromClassName?.let { " (inlined from $it)" } ?: ""
-            val where = "(instance ${key.run.serviceInstanceId}, class ${key.classId}, probe ${key.probeIndex})"
-            val branchIndex = info.branchIndex
-            if (branchIndex == null) {
-                val method = methodText(info.className, info.methodName, info.methodDescriptor, info.line)
-                val kind = if (info.methodName == CONSTRUCTOR) "CONSTRUCTOR, unused overload" else "${info.kind}"
-                println("  NEVER HIT: $method [$kind]$inlinedFromSuffix $where")
-            } else {
-                val site =
-                    info.siteIndex?.let { siteIndex ->
-                        manifestBranchSites[InstanceMethodKey(key.run, key.classId, info.methodName, info.methodDescriptor)]
-                            ?.firstOrNull { it.siteIndex == siteIndex }
-                    }
-                val description = site?.let { describeNeverHitOutcome(it, branchIndex) } ?: "branch at line ${info.line}"
-                val method = methodText(info.className, info.methodName, info.methodDescriptor, info.line)
-                println("  NEVER HIT: $method $description$inlinedFromSuffix $where [${info.kind} branch#$branchIndex]")
-            }
+    sortedForReport(judgeable).forEach { (key, info) ->
+        val inlinedFromSuffix = info.inlinedFromClassName?.let { " (inlined from $it)" } ?: ""
+        val where = "(instance ${key.run.serviceInstanceId}, class ${key.classId}, probe ${key.probeIndex})"
+        val branchIndex = info.branchIndex
+        if (branchIndex == null) {
+            val method = methodText(info.className, info.methodName, info.methodDescriptor, info.line)
+            val kind = if (info.methodName == CONSTRUCTOR) "CONSTRUCTOR, unused overload" else "${info.kind}"
+            println("  NEVER HIT: $method [$kind]$inlinedFromSuffix $where")
+        } else {
+            println("  NEVER HIT: ${branchRow(key, info, branchIndex)}$inlinedFromSuffix $where [${info.kind} branch#$branchIndex]")
         }
+    }
     // Kotlin inline functions copy their body into the caller, so their own probe reads near
     // zero however often they run: no "never hit" claim is made about them. See ADR 0022.
     println("inline (not judged): ${inlineNeverHit.size}")
@@ -785,6 +782,12 @@ private fun printNeverHitReport() {
     println("in class findings (reported by class): ${inClassFindings.size}")
     println("in never-hit methods (lambda bodies reported with their creator): ${inNeverHitCode.size}")
     println("static initialisers and lone constructors (not listed): ${classStates.size}")
+    println("ROUTINE OUTCOMES (not judged): ${routine.size}")
+    sortedForReport(routine).forEach { (key, info) ->
+        val where = "(instance ${key.run.serviceInstanceId}, class ${key.classId}, probe ${key.probeIndex})"
+        val kind = routineText(routineOf(key))
+        println("  ROUTINE [$kind]: ${branchRow(key, info, info.branchIndex ?: -1)} $where [branch#${info.branchIndex}]")
+    }
     if (skippedClasses.isNotEmpty()) {
         println("skipped (matched but could not be instrumented): ${skippedClasses.size}")
         skippedClasses.entries
@@ -793,6 +796,52 @@ private fun printNeverHitReport() {
     }
     println("=====================================")
 }
+
+/** [keys] with their probes, in the order the never-hit report lists them. */
+private fun sortedForReport(keys: List<InstanceProbeKey>): List<Pair<InstanceProbeKey, ProbeInfo>> =
+    keys
+        .mapNotNull { key -> manifestProbes[key]?.let { key to it } }
+        .sortedWith(compareBy({ it.second.className }, { it.second.methodName }, { it.second.line }, { it.second.branchIndex ?: -1 }))
+
+/** The site [info], a BRANCH probe of [key]'s run, belongs to, from its run's METHOD probe. */
+private fun siteOf(
+    key: InstanceProbeKey,
+    info: ProbeInfo,
+): BranchSite? =
+    info.siteIndex?.let { siteIndex ->
+        manifestBranchSites[InstanceMethodKey(key.run, key.classId, info.methodName, info.methodDescriptor)]
+            ?.firstOrNull { it.siteIndex == siteIndex }
+    }
+
+/** A BRANCH probe as a report row names it: its method, then its outcome as [describeNeverHitOutcome] reads it. */
+private fun branchRow(
+    key: InstanceProbeKey,
+    info: ProbeInfo,
+    branchIndex: Int,
+): String {
+    val description = siteOf(key, info)?.let { describeNeverHitOutcome(it, branchIndex) } ?: "branch at line ${info.line}"
+    return "${methodText(info.className, info.methodName, info.methodDescriptor, info.line)} $description"
+}
+
+/**
+ * The routine kind the agent gave the outcome of [key], a BRANCH probe, in its site on its run's
+ * METHOD probe. [RoutineKind.ROUTINE_KIND_NONE] for any other probe, and for an outcome no site
+ * lists. See ADR 0046.
+ */
+private fun routineOf(key: InstanceProbeKey): RoutineKind {
+    val info = manifestProbes[key] ?: return RoutineKind.ROUTINE_KIND_NONE
+    val branchIndex = info.branchIndex ?: return RoutineKind.ROUTINE_KIND_NONE
+    return siteOf(key, info)?.outcomesList?.firstOrNull { it.branchIndex == branchIndex }?.routine ?: RoutineKind.ROUTINE_KIND_NONE
+}
+
+/** A routine kind as the report names it, the way server ADR 0039's web UI reads it. */
+private fun routineText(kind: RoutineKind): String =
+    when (kind) {
+        RoutineKind.NULL_DEFAULT -> "default never used"
+        RoutineKind.THROW_ONLY -> "only throws"
+        RoutineKind.FINALLY_COPY -> "finally copy"
+        else -> kind.name
+    }
 
 /**
  * The source file a report names [className] by: set for a file facade or a multi-file part that
@@ -1546,14 +1595,18 @@ private fun toClusterMember(
  * Every outcome node, keyed by its [ClusterNode]: a BRANCH probe that is neither inline nor
  * generated, whose hits summed across runs are zero, in a method [isHit] says has hits. Its site is
  * the one its run's METHOD probe lists with that branch index. See ADR 0039.
+ *
+ * A routine outcome is never a node, as server ADR 0039 has it, so a call it guards starts at its
+ * method. See ADR 0046.
  */
 private fun buildOutcomeNodes(isHit: (NodeKey) -> Boolean): Map<ClusterNode, OutcomeNode> =
     manifestProbes.entries
-        .filter { (_, probe) ->
+        .filter { (key, probe) ->
             probe.kind == ProbeKind.BRANCH &&
                 probe.branchIndex != null &&
                 !probe.inline &&
-                probe.generatedBy == GeneratedBy.GENERATED_BY_NONE
+                probe.generatedBy == GeneratedBy.GENERATED_BY_NONE &&
+                routineOf(key) == RoutineKind.ROUTINE_KIND_NONE
         }.groupBy { (_, probe) -> ClusterNode(NodeKey(probe.className, probe.methodName, probe.methodDescriptor), probe.branchIndex) }
         .filter { (node, entries) -> isHit(node.method) && entries.sumOf { (key, _) -> latestHitsTotal[key] ?: 0L } == 0L }
         .mapValues { (node, entries) ->
