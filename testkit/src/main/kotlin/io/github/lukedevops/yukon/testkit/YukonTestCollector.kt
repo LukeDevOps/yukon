@@ -702,13 +702,13 @@ class YukonTestCollector private constructor(
      * such a method or a never-hit method listed here. A BRANCH probe in a method left out this way
      * is left out too.
      *
-     * A branch site inside code a row already stands for folds into that row, as server ADR 0031
-     * has it: every BRANCH probe of the site is left out. A site folds when its method's METHOD
-     * probe is a row here, or when its guard, the innermost outcome in the same method that must
-     * run before the site is reached (ADR 0037), is a never-hit outcome that would be a row but for
-     * this fold. A guard outcome whose own site folded still counts, so a site two levels under a
-     * never-taken outcome folds too. A routine guard folds nothing, since a routine outcome is in no
-     * finding, and neither does a guard that ran.
+     * A branch site inside code that never ran folds, as server ADR 0031 has it: every BRANCH probe
+     * of the site is left out. A site folds when its method was never hit, even a method that is
+     * not a row itself such as a lone constructor, or when its guard, the innermost outcome in the
+     * same method that must run before the site is reached (ADR 0037), is a never-hit outcome that
+     * would be a row but for this fold. A guard outcome whose own site folded still counts, so a
+     * site two levels under a never-taken outcome folds too. A routine guard folds nothing, since a
+     * routine outcome is in no finding, and neither does a guard that ran.
      *
      * A routine outcome is left out too, as server ADR 0039 has it: the agent read from the
      * bytecode that the outcome only yields a null default, only throws, or is the exception-path
@@ -747,29 +747,34 @@ class YukonTestCollector private constructor(
     }
 
     /**
-     * The BRANCH probes among [candidates] whose site folds, under server ADR 0031, into a row that
-     * already stands for it. [candidates] are every probe that is a never-hit row or routine
-     * outcome by every other rule. A site folds when its method's METHOD probe in the same instance
-     * is among them, or when its guard outcome is a BRANCH probe among them that is not routine.
+     * The BRANCH probes among [candidates] whose site folds, under server ADR 0031, into code a row
+     * already stands for. [candidates] are every probe that is a never-hit row or routine outcome by
+     * every other rule. A site folds when its method's judgeable METHOD probe in the same instance
+     * was never hit, whether or not that probe is a row itself (a constructor that is not an unused
+     * overload is not, and its code never ran either), or when its guard outcome is a BRANCH probe
+     * among [candidates] that is not routine.
      */
     private fun foldedSiteProbes(
         candidates: List<Map.Entry<ProbeKey, StoredProbe>>,
         routineKinds: Map<OutcomeKey, RoutineKind>,
     ): Set<ProbeKey> {
-        val methodRows = HashSet<InstanceKey<NodeKey>>()
+        val neverHitMethods =
+            probesByKey.entries
+                .filter { (key, probe) ->
+                    probe.kind == ProbeKind.METHOD &&
+                        !probe.inline &&
+                        probe.generatedBy == GeneratedBy.NONE &&
+                        (hitsByKey[key] ?: 0L) <= 0L
+                }.mapTo(HashSet()) { (key, probe) ->
+                    InstanceKey(key.serviceInstanceId, NodeKey(probe.className, probe.methodName, probe.methodDescriptor))
+                }
         val guardOutcomes = HashSet<OutcomeKey>()
         for ((key, probe) in candidates) {
-            val method = NodeKey(probe.className, probe.methodName, probe.methodDescriptor)
             val branchIndex = probe.branchIndex
-            when {
-                probe.kind == ProbeKind.METHOD -> {
-                    methodRows += InstanceKey(key.serviceInstanceId, method)
-                }
-
-                probe.kind == ProbeKind.BRANCH && branchIndex != null && routineOf(key, probe, routineKinds) == RoutineKind.NONE -> {
-                    guardOutcomes += OutcomeKey(key.serviceInstanceId, method, branchIndex)
-                }
-            }
+            if (probe.kind != ProbeKind.BRANCH || branchIndex == null) continue
+            if (routineOf(key, probe, routineKinds) != RoutineKind.NONE) continue
+            guardOutcomes +=
+                OutcomeKey(key.serviceInstanceId, NodeKey(probe.className, probe.methodName, probe.methodDescriptor), branchIndex)
         }
         val guards = siteGuards()
         return candidates
@@ -778,7 +783,7 @@ class YukonTestCollector private constructor(
                 if (probe.kind != ProbeKind.BRANCH || branchIndex == null) return@filter false
                 val method = NodeKey(probe.className, probe.methodName, probe.methodDescriptor)
                 val guard = guards[OutcomeKey(key.serviceInstanceId, method, branchIndex)]
-                InstanceKey(key.serviceInstanceId, method) in methodRows ||
+                InstanceKey(key.serviceInstanceId, method) in neverHitMethods ||
                     (guard != null && OutcomeKey(key.serviceInstanceId, method, guard) in guardOutcomes)
             }.mapTo(HashSet()) { it.key }
     }

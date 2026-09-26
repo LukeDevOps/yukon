@@ -57,3 +57,16 @@ class SiteFolds {
         flag: Boolean,
     ): Int = count ?: if (flag) 1 else 2
 }
+
+/**
+ * A class whose only method is its constructor, loaded but never constructed. Its constructor is
+ * never hit but is not a row, since it is not an unused overload and the class has no finding, and
+ * its site still folds into it: that code never ran.
+ */
+class SiteFoldsLoneConstructor(
+    flag: Boolean,
+) {
+    init {
+        if (flag) Thread.yield()
+    }
+}

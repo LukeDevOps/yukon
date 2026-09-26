@@ -265,4 +265,50 @@ class StubCollectorTest {
         assertEquals(emptyList(), routine, "a folded site's routine outcome is not listed")
         assertEquals(4, countOn(report, label) - before, "sites 1 and 2 fold, two outcomes each")
     }
+
+    /**
+     * Server ADR 0031 folds a site into any never-hit method, not only a row: a lone constructor of
+     * a class with no finding is not listed, and neither is its code.
+     */
+    @Test
+    fun `a site in a never-run constructor that is not a row leaves NEVER HIT and is counted apart`() {
+        val className = "com.acme.fold.Lone"
+
+        fun location(
+            probeIndex: Int,
+            kind: ProbeKind,
+        ) = ProbeLocation
+            .newBuilder()
+            .setClassId(0)
+            .setProbeIndex(probeIndex)
+            .setKind(kind)
+            .setClassName(className)
+            .setMethodName("<init>")
+            .setMethodDescriptor("(Z)V")
+            .setLine(5)
+
+        val site =
+            BranchSite
+                .newBuilder()
+                .setSiteIndex(0)
+                .setLine(6)
+                .addOutcomes(BranchOutcome.newBuilder().setBranchIndex(0).setRole(BranchRole.TAKEN))
+                .addOutcomes(BranchOutcome.newBuilder().setBranchIndex(1).setRole(BranchRole.FALL_THROUGH))
+        val manifest =
+            ProbeManifest
+                .newBuilder()
+                .setResource(resource("run-lone"))
+                .addProbes(location(0, ProbeKind.METHOD).addBranchSites(site))
+                .addProbes(location(1, ProbeKind.BRANCH).setLine(6).setSiteIndex(0).setBranchIndex(0))
+                .addProbes(location(2, ProbeKind.BRANCH).setLine(6).setSiteIndex(0).setBranchIndex(1))
+                .build()
+        val label = "branches in never-hit code (reported with their method or guard):"
+        val before = countOn(neverHitReport(), label)
+
+        assertEquals(200, post("manifest", manifest))
+
+        val report = neverHitReport()
+        assertEquals(emptyList(), report.filter { it.contains("NEVER HIT:") && it.contains("Lone") })
+        assertEquals(2, countOn(report, label) - before, "both outcomes of the constructor's site fold")
+    }
 }

@@ -719,12 +719,13 @@ private fun respondBadRequest(
  * never-hit methods listed here is not a row either, and neither is a branch in it. The report
  * counts each kind of folded probe apart.
  *
- * A branch site inside code a row already stands for folds into that row, as server ADR 0031 has
- * it, and its BRANCH probes are counted apart as branches in never-hit code. A site folds when its
- * method's METHOD probe is a row, or when its guard (ADR 0037) is a never-hit outcome that is not
- * routine and would be a row but for this fold, so a site two levels under a never-taken outcome
- * folds too. A routine guard folds nothing, and neither does a guard that ran. The dead percentage
- * keeps folded probes in its denominator, as it does for probes a class finding covers.
+ * A branch site inside code that never ran folds, as server ADR 0031 has it, and its BRANCH probes
+ * are counted apart as branches in never-hit code. A site folds when its method was never hit, a
+ * lone constructor that is not a row included, or when its guard (ADR 0037) is a never-hit outcome
+ * that is not routine and would be a row but for this fold, so a site two levels under a
+ * never-taken outcome folds too. A routine guard folds nothing, and neither does a guard that ran.
+ * The dead percentage keeps folded probes in its denominator, as it does for probes a class finding
+ * covers.
  *
  * A routine outcome is not a row and is not in the headline, as server ADR 0039 has it. The fold
  * rules above run first, so a routine outcome inside folded code counts with that code. The rest
@@ -759,7 +760,7 @@ internal fun printNeverHitReport() {
                     else -> true
                 }
         }
-    val folded = foldedSiteProbes(rowsAndRoutine)
+    val folded = foldedSiteProbes(rowsAndRoutine, judgeableNeverHit)
     val (routine, judgeable) = (rowsAndRoutine - folded).partition { routineOf(it) != RoutineKind.ROUTINE_KIND_NONE }
     val judgeableTotal =
         judgeableKeys.count { key ->
@@ -810,36 +811,40 @@ internal fun printNeverHitReport() {
 }
 
 /**
- * The BRANCH probes among [candidates] whose site folds, under server ADR 0031, into a row that
- * already stands for it. [candidates] are every probe that is a never-hit row or a routine outcome
- * by every other rule of [printNeverHitReport]. A site folds when its method's METHOD probe in the
- * same run is among them, or when the outcome its site names as guard is a BRANCH probe among them
- * that is not routine.
+ * The BRANCH probes among [candidates] whose site folds, under server ADR 0031, into code that never
+ * ran. [candidates] are every probe that is a never-hit row or a routine outcome by every other rule
+ * of [printNeverHitReport]; [neverHit] is every judgeable probe with no hits. A site folds when its
+ * method's METHOD probe in the same run is in [neverHit], whether or not that probe is a row itself
+ * (a lone constructor is not, and its code never ran either), or when the outcome its site names as
+ * guard is a BRANCH probe among [candidates] that is not routine.
  */
-private fun foldedSiteProbes(candidates: List<InstanceProbeKey>): Set<InstanceProbeKey> {
-    val methodRows = HashSet<InstanceMethodKey>()
+private fun foldedSiteProbes(
+    candidates: List<InstanceProbeKey>,
+    neverHit: List<InstanceProbeKey>,
+): Set<InstanceProbeKey> {
+    fun methodOf(
+        key: InstanceProbeKey,
+        info: ProbeInfo,
+    ) = InstanceMethodKey(key.run, key.classId, info.methodName, info.methodDescriptor)
+    val neverHitMethods =
+        neverHit.mapNotNullTo(HashSet()) { key ->
+            manifestProbes[key]?.takeIf { it.kind == ProbeKind.METHOD }?.let { methodOf(key, it) }
+        }
     val guardOutcomes = HashSet<Pair<InstanceMethodKey, Int>>()
     for (key in candidates) {
         val info = manifestProbes[key] ?: continue
-        val method = InstanceMethodKey(key.run, key.classId, info.methodName, info.methodDescriptor)
         val branchIndex = info.branchIndex
-        when {
-            info.kind == ProbeKind.METHOD -> {
-                methodRows += method
-            }
-
-            info.kind == ProbeKind.BRANCH && branchIndex != null && routineOf(key) == RoutineKind.ROUTINE_KIND_NONE -> {
-                guardOutcomes += method to branchIndex
-            }
-        }
+        if (info.kind != ProbeKind.BRANCH || branchIndex == null) continue
+        if (routineOf(key) != RoutineKind.ROUTINE_KIND_NONE) continue
+        guardOutcomes += methodOf(key, info) to branchIndex
     }
     return candidates
         .filter { key ->
             val info = manifestProbes[key] ?: return@filter false
             if (info.kind != ProbeKind.BRANCH) return@filter false
-            val method = InstanceMethodKey(key.run, key.classId, info.methodName, info.methodDescriptor)
+            val method = methodOf(key, info)
             val site = siteOf(key, info)
-            method in methodRows || (site != null && site.hasGuard() && (method to site.guard) in guardOutcomes)
+            method in neverHitMethods || (site != null && site.hasGuard() && (method to site.guard) in guardOutcomes)
         }.toSet()
 }
 

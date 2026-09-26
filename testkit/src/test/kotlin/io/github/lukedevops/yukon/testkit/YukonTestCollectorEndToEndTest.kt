@@ -399,6 +399,7 @@ class YukonTestCollectorEndToEndTest {
         foldsClass.getMethod("nested", flag, flag, flag).invoke(folds, false, false, false)
         foldsClass.getMethod("guardRan", flag, flag).invoke(folds, true, false)
         foldsClass.getMethod("behindRoutine", Integer::class.java, flag).invoke(folds, 7, true)
+        Class.forName(LONE_CONSTRUCTOR, true, foldsClass.classLoader)
 
         val exporter = HttpOtlpStyleExporter(target.endpoint)
         val exportScheduler = ExportScheduler(config, TestResources.forConfig(config), registry, EndpointRegistry(), exporter)
@@ -408,6 +409,7 @@ class YukonTestCollectorEndToEndTest {
         for (methodName in listOf("neverCalled", "nested", "guardRan", "behindRoutine")) {
             target.awaitProbe(SITE_FOLDS, methodName, Duration.ofSeconds(10))
         }
+        target.awaitProbe(LONE_CONSTRUCTOR, "<init>", Duration.ofSeconds(10))
         target.awaitSettled(Duration.ofSeconds(10))
         return target
     }
@@ -451,6 +453,20 @@ class YukonTestCollectorEndToEndTest {
         assertEquals(listOf("nested:28"), nestedRows, "the `inner` site folds into the never-hit `middle` outcome")
     }
 
+    /**
+     * Server ADR 0031 folds a site into any never-hit method, not only into one that is a row: a
+     * constructor that is not an unused overload, in a class with no finding, is not listed, and
+     * neither is the code inside it.
+     */
+    @Test
+    fun `a site in a never-run constructor that is not a row folds with it, observed only through the wire protocol`() {
+        val target = collectSiteFolds("e2e-fold-7")
+
+        val rows = (target.neverHit() + target.neverHitRoutineOutcomes()).filter { it.className == LONE_CONSTRUCTOR }
+        assertEquals(emptyList(), rows.map { "${it.methodName}:${it.line} ${it.kind}" })
+        assertEquals(emptyList(), target.neverInstantiated().filter { it.className == LONE_CONSTRUCTOR })
+    }
+
     @Test
     fun `a site behind a never-taken routine outcome stays listed, observed only through the wire protocol`() {
         val target = collectSiteFolds("e2e-fold-4")
@@ -489,5 +505,6 @@ class YukonTestCollectorEndToEndTest {
     private companion object {
         const val FIXTURES = "com.example.testkittarget"
         const val SITE_FOLDS = "$FIXTURES.SiteFolds"
+        const val LONE_CONSTRUCTOR = "$FIXTURES.SiteFoldsLoneConstructor"
     }
 }
