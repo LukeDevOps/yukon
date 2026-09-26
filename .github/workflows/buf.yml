@@ -22,6 +22,13 @@ jobs:
         if: github.event_name == 'pull_request'
         with:
           against: "https://github.com/${{ github.repository }}.git#branch=${{ github.event.pull_request.base.ref }}"
+      # A push to master publishes, so it is checked against what the registry already serves,
+      # not against the previous commit: a break that reached master unpublished is still caught.
+      - uses: bufbuild/buf-breaking-action@v1
+        if: github.event_name == 'push'
+        with:
+          input: "src/main/proto"
+          against: "buf.build/lukedevops-oss/yukon"
 
   push:
     needs: lint-and-breaking

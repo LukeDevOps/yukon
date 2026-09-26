@@ -39,8 +39,6 @@ adopter's collector forwards to one multi-tenant backend.
      server's findings.
    - Review the agent option names, which ADR 0016 makes a compatibility
      surface.
-   - Run `buf breaking` on push to master too, not only on pull requests,
-     since every push publishes to the Buf registry.
    - Settle versioning: the agent is `1.0-SNAPSHOT`, and no repo has
      tags. Add Maven publishing, signing, and licence metadata in the
      poms.
