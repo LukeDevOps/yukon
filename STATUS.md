@@ -7,6 +7,37 @@ one record per decision, and `CONTEXT.md` the glossary. Where this file and
 
 ## TODO
 
+### A service's namespace, and OpenTelemetry's own settings: agent chunk landed
+
+Settled 2026-09-26 in a grilling session across all three repos: ADR 0045,
+with server ADR 0038 and collector ADR 0002. The server keys a service by
+its namespace and its name, so the agent sends a namespace, and it reads
+the values an adopter has already given OpenTelemetry.
+
+Chunk 1, the agent: a `serviceNamespace` option with no default, and
+`ResourceAttributes.service_namespace` (field 6), sent only when set. The
+name, the namespace and the environment fall back from Yukon's own three
+sources to OpenTelemetry's own settings, resolved as its Java agent
+resolves them: `otel.service.name` and `otel.resource.attributes` each come
+whole from the system property, else from `OTEL_SERVICE_NAME` or
+`OTEL_RESOURCE_ATTRIBUTES`, and a list with a pair that is not `key=value`
+is ignored whole, as the specification says. The name then falls back to `ServiceNameDetector`, which mirrors
+OpenTelemetry's Spring Boot, manifest and jar detectors, and last to
+`unknown_service:java` in place of `unknown-service`. The stub collector
+and `runDemoStack` print a namespace when there is one, and `runDemoStack`
+passes `YUKON_SERVICE_NAMESPACE` to the demo server.
+
+Open from this chunk:
+
+- The collector and the server still have to carry and key on the
+  namespace.
+- `runDemoStack` reads the server's API by service name alone, so a demo
+  run in a named namespace reads back correctly only once the server's
+  read paths take a namespace.
+- The YAML reader in the detector covers block mappings only. A Spring
+  name written as a flow mapping is not detected, where OpenTelemetry's
+  would be.
+
 ### Readable branch findings: landed in all three repos
 
 Settled 2026-09-24 in a grilling session across all three repos, after

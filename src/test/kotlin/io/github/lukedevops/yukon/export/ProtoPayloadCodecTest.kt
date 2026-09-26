@@ -81,6 +81,30 @@ class ProtoPayloadCodecTest {
     }
 
     @Test
+    fun `a service namespace round-trips when set and stays absent when null`() {
+        val named = ResourceAttributes("checkout", null, "i-1", null, "run-1", serviceNamespace = "shop")
+        val unnamed = ResourceAttributes("checkout", null, "i-1", null, "run-1", serviceNamespace = null)
+
+        val namedWire = ProtoDeltaBatch.parseFrom(ProtoPayloadCodec.encode(DeltaBatch(named, emptyList())))
+        assertTrue(namedWire.resource.hasServiceNamespace())
+        assertEquals("shop", namedWire.resource.serviceNamespace)
+        assertEquals(named, ProtoPayloadCodec.decodeDeltaBatch(ProtoPayloadCodec.encode(DeltaBatch(named, emptyList()))).resource)
+
+        val unnamedWire = ProtoDeltaBatch.parseFrom(ProtoPayloadCodec.encode(DeltaBatch(unnamed, emptyList())))
+        assertFalse(unnamedWire.resource.hasServiceNamespace())
+        assertEquals(unnamed, ProtoPayloadCodec.decodeDeltaBatch(ProtoPayloadCodec.encode(DeltaBatch(unnamed, emptyList()))).resource)
+    }
+
+    @Test
+    fun `a probe manifest carries the service namespace`() {
+        val manifest = ProbeManifest(ResourceAttributes("checkout", null, "i-1", null, "run-1", serviceNamespace = "shop"), emptyList())
+
+        val decoded = ProtoProbeManifest.parseFrom(ProtoPayloadCodec.encode(manifest))
+
+        assertEquals("shop", decoded.resource.serviceNamespace)
+    }
+
+    @Test
     fun `encodes a probe manifest that round-trips through the generated protobuf schema`() {
         val manifest =
             ProbeManifest(

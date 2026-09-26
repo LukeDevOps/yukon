@@ -58,10 +58,11 @@ described below):
 
 | Option | Default | Meaning |
 |---|---|---|
-| `serviceName` | `unknown-service` | Reported to the collector. |
+| `serviceName` | detected, else `unknown_service:java` | Reported to the collector. Falls back to OpenTelemetry's settings and then to detection; see "Reading OpenTelemetry's settings" below. |
+| `serviceNamespace` | *(none)* | The group the service belongs to, as OpenTelemetry's `service.namespace`. A service is known by its namespace and its name together. Falls back to OpenTelemetry's settings. With none, the service is in the unspecified namespace. |
 | `serviceVersion` | *(none)* | Reported to the collector. |
 | `serviceInstanceId` | random UUID | Reported to the collector. |
-| `environment` | *(none)* | Reported to the collector. |
+| `environment` | *(none)* | Reported to the collector. Falls back to OpenTelemetry's `deployment.environment.name`, then `deployment.environment`. |
 | `endpoint` | `http://localhost:4319` | Collector base URL. |
 | `authToken` | *(none)* | Bearer token sent to the collector as `Authorization: Bearer <token>`. Prefer setting it through `YUKON_AUTH_TOKEN` rather than this option: agent arguments are visible to every user on the host via `ps`, and an environment variable is not. |
 | `flushIntervalSeconds` | `60` | How often deltas/manifest updates are sent. |
@@ -86,6 +87,47 @@ uppercase it for the environment variable (prefixed `YUKON_`). For example:
 
 - `serviceName` → system property `yukon.service.name`, environment variable `YUKON_SERVICE_NAME`
 - `flushIntervalSeconds` → system property `yukon.flush.interval.seconds`, environment variable `YUKON_FLUSH_INTERVAL_SECONDS`
+
+## Reading OpenTelemetry's settings
+
+A service that already runs OpenTelemetry has named itself once in
+OpenTelemetry's settings. Yukon reads those, so its findings carry the same
+name as the service's traces. The service name, the namespace and the
+environment each come from the first of these sources that gives a value
+that is not blank, and each value is trimmed:
+
+1. Yukon's own three sources above: the agent-args string, the `yukon.*`
+   system property, then the `YUKON_*` environment variable.
+2. OpenTelemetry's own settings, resolved as its Java agent resolves them:
+   each of `otel.service.name` and `otel.resource.attributes` from its
+   system property, else its environment variable (`OTEL_SERVICE_NAME`,
+   `OTEL_RESOURCE_ATTRIBUTES`); the name from `otel.service.name`, else
+   `service.name` in the attributes.
+3. For the name only, detection in the order OpenTelemetry's Java agent
+   uses: the Spring Boot application name (a `--spring.application.name`
+   argument, the `spring.application.name` system property,
+   `SPRING_APPLICATION_NAME`, then `application.properties`,
+   `application.yml` and `application.yaml` in the working directory and on
+   the class path, then `bootstrap.*` on the class path), then the main
+   jar's `Implementation-Title`, then the main jar's file name.
+4. For the name only, OpenTelemetry's default `unknown_service:java`.
+
+The resource-attribute keys are `service.name`, `service.namespace`, and
+`deployment.environment.name`, then the older `deployment.environment`.
+Each OpenTelemetry setting comes whole from one place, so a set
+`otel.resource.attributes` system property hides `OTEL_RESOURCE_ATTRIBUTES`
+entirely, and `OTEL_SERVICE_NAME` wins over a `service.name` inside that
+system property. A list is `key=value` pairs split by commas, with
+percent-encoded values. If any pair is not `key=value`, Yukon ignores the
+whole list and logs a warning, as the OpenTelemetry specification says. Set
+a Yukon option to name the service differently in Yukon on purpose, since
+Yukon's own sources win.
+
+In Kubernetes, the OpenTelemetry Operator sets `service.namespace` from the
+pod's `resource.opentelemetry.io/service.namespace` annotation, or else from
+the pod's Kubernetes namespace, and passes it in `OTEL_RESOURCE_ATTRIBUTES`.
+Yukon reads it from there. Set `YUKON_SERVICE_NAMESPACE` to override it.
+Yukon never works out a namespace for itself.
 
 Yukon needs somewhere to send data to. See the `demo` module below for a
 minimal stub, or point it at a real collector.
@@ -243,6 +285,10 @@ the stack up it works with no arguments. Each run registers as a new
 instance, and the server keeps everything it has seen, so the report
 covers every run of that service and version so far; pass a fresh
 `-PyukonServiceVersion` to start a clean slate.
+
+The demo runs in the unspecified namespace. To run it in a named one, set
+`YUKON_SERVICE_NAMESPACE` in the environment of the Gradle command; the
+task passes it to the demo server, and the report names the namespace.
 
 ## Test your app against the agent
 

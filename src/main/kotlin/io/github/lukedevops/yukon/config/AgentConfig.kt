@@ -15,9 +15,23 @@ import java.util.UUID
  * environment variable instead; see [parse].
  */
 data class AgentConfig(
+    /**
+     * The service name. When no Yukon source sets it, it comes from OpenTelemetry's own settings,
+     * then from detection by [ServiceNameDetector], then [DEFAULT_SERVICE_NAME]. See ADR 0045.
+     */
     val serviceName: String,
+    /**
+     * The group the service belongs to, as OpenTelemetry's `service.namespace`. When no Yukon source
+     * sets it, it comes from OpenTelemetry's own settings. It has no default: null is the
+     * unspecified namespace. The agent never works one out for itself. See ADR 0045.
+     */
+    val serviceNamespace: String?,
     val serviceVersion: String?,
     val serviceInstanceId: String,
+    /**
+     * The deployment environment. When no Yukon source sets it, it comes from OpenTelemetry's
+     * `deployment.environment.name` or older `deployment.environment` resource attribute.
+     */
     val environment: String?,
     /** Base URL of the collector. The exporter appends `/v1/yukon/{deltas,manifest,static-baseline}`. */
     val collectorEndpoint: String,
@@ -68,6 +82,9 @@ data class AgentConfig(
     val otelBridgeEnabled: Boolean,
 ) {
     companion object {
+        /** OpenTelemetry's name for a Java service that names none. */
+        const val DEFAULT_SERVICE_NAME = "unknown_service:java"
+
         private const val DEFAULT_ENDPOINT = "http://localhost:4319"
         private val DEFAULT_FLUSH_INTERVAL: Duration = Duration.ofSeconds(60)
         private val log = System.getLogger(AgentConfig::class.java.name)
@@ -75,6 +92,7 @@ data class AgentConfig(
         private val KNOWN_KEYS =
             setOf(
                 "serviceName",
+                "serviceNamespace",
                 "serviceVersion",
                 "serviceInstanceId",
                 "environment",
@@ -97,11 +115,25 @@ data class AgentConfig(
          *
          * A blank value at any source counts as unset and falls through to the next one, the
          * same way a blank `authToken` option already fell through to `YUKON_AUTH_TOKEN`.
+         *
+         * The service name, the namespace and the environment go on past Yukon's three sources, in
+         * this order, and the first value that is not blank wins (ADR 0045):
+         *
+         * 1. OpenTelemetry's own settings, resolved as its Java agent resolves them by
+         *    [OtelResourceSettings.resolve]: each of `otel.service.name` and
+         *    `otel.resource.attributes` from its system property, else its environment variable;
+         *    the name from `otel.service.name`, else `service.name` in the attributes.
+         * 2. For the name only, [detectServiceName], which runs only when every source above is
+         *    empty.
+         * 3. For the name only, [DEFAULT_SERVICE_NAME].
+         *
+         * [OtelResourceSettings] lists the resource-attribute keys each value reads.
          */
         fun parse(
             agentArgs: String?,
             env: (String) -> String? = System::getenv,
             systemProperties: (String) -> String? = System::getProperty,
+            detectServiceName: () -> String? = { ServiceNameDetector.forThisProcess(env, systemProperties).detect() },
         ): AgentConfig {
             val options = parseOptions(agentArgs)
             for (key in options.keys - KNOWN_KEYS) {
@@ -109,6 +141,8 @@ data class AgentConfig(
             }
 
             fun resolve(key: String): String? = resolveOption(key, options, systemProperties, env)
+
+            val otel = OtelResourceSettings.resolve(systemProperties, env)
 
             val prefixes = parsePackagePrefixes(resolve("includePackages"))
             val excludedPrefixes = parsePackagePrefixes(resolve("excludePackages"))
@@ -118,10 +152,15 @@ data class AgentConfig(
                 log.log(Level.WARNING, "yukon: endpoint uses plain http, so the auth token is sent unencrypted")
             }
             return AgentConfig(
-                serviceName = resolve("serviceName") ?: "unknown-service",
+                serviceName =
+                    resolve("serviceName")
+                        ?: otel.serviceName
+                        ?: detectedServiceName(detectServiceName)
+                        ?: DEFAULT_SERVICE_NAME,
+                serviceNamespace = resolve("serviceNamespace") ?: otel.serviceNamespace,
                 serviceVersion = resolve("serviceVersion"),
                 serviceInstanceId = resolve("serviceInstanceId") ?: UUID.randomUUID().toString(),
-                environment = resolve("environment"),
+                environment = resolve("environment") ?: otel.environment,
                 collectorEndpoint = endpoint,
                 authToken = authToken,
                 flushInterval = parseFlushInterval(resolve("flushIntervalSeconds")),
@@ -151,6 +190,14 @@ data class AgentConfig(
                 ?: valueOrNull(env(OptionNames.environmentVariable(key)))
 
         private fun valueOrNull(raw: String?): String? = raw?.trim()?.ifBlank { null }
+
+        /** [detect]'s name, trimmed, or null when it finds none or throws. This runs in `premain`. */
+        private fun detectedServiceName(detect: () -> String?): String? =
+            try {
+                valueOrNull(detect())
+            } catch (e: Exception) {
+                null
+            }
 
         /**
          * Accepts `true`/`false` case-insensitively. Any other non-blank value logs a WARNING

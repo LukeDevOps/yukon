@@ -59,6 +59,10 @@ message ResourceAttributes {
   // mean something only within one run, so a consumer keeps each run's data apart and merges with
   // max() only within a run. Empty means missing, and a consumer rejects the payload. See ADR 0032.
   string run_id = 5;
+  // The group the service belongs to, as OpenTelemetry's service.namespace. A service is known by
+  // its namespace and its name together. Absent or blank means the unspecified namespace, which
+  // never matches a named one. The agent never works one out for itself. See ADR 0045.
+  optional string service_namespace = 6;
 }
 
 // hits_total is a cumulative count from process start, not the count since

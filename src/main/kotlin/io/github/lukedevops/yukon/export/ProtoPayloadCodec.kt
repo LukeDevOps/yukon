@@ -84,6 +84,7 @@ object ProtoPayloadCodec {
                 .setRunId(resource.runId)
         resource.serviceVersion?.let { builder.serviceVersion = it }
         resource.environment?.let { builder.environment = it }
+        resource.serviceNamespace?.let { builder.serviceNamespace = it }
         return builder.build()
     }
 
@@ -94,6 +95,7 @@ object ProtoPayloadCodec {
             serviceInstanceId = resource.serviceInstanceId,
             environment = if (resource.hasEnvironment()) resource.environment else null,
             runId = resource.runId,
+            serviceNamespace = if (resource.hasServiceNamespace()) resource.serviceNamespace else null,
         )
 
     private fun toProto(delta: ProbeDelta): ProtoProbeDelta =

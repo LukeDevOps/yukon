@@ -512,7 +512,7 @@ private fun handleDeltaBatch(exchange: HttpExchange) {
     val totalEndpointHits = latestEndpointHitsTotal.values.sum()
     val finalFlushSuffix = if (batch.finalFlush) " final=true" else ""
     println(
-        "[flush] service=${batch.resource.serviceName} instance=${batch.resource.serviceInstanceId} " +
+        "[flush] service=${batch.resource.serviceName}${namespaceField(batch.resource)} instance=${batch.resource.serviceInstanceId} " +
             "probes_with_activity=${batch.deltasList.size} total_hits=$totalHits " +
             "endpoints_with_activity=${batch.endpointDeltasList.size} total_endpoint_hits=$totalEndpointHits$finalFlushSuffix",
     )
@@ -669,7 +669,7 @@ private fun handleStaticBaseline(exchange: HttpExchange) {
     progress.received += baseline.chunkIndex
     val callEdgeCount = baseline.declaredClassesList.sumOf { c -> c.methodsList.sumOf { it.callsList.size } }
     println(
-        "[static-baseline] service=${baseline.resource.serviceName} chunk=${baseline.chunkIndex + 1}/${baseline.chunkCount} " +
+        "[static-baseline] service=${baseline.resource.serviceName}${namespaceField(baseline.resource)} chunk=${baseline.chunkIndex + 1}/${baseline.chunkCount} " +
             "declared_classes=${baseline.declaredClassesList.size} " +
             "statically_unsafe=${baseline.staticallyUnsafeClassesList.size} unreadable=${baseline.unreadableClassesList.size} " +
             "unprobed=${baseline.unprobedClassesList.size} call_edges=$callEdgeCount",
@@ -692,6 +692,10 @@ private fun respondOk(exchange: HttpExchange) {
     exchange.sendResponseHeaders(200, -1)
     exchange.close()
 }
+
+/** A ` namespace=` field for a log line when [resource] names a namespace, else nothing. See ADR 0045. */
+private fun namespaceField(resource: ResourceAttributes): String =
+    if (resource.hasServiceNamespace() && resource.serviceNamespace.isNotBlank()) " namespace=${resource.serviceNamespace}" else ""
 
 /** Answers 400 to a [payload] whose resource has no run id, and keeps nothing from it. See ADR 0032. */
 private fun respondBadRequest(

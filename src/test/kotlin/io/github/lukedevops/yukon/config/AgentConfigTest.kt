@@ -8,9 +8,11 @@ import kotlin.test.assertNotNull
 class AgentConfigTest {
     @Test
     fun `null args fall back to defaults`() {
-        val config = AgentConfig.parse(null)
+        val config = AgentConfig.parse(null, env = { null }, systemProperties = { null }, detectServiceName = { null })
 
-        assertEquals("unknown-service", config.serviceName)
+        assertEquals("unknown_service:java", config.serviceName)
+        assertEquals(null, config.serviceNamespace)
+        assertEquals(null, config.environment)
         assertEquals(null, config.serviceVersion)
         assertNotNull(config.serviceInstanceId)
         assertEquals(Duration.ofSeconds(60), config.flushInterval)
@@ -122,9 +124,9 @@ class AgentConfigTest {
 
     @Test
     fun `blank args string behaves like null`() {
-        val config = AgentConfig.parse("   ")
+        val config = AgentConfig.parse("   ", env = { null }, systemProperties = { null }, detectServiceName = { null })
 
-        assertEquals("unknown-service", config.serviceName)
+        assertEquals("unknown_service:java", config.serviceName)
     }
 
     @Test

@@ -190,6 +190,10 @@ val stackServerApiKey = providers.gradleProperty("yukonServerApiKey").getOrElse(
 val stackServiceVersion = providers.gradleProperty("yukonServiceVersion").getOrElse("stack-demo")
 val stackServiceName = "yukon-demo"
 
+// The demo runs in the unspecified namespace unless YUKON_SERVICE_NAMESPACE names one. The agent
+// reads it from its own environment, so runDemoStack hands it to the demo server as it is.
+val stackServiceNamespace: String? = providers.environmentVariable("YUKON_SERVICE_NAMESPACE").orNull?.trim()?.ifEmpty { null }
+
 tasks.register("runDemoStack") {
     group = "application"
     description =
@@ -216,7 +220,9 @@ tasks.register("runDemoStack") {
         }
 
         val runInstanceId = UUID.randomUUID().toString()
-        println("yukon demo: starting instrumented demo server against $stackEndpoint as instance $runInstanceId")
+        println(
+            "yukon demo: starting instrumented demo server${stackNamespaceSuffix()} against $stackEndpoint as instance $runInstanceId",
+        )
         val agentArg =
             "-javaagent:${agentJar.absolutePath}=" +
                 "serviceName=$stackServiceName," +
@@ -231,7 +237,7 @@ tasks.register("runDemoStack") {
                 "server",
                 javaBin,
                 listOf(agentArg, "-cp", demoClasspath, demoServerMainClass),
-                env = mapOf("YUKON_AUTH_TOKEN" to stackAgentToken),
+                env = mapOf("YUKON_AUTH_TOKEN" to stackAgentToken) + stackServiceNamespaceEnv(),
             )
         try {
             waitForPort(DemoPorts.SERVER_PORT, portWaitTimeoutSeconds)
@@ -253,6 +259,12 @@ tasks.register("runDemoStack") {
         println("yukon demo: done")
     }
 }
+
+fun stackServiceNamespaceEnv(): Map<String, String> =
+    stackServiceNamespace?.let { mapOf("YUKON_SERVICE_NAMESPACE" to it) } ?: emptyMap()
+
+// A suffix that names the namespace for a printed line, or an empty string when there is none.
+fun stackNamespaceSuffix(): String = stackServiceNamespace?.let { " in namespace $it" } ?: ""
 
 class HttpResult(
     val status: Int,
@@ -471,7 +483,10 @@ fun printStackReport() {
     val probes = report["probes"] as Map<*, *>
     val classes = report["classes"] as Map<*, *>
     val instances = report["instances"] as Map<*, *>
-    println("yukon demo: report for $stackServiceName@$stackServiceVersion from $stackServerUrl (${instances["total"]} instance(s) so far)")
+    println(
+        "yukon demo: report for $stackServiceName@$stackServiceVersion${stackNamespaceSuffix()} from $stackServerUrl " +
+            "(${instances["total"]} instance(s) so far)",
+    )
     println(
         "  methods: known=${methods["known"]} hit=${methods["hit"]} never_hit=${methods["never_hit"]} " +
             "in_class_findings=${methods["in_class_findings"]} in_never_hit_code=${methods["in_never_hit_code"]} " +

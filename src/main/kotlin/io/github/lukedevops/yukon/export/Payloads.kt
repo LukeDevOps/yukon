@@ -85,6 +85,10 @@ enum class KotlinKind {
  * run of one instance. A new process always gets a new one, even when [serviceInstanceId] is pinned
  * to a name that survives a restart, so a consumer can keep each run's class ids and totals apart.
  * See ADR 0032.
+ *
+ * [serviceNamespace] is the group the service belongs to, as OpenTelemetry's `service.namespace`.
+ * Null means the unspecified namespace. It comes last, with a default, so that a caller that
+ * passes the other values by position cannot shift them. See ADR 0045.
  */
 data class ResourceAttributes(
     val serviceName: String,
@@ -92,6 +96,7 @@ data class ResourceAttributes(
     val serviceInstanceId: String,
     val environment: String?,
     val runId: String,
+    val serviceNamespace: String? = null,
 ) {
     companion object {
         /** [config]'s identity with a new random [runId]. The agent calls this once per process. */
@@ -102,6 +107,7 @@ data class ResourceAttributes(
                 serviceInstanceId = config.serviceInstanceId,
                 environment = config.environment,
                 runId = UUID.randomUUID().toString(),
+                serviceNamespace = config.serviceNamespace,
             )
     }
 }

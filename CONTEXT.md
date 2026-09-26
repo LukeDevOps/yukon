@@ -93,6 +93,18 @@ _Avoid_: delta, hits since last flush, increment
 The payload mapping each (class ID, probe index) to its class, method, descriptor, line and branch index, plus the skipped classes. Delivered incrementally.
 _Avoid_: metadata, symbol table
 
+**Service**:
+One program, known by its namespace and its name together, as OpenTelemetry's `service.namespace` and `service.name` are. The same name in two namespaces is two services. Names keep their case and ignore surrounding spaces. A name that starts with `unknown_service` means the service was never given one.
+_Avoid_: app, application, dataset
+
+**Namespace**:
+The group a service belongs to, such as one team's or one product's services. It is part of the service's identity.
+_Avoid_: team, group, owner, project
+
+**Unspecified namespace**:
+The namespace of every service that names none, or a blank one. It is a namespace of its own and never matches a named one, even one called `none`.
+_Avoid_: default namespace, no namespace, `none`
+
 **Service instance**:
 A JVM as the collector sees it, identified by `service.instance.id`, a fresh UUID per process by default. An adopter can pin the ID to a name that survives a restart. One instance then spans several runs.
 _Avoid_: node, pod, host
