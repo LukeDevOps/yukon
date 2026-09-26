@@ -7,7 +7,7 @@ one record per decision, and `CONTEXT.md` the glossary. Where this file and
 
 ## TODO
 
-### Routine outcomes: agent chunk landed
+### Routine outcomes: landed in all three repos
 
 Settled 2026-09-26 in a grilling session with `yukon-server`: ADR 0046 here,
 server ADR 0039, server STATUS item 17. Some outcomes are real but not worth
@@ -45,10 +45,16 @@ Open from this chunk:
   recognised. Kotlin's `use {}` holds no site of its own.
 - A `Throwable` is resolved through the analyser's class lookup. A class it
   cannot read counts as one when its name ends in `Exception` or `Error`.
-- The collector's bindings, the server, the web UI and an end-to-end run are
-  the next chunks.
+- The demo's stub collector does not fold sites inside never-hit methods
+  (server ADR 0031), so it lists `PromoHandler.handle`'s `query ?: ""` null
+  side as a fifth routine outcome, where the server counts that site under
+  never-hit code.
 
-### A service's namespace, and OpenTelemetry's own settings: agent chunk landed
+The rest landed the same day: collector bindings (`f827a13`), the server
+(`b1294fe`) and the web UI (`1831561`). Checked end to end: the headline
+reads 2 conditions where it read 6; see the server's STATUS, item 17.
+
+### A service's namespace, and OpenTelemetry's own settings: landed in all three repos
 
 Settled 2026-09-26 in a grilling session across all three repos: ADR 0045,
 with server ADR 0038 and collector ADR 0002. The server keys a service by
@@ -68,16 +74,26 @@ OpenTelemetry's Spring Boot, manifest and jar detectors, and last to
 and `runDemoStack` print a namespace when there is one, and `runDemoStack`
 passes `YUKON_SERVICE_NAMESPACE` to the demo server.
 
-Open from this chunk:
+The rest landed the same day: the collector's namespace processor and
+shard key (collector `38b1a0e`), the server's keying, routes and web UI
+(server `fa30548`, `c72ed4d`), and `runDemoStack` reading the demo under
+its namespace (`a18a278`). A name or namespace of `.` or `..` is skipped
+with a warning at each source (`bd3052b`), since browsers drop dot
+segments from the URL the server shows it at; the collector rejects such
+a payload too (`c36c608`). Checked end to end with two `runDemoStack`
+runs, one with `YUKON_SERVICE_NAMESPACE=shop`: see the server's STATUS,
+item 16.
 
-- The collector and the server still have to carry and key on the
-  namespace.
-- `runDemoStack` reads the server's API by service name alone, so a demo
-  run in a named namespace reads back correctly only once the server's
-  read paths take a namespace.
+Open:
+
 - The YAML reader in the detector covers block mappings only. A Spring
   name written as a flow mapping is not detected, where OpenTelemetry's
   would be.
+- A blank OpenTelemetry system property falls through to its environment
+  variable, where OpenTelemetry would let it hide the variable.
+- Agent-level redaction of literals is parked in the server's STATUS,
+  item 18. The README says an agent posting straight to a backend sends
+  literals in clear.
 
 ### Readable branch findings: landed in all three repos
 
