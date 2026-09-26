@@ -34,15 +34,22 @@ adopter's collector forwards to one multi-tenant backend.
    - Scala objects are counted twice: each `Driver$` method has a twin on
      `Driver` at line -1, the static forwarder scalac adds, so 14 methods
      give 28 rows and every cluster doubles.
-   - Settled for both Scala bullets above on 2026-09-26: ADR 0048 marks
-     case-class and companion plumbing `CASE_CLASS`, static forwarders
-     `STATIC_FORWARDER` (passed through, as ADR 0041's generated
-     forwarders are) and an object's `writeReplace` `SCALA_OBJECT`, all by
-     bytecode shape. Landing order: (1) agent, with fixtures in both
-     Scala modules for every layout and hand-written shape review turned
-     up, testkit and stub parity, `runShapesStack` rerun; (2) `yukon-collector` bindings
-     bump; (3) `yukon-server` labels. Scala 3 enums, Scala 2 `Enumeration`
-     and `lazy val` plumbing wait for a run that loads them.
+   - Both Scala bullets above landed on 2026-09-26 in all three repos
+     (ADR 0048): agent `53cf4e9`, collector bindings `7c36b23`, server
+     labels `9725015`. Case-class and companion plumbing is `CASE_CLASS`,
+     static forwarders `STATIC_FORWARDER` (passed through), an object's
+     `writeReplace` `SCALA_OBJECT`, each recognised by the body scalac
+     writes, never by line. A first line-based rule failed four review
+     rounds on layouts (wrapped parameters, body `val`s, a hand-written
+     `copy` with defaults) and hid hand-written code, so it was replaced
+     before commit; seven review rounds in all. The rebuilt stack labels a
+     Scala 3 run's probes 37 `case_class`, 21 `static_forwarder`, 2
+     `scala_object`, and the Scala never-hit lists hold only the fixtures'
+     uncalled methods. Not covered, in ADR 0048: Scala 3 enum class and
+     singleton-case plumbing, `Enumeration`, `lazy val` plumbing, `Array`
+     and `Unit` elements, symbolic names, value-class elements, aliased
+     superclass parameters, local case classes that capture a value, and
+     Scala versions other than 2.13 and 3.3.
    - `suspendCoroutine` leaves two conditions per call site,
      `….orThrow === IntrinsicsKt.getCOROUTINE_SUSPENDED()` never true. The
      inlined intrinsic compares the call result directly and never stores it
