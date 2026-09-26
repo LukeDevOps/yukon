@@ -141,6 +141,67 @@ class ServiceIdentityResolutionTest {
     }
 
     @Test
+    fun `a dot namespace from a Yukon source falls through to the next source`() {
+        val fromProperty =
+            AgentConfig.parse(
+                "serviceNamespace=.",
+                env = { null },
+                systemProperties = mapOf("yukon.service.namespace" to "shop")::get,
+                detectServiceName = { null },
+            )
+        assertEquals("shop", fromProperty.serviceNamespace)
+
+        val fromOtel =
+            AgentConfig.parse(
+                null,
+                env = mapOf("YUKON_SERVICE_NAMESPACE" to " .. ", "OTEL_RESOURCE_ATTRIBUTES" to "service.namespace=shop")::get,
+                systemProperties = { null },
+                detectServiceName = { null },
+            )
+        assertEquals("shop", fromOtel.serviceNamespace)
+    }
+
+    @Test
+    fun `a dot namespace attribute leaves the service in the unspecified namespace`() {
+        val config =
+            AgentConfig.parse(
+                null,
+                env = mapOf("OTEL_RESOURCE_ATTRIBUTES" to "service.namespace=%2E%2E")::get,
+                systemProperties = { null },
+                detectServiceName = { null },
+            )
+        assertEquals(null, config.serviceNamespace)
+    }
+
+    @Test
+    fun `a dot service name falls through to the next source`() {
+        val fromAttribute =
+            AgentConfig.parse(
+                "serviceName=..",
+                env = mapOf("OTEL_SERVICE_NAME" to ".", "OTEL_RESOURCE_ATTRIBUTES" to "service.name=checkout")::get,
+                systemProperties = { null },
+                detectServiceName = { null },
+            )
+        assertEquals("checkout", fromAttribute.serviceName)
+
+        val fromDefault = AgentConfig.parse(null, env = { null }, systemProperties = { null }, detectServiceName = { ".." })
+        assertEquals("unknown_service:java", fromDefault.serviceName)
+    }
+
+    @Test
+    fun `dots inside a name are kept`() {
+        val config =
+            AgentConfig.parse(
+                "serviceName=checkout.v2,serviceNamespace=...",
+                env = { null },
+                systemProperties = { null },
+                detectServiceName = { null },
+            )
+        assertEquals("checkout.v2", config.serviceName)
+        assertEquals("...", config.serviceNamespace)
+    }
+
+    @Test
     fun `deployment environment name wins over the older deployment environment key in one list`() {
         val both = mapOf("OTEL_RESOURCE_ATTRIBUTES" to "deployment.environment=old,deployment.environment.name=new")
         assertEquals("new", AgentConfig.parse(null, env = both::get, systemProperties = { null }, detectServiceName = { null }).environment)

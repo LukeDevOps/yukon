@@ -18,6 +18,7 @@ The server keys a service by its namespace and its name, as OpenTelemetry's `ser
   4. For the name only, OpenTelemetry's default `unknown_service:java`.
 
   The keys read from a resource-attributes list are `service.name`, `service.namespace`, and `deployment.environment.name` then the older `deployment.environment`. Each OpenTelemetry setting is taken whole from one place, as in OpenTelemetry's Java agent: a set `otel.resource.attributes` system property hides `OTEL_RESOURCE_ATTRIBUTES` entirely, and `OTEL_SERVICE_NAME` wins over a `service.name` inside that system property. Values are trimmed, and a blank one falls through to the next source.
+- A service name or namespace that is `.` or `..` after trimming is skipped with a warning, and the next source gives the value. The server shows a service at a URL path that holds both, and browsers drop dot segments even when they are escaped, so a namespace `..` would lead to another service. The collector rejects such a payload too (collector ADR 0002).
 - The agent never works out a namespace for itself. In Kubernetes the OpenTelemetry Operator derives `service.namespace` from a pod annotation or the pod's namespace, and it writes the result into `OTEL_RESOURCE_ATTRIBUTES`. The agent reads that like any other value.
 
 ## Considered options

@@ -14,11 +14,17 @@ internal class OtelResourceSettings(
     private val serviceNameSetting: String?,
     private val attributes: Map<String, String>,
 ) {
-    /** The service name: the `otel.service.name` setting, else the `service.name` attribute. */
-    val serviceName: String? get() = serviceNameSetting ?: attributes["service.name"]
+    /**
+     * The service name: the `otel.service.name` setting, else the `service.name` attribute. A value
+     * that [ServiceIdentityValues.usable] skips falls through to the next one.
+     */
+    val serviceName: String? =
+        ServiceIdentityValues.usable(serviceNameSetting, "the otel.service.name setting")
+            ?: ServiceIdentityValues.usable(attributes["service.name"], "service.name in the resource attributes")
 
-    /** The `service.namespace` attribute. */
-    val serviceNamespace: String? get() = attributes["service.namespace"]
+    /** The `service.namespace` attribute, unless [ServiceIdentityValues.usable] skips it. */
+    val serviceNamespace: String? =
+        ServiceIdentityValues.usable(attributes["service.namespace"], "service.namespace in the resource attributes")
 
     /** The `deployment.environment.name` attribute, else the older `deployment.environment`. */
     val environment: String? get() = attributes["deployment.environment.name"] ?: attributes["deployment.environment"]

@@ -59,7 +59,7 @@ described below):
 | Option | Default | Meaning |
 |---|---|---|
 | `serviceName` | detected, else `unknown_service:java` | Reported to the collector. Falls back to OpenTelemetry's settings and then to detection; see "Reading OpenTelemetry's settings" below. |
-| `serviceNamespace` | *(none)* | The group the service belongs to, as OpenTelemetry's `service.namespace`. A service is known by its namespace and its name together. Falls back to OpenTelemetry's settings. With none, the service is in the unspecified namespace. |
+| `serviceNamespace` | *(none)* | The group the service belongs to, as OpenTelemetry's `service.namespace`. A service is known by its namespace and its name together. Falls back to OpenTelemetry's settings. With none, the service is in the unspecified namespace. A name or namespace of `.` or `..` is ignored with a warning, since no URL can name it. |
 | `serviceVersion` | *(none)* | Reported to the collector. |
 | `serviceInstanceId` | random UUID | Reported to the collector. |
 | `environment` | *(none)* | Reported to the collector. Falls back to OpenTelemetry's `deployment.environment.name`, then `deployment.environment`. |

@@ -153,11 +153,11 @@ data class AgentConfig(
             }
             return AgentConfig(
                 serviceName =
-                    resolve("serviceName")
+                    resolveIdentity("serviceName", options, systemProperties, env)
                         ?: otel.serviceName
-                        ?: detectedServiceName(detectServiceName)
+                        ?: ServiceIdentityValues.usable(detectedServiceName(detectServiceName), "service name detection")
                         ?: DEFAULT_SERVICE_NAME,
-                serviceNamespace = resolve("serviceNamespace") ?: otel.serviceNamespace,
+                serviceNamespace = resolveIdentity("serviceNamespace", options, systemProperties, env) ?: otel.serviceNamespace,
                 serviceVersion = resolve("serviceVersion"),
                 serviceInstanceId = resolve("serviceInstanceId") ?: UUID.randomUUID().toString(),
                 environment = resolve("environment") ?: otel.environment,
@@ -188,6 +188,24 @@ data class AgentConfig(
             valueOrNull(options[key])
                 ?: valueOrNull(systemProperties(OptionNames.systemProperty(key)))
                 ?: valueOrNull(env(OptionNames.environmentVariable(key)))
+
+        /**
+         * Walks the three sources for [key] as [resolveOption] does, for a service name or
+         * namespace. A value that [ServiceIdentityValues.usable] skips falls through to the next
+         * source, as a blank one does.
+         */
+        private fun resolveIdentity(
+            key: String,
+            options: Map<String, String>,
+            systemProperties: (String) -> String?,
+            env: (String) -> String?,
+        ): String? {
+            val property = OptionNames.systemProperty(key)
+            val variable = OptionNames.environmentVariable(key)
+            return ServiceIdentityValues.usable(valueOrNull(options[key]), "the agent option $key")
+                ?: ServiceIdentityValues.usable(valueOrNull(systemProperties(property)), "the system property $property")
+                ?: ServiceIdentityValues.usable(valueOrNull(env(variable)), "the environment variable $variable")
+        }
 
         private fun valueOrNull(raw: String?): String? = raw?.trim()?.ifBlank { null }
 
