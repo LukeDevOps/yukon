@@ -69,11 +69,23 @@ fire. `demo-spring`'s `PricingConfiguration` is fully hit with the rule in place
   `$$FastClassBySpringCGLIB$$`). Both were read out of `SpringNamingPolicy` and `DefaultNamingPolicy`
   in spring-core 5.3.39, 6.2.19 and 7.0.9, not recalled. `endpoints-spring-webmvc` supports 5.3, so
   both spellings have to be covered.
-- Spring and Hibernate are covered, because only those two have been confirmed against their own
-  source and run end to end here. ByteBuddy's own `$ByteBuddy$`, javassist's `_$$_jvst` and JDK
-  dynamic proxies produce the same shape and are not covered; `STATUS.md` carries them, to be added
-  when a corpus or an adopter shows one. The cost of a missing marker is the noise above, which is
-  visible and loud, not a silent wrong claim.
+- Spring and Hibernate were covered first, because only those two had been confirmed against their
+  own source and run end to end. The cost of a missing marker is the noise above, which is visible
+  and loud, not a silent wrong claim.
+- ByteBuddy, Mockito, javassist and JDK proxies were added on 2026-09-26, ahead of release rather
+  than waiting for an adopter to show one. ByteBuddy names a type from a default `ByteBuddy`
+  instance `<base>$ByteBuddy$<random>` and an auxiliary type `<instrumented>$auxiliary$<random>`;
+  Mockito names a subclass mock `<mocked>$MockitoMock$<random>`, in the mocked type's package, so a
+  test JVM mocking an adopter's interface puts one inside the include prefix; the random tail is
+  `RandomString` output, letters and digits only. javassist's `ProxyFactory` appends
+  `_$$_jvst<hex>_<hex counter>`. The JDK names a proxy `$Proxy<n>` and puts it in the package of a
+  non-public interface it implements, otherwise in `jdk.proxyN`; a proxy class is final and not
+  synthetic. Read out of ByteBuddy 1.18.12, mockito-core 5.14.2, javassist 3.30.2-GA and
+  `java.lang.reflect.Proxy` in JDK 11, 21 and 22. ByteBuddy's and Mockito's parts are matched as a
+  whole part with at least one part after it, and the JDK's as the whole simple name, so an
+  adopter's `Config$ByteBuddySettings` or `Outer$Proxy1` is kept. `RuntimeGeneratedClassTest` has
+  each generator define a class in the fixture package under the installed agent, confirms the
+  transformer is offered it, and checks it is neither woven, skipped nor swept.
 - Hibernate (added 2026-09-23) generates four kinds of class beside an entity: the lazy-loading
   proxy, the basic proxy, the instantiator and the access optimizer (with, in 6.6 and later, the
   optimizer's bridge). 6.6 and 7.4 name the first three `<Entity>$HibernateProxy`,

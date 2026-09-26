@@ -24,8 +24,6 @@ adopter's collector forwards to one multi-tenant backend.
    "until a real service shows it"; this run says which are real.
 2. **Fix the false findings a typical Spring app will hit.** These are
    likely to show up in step 1:
-   - `$ByteBuddy$`, javassist `_$$_jvst` and JDK `$Proxy` generated
-     classes are not recognised.
    - Hibernate's `$$_hibernate_` methods: it is not checked whether they
      are synthetic.
    - A named class that implements a framework interface reads as an
@@ -837,10 +835,15 @@ not as substrings, so an adopter's `Util$HibernateProxyUnwrapper` is kept. A
 scratch program driving hibernate-core 7.4.10's own generators under the agent
 showed all four kinds woven before the rule and none after.
 
-Not covered, and not checked: Hibernate's bytecode enhancement rewrites the
-entity class itself, adding `$$_hibernate_` methods to a class the adopter
-wrote. Whether those methods are synthetic, and so already out of the method
-tier, has not been looked at.
+ByteBuddy, Mockito, javassist and JDK proxy classes were added on 2026-09-26;
+ADR 0029's consequences hold the spellings and sources.
+
+Not covered: Hibernate's bytecode enhancement rewrites the entity class
+itself, adding `$$_hibernate_` methods to a class the adopter wrote. They are
+not synthetic: 5.6.15, 6.6.58 and 7.4.10 all define them public through
+ByteBuddy's `defineMethod`, with no synthetic modifier (`EnhancerImpl`,
+`PersistentAttributeTransformer`). So the method tier probes them, and whether
+to exclude them or mark them `GeneratedBy` is an open decision.
 
 ### Stable branch identity: landed in both repos
 

@@ -453,6 +453,65 @@ class TypeMatchPolicyTest {
     }
 
     /**
+     * Names ByteBuddy, Mockito, javassist and the JDK give the classes they generate. The shapes
+     * are read out of ByteBuddy 1.18.12's `NamingStrategy` and `AuxiliaryType`, mockito-core
+     * 5.14.2's `SubclassBytecodeGenerator`, javassist 3.30.2-GA's `ProxyFactory` and
+     * `java.lang.reflect.Proxy`; `RuntimeGeneratedClassTest` has each generator make one.
+     */
+    @Test
+    fun `a ByteBuddy, Mockito, javassist or JDK proxy class name is rejected by the type matcher`() {
+        for (
+        name in
+        listOf(
+            "com.example.target.Order\$ByteBuddy\$Ab3dEf9h",
+            "com.example.target.Outer\$Order\$ByteBuddy\$Ab3dEf9h",
+            "com.example.target.Order\$auxiliary\$Ab3dEf9h",
+            "com.example.target.Order\$ByteBuddy\$Ab3dEf9h\$auxiliary\$x7Yz",
+            "com.example.target.OrderService\$MockitoMock\$Ab3dEf9h",
+            "com.example.target.Order_\$\$_jvst3f2_0",
+            "com.example.target.Order_\$\$_jvst3f2_1a",
+            "com.example.target.\$Proxy0",
+            "com.example.target.\$Proxy137",
+        )
+        ) {
+            assertTrue(TypeMatchPolicy.isRuntimeGenerated(name), name)
+            val bytes = classWithSuperclass(name.replace('.', '/'), "java/lang/Object")
+            val pool = TypePool.Default.of(ClassFileLocator.Simple.of(name, bytes))
+
+            assertFalse(
+                TypeMatchPolicy.typeNameMatcher(listOf("com.example"), emptyList()).matches(pool.describe(name).resolve()),
+                name,
+            )
+        }
+    }
+
+    /**
+     * ByteBuddy's and Mockito's markers count only as a whole part with a random tail after it, and
+     * the JDK's only as the whole simple name, so a class an adopter names with the same words is
+     * kept.
+     */
+    @Test
+    fun `an adopter class named like a ByteBuddy, Mockito or JDK proxy class is kept`() {
+        for (
+        name in
+        listOf(
+            "com.example.target.ByteBuddy",
+            "com.example.target.Config\$ByteBuddy",
+            "com.example.target.Config\$ByteBuddySettings",
+            "com.example.target.Config\$auxiliary",
+            "com.example.target.MockitoMock",
+            "com.example.target.Outer\$MockitoMockFactory\$Inner",
+            "com.example.target.Proxy1",
+            "com.example.target.Outer\$Proxy1",
+            "com.example.target.\$ProxyFactory",
+            "com.example.target.MyProxy12",
+        )
+        ) {
+            assertFalse(TypeMatchPolicy.isRuntimeGenerated(name), name)
+        }
+    }
+
+    /**
      * Why the rule names its markers rather than turning away any `$$` in a class name: kotlinc
      * puts `$$` in the name of the class it generates for a lambda passed to an inlined stdlib
      * function, and that class holds the adopter's own body.
@@ -508,6 +567,7 @@ class TypeMatchPolicyTest {
     @Test
     fun `the type matcher takes kotlinc's multi-file part, which is synthetic, and reads each fixture's Kotlin kind`() {
         val pool = TypePool.Default.of(ClassFileLocator.ForClassLoader.of(javaClass.classLoader))
+
         fun describe(name: String) = pool.describe(name).resolve()
 
         val part = describe("com.example.target.MultifileText__MultifileGreetingKt")

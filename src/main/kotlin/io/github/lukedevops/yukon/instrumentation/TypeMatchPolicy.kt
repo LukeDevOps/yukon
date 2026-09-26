@@ -145,8 +145,32 @@ object TypeMatchPolicy {
      * `BySpringCGLIB$$` behind the generating class's simple name (`$$EnhancerBySpringCGLIB$$`,
      * `$$FastClassBySpringCGLIB$$`). Both spellings were read out of `SpringNamingPolicy` and
      * `DefaultNamingPolicy` in spring-core 5.3.39, 6.2.19 and 7.0.9 rather than recalled.
+     *
+     * javassist's `ProxyFactory`, which older Hibernate and Weld use, appends `_$$_jvst`, three hex
+     * digits from the generator's hash code, `_` and a hex counter to the superclass's name. Read
+     * out of `ProxyFactory.nameGenerator` in javassist 3.30.2-GA.
      */
-    private val RUNTIME_GENERATED_NAME_MARKERS = listOf("\$\$SpringCGLIB\$\$", "BySpringCGLIB\$\$")
+    private val RUNTIME_GENERATED_NAME_MARKERS = listOf("\$\$SpringCGLIB\$\$", "BySpringCGLIB\$\$", "_\$\$_jvst")
+
+    /**
+     * Parts of a name that ByteBuddy's naming strategies put between the base name and a random
+     * tail: `<base>$ByteBuddy$<random>` for a type made by a default `ByteBuddy` instance
+     * (`NamingStrategy.SuffixingRandom`), `<instrumented>$auxiliary$<random>` for an auxiliary
+     * type, and `<mocked>$MockitoMock$<random>` for a Mockito subclass mock. The tail is
+     * `RandomString` output, letters and digits only, so it is always the last part of the name.
+     * Read out of `NamingStrategy`, `ByteBuddy`, `AuxiliaryType` and `RandomString` in ByteBuddy
+     * 1.18.12, and `SubclassBytecodeGenerator` in mockito-core 5.14.2.
+     */
+    private val RANDOM_TAILED_PARTS = setOf("ByteBuddy", "auxiliary", "MockitoMock")
+
+    /**
+     * The simple name the JDK gives a dynamic proxy class: `$Proxy` and a counter, straight after
+     * the package. A proxy lands in the adopter's own package when one of its interfaces is not
+     * public; otherwise its package is `jdk.proxyN` or `com.sun.proxy`. A proxy class is final and
+     * not synthetic, so only its name tells it apart. Read out of `java.lang.reflect.Proxy` in JDK
+     * 11, 21 and 22.
+     */
+    private val JDK_PROXY_SIMPLE_NAME = Regex("\\\$Proxy\\d+")
 
     /**
      * The suffixes Hibernate appends, after a `$`, to the name of an entity or embeddable when it
@@ -208,11 +232,29 @@ object TypeMatchPolicy {
      * kotlinc puts `$$` in the name of a class it generates for a lambda passed to an inlined
      * function, and that class holds the adopter's body. See ADR 0029.
      *
-     * Two generators are recognised: Spring's CGLIB, by a marker anywhere in the name, and
-     * Hibernate, by a suffix that makes up a whole part of the name.
+     * Spring's CGLIB and javassist are recognised by a marker anywhere in the name, Hibernate by a
+     * suffix that makes up a whole part of the name, ByteBuddy and Mockito by a whole part with a
+     * random tail after it, and JDK proxies by their whole simple name.
      */
     fun isRuntimeGenerated(className: String): Boolean =
-        RUNTIME_GENERATED_NAME_MARKERS.any { it in className } || isHibernateGenerated(className)
+        RUNTIME_GENERATED_NAME_MARKERS.any { it in className } ||
+            isHibernateGenerated(className) ||
+            isRandomTailed(className) ||
+            JDK_PROXY_SIMPLE_NAME.matches(className.substringAfterLast('.'))
+
+    /**
+     * Whether a part of [className]'s simple name after the first is one of [RANDOM_TAILED_PARTS]
+     * with at least one part after it. Matched as a whole part, as Hibernate's suffixes are, so an
+     * adopter's `Config$ByteBuddySettings` is kept, and never as the last part, so a nested class
+     * the adopter named `ByteBuddy` is kept too.
+     */
+    private fun isRandomTailed(className: String): Boolean =
+        className
+            .substringAfterLast('.')
+            .split('$')
+            .drop(1)
+            .dropLast(1)
+            .any { it in RANDOM_TAILED_PARTS }
 
     /**
      * A dotted suffix of a suspend function's own continuation class's direct superclass. Matched
