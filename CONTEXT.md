@@ -65,7 +65,7 @@ The jumps kotlinc adds to a suspend function or suspend lambda for its state mac
 _Avoid_: coroutine noise, state-machine branches
 
 **Generated method**:
-A method the compiler emits from a declaration rather than from a body the adopter wrote: an enum's `values` and `valueOf`, a data class's `componentN`, `copy`, and the `equals`, `hashCode` and `toString` it did not override by hand, a `$DefaultImpls` method that only forwards to the interface's own default method, and an overload `@JvmOverloads` adds that only forwards to its `$default` twin. Probed and marked with what generated it, and so are the branch sites inside it; never reported as never hit. A `$DefaultImpls` method holding the interface method's real body, or an override the adopter wrote, is ordinary code.
+A method the compiler emits from a declaration rather than from a body the adopter wrote: an enum's `values` and `valueOf`, a data class's `componentN`, `copy`, and the `equals`, `hashCode` and `toString` it did not override by hand, a `$DefaultImpls` method that only forwards to the interface's own default method, an overload `@JvmOverloads` adds that only forwards to its `$default` twin, a multi-file facade's function, a Scala case class's and its companion's plumbing (`copy`, `canEqual`, `productElement` and the rest, `apply`, `unapply`) that the adopter did not write by hand, and a static forwarder. Probed and marked with what generated it, and so are the branch sites inside it; never reported as never hit. A `$DefaultImpls` method holding the interface method's real body, or an override the adopter wrote, is ordinary code.
 _Avoid_: synthetic method (a JVM flag; these are not synthetic), compiler method
 
 **Runtime-generated class**:
@@ -218,11 +218,15 @@ _Avoid_: synthetic method (kotlinc's bodies are not synthetic), anonymous functi
 A class's superclass and direct interfaces, sent with the class so a collector can widen a virtual call edge to the methods that override or inherit its callee.
 
 **Pass-through**:
-A compiler-generated method with no probe of its own, such as a bridge, an `access$` accessor, Kotlin's `$default`, or any method of a body class the agent does not probe, such as a Kotlin reference class's forwarding `invoke`, whose callees are attributed to whatever references it, in its own class or another. A generated forwarder is a pass-through too, though it keeps a probe for its hits: a `@JvmOverloads` overload, a multi-file facade's function, or a `$DefaultImpls` forwarder. Lambda bodies are not pass-throughs: they hold the adopter's own code and get probes.
+A compiler-generated method with no probe of its own, such as a bridge, an `access$` accessor, Kotlin's `$default`, or any method of a body class the agent does not probe, such as a Kotlin reference class's forwarding `invoke`, whose callees are attributed to whatever references it, in its own class or another. A generated forwarder is a pass-through too, though it keeps a probe for its hits: a `@JvmOverloads` overload, a multi-file facade's function, a `$DefaultImpls` forwarder, or a static forwarder. Lambda bodies are not pass-throughs: they hold the adopter's own code and get probes.
 
 **File facade**:
 The class kotlinc makes for a source file's top-level functions and properties, such as `DemoServerMainKt` for `DemoServerMain.kt`. It is named after the file, or by `@file:JvmName`. The agent reads it from the class's `@kotlin.Metadata` kind, never from the name. A person knows it as the file.
 _Avoid_: Kt class, facade class, file class
+
+**Static forwarder**:
+A static method scalac puts on an object's own class, or on a case class for its companion's methods, that only calls the same method on the object. A generated forwarder: the object's method holds the code.
+_Avoid_: mirror method, forwarder alone (it also names scalac's `$adapted` boxing forwarder and the forwarder table's entries)
 
 **Multi-file facade**:
 The class that `@file:JvmMultifileClass` makes to join several files under one name. It holds only forwarders to its parts, one part class per source file, where the code lives.

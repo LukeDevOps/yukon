@@ -34,6 +34,15 @@ adopter's collector forwards to one multi-tenant backend.
    - Scala objects are counted twice: each `Driver$` method has a twin on
      `Driver` at line -1, the static forwarder scalac adds, so 14 methods
      give 28 rows and every cluster doubles.
+   - Settled for both Scala bullets above on 2026-09-26: ADR 0048 marks
+     case-class and companion plumbing `CASE_CLASS`, static forwarders
+     `STATIC_FORWARDER` (passed through, as ADR 0041's generated
+     forwarders are) and an object's `writeReplace` `SCALA_OBJECT`, all by
+     bytecode shape. Landing order: (1) agent, fixtures pinning the
+     hand-written-override line rule in both Scala modules, testkit and
+     stub parity, `runShapesStack` rerun; (2) `yukon-collector` bindings
+     bump; (3) `yukon-server` labels. Scala 3 enums, Scala 2 `Enumeration`
+     and `lazy val` plumbing wait for a run that loads them.
    - `suspendCoroutine` leaves two conditions per call site,
      `….orThrow === IntrinsicsKt.getCOROUTINE_SUSPENDED()` never true. The
      inlined intrinsic compares the call result directly and never stores it
