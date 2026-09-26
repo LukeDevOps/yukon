@@ -283,12 +283,18 @@ reference is reached from the handler and never appears in a cluster.
 ```
 ./gradlew :demo:runDemoStack
 ./gradlew :demo:runSpringDemoStack
+./gradlew :demo:runShapesStack
 ```
 
 Runs the same instrumented demo server and client, but against a real
 collector instead of the stub, then prints what the backend behind it
 reports. `runSpringDemoStack` does the same for the Spring Boot fat-jar
-demo, as service `yukon-spring-demo`. Each prints: probe and class counts, the never-hit probes, the never-loaded,
+demo, as service `yukon-spring-demo`. `runShapesStack` runs three short
+programs one after another, each as its own service: `yukon-shapes`
+touches Java anonymous classes and a lambda, a companion object, a data
+class and a suspend function, each with a part that never runs, and
+`yukon-fixtures-scala2` and `yukon-fixtures-scala3` call some of the Scala
+fixture modules' `Driver` methods and leave the rest. Each prints: probe and class counts, the never-hit probes, the never-loaded,
 never-initialised and never-instantiated classes, and the unreached
 clusters. It expects a collector at `http://localhost:4319` and the
 yukon-server read API at `http://localhost:4320`, which is what
@@ -301,7 +307,7 @@ address and credential can be overridden:
 | `-PyukonAgentToken` | `local-stack-agent-token` |
 | `-PyukonServerUrl` | `http://localhost:4320` |
 | `-PyukonServerApiKey` | `yk_local-stack-api-key` |
-| `-PyukonServiceVersion` | `stack-demo`, or `spring-stack-demo` for the Spring demo |
+| `-PyukonServiceVersion` | `stack-demo`, `spring-stack-demo` for the Spring demo, `shapes-stack-demo` for the shapes run |
 
 The defaults match the compose stack's own development defaults, so with
 the stack up it works with no arguments. Each run registers as a new

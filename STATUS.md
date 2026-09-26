@@ -15,22 +15,52 @@ publishes the agent (with its testkit) and the collector as open source.
 `yukon-server` stays closed source and hosted (server ADR 0001), so every
 adopter's collector forwards to one multi-tenant backend.
 
-1. **Run on a real Spring Boot service.** The demo is Kotlin on the JDK
-   HTTP server only. Run the Spring demo against the real collector and
-   server and the `fixtures-*` modules. `runSpringDemoStack` landed on
-   2026-09-26 and reports the Spring demo correctly: its two uncalled
-   handlers never hit, the legacy-pricing branch never taken with
-   `LegacyPricing` never loaded under it, and five of nine endpoints never
-   called, Spring's `/error` and resource handlers included. Then read the UI for Java anonymous classes, Scala,
-   `Companion`, data classes, coroutines and Spring (server STATUS, "Not
-   yet checked"). About fifteen items here and in the server are deferred
-   "until a real service shows it"; this run says which are real.
-2. **Fix the false findings a typical Spring app will hit.** These are
-   likely to show up in step 1:
-   - A named class that implements a framework interface reads as an
-     uncalled root (the ADR 0024 gap).
-   - kotlin-stdlib always reads as used, through `kotlin.Metadata`.
-   - A class that failed to load reads as unreferenced.
+1. **Run on a real Spring Boot service.** Done on 2026-09-26 against the
+   compose stack, through `runSpringDemoStack` and `runShapesStack` (Java
+   anonymous classes and a lambda, a companion object, a data class, a
+   suspend function, and the Scala 2 and 3 fixture drivers), reading both
+   the report and the web UI. Correct: Spring endpoints and their handlers,
+   never-loaded classes, anonymous class and lambda names ("second Runnable
+   anonymous class in run", "Supplier lambda in run at line 32"), suspend
+   function names, untaken conditions with the code only they reach, and
+   "always supplied" on Scala defaults. What was wrong is item 2.
+2. **Fix the false findings the real runs showed**, most noise first:
+   - Scala case-class and object plumbing reads as dead code: `canEqual`,
+     `copy`, `equals`, `hashCode`, `productElement` and its `Name(s)`,
+     `unapply`, `fromProduct`, `curried`, `tupled`, the companion's
+     `toString` and `writeReplace`, and an object's `writeReplace`. Each is
+     its own uncalled cluster root. Scala needs what ADR 0026 gives Kotlin
+     data classes.
+   - Scala objects are counted twice: each `Driver$` method has a twin on
+     `Driver` at line -1, the static forwarder scalac adds, so 14 methods
+     give 28 rows and every cluster doubles.
+   - `suspendCoroutine` leaves two conditions per call site,
+     `….orThrow === IntrinsicsKt.getCOROUTINE_SUSPENDED()` never true. The
+     inlined intrinsic compares the call result directly and never stores it
+     to a local, so ADR 0025's second shape does not match; every adopter
+     `suspendCoroutine` or `suspendCancellableCoroutine` gives these rows.
+   - A suspend lambda started through `startCoroutine` (and kotlinx
+     `launch` and `async`, which take the same path) reads with a never-hit
+     `invoke` at line -1: the coroutine machinery calls `create` and
+     `invokeSuspend`, never `invoke`.
+   - A Scala 3 lambda body, `callByName$$anonfun$1`, is not folded with the
+     method that creates it and shows its raw name; Scala 2's
+     `$anonfun$callByName$1` folds.
+   - A Java utility class's private constructor roots an uncalled cluster,
+     though the never-hit list leaves it out.
+   - The agent logs "looks like a Kotlin default-argument method" at INFO for
+     the synthetic accessor kotlinc adds when a companion calls its class's
+     private constructor (`Tariff#<init>(String, double,
+     DefaultConstructorMarker)`), which is not a `$default` method.
+   - Not seen in these runs, still open: a named class implementing a
+     framework interface reads as an uncalled root (the ADR 0024 gap);
+     kotlin-stdlib always reads as used, through `kotlin.Metadata`; a class
+     that failed to load reads as unreferenced.
+   - Naming, after release: `Tariff$Companion`, `Cc$` and `Driver$` show
+     their JVM names in the UI, and Scala signatures read with Java types and
+     `x$0` parameter names. A data class property's getter reads as never
+     hit when only `copy`, `toString` and the class's own methods read the
+     field; that is true, and noisy.
 3. **Settle the one-way doors before anything is published.**
    - Review the testkit's query API, which publishing freezes. Include
      whether `neverHit()` judges per instance or across instances (see the
@@ -301,6 +331,10 @@ rule-two keys moving when kotlinc swaps `ifeq` and `ifne`.
 
 The agent side of the landing order is done. Across chunks 2 to 5 the
 analysis costs 11 to 43 percent more per class than the baseline.
+
+The `demo` corpus is the demo module's whole Kotlin output, so
+`runShapesStack`'s shapes (2026-09-26) add eight classes to it; numbers
+measured after that are not comparable with the tables above.
 
 Chunk 6 landed in `yukon-collector` (`a09f9cd`): a `Redaction`
 processor replaces `STRING_LITERAL` parts a blocked pattern matches, or all

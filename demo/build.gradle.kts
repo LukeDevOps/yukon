@@ -273,40 +273,17 @@ fun runStackDemo(
     serverPortWaitSeconds: Long,
     clientArgs: List<String>,
 ) {
+    requireStackCollector()
     val javaBin = Jvm.current().javaExecutable.absolutePath
-    val agentJar =
-        rootProject.tasks
-            .named("shadowJar", Jar::class.java)
-            .get()
-            .archiveFile
-            .get()
-            .asFile
-
-    if (httpGet("$stackEndpoint/healthz", token = null).status != 200) {
-        throw GradleException(
-            "yukon demo: no collector answering at $stackEndpoint/healthz. Start the stack with " +
-                "`docker compose --profile stack up --build` in yukon-server, or pass -PyukonEndpoint=<url>.",
-        )
-    }
-
     val runInstanceId = UUID.randomUUID().toString()
     println(
         "yukon demo: starting instrumented ${service.name}${stackNamespaceSuffix()} against $stackEndpoint as instance $runInstanceId",
     )
-    val agentArg =
-        "-javaagent:${agentJar.absolutePath}=" +
-            "serviceName=${service.name}," +
-            "serviceVersion=${service.version}," +
-            "serviceInstanceId=$runInstanceId," +
-            "flushIntervalSeconds=$flushIntervalSeconds," +
-            "endpoint=$stackEndpoint," +
-            "includePackages=$includePackages," +
-            "staticBaselineEnabled=true"
     val server =
         startProcess(
             "server",
             javaBin,
-            listOf(agentArg) + serverArgs,
+            listOf(stackAgentArg(service, includePackages, runInstanceId)) + serverArgs,
             env = mapOf("YUKON_AUTH_TOKEN" to stackAgentToken) + stackServiceNamespaceEnv(),
         )
     try {
@@ -326,6 +303,136 @@ fun runStackDemo(
 
     printStackReport(service)
     println("yukon demo: done")
+}
+
+// Runs one program under the agent against the stack's collector until it exits by itself, waits
+// for its shutdown flush to land, then prints the server's report for [service]. The program's
+// first argument is how long to wait before exiting, so its static baseline scan and a regular
+// flush land first.
+fun runStackOneShot(
+    service: StackService,
+    includePackages: String,
+    programArgs: List<String>,
+) {
+    requireStackCollector()
+    val javaBin = Jvm.current().javaExecutable.absolutePath
+    val runInstanceId = UUID.randomUUID().toString()
+    println(
+        "yukon demo: running instrumented ${service.name}${stackNamespaceSuffix()} against $stackEndpoint as instance $runInstanceId",
+    )
+    val program =
+        startProcess(
+            service.name,
+            javaBin,
+            listOf(stackAgentArg(service, includePackages, runInstanceId)) + programArgs,
+            env = mapOf("YUKON_AUTH_TOKEN" to stackAgentToken) + stackServiceNamespaceEnv(),
+        )
+    try {
+        if (!program.process.waitFor(oneShotTimeoutSeconds, TimeUnit.SECONDS)) {
+            throw GradleException("yukon demo: ${service.name} did not exit within ${oneShotTimeoutSeconds}s")
+        }
+    } finally {
+        // A program that hung, or a build that was cancelled mid-wait, must not leave a JVM behind
+        // still sending to the collector.
+        if (program.process.isAlive) program.process.destroyForcibly().waitFor()
+        program.outputThread.join()
+    }
+    val exitCode = program.process.exitValue()
+    if (exitCode != 0) throw GradleException("yukon demo: ${service.name} exited with $exitCode")
+    awaitShutdownFlush(service, runInstanceId)
+
+    printStackReport(service)
+}
+
+// How long a one-shot program may run: its own wait before exiting, plus JVM start-up and the
+// agent's shutdown flush, with room to spare.
+val oneShotTimeoutSeconds = flushIntervalSeconds + 60
+
+fun requireStackCollector() {
+    if (httpGet("$stackEndpoint/healthz", token = null).status != 200) {
+        throw GradleException(
+            "yukon demo: no collector answering at $stackEndpoint/healthz. Start the stack with " +
+                "`docker compose --profile stack up --build` in yukon-server, or pass -PyukonEndpoint=<url>.",
+        )
+    }
+}
+
+// The -javaagent argument for one stack run of [service] as instance [instanceId].
+fun stackAgentArg(
+    service: StackService,
+    includePackages: String,
+    instanceId: String,
+): String {
+    val agentJar =
+        rootProject.tasks
+            .named("shadowJar", Jar::class.java)
+            .get()
+            .archiveFile
+            .get()
+            .asFile
+    return "-javaagent:${agentJar.absolutePath}=" +
+        "serviceName=${service.name}," +
+        "serviceVersion=${service.version}," +
+        "serviceInstanceId=$instanceId," +
+        "flushIntervalSeconds=$flushIntervalSeconds," +
+        "endpoint=$stackEndpoint," +
+        "includePackages=$includePackages," +
+        "staticBaselineEnabled=true"
+}
+
+val shapesStackServiceVersion = providers.gradleProperty("yukonServiceVersion").getOrElse("shapes-stack-demo")
+
+// The Scala fixture modules' `Driver` methods runShapesStack calls. The rest of each module's
+// classes and methods are left for the report to show as never run.
+val scalaDriverCalls =
+    listOf("callSimpleAllOmitted", "callCurried", "callCaseClassApply", "callTraitDefault", "callThroughPlainOverridesOnly")
+
+tasks.register("runShapesStack") {
+    group = "application"
+    description =
+        "Runs the code shapes run and the Scala 2 and 3 fixture drivers under the agent against a real collector, " +
+        "then prints what the yukon-server read API reports for each."
+    dependsOn(
+        rootProject.tasks.named("shadowJar"),
+        tasks.named("classes"),
+        project(":fixtures-scala2").tasks.named("classes"),
+        project(":fixtures-scala3").tasks.named("classes"),
+    )
+
+    doLast {
+        val waitSeconds = (flushIntervalSeconds + 2).toString()
+        runStackOneShot(
+            service = StackService("yukon-shapes", shapesStackServiceVersion, stackServiceNamespace),
+            includePackages = "io.github.lukedevops.demo.shapes",
+            programArgs = listOf("-cp", demoAppClasspath(), "io.github.lukedevops.demo.shapes.ShapesMainKt", waitSeconds),
+        )
+        for (module in listOf("fixtures-scala2", "fixtures-scala3")) {
+            val fixtureClasspath =
+                project(":$module")
+                    .extensions
+                    .getByType(SourceSetContainer::class.java)["main"]
+                    .runtimeClasspath
+                    .asPath
+            // Only the demo's Java output, so no Kotlin standard library is on this run's classpath.
+            val driverClasspath =
+                sourceSets["main"]
+                    .java.destinationDirectory
+                    .get()
+                    .asFile.absolutePath
+            runStackOneShot(
+                service = StackService("yukon-$module", shapesStackServiceVersion, stackServiceNamespace),
+                includePackages = "com.example.scalatarget",
+                programArgs =
+                    listOf(
+                        "-cp",
+                        "$driverClasspath${File.pathSeparator}$fixtureClasspath",
+                        "io.github.lukedevops.demo.fixtures.ScalaDriverMain",
+                        waitSeconds,
+                    ) + scalaDriverCalls,
+            )
+        }
+        println("yukon demo: done")
+    }
 }
 
 fun stackServiceNamespaceEnv(): Map<String, String> = stackServiceNamespace?.let { mapOf("YUKON_SERVICE_NAMESPACE" to it) } ?: emptyMap()
