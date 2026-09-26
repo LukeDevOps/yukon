@@ -273,6 +273,13 @@ class YukonTestCollector private constructor(
         val endpointId: Int,
     )
 
+    /** What one never-hit row stands for within an instance, whichever copy of its class holds it. */
+    private data class RowIdentity(
+        val method: NodeKey,
+        val kind: ProbeKind,
+        val branchIndex: Int?,
+    )
+
     /** Scopes a per-instance id (`dependency_id`, `class_id`) or a class name to the instance that reported it. */
     private data class InstanceKey<T>(
         val serviceInstanceId: String,
@@ -680,8 +687,9 @@ class YukonTestCollector private constructor(
     }
 
     /**
-     * Every manifest probe, method or branch, with no hit ever reported by any instance, sorted
-     * by class name, method name, line, then branch index.
+     * Every manifest probe, method or branch, that its instance never reported a hit for, sorted
+     * by class name, method name, line, then branch index. Each instance is judged on its own hits;
+     * the server, and this collector's class findings and clusters, merge every instance.
      *
      * A probe belonging to a Kotlin inline function, or a branch inside one, is left out: a
      * Kotlin caller copies the body into its own call site instead of invoking it, so a zero hit
@@ -721,9 +729,9 @@ class YukonTestCollector private constructor(
      * each with its [ProbeRef.routine] kind, sorted as [neverHit] sorts. Server ADR 0039 counts
      * these apart and lists them only on request. See ADR 0046.
      *
-     * A routine outcome of a site that folds into its method's row or its guard's row, by the rule
-     * [neverHit] gives from server ADR 0031, is not listed here either: a site folds before any of
-     * its outcomes can count as routine.
+     * A routine outcome of a site that folds into code that never ran, by the rule [neverHit] gives
+     * from server ADR 0031, is not listed here either: a site folds before any of its outcomes can
+     * count as routine.
      */
     fun neverHitRoutineOutcomes(): List<ProbeRef> = checked { neverHitRows().filter { it.routine != RoutineKind.NONE } }
 
@@ -731,14 +739,23 @@ class YukonTestCollector private constructor(
     private fun neverHitRows(): List<ProbeRef> {
         val judgement = judgeClasses()
         val routineKinds = routineKinds()
+        // Two loaders can define one class in an instance. Such copies are one class by name, so a
+        // row is judged on the hits of every copy in the instance and listed once, from the copy
+        // with the lowest class id.
         val candidates =
-            probesByKey.entries.filter { (key, probe) ->
-                !probe.inline &&
-                    probe.generatedBy == GeneratedBy.NONE &&
-                    probe.kind != ProbeKind.OPTIONAL_ARGUMENT &&
-                    (hitsByKey[key] ?: 0L) <= 0L &&
-                    isNeverHitRow(probe, judgement)
-            }
+            probesByKey.entries
+                .filter { (_, probe) ->
+                    !probe.inline && probe.generatedBy == GeneratedBy.NONE && probe.kind != ProbeKind.OPTIONAL_ARGUMENT
+                }.groupBy { (key, probe) ->
+                    InstanceKey(
+                        key.serviceInstanceId,
+                        RowIdentity(NodeKey(probe.className, probe.methodName, probe.methodDescriptor), probe.kind, probe.branchIndex),
+                    )
+                }.values
+                .filter { copies ->
+                    copies.sumOf { (key, _) -> hitsByKey[key] ?: 0L } <= 0L &&
+                        isNeverHitRow(copies.first().value, judgement)
+                }.map { copies -> copies.minBy { (key, _) -> key.classId } }
         val folded = foldedSiteProbes(candidates, routineKinds)
         return candidates
             .filter { (key, _) -> key !in folded }
@@ -747,12 +764,13 @@ class YukonTestCollector private constructor(
     }
 
     /**
-     * The BRANCH probes among [candidates] whose site folds, under server ADR 0031, into code a row
-     * already stands for. [candidates] are every probe that is a never-hit row or routine outcome by
-     * every other rule. A site folds when its method's judgeable METHOD probe in the same instance
-     * was never hit, whether or not that probe is a row itself (a constructor that is not an unused
-     * overload is not, and its code never ran either), or when its guard outcome is a BRANCH probe
-     * among [candidates] that is not routine.
+     * The BRANCH probes among [candidates] whose site folds, under server ADR 0031, into code that
+     * never ran. [candidates] are every probe that is a never-hit row or routine outcome by every
+     * other rule, one per row with its copies' hits summed. A site folds when its judgeable method
+     * was never hit in the same instance, summed across every copy of its class that instance
+     * loaded, whether or not the method is a row itself (a constructor that is not an unused
+     * overload is not, and its code never ran either). It also folds when its guard outcome is a
+     * BRANCH probe among [candidates] that is not routine.
      */
     private fun foldedSiteProbes(
         candidates: List<Map.Entry<ProbeKey, StoredProbe>>,
@@ -760,14 +778,11 @@ class YukonTestCollector private constructor(
     ): Set<ProbeKey> {
         val neverHitMethods =
             probesByKey.entries
-                .filter { (key, probe) ->
-                    probe.kind == ProbeKind.METHOD &&
-                        !probe.inline &&
-                        probe.generatedBy == GeneratedBy.NONE &&
-                        (hitsByKey[key] ?: 0L) <= 0L
-                }.mapTo(HashSet()) { (key, probe) ->
+                .filter { (_, probe) -> probe.kind == ProbeKind.METHOD && !probe.inline && probe.generatedBy == GeneratedBy.NONE }
+                .groupBy { (key, probe) ->
                     InstanceKey(key.serviceInstanceId, NodeKey(probe.className, probe.methodName, probe.methodDescriptor))
-                }
+                }.filterValues { entries -> entries.sumOf { (key, _) -> hitsByKey[key] ?: 0L } <= 0L }
+                .keys
         val guardOutcomes = HashSet<OutcomeKey>()
         for ((key, probe) in candidates) {
             val branchIndex = probe.branchIndex

@@ -2334,6 +2334,38 @@ class YukonTestCollectorTest {
         exporter.exportDeltaBatch(DeltaBatch(resource, hits.map { (c, p) -> ProbeDelta(c, p, kinds.getValue(c to p), 1L, 1L) }))
     }
 
+    /**
+     * A class two loaders define in one instance is one class by name, as the server merges it.
+     * Copy 1 ran `<clinit>` and `run`, and took outcome 0 but never outcome 1; copy 2 loaded and ran
+     * nothing. Summed across the copies, only outcome 1 never ran: it is listed once, and neither
+     * copy 2's zero on outcome 0 or `run` nor its `<clinit>`, which on its own reads zero, makes or
+     * folds a row. See server ADR 0031.
+     */
+    @Test
+    fun `a class two loaders define in one instance is judged once, with its copies' hits summed`() {
+        val target = YukonTestCollector.start()
+        collector = target
+        val clinit = "<clinit>"
+        collect(
+            target,
+            listOf(
+                methodProbe(1, 0, "com.acme.Twice", clinit, "()V", 1, branchSites = listOf(ifSite(0, 2, 0, 1))),
+                branchProbe(1, 1, "com.acme.Twice", clinit, "()V", 2, 0, 0),
+                branchProbe(1, 2, "com.acme.Twice", clinit, "()V", 2, 1, 0),
+                methodProbe(2, 0, "com.acme.Twice", clinit, "()V", 1, branchSites = listOf(ifSite(0, 2, 0, 1))),
+                branchProbe(2, 1, "com.acme.Twice", clinit, "()V", 2, 0, 0),
+                branchProbe(2, 2, "com.acme.Twice", clinit, "()V", 2, 1, 0),
+                methodProbe(1, 3, "com.acme.Twice", "run", "()V", 5),
+                methodProbe(2, 3, "com.acme.Twice", "run", "()V", 5),
+            ),
+            1 to 0,
+            1 to 1,
+            1 to 3,
+        )
+
+        assertEquals(listOf("Twice#<clinit>/1"), target.neverHit().filter { it.className == "com.acme.Twice" }.map { it.id() })
+    }
+
     private fun ProbeRef.id() = "${className.removePrefix("com.acme.")}#$methodName${if (kind == ProbeKind.BRANCH) "/$branchIndex" else ""}"
 
     @Test
