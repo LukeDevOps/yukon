@@ -34,3 +34,8 @@ object Driver3 {
 
   def callInline(): Int = InlineHost.inlineF(1)
 }
+
+/** A case class with a hand-written `a$access$0`, a name Scala 3.3.4 never generates. */
+case class Acc(private val a: Int) {
+  def a$access$0: Int = a
+}

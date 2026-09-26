@@ -24,7 +24,9 @@ enum class ProbeKind { METHOD, BRANCH, OPTIONAL_ARGUMENT }
  * have no line-number table), a `$DefaultImpls` method that only forwards to the interface's own
  * default method, a Java record's `equals`/`hashCode`/`toString`, or an overload `@JvmOverloads`
  * adds, whose body only forwards to its own class's `$default` twin, or a function of a multi-file
- * facade, whose body only forwards to the same function on a part class (ADR 0041). Set on a [ProbeKind.METHOD]
+ * facade, whose body only forwards to the same function on a part class (ADR 0041). Scala adds a
+ * case class's and its companion's plumbing ([CASE_CLASS]), a static forwarder to an object's method
+ * ([STATIC_FORWARDER]) and an object's `writeReplace` ([SCALA_OBJECT]) (ADR 0048). Set on a [ProbeKind.METHOD]
  * probe and a [DeclaredMethod], on a [ProbeKind.BRANCH] probe as the mark of the method it sits in,
  * and on a [ProbeKind.OPTIONAL_ARGUMENT] probe as its target's own mark. A collector leaves a
  * generated probe out of never-hit, stale-hit, the call graph and the two optional-parameter
@@ -33,7 +35,18 @@ enum class ProbeKind { METHOD, BRANCH, OPTIONAL_ARGUMENT }
  * kept and counted, since a call to a generated method, such as `copy`, is still evidence of use.
  * See ADR 0026.
  */
-enum class GeneratedBy { NONE, ENUM, DATA_CLASS, DEFAULT_IMPLS, RECORD, JVM_OVERLOADS, MULTIFILE_FACADE }
+enum class GeneratedBy {
+    NONE,
+    ENUM,
+    DATA_CLASS,
+    DEFAULT_IMPLS,
+    RECORD,
+    JVM_OVERLOADS,
+    MULTIFILE_FACADE,
+    CASE_CLASS,
+    STATIC_FORWARDER,
+    SCALA_OBJECT,
+}
 
 /**
  * What kind of class kotlinc says a class is: the `k` element of its `kotlin.Metadata`, the one

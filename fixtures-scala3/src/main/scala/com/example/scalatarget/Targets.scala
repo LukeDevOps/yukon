@@ -115,3 +115,25 @@ class DefaultLines {
         "x"
   ): Int = a + b + c.length
 }
+
+/**
+ * A case class whose `toString` the adopter wrote on its own line, beside an explicit companion
+ * with a hand-written `apply(String)`. Neither hand-written body has the shape scalac gives the
+ * generated member, which is how ADR 0048 tells them apart from the plumbing around them. The
+ * auxiliary constructor gives the class a second `<init>` beside the primary one.
+ */
+case class Written(a: Int, b: String) {
+  def this(b: String) =
+    this(b.length, b)
+
+  override def toString: String =
+    s"Written($a, $b)"
+}
+
+object Written {
+  def apply(s: String): Written =
+    new Written(s.length, s)
+}
+
+/** Not a case class, so its `toString`, though it returns the class's name, is ordinary code. */
+class NotCase(val a: Int) { override def toString: String = "NotCase" }

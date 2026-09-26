@@ -353,15 +353,23 @@ class StaticBaselineScanner(
             } else {
                 BranchSiteAnalyzer.Analysis.EMPTY
             }
+        // A resolved Scala default getter takes the mark of the method it fills a default for, as
+        // its omission probe does in the manifest, so `copy$default$1` is generated with `copy`.
+        val getterTargets = analysis.scalaGetterSites.associateBy { it.getterName to it.getterDescriptor }
         val declaredMethods =
             methods.map {
                 val sourceSignature = analysis.sourceSignatureOf(it.internalName, it.descriptor)
+                val getterTarget = getterTargets[it.internalName to it.descriptor]
                 DeclaredMethod(
                     it.internalName,
                     it.descriptor,
                     analysis.isInline(it.internalName, it.descriptor),
                     analysis.callsOf(it.internalName, it.descriptor),
-                    analysis.generatedBy(it.internalName, it.descriptor),
+                    if (getterTarget != null) {
+                        analysis.generatedBy(getterTarget.targetName, getterTarget.targetDescriptor)
+                    } else {
+                        analysis.generatedBy(it.internalName, it.descriptor)
+                    },
                     analysis.referencesOf(it.internalName, it.descriptor),
                     analysis.isLambdaBody(it.internalName, it.descriptor),
                     analysis.branchSitesOf(it.internalName, it.descriptor),

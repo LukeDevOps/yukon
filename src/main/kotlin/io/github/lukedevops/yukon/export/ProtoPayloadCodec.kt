@@ -522,6 +522,9 @@ object ProtoPayloadCodec {
             GeneratedBy.RECORD -> ProtoGeneratedBy.RECORD
             GeneratedBy.JVM_OVERLOADS -> ProtoGeneratedBy.JVM_OVERLOADS
             GeneratedBy.MULTIFILE_FACADE -> ProtoGeneratedBy.MULTIFILE_FACADE
+            GeneratedBy.CASE_CLASS -> ProtoGeneratedBy.CASE_CLASS
+            GeneratedBy.STATIC_FORWARDER -> ProtoGeneratedBy.STATIC_FORWARDER
+            GeneratedBy.SCALA_OBJECT -> ProtoGeneratedBy.SCALA_OBJECT
         }
 
     // GENERATED_BY_NONE is a legitimate value on the wire, unlike ProbeKind's own unspecified
@@ -536,6 +539,9 @@ object ProtoPayloadCodec {
             ProtoGeneratedBy.RECORD -> GeneratedBy.RECORD
             ProtoGeneratedBy.JVM_OVERLOADS -> GeneratedBy.JVM_OVERLOADS
             ProtoGeneratedBy.MULTIFILE_FACADE -> GeneratedBy.MULTIFILE_FACADE
+            ProtoGeneratedBy.CASE_CLASS -> GeneratedBy.CASE_CLASS
+            ProtoGeneratedBy.STATIC_FORWARDER -> GeneratedBy.STATIC_FORWARDER
+            ProtoGeneratedBy.SCALA_OBJECT -> GeneratedBy.SCALA_OBJECT
             ProtoGeneratedBy.UNRECOGNIZED -> throw IllegalArgumentException("unrecognized generated-by reason on the wire: $generatedBy")
         }
 

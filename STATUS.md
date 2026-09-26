@@ -38,9 +38,9 @@ adopter's collector forwards to one multi-tenant backend.
      case-class and companion plumbing `CASE_CLASS`, static forwarders
      `STATIC_FORWARDER` (passed through, as ADR 0041's generated
      forwarders are) and an object's `writeReplace` `SCALA_OBJECT`, all by
-     bytecode shape. Landing order: (1) agent, fixtures pinning the
-     hand-written-override line rule in both Scala modules, testkit and
-     stub parity, `runShapesStack` rerun; (2) `yukon-collector` bindings
+     bytecode shape. Landing order: (1) agent, with fixtures in both
+     Scala modules for every layout and hand-written shape review turned
+     up, testkit and stub parity, `runShapesStack` rerun; (2) `yukon-collector` bindings
      bump; (3) `yukon-server` labels. Scala 3 enums, Scala 2 `Enumeration`
      and `lazy val` plumbing wait for a run that loads them.
    - `suspendCoroutine` leaves two conditions per call site,

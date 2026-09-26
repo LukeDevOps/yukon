@@ -22,7 +22,8 @@ enum ProbeKind {
 // values/valueOf/getEntries, a data class's componentN/copy and whichever of
 // equals/hashCode/toString the adopter did not override (the generated ones have no line-number
 // table), a $DefaultImpls method that only forwards to the interface's own default method, a
-// Java record's equals/hashCode/toString, or an overload @JvmOverloads adds. A branch probe
+// Java record's equals/hashCode/toString, an overload @JvmOverloads adds, or Scala's case-class
+// plumbing, static forwarders and object serialization (ADR 0048). A branch probe
 // carries the mark of the method it sits in. A collector leaves a generated probe out of never-hit,
 // stale-hit, and the call graph by default, since the compiler will emit the method again
 // regardless of what the adopter does; its hit count is still evidence, so the probe itself is
@@ -44,6 +45,20 @@ enum GeneratedBy {
   // the same package, and returns. kotlinc's parameter null checks may come first. The part's
   // function holds the code and is not marked. See ADR 0041.
   MULTIFILE_FACADE = 6;
+  // A Scala case class's plumbing (canEqual, copy, equals, hashCode, toString, productArity,
+  // productElement and its Name variants, productIterator, productPrefix, Scala 3's _1, _2 and on,
+  // and Scala 2's <name>$access$<n>), and its companion's apply, unapply, toString and fromProduct,
+  // each marked only when its body is the one scalac writes for that member of that class. A field
+  // accessor and a member the adopter wrote with any other body are not marked. See ADR 0048.
+  CASE_CLASS = 7;
+  // A static method scalac puts on an object's own class, or on a case class for its companion's
+  // methods. Its body only reads the object's MODULE$ field, loads its arguments, calls the method
+  // with its own name and descriptor on the object, and returns. The object's method holds the
+  // code and is not marked. See ADR 0048.
+  STATIC_FORWARDER = 8;
+  // A Scala object's private writeReplace, whose body only constructs a
+  // scala.runtime.ModuleSerializationProxy for the object's class. See ADR 0048.
+  SCALA_OBJECT = 9;
 }
 
 // Who sent a payload. DeltaBatch, ProbeManifest and StaticBaseline each carry one, and one process

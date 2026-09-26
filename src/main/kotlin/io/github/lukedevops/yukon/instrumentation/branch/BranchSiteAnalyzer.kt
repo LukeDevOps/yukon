@@ -568,6 +568,7 @@ object BranchSiteAnalyzer {
         handlerInterfaces: Set<String> = emptySet(),
         methodFilter: (name: String, descriptor: String) -> Boolean,
     ): Analysis {
+        val readClass = readOnce(lookup)
         val sites = mutableListOf<BranchSite>()
         val firstLines = mutableMapOf<Pair<String, String>, Int>()
         val inlineMethods = mutableSetOf<Pair<String, String>>()
@@ -799,8 +800,8 @@ object BranchSiteAnalyzer {
             sites,
             classBytes,
             language,
-            enumTest(internalClassName, classAccess, lookup),
-            EnumSwitchMappings(lookup),
+            enumTest(internalClassName, classAccess, readClass),
+            EnumSwitchMappings(readClass),
             droppedOrdinalsByMethod,
             throwingDefaultOrdinalsByMethod,
         )
@@ -812,7 +813,7 @@ object BranchSiteAnalyzer {
                 smap,
                 includePackages,
                 excludePackages,
-                throwableTest(internalClassName, superInternalName, lookup),
+                throwableTest(internalClassName, superInternalName, readClass),
             )
 
         val defaultSites = resolveDefaultSites(internalClassName, classAccess, methodAccess, localNames, defaultCandidates)
@@ -825,12 +826,21 @@ object BranchSiteAnalyzer {
                 .map { it.key }
                 .filter { (name, _) -> scalaGetterPattern.matches(name) }
         val scalaGetterSites =
-            resolveScalaGetterSites(internalClassName, classAccess, methodAccess, localNames, firstLines, getterCandidateNames, lookup)
+            resolveScalaGetterSites(internalClassName, classAccess, methodAccess, localNames, firstLines, getterCandidateNames, readClass)
         val resolvedGetters = scalaGetterSites.mapTo(mutableSetOf()) { it.getterName to it.getterDescriptor }
         val unresolvedScalaGetterSites = getterCandidateNames.filterNot { it in resolvedGetters }
         val hasTypeInitializer = ("<clinit>" to "()V") in methodAccess
         val generatedByMethod =
-            computeGeneratedBy(classBytes, internalClassName, superInternalName, methodAccess, methodsWithLineNumbers, kotlinKind)
+            computeGeneratedBy(
+                classBytes,
+                internalClassName,
+                superInternalName,
+                methodAccess,
+                methodsWithLineNumbers,
+                kotlinKind,
+                isScalaClass,
+                readClass,
+            )
 
         val callEdgeEntryPoints = if (hasTypeInitializer) eligibleMethodKeys + ("<clinit>" to "()V") else eligibleMethodKeys
         val resolvedCalls =
@@ -839,7 +849,7 @@ object BranchSiteAnalyzer {
                 methodAccess = methodAccess,
                 rawCandidatesByMethod = rawCandidatesByMethod,
                 eligibleMethodKeys = callEdgeEntryPoints,
-                lookup = lookup,
+                lookup = readClass,
                 includePackages = includePackages,
                 excludePackages = excludePackages,
                 tableCache = tableCache,
@@ -899,6 +909,30 @@ object BranchSiteAnalyzer {
     }
 
     /**
+     * [lookup], asked at most once per internal name. Several passes of one [analyze] call read the
+     * same class, such as a Scala companion's partner, which the constructor getter resolution and
+     * the companion plumbing rule both need (ADR 0023, ADR 0048). A thrown exception is kept as a
+     * null result, which is how [analyze] treats it anyway.
+     */
+    private fun readOnce(lookup: (internalName: String) -> ByteArray?): (String) -> ByteArray? {
+        val read = HashMap<String, ByteArray?>()
+        return { internalName ->
+            if (internalName in read) {
+                read[internalName]
+            } else {
+                val bytes =
+                    try {
+                        lookup(internalName)
+                    } catch (_: Exception) {
+                        null
+                    }
+                read[internalName] = bytes
+                bytes
+            }
+        }
+    }
+
+    /**
      * Reads the `k` element of a `kotlin.Metadata` annotation and hands it to [onKind]. It passes
      * every element on to [delegate] unchanged and decodes nothing else. See ADR 0041.
      */
@@ -917,10 +951,12 @@ object BranchSiteAnalyzer {
 
     /**
      * The generated forwarders a call passes through, per ADR 0041: a call into one records edges
-     * to what the forwarder calls. Each only moves its arguments on to another method. `ENUM`,
-     * `DATA_CLASS` and `RECORD` methods do work of their own, so a call into one stays an edge.
+     * to what the forwarder calls. Each only moves its arguments on to another method. A Scala
+     * static forwarder is one too (ADR 0048). `ENUM`, `DATA_CLASS`, `RECORD`, `CASE_CLASS` and
+     * `SCALA_OBJECT` methods do work of their own, so a call into one stays an edge.
      */
-    private val PASS_THROUGH_FORWARDERS = setOf(GeneratedBy.JVM_OVERLOADS, GeneratedBy.MULTIFILE_FACADE, GeneratedBy.DEFAULT_IMPLS)
+    private val PASS_THROUGH_FORWARDERS =
+        setOf(GeneratedBy.JVM_OVERLOADS, GeneratedBy.MULTIFILE_FACADE, GeneratedBy.DEFAULT_IMPLS, GeneratedBy.STATIC_FORWARDER)
 
     /**
      * Runs [GuardAnalysis] over each recorded method that has at least one kept site. A method
@@ -1395,12 +1431,13 @@ object BranchSiteAnalyzer {
      * point's own.
      *
      * A generated forwarder ([PASS_THROUGH_FORWARDERS]: a `JVM_OVERLOADS` overload, a
-     * `MULTIFILE_FACADE` function or a `DEFAULT_IMPLS` method) is a pass-through too, though it
-     * keeps its probe. [forwarderKeys] names this class's own, and [MethodTable.forwarderKeys]
-     * another class's. A call into one records edges to what the forwarder calls, transitively,
-     * and a cross-class one implies its owner's `<clinit>`, the same as any other cross-class
-     * pass-through. So a call to a `@JvmOverloads` overload reaches the full function through its
-     * `$default` twin, and a call to a multi-file facade reaches the part's function. A `<init>`
+     * `MULTIFILE_FACADE` function, a `DEFAULT_IMPLS` method or a Scala `STATIC_FORWARDER`) is a
+     * pass-through too, though it keeps its probe. [forwarderKeys] names this class's own, and
+     * [MethodTable.forwarderKeys] another class's. A call into one records edges to what the
+     * forwarder calls, transitively, and a cross-class one implies its owner's `<clinit>`, the same
+     * as any other cross-class pass-through. So a call to a `@JvmOverloads` overload reaches the
+     * full function through its `$default` twin, a call to a multi-file facade reaches the part's
+     * function, and a call to a Scala static forwarder reaches the object's method. A `<init>`
      * forwarder of a body class still adds the body-class edges. The forwarder keeps its own
      * references, since it has a probe to hold them, so none of them are added to the caller. An
      * entry point that is itself a generated forwarder does not pass through other forwarders:
@@ -2526,6 +2563,13 @@ object BranchSiteAnalyzer {
      * In a class whose [kotlinKind] is [KotlinKind.MULTIFILE_CLASS_FACADE], a function that only
      * forwards to the same function on a part is [GeneratedBy.MULTIFILE_FACADE]; see
      * [multifileFacadeForwarders] and ADR 0041.
+     *
+     * In a class that [isScalaClass], a static forwarder, a case class's and its companion's
+     * plumbing and an object's `writeReplace` are marked as [ScalaGeneratedMethods] reads them,
+     * with [lookup] reading a companion's partner class; see ADR 0048. They go in after every rule
+     * above, each only where no earlier rule marked the method, the way the `@JvmOverloads` and
+     * multi-file facade marks do. No compiler emits a shape both a Kotlin rule and a Scala rule
+     * match, so the order only settles which rule is authoritative if one ever did: the older one.
      */
     private fun computeGeneratedBy(
         classBytes: ByteArray,
@@ -2534,6 +2578,8 @@ object BranchSiteAnalyzer {
         methodAccess: Map<Pair<String, String>, Int>,
         methodsWithLineNumbers: Set<Pair<String, String>>,
         kotlinKind: KotlinKind,
+        isScalaClass: Boolean,
+        lookup: (internalName: String) -> ByteArray?,
     ): Map<Pair<String, String>, GeneratedBy> {
         val result = mutableMapOf<Pair<String, String>, GeneratedBy>()
 
@@ -2571,6 +2617,10 @@ object BranchSiteAnalyzer {
 
         if (methodAccess.keys.any { (name, descriptor) -> isDefaultShaped(name, descriptor) }) {
             for (key in jvmOverloadsForwarders(classBytes, internalClassName)) result.putIfAbsent(key, GeneratedBy.JVM_OVERLOADS)
+        }
+
+        if (isScalaClass) {
+            for ((key, generatedBy) in ScalaGeneratedMethods.of(classBytes, lookup)) result.putIfAbsent(key, generatedBy)
         }
         return result
     }
@@ -3614,9 +3664,18 @@ object BranchSiteAnalyzer {
         ClassReader(classBytes).accept(classVisitor, ClassReader.SKIP_FRAMES)
         val isScalaClass = ScalaClassDetector.isScalaClass(classBytes)
         // A method with any line number carries a line-number table, which is all the data-class
-        // rule in computeGeneratedBy asks of methodsWithLineNumbers.
+        // rule in computeGeneratedBy asks of methodsWithLineNumbers. Only the forwarders are kept,
+        // and no forwarder rule reads another class, so nothing is looked up.
         val forwarderKeys =
-            computeGeneratedBy(classBytes, internalName, superInternalName, methodAccess, firstLines.keys, kotlinKind)
+            computeGeneratedBy(
+                classBytes,
+                internalName,
+                superInternalName,
+                methodAccess,
+                firstLines.keys,
+                kotlinKind,
+                isScalaClass,
+            ) { null }
                 .filterValues { it in PASS_THROUGH_FORWARDERS }
                 .keys
         return MethodTable(

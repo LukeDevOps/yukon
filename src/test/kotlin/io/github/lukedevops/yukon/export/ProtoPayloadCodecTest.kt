@@ -364,6 +364,9 @@ class ProtoPayloadCodecTest {
                         probeNamed("toString", GeneratedBy.RECORD),
                         probeNamed("format", GeneratedBy.JVM_OVERLOADS),
                         probeNamed("greet", GeneratedBy.MULTIFILE_FACADE),
+                        probeNamed("canEqual", GeneratedBy.CASE_CLASS),
+                        probeNamed("run", GeneratedBy.STATIC_FORWARDER),
+                        probeNamed("writeReplace", GeneratedBy.SCALA_OBJECT),
                     ),
             )
 
@@ -377,6 +380,9 @@ class ProtoPayloadCodecTest {
         assertEquals(GeneratedBy.RECORD, decoded.probes.single { it.methodName == "toString" }.generatedBy)
         assertEquals(GeneratedBy.JVM_OVERLOADS, decoded.probes.single { it.methodName == "format" }.generatedBy)
         assertEquals(GeneratedBy.MULTIFILE_FACADE, decoded.probes.single { it.methodName == "greet" }.generatedBy)
+        assertEquals(GeneratedBy.CASE_CLASS, decoded.probes.single { it.methodName == "canEqual" }.generatedBy)
+        assertEquals(GeneratedBy.STATIC_FORWARDER, decoded.probes.single { it.methodName == "run" }.generatedBy)
+        assertEquals(GeneratedBy.SCALA_OBJECT, decoded.probes.single { it.methodName == "writeReplace" }.generatedBy)
     }
 
     @Test
@@ -983,7 +989,12 @@ class ProtoPayloadCodecTest {
         assertEquals(manifest, ProtoPayloadCodec.decodeProbeManifest(bytes))
         assertEquals(baseline, ProtoPayloadCodec.decodeStaticBaseline(ProtoPayloadCodec.encode(baseline)))
         assertEquals(
-            listOf(ProtoRoutineKind.NULL_DEFAULT, ProtoRoutineKind.ROUTINE_KIND_NONE, ProtoRoutineKind.THROW_ONLY, ProtoRoutineKind.FINALLY_COPY),
+            listOf(
+                ProtoRoutineKind.NULL_DEFAULT,
+                ProtoRoutineKind.ROUTINE_KIND_NONE,
+                ProtoRoutineKind.THROW_ONLY,
+                ProtoRoutineKind.FINALLY_COPY,
+            ),
             ProtoProbeManifest
                 .parseFrom(bytes)
                 .probesList
@@ -1147,6 +1158,17 @@ class ProtoPayloadCodecTest {
                                         methodDescriptor = "()V",
                                         generatedBy = GeneratedBy.MULTIFILE_FACADE,
                                     ),
+                                    DeclaredMethod(methodName = "canEqual", methodDescriptor = "()V", generatedBy = GeneratedBy.CASE_CLASS),
+                                    DeclaredMethod(
+                                        methodName = "run",
+                                        methodDescriptor = "()V",
+                                        generatedBy = GeneratedBy.STATIC_FORWARDER,
+                                    ),
+                                    DeclaredMethod(
+                                        methodName = "writeReplace",
+                                        methodDescriptor = "()V",
+                                        generatedBy = GeneratedBy.SCALA_OBJECT,
+                                    ),
                                 ),
                         ),
                     ),
@@ -1164,6 +1186,9 @@ class ProtoPayloadCodecTest {
         assertEquals(GeneratedBy.RECORD, methods.single { it.methodName == "toString" }.generatedBy)
         assertEquals(GeneratedBy.JVM_OVERLOADS, methods.single { it.methodName == "format" }.generatedBy)
         assertEquals(GeneratedBy.MULTIFILE_FACADE, methods.single { it.methodName == "greet" }.generatedBy)
+        assertEquals(GeneratedBy.CASE_CLASS, methods.single { it.methodName == "canEqual" }.generatedBy)
+        assertEquals(GeneratedBy.STATIC_FORWARDER, methods.single { it.methodName == "run" }.generatedBy)
+        assertEquals(GeneratedBy.SCALA_OBJECT, methods.single { it.methodName == "writeReplace" }.generatedBy)
     }
 
     @Test
@@ -1728,7 +1753,7 @@ class ProtoPayloadCodecTest {
     }
 
     @Test
-    fun `a creation edge's implemented interface round-trips through the manifest and the baseline, and an edge with none is empty on the wire`() {
+    fun `a creation edge's implemented interface round-trips through manifest and baseline, and an edge with none is empty on the wire`() {
         val calls =
             listOf(
                 CallEdge(
@@ -1870,7 +1895,13 @@ class ProtoPayloadCodecTest {
         val decoded = ProtoPayloadCodec.decodeStaticBaseline(ProtoPayloadCodec.encode(baseline))
 
         assertEquals(baseline, decoded)
-        assertEquals(listOf(true, false), decoded.declaredClasses.single().methods.map { it.static })
+        assertEquals(
+            listOf(true, false),
+            decoded.declaredClasses
+                .single()
+                .methods
+                .map { it.static },
+        )
     }
 
     @Test
@@ -1901,7 +1932,10 @@ class ProtoPayloadCodecTest {
 
         assertEquals(manifest, decoded)
         val onTheWire = ProtoProbeManifest.parseFrom(ProtoPayloadCodec.encode(manifest))
-        assertEquals(listOf(listOf("\$this\$shout"), listOf("items"), emptyList()), onTheWire.probesList.map { it.parameterNamesList.toList() })
+        assertEquals(
+            listOf(listOf("\$this\$shout"), listOf("items"), emptyList()),
+            onTheWire.probesList.map { it.parameterNamesList.toList() },
+        )
         assertEquals(listOf("", "<T:Ljava/lang/Object;>(Ljava/util/List<+TT;>;)TT;", ""), onTheWire.probesList.map { it.genericSignature })
         assertEquals(listOf(true, false, false), onTheWire.probesList.map { it.extensionReceiver })
     }
@@ -2074,7 +2108,14 @@ class ProtoPayloadCodecTest {
                 .addClassLocations(ProtoClassLocation.newBuilder().setClassId(0).setSuperClassName("java.lang.Object"))
                 .build()
 
-        assertEquals(KotlinKind.NONE, ProtoPayloadCodec.decodeProbeManifest(wireManifest.toByteArray()).classLocations.single().kotlinKind)
+        assertEquals(
+            KotlinKind.NONE,
+            ProtoPayloadCodec
+                .decodeProbeManifest(wireManifest.toByteArray())
+                .classLocations
+                .single()
+                .kotlinKind,
+        )
     }
 
     @Test

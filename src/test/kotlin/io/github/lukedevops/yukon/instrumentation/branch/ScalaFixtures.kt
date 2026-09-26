@@ -12,7 +12,8 @@ import java.io.File
 object ScalaFixtures {
     private const val SCALA_TARGET_PACKAGE_PREFIX = "com.example.scalatarget."
 
-    private fun outputDir(module: String): File =
+    /** The compiled output directory of fixture module `module` (`scala3` or `scala2`). */
+    fun outputDir(module: String): File =
         File(
             System.getProperty("yukon.fixtures.$module.dir")
                 ?: error("system property yukon.fixtures.$module.dir is not set; run tests through the root Gradle build"),

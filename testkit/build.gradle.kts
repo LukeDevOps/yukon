@@ -55,9 +55,37 @@ tasks.jar {
     archiveBaseName.set("yukon-testkit")
 }
 
+// The Scala fixture modules, wired in the way the root build wires them: a task dependency and two
+// system properties each, never a test dependency, so no fixture class loads before a test installs
+// instrumentation. The never-hit test for Scala's generated methods (ADR 0048) loads them through a
+// child-first loader.
+evaluationDependsOn(":fixtures-scala3")
+evaluationDependsOn(":fixtures-scala2")
+val scalaFixtureModules = listOf("scala3", "scala2")
+
 tasks.test {
     useJUnitPlatform()
     jvmArgs("-Djdk.attach.allowAttachSelf=true")
+    dependsOn(scalaFixtureModules.map { ":fixtures-$it:classes" })
+    doFirst {
+        for (module in scalaFixtureModules) {
+            val fixture = project(":fixtures-$module")
+            systemProperty(
+                "yukon.fixtures.$module.dir",
+                fixture.layout.buildDirectory
+                    .dir("classes/scala/main")
+                    .get()
+                    .asFile.absolutePath,
+            )
+            systemProperty(
+                "yukon.fixtures.$module.classpath",
+                fixture.configurations
+                    .named("runtimeClasspath")
+                    .get()
+                    .asPath,
+            )
+        }
+    }
 }
 
 // Proves YukonExtension against the real, shaded agent jar rather than hand-built payloads or a
