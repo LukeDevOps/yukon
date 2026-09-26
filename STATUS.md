@@ -51,10 +51,7 @@ adopter's collector forwards to one multi-tenant backend.
    - Collector: a TLS listener, or a README line saying it must sit behind
      a TLS proxy. Add several valid tokens for rotation, and `_FILE` token
      variables.
-5. **Close the collector's shutdown race.** `enqueue` checks `closed` and
-   then sends without a lock. So a request racing `Shutdown` can be
-   answered 202 and never forwarded. It is a small lock fix.
-6. **Release mechanics.**
+5. **Release mechanics.**
    - Collector: publish the image to GHCR with tags. Build it with the Go
      version `go.mod` pins (the Dockerfile uses 1.27, `go.mod` pins 1.26),
      and add a HEALTHCHECK like the server's.
