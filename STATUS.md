@@ -16,9 +16,12 @@ publishes the agent (with its testkit) and the collector as open source.
 adopter's collector forwards to one multi-tenant backend.
 
 1. **Run on a real Spring Boot service.** The demo is Kotlin on the JDK
-   HTTP server only. Run `runSpringDemo` against the real collector and
-   server (a `runSpringDemoStack` is not written yet) and the `fixtures-*`
-   modules. Then read the UI for Java anonymous classes, Scala,
+   HTTP server only. Run the Spring demo against the real collector and
+   server and the `fixtures-*` modules. `runSpringDemoStack` landed on
+   2026-09-26 and reports the Spring demo correctly: its two uncalled
+   handlers never hit, the legacy-pricing branch never taken with
+   `LegacyPricing` never loaded under it, and five of nine endpoints never
+   called, Spring's `/error` and resource handlers included. Then read the UI for Java anonymous classes, Scala,
    `Companion`, data classes, coroutines and Spring (server STATUS, "Not
    yet checked"). About fifteen items here and in the server are deferred
    "until a real service shows it"; this run says which are real.
@@ -1014,8 +1017,6 @@ dispatch for the other modules.
 
 - Static analysis of registration call sites, to declare an endpoint whose
   registration the agent never sees at runtime.
-- A `runSpringDemoStack` counterpart to `runDemoStack`, so the Spring demo is
-  proven against the real collector and server rather than only the stub.
 - Per-framework disable flags. One `endpointsEnabled` switch and the
   self-disabling modules cover everything known so far; this is only worth
   building if an adopter needs to turn one module off by hand.

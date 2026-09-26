@@ -5,7 +5,6 @@ import java.net.HttpURLConnection
 import java.net.Socket
 import java.net.URI
 import java.net.URLEncoder
-import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
@@ -189,11 +188,29 @@ val stackAgentToken = providers.gradleProperty("yukonAgentToken").getOrElse("loc
 val stackServerUrl = providers.gradleProperty("yukonServerUrl").getOrElse("http://localhost:4320")
 val stackServerApiKey = providers.gradleProperty("yukonServerApiKey").getOrElse("yk_local-stack-api-key")
 val stackServiceVersion = providers.gradleProperty("yukonServiceVersion").getOrElse("stack-demo")
-val stackServiceName = "yukon-demo"
+val springStackServiceVersion = providers.gradleProperty("yukonServiceVersion").getOrElse("spring-stack-demo")
+
+// One service as the stack's read API knows it: the name and version a demo's agent reports under.
+class StackService(
+    val name: String,
+    val version: String,
+    namespace: String?,
+) {
+    // The server's path for the service: under its namespace when one is named (server ADR 0038).
+    val path: String =
+        namespace?.let {
+            "/api/v1/namespaces/${URLEncoder.encode(it, Charsets.UTF_8).replace("+", "%20")}/services/$name"
+        } ?: "/api/v1/services/$name"
+}
 
 // The demo runs in the unspecified namespace unless YUKON_SERVICE_NAMESPACE names one. The agent
-// reads it from its own environment, so runDemoStack hands it to the demo server as it is.
-val stackServiceNamespace: String? = providers.environmentVariable("YUKON_SERVICE_NAMESPACE").orNull?.trim()?.ifEmpty { null }
+// reads it from its own environment, so the stack tasks hand it to the demo server as it is.
+val stackServiceNamespace: String? =
+    providers
+        .environmentVariable("YUKON_SERVICE_NAMESPACE")
+        .orNull
+        ?.trim()
+        ?.ifEmpty { null }
 
 tasks.register("runDemoStack") {
     group = "application"
@@ -203,66 +220,115 @@ tasks.register("runDemoStack") {
     dependsOn(rootProject.tasks.named("shadowJar"), tasks.named("classes"))
 
     doLast {
-        val javaBin = Jvm.current().javaExecutable.absolutePath
         val demoClasspath = demoAppClasspath()
-        val agentJar =
-            rootProject.tasks
-                .named("shadowJar", Jar::class.java)
+        runStackDemo(
+            service = StackService("yukon-demo", stackServiceVersion, stackServiceNamespace),
+            includePackages = "io.github.lukedevops.demo.server",
+            serverArgs = listOf("-cp", demoClasspath, demoServerMainClass),
+            serverPort = DemoPorts.SERVER_PORT,
+            serverPortWaitSeconds = portWaitTimeoutSeconds,
+            clientArgs = listOf("-cp", demoClasspath, demoClientMainClass),
+        )
+    }
+}
+
+tasks.register("runSpringDemoStack") {
+    group = "application"
+    description =
+        "Runs the -javaagent-instrumented Spring Boot fat-jar demo and its client against a real collector, " +
+        "then prints what the yukon-server read API reports for it."
+    dependsOn(
+        rootProject.tasks.named("shadowJar"),
+        project(":demo-spring").tasks.named("bootJar"),
+        tasks.named("classes"),
+    )
+
+    doLast {
+        val springBootJar =
+            project(":demo-spring")
+                .tasks
+                .named("bootJar", Jar::class.java)
                 .get()
                 .archiveFile
                 .get()
                 .asFile
-
-        if (httpGet("$stackEndpoint/healthz", token = null).status != 200) {
-            throw GradleException(
-                "yukon demo: no collector answering at $stackEndpoint/healthz. Start the stack with " +
-                    "`docker compose --profile stack up --build` in yukon-server, or pass -PyukonEndpoint=<url>.",
-            )
-        }
-
-        val runInstanceId = UUID.randomUUID().toString()
-        println(
-            "yukon demo: starting instrumented demo server${stackNamespaceSuffix()} against $stackEndpoint as instance $runInstanceId",
+        runStackDemo(
+            service = StackService("yukon-spring-demo", springStackServiceVersion, stackServiceNamespace),
+            includePackages = "io.github.lukedevops.demo.spring",
+            serverArgs = listOf("-jar", springBootJar.absolutePath, "--server.port=${DemoPorts.SPRING_SERVER_PORT}"),
+            serverPort = DemoPorts.SPRING_SERVER_PORT,
+            serverPortWaitSeconds = springPortWaitTimeoutSeconds,
+            clientArgs = listOf("-cp", demoAppClasspath(), springDemoClientMainClass),
         )
-        val agentArg =
-            "-javaagent:${agentJar.absolutePath}=" +
-                "serviceName=$stackServiceName," +
-                "serviceVersion=$stackServiceVersion," +
-                "serviceInstanceId=$runInstanceId," +
-                "flushIntervalSeconds=$flushIntervalSeconds," +
-                "endpoint=$stackEndpoint," +
-                "includePackages=io.github.lukedevops.demo.server," +
-                "staticBaselineEnabled=true"
-        val server =
-            startProcess(
-                "server",
-                javaBin,
-                listOf(agentArg, "-cp", demoClasspath, demoServerMainClass),
-                env = mapOf("YUKON_AUTH_TOKEN" to stackAgentToken) + stackServiceNamespaceEnv(),
-            )
-        try {
-            waitForPort(DemoPorts.SERVER_PORT, portWaitTimeoutSeconds)
-
-            println("yukon demo: running demo client")
-            val client = startProcess("client", javaBin, listOf("-cp", demoClasspath, demoClientMainClass))
-            client.process.waitFor()
-            client.outputThread.join()
-
-            println("yukon demo: waiting for one more flush and the static baseline scan before shutdown")
-            Thread.sleep((flushIntervalSeconds + 2) * 1000)
-        } finally {
-            val seenBeforeShutdown = instanceLastSeen(runInstanceId)
-            gracefulShutdown("server", server, DemoPorts.SERVER_PORT)
-            awaitShutdownFlush(runInstanceId, seenBeforeShutdown)
-        }
-
-        printStackReport()
-        println("yukon demo: done")
     }
 }
 
-fun stackServiceNamespaceEnv(): Map<String, String> =
-    stackServiceNamespace?.let { mapOf("YUKON_SERVICE_NAMESPACE" to it) } ?: emptyMap()
+// Runs one demo server under the agent against the stack's collector, drives it with its client,
+// waits for the shutdown flush to land, then prints the server's report for [service].
+fun runStackDemo(
+    service: StackService,
+    includePackages: String,
+    serverArgs: List<String>,
+    serverPort: Int,
+    serverPortWaitSeconds: Long,
+    clientArgs: List<String>,
+) {
+    val javaBin = Jvm.current().javaExecutable.absolutePath
+    val agentJar =
+        rootProject.tasks
+            .named("shadowJar", Jar::class.java)
+            .get()
+            .archiveFile
+            .get()
+            .asFile
+
+    if (httpGet("$stackEndpoint/healthz", token = null).status != 200) {
+        throw GradleException(
+            "yukon demo: no collector answering at $stackEndpoint/healthz. Start the stack with " +
+                "`docker compose --profile stack up --build` in yukon-server, or pass -PyukonEndpoint=<url>.",
+        )
+    }
+
+    val runInstanceId = UUID.randomUUID().toString()
+    println(
+        "yukon demo: starting instrumented ${service.name}${stackNamespaceSuffix()} against $stackEndpoint as instance $runInstanceId",
+    )
+    val agentArg =
+        "-javaagent:${agentJar.absolutePath}=" +
+            "serviceName=${service.name}," +
+            "serviceVersion=${service.version}," +
+            "serviceInstanceId=$runInstanceId," +
+            "flushIntervalSeconds=$flushIntervalSeconds," +
+            "endpoint=$stackEndpoint," +
+            "includePackages=$includePackages," +
+            "staticBaselineEnabled=true"
+    val server =
+        startProcess(
+            "server",
+            javaBin,
+            listOf(agentArg) + serverArgs,
+            env = mapOf("YUKON_AUTH_TOKEN" to stackAgentToken) + stackServiceNamespaceEnv(),
+        )
+    try {
+        waitForPort(serverPort, serverPortWaitSeconds)
+
+        println("yukon demo: running demo client")
+        val client = startProcess("client", javaBin, clientArgs)
+        client.process.waitFor()
+        client.outputThread.join()
+
+        println("yukon demo: waiting for one more flush and the static baseline scan before shutdown")
+        Thread.sleep((flushIntervalSeconds + 2) * 1000)
+    } finally {
+        gracefulShutdown("server", server, serverPort)
+        awaitShutdownFlush(service, runInstanceId)
+    }
+
+    printStackReport(service)
+    println("yukon demo: done")
+}
+
+fun stackServiceNamespaceEnv(): Map<String, String> = stackServiceNamespace?.let { mapOf("YUKON_SERVICE_NAMESPACE" to it) } ?: emptyMap()
 
 // A suffix that names the namespace for a printed line, or an empty string when there is none.
 fun stackNamespaceSuffix(): String = stackServiceNamespace?.let { " in namespace $it" } ?: ""
@@ -291,44 +357,42 @@ fun httpGet(
     }
 }
 
-// The server's path for the demo service: under its namespace when one is named (server ADR 0038).
-val stackServicePath: String =
-    stackServiceNamespace?.let {
-        "/api/v1/namespaces/${URLEncoder.encode(it, Charsets.UTF_8).replace("+", "%20")}/services/$stackServiceName"
-    } ?: "/api/v1/services/$stackServiceName"
-
-fun readApi(path: String): Map<*, *> {
-    val result = httpGet("$stackServerUrl$stackServicePath$path", stackServerApiKey)
+fun readApi(
+    service: StackService,
+    path: String,
+): Map<*, *> {
+    val result = httpGet("$stackServerUrl${service.path}$path", stackServerApiKey)
     if (result.status != 200) {
         throw GradleException("yukon demo: GET $path returned ${result.status}: ${result.body}")
     }
     return groovy.json.JsonSlurper().parseText(result.body) as Map<*, *>
 }
 
-// last_seen_at of this run's instance as the server reports it, or null
-// if the server has not heard from the instance yet.
-fun instanceLastSeen(instanceId: String): Instant? {
-    val instances = readApi("/instances?version=$stackServiceVersion")["instances"] as List<*>
-    val match = instances.map { it as Map<*, *> }.firstOrNull { it["instance_id"] == instanceId } ?: return null
-    return Instant.parse(match["last_seen_at"] as String)
-}
-
-// The agent's shutdown hook sends one last delta batch, and the collector
-// forwards it asynchronously, so it can still be in flight after the demo
-// server has exited. Every delta batch moves the instance's last_seen_at,
-// so wait until this run's instance has been seen again since just before
-// the shutdown request; that is the final flush landing. The report would
-// otherwise be read before the last hits arrived, and because the store
-// keeps data across runs, "any probes known" cannot tell one run from the
-// last.
-fun awaitShutdownFlush(
+// Whether the server reports this run's instance as ended cleanly: its shutdown flush, the delta
+// batch marked final_flush, has landed. False while the service or the instance is unknown to it.
+fun instanceEndedCleanly(
+    service: StackService,
     instanceId: String,
-    seenBefore: Instant?,
+): Boolean =
+    try {
+        val instances = readApi(service, "/instances?version=${service.version}")["instances"] as List<*>
+        instances.map { it as Map<*, *> }.any { it["instance_id"] == instanceId && it["ended_cleanly"] == true }
+    } catch (_: GradleException) {
+        false
+    }
+
+// The agent's shutdown hook sends one last delta batch, and the collector forwards it
+// asynchronously, so it can still be in flight after the demo server has exited. Wait until the
+// server has it, so the report is not read before the last hits arrive; because the store keeps
+// data across runs, "any probes known" cannot tell one run from the last. The instance id is fresh
+// each run, so its ended_cleanly flag can only come from this run's final flush.
+fun awaitShutdownFlush(
+    service: StackService,
+    instanceId: String,
 ) {
     val deadline = System.currentTimeMillis() + 15_000
     while (System.currentTimeMillis() < deadline) {
-        val seenNow = instanceLastSeen(instanceId)
-        if (seenNow != null && (seenBefore == null || seenNow.isAfter(seenBefore))) return
+        if (instanceEndedCleanly(service, instanceId)) return
         Thread.sleep(250)
     }
     println(
@@ -482,16 +546,16 @@ fun clusterRootText(root: Map<*, *>): String {
 
 // The report covers every instance of this service and version the server
 // has ever seen, so repeated runs against the same stack accumulate.
-fun printStackReport() {
-    val version = "?version=$stackServiceVersion"
-    val report = readApi("/report$version")
+fun printStackReport(service: StackService) {
+    val version = "?version=${service.version}"
+    val report = readApi(service, "/report$version")
     val methods = report["methods"] as Map<*, *>
     val branchSites = report["branch_sites"] as Map<*, *>
     val probes = report["probes"] as Map<*, *>
     val classes = report["classes"] as Map<*, *>
     val instances = report["instances"] as Map<*, *>
     println(
-        "yukon demo: report for $stackServiceName@$stackServiceVersion${stackNamespaceSuffix()} from $stackServerUrl " +
+        "yukon demo: report for ${service.name}@${service.version}${stackNamespaceSuffix()} from $stackServerUrl " +
             "(${instances["total"]} instance(s) so far)",
     )
     println(
@@ -530,7 +594,7 @@ fun printStackReport() {
     }
 
     println("  NEVER HIT:")
-    for (row in readApi("/never-hit$version")["rows"] as List<*>) {
+    for (row in readApi(service, "/never-hit$version")["rows"] as List<*>) {
         val r = row as Map<*, *>
         val routes = (r["routes"] as List<*>).takeIf { it.isNotEmpty() }?.let { " routes=$it" } ?: ""
         val inlinedFrom = r["inlined_from_class_name"]?.let { " (inlined from $it)" } ?: ""
@@ -545,13 +609,13 @@ fun printStackReport() {
         }
     }
     println("  NEVER LOADED:")
-    for (cls in readApi("/never-loaded$version")["classes"] as List<*>) {
+    for (cls in readApi(service, "/never-loaded$version")["classes"] as List<*>) {
         val c = cls as Map<*, *>
         println("    ${classText(c)} (${(c["methods"] as List<*>).size} methods)")
     }
     for (finding in listOf("never-initialised", "never-instantiated")) {
         println("  ${finding.replace('-', ' ').uppercase()}:")
-        for (cls in readApi("/$finding$version")["classes"] as List<*>) {
+        for (cls in readApi(service, "/$finding$version")["classes"] as List<*>) {
             val c = cls as Map<*, *>
             val names = (c["methods"] as List<*>).joinToString(", ") { if (it == "<init>") "constructor" else "$it" }
             println("    ${classText(c)} (methods: $names) (instances loading: ${c["instances_loading"]})")
@@ -559,14 +623,14 @@ fun printStackReport() {
     }
     for (status in listOf("never-supplied", "always-supplied")) {
         println("  ${status.replace('-', ' ').uppercase()}:")
-        for (parameter in readApi("/optional-parameters$version&status=$status")["optional_parameters"] as List<*>) {
+        for (parameter in readApi(service, "/optional-parameters$version&status=$status")["optional_parameters"] as List<*>) {
             val p = parameter as Map<*, *>
             val name = p["parameter_name"] ?: "#${p["parameter_index"]}"
             println("    ${p["class_name"]}#${p["method_name"]}($name) omitted=${p["omissions_total"]} of ${p["target_hits_total"]} calls")
         }
     }
     println("  UNREACHED CLUSTERS:")
-    for (cluster in readApi("/unreached-clusters$version")["clusters"] as List<*>) {
+    for (cluster in readApi(service, "/unreached-clusters$version")["clusters"] as List<*>) {
         val c = cluster as Map<*, *>
         val root = c["root"] as Map<*, *>
         val routes = (root["routes"] as List<*>).takeIf { it.isNotEmpty() }?.let { " routes=$it" } ?: ""
@@ -586,7 +650,7 @@ fun printStackReport() {
         }
     }
     println("  ENDPOINTS:")
-    for (endpoint in readApi("/endpoints$version&status=all")["endpoints"] as List<*>) {
+    for (endpoint in readApi(service, "/endpoints$version&status=all")["endpoints"] as List<*>) {
         val e = endpoint as Map<*, *>
         val status = if ((e["calls_total"] as Number).toLong() > 0) "CALLED" else "NEVER CALLED"
         val handler = e["handler_class"]?.let { cls -> " handler=$cls${e["handler_method"]?.let { "#$it" } ?: ""}" } ?: ""

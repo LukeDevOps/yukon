@@ -282,11 +282,13 @@ reference is reached from the handler and never appears in a cluster.
 
 ```
 ./gradlew :demo:runDemoStack
+./gradlew :demo:runSpringDemoStack
 ```
 
 Runs the same instrumented demo server and client, but against a real
 collector instead of the stub, then prints what the backend behind it
-reports: probe and class counts, the never-hit probes, the never-loaded,
+reports. `runSpringDemoStack` does the same for the Spring Boot fat-jar
+demo, as service `yukon-spring-demo`. Each prints: probe and class counts, the never-hit probes, the never-loaded,
 never-initialised and never-instantiated classes, and the unreached
 clusters. It expects a collector at `http://localhost:4319` and the
 yukon-server read API at `http://localhost:4320`, which is what
@@ -299,7 +301,7 @@ address and credential can be overridden:
 | `-PyukonAgentToken` | `local-stack-agent-token` |
 | `-PyukonServerUrl` | `http://localhost:4320` |
 | `-PyukonServerApiKey` | `yk_local-stack-api-key` |
-| `-PyukonServiceVersion` | `stack-demo` |
+| `-PyukonServiceVersion` | `stack-demo`, or `spring-stack-demo` for the Spring demo |
 
 The defaults match the compose stack's own development defaults, so with
 the stack up it works with no arguments. Each run registers as a new
@@ -309,7 +311,7 @@ covers every run of that service and version so far; pass a fresh
 
 The demo runs in the unspecified namespace. To run it in a named one, set
 `YUKON_SERVICE_NAMESPACE` in the environment of the Gradle command; the
-task passes it to the demo server, and the report names the namespace.
+tasks pass it to the demo server, and the report names the namespace.
 
 ## Test your app against the agent
 
