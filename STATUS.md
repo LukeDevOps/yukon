@@ -24,8 +24,6 @@ adopter's collector forwards to one multi-tenant backend.
    "until a real service shows it"; this run says which are real.
 2. **Fix the false findings a typical Spring app will hit.** These are
    likely to show up in step 1:
-   - Hibernate's `$$_hibernate_` methods: it is not checked whether they
-     are synthetic.
    - A named class that implements a framework interface reads as an
      uncalled root (the ADR 0024 gap).
    - kotlin-stdlib always reads as used, through `kotlin.Metadata`.
@@ -834,12 +832,19 @@ showed all four kinds woven before the rule and none after.
 ByteBuddy, Mockito, javassist and JDK proxy classes were added on 2026-09-26;
 ADR 0029's consequences hold the spellings and sources.
 
-Not covered: Hibernate's bytecode enhancement rewrites the entity class
-itself, adding `$$_hibernate_` methods to a class the adopter wrote. They are
-not synthetic: 5.6.15, 6.6.58 and 7.4.10 all define them public through
-ByteBuddy's `defineMethod`, with no synthetic modifier (`EnhancerImpl`,
-`PersistentAttributeTransformer`). So the method tier probes them, and whether
-to exclude them or mark them `GeneratedBy` is an open decision.
+Hibernate's bytecode enhancement adds public, non-synthetic `$$_hibernate_`
+methods to the entity class the adopter wrote. Settled 2026-09-26 in ADR 0047:
+they are not probed or declared, and a call to one passes through. Open from
+that decision:
+
+- EclipseLink (`_persistence_*`), OpenJPA (`pc*`) and Ebean (`_ebean_*`) weave
+  methods into entities the same way and are not covered; each needs reading
+  from its own source first, and OpenJPA's `pc` prefix is a name a person
+  writes, so it cannot be matched by prefix.
+- "Persistent field never read" is a possible finding of its own: a column
+  stored but never read by application code. It would come from the
+  adopter's own field reads, with or without enhancement, not from
+  Hibernate's reader methods. Nobody has asked for it.
 
 ### Stable branch identity: landed in both repos
 

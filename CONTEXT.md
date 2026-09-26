@@ -69,8 +69,12 @@ A method the compiler emits from a declaration rather than from a body the adopt
 _Avoid_: synthetic method (a JVM flag; these are not synthetic), compiler method
 
 **Runtime-generated class**:
-A class a framework synthesized in memory rather than compiled from source, named after the class it proxies so that it falls inside the adopter's own packages: a Spring CGLIB proxy and its fast-class helpers. Recognised by the generator's naming, never probed, never declared, and never reported at all, the way coroutine machinery is.
+A class a framework synthesized in memory rather than compiled from source, named after the class it proxies or the class it serves, so that it falls inside the adopter's own packages: a Spring CGLIB proxy and its fast-class helpers, a Hibernate proxy or instantiator, a ByteBuddy or Mockito subclass, a javassist proxy, or a JDK proxy of a non-public interface. Recognised by the generator's naming, never probed, never declared, and never reported at all, the way coroutine machinery is.
 _Avoid_: proxy class (a Spring bean proxy is one shape of it), synthetic class (a JVM flag; these are not synthetic), skipped class (a skipped class is one the agent wanted and could not have)
+
+**Enhancement method**:
+A method Hibernate's bytecode enhancement adds to an entity class the adopter wrote, named with the `$$_hibernate_` prefix, including a reader and writer per persistent field. Never probed, never declared, and passed through when the adopter's code calls one, the way a synthetic accessor is.
+_Avoid_: generated method (that is compiler output that stands for a declaration), synthetic method (a JVM flag; these are not synthetic)
 
 **Skipped class**:
 A class that matched the include rules but could not be instrumented, reported with a reason.

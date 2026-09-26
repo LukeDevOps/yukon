@@ -319,13 +319,34 @@ object TypeMatchPolicy {
      * where Scala 3 marks its `$anonfun$adapted$N` as one, so the `$adapted` suffix is excluded
      * explicitly and both compilers yield one probe per lambda. Kotlin needs no entry here, since
      * its lambda bodies are plain private static methods, never synthetic.
+     *
+     * A method Hibernate's bytecode enhancement added ([isEnhancementMethod]) is left out the same
+     * way, though it is not synthetic. See ADR 0047.
      */
     fun methodMatcher(isScalaClass: Boolean): ElementMatcher.Junction<MethodDescription> =
         not(isAbstract<MethodDescription>())
             .and(not(isNative()))
             .and(not(isBridge()))
             .and(not(isTypeInitializer()))
-            .and { method -> !method.isSynthetic || isProbedLambdaBody(method.name, isScalaClass) }
+            .and { method ->
+                (!method.isSynthetic || isProbedLambdaBody(method.name, isScalaClass)) && !isEnhancementMethod(method.name)
+            }
+
+    /**
+     * The prefix of every method name Hibernate's bytecode enhancement adds to an entity: the fixed
+     * methods of `EnhancerConstants` and `ExtendedSelfDirtinessTracker`, and the per-field
+     * `$$_hibernate_read_<field>` and `$$_hibernate_write_<field>`. Read out of hibernate-core
+     * 5.6.15, 6.6.58 and 7.4.10.
+     */
+    private const val ENHANCEMENT_METHOD_PREFIX = "\$\$_hibernate_"
+
+    /**
+     * Whether a method named [name] is one Hibernate's bytecode enhancement added to a class the
+     * adopter wrote. Such a method is public and not synthetic, so only its name tells it apart; it
+     * stands for nothing in the adopter's source and exists only when enhancement is on. The method
+     * tier leaves it out like a synthetic method, and a call to one is a pass-through. See ADR 0047.
+     */
+    fun isEnhancementMethod(name: String): Boolean = name.startsWith(ENHANCEMENT_METHOD_PREFIX)
 
     /**
      * Whether a synthetic method named [name] is a lambda body worth a probe. See [methodMatcher].

@@ -453,6 +453,20 @@ class TypeMatchPolicyTest {
     }
 
     /**
+     * A Hibernate enhancement method is recognised by its name alone, and only by the prefix: a
+     * method whose name mentions Hibernate some other way is the adopter's. See ADR 0047.
+     */
+    @Test
+    fun `only a name starting with the Hibernate enhancement prefix is an enhancement method`() {
+        for (name in listOf("\$\$_hibernate_read_name", "\$\$_hibernate_write_order", "\$\$_hibernate_getInterceptor")) {
+            assertTrue(TypeMatchPolicy.isEnhancementMethod(name), name)
+        }
+        for (name in listOf("hibernateRead", "read\$\$_hibernate_x", "_hibernate_read_name", "\$hibernate_read")) {
+            assertFalse(TypeMatchPolicy.isEnhancementMethod(name), name)
+        }
+    }
+
+    /**
      * Names ByteBuddy, Mockito, javassist and the JDK give the classes they generate. The shapes
      * are read out of ByteBuddy 1.18.12's `NamingStrategy` and `AuxiliaryType`, mockito-core
      * 5.14.2's `SubclassBytecodeGenerator`, javassist 3.30.2-GA's `ProxyFactory` and

@@ -10,7 +10,7 @@ import java.net.URLClassLoader
  * Everything else, such as the JDK and the agent classes, still resolves through the parent as
  * normal.
  */
-class FixtureClassLoader(
+open class FixtureClassLoader(
     urls: Array<URL>,
     parent: ClassLoader,
     private val fixturePackagePrefix: String = "com.example.target.",

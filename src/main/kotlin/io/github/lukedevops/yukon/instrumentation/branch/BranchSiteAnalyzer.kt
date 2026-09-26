@@ -1581,7 +1581,12 @@ object BranchSiteAnalyzer {
                 val table = methodTableFor(owner)
                 val access = table?.methodAccess?.get(name to descriptor)
                 if (table == null || access == null) {
-                    edges += edge(dottedOwner, name, descriptor, virtualRaw, kind, capturedCount, implementedInterface)
+                    // Under runtime enhancement the owner's class file predates the enhancer, so an
+                    // enhancement method it calls is not declared there. Nothing probes that name,
+                    // so an edge to it could never resolve. See ADR 0047.
+                    if (!TypeMatchPolicy.isEnhancementMethod(name)) {
+                        edges += edge(dottedOwner, name, descriptor, virtualRaw, kind, capturedCount, implementedInterface)
+                    }
                     return
                 }
 
@@ -1850,11 +1855,11 @@ object BranchSiteAnalyzer {
 
     /**
      * Whether the method tier would not probe a declared method with these [access] flags and
-     * [name], owned by a Scala class when [isScalaClass] is true: a bridge, always, or a synthetic
-     * method that is not a lambda body the method tier does probe. Mirrors
-     * [TypeMatchPolicy.methodMatcher]'s own synthetic handling exactly, so a method resolved as a
-     * cross-class pass-through here is never one the method tier also probes in its own right.
-     * See ADR 0024.
+     * [name], owned by a Scala class when [isScalaClass] is true: a bridge, always, a Hibernate
+     * enhancement method (ADR 0047), or a synthetic method that is not a lambda body the method
+     * tier does probe. Mirrors [TypeMatchPolicy.methodMatcher]'s own handling of those exactly, so
+     * a method resolved as a cross-class pass-through here is never one the method tier also probes
+     * in its own right. See ADR 0024.
      */
     private fun wouldNotBeProbedByMethodTier(
         access: Int,
@@ -1862,6 +1867,7 @@ object BranchSiteAnalyzer {
         isScalaClass: Boolean,
     ): Boolean {
         if (access and Opcodes.ACC_BRIDGE != 0) return true
+        if (TypeMatchPolicy.isEnhancementMethod(name)) return true
         if (access and Opcodes.ACC_SYNTHETIC != 0) return !TypeMatchPolicy.isProbedLambdaBody(name, isScalaClass)
         return false
     }
@@ -2696,11 +2702,21 @@ object BranchSiteAnalyzer {
 
         override fun visitInsn(opcode: Int) {
             when {
-                twinDescriptor != null && !returned && opcode in Opcodes.IRETURN..Opcodes.RETURN -> returned = true
-                opcode in Opcodes.ICONST_M1..Opcodes.ICONST_5 -> push(Pushed.IntConstant(opcode - Opcodes.ICONST_0))
-                opcode == Opcodes.ACONST_NULL || opcode == Opcodes.LCONST_0 || opcode == Opcodes.FCONST_0 || opcode == Opcodes.DCONST_0 ->
+                twinDescriptor != null && !returned && opcode in Opcodes.IRETURN..Opcodes.RETURN -> {
+                    returned = true
+                }
+
+                opcode in Opcodes.ICONST_M1..Opcodes.ICONST_5 -> {
+                    push(Pushed.IntConstant(opcode - Opcodes.ICONST_0))
+                }
+
+                opcode == Opcodes.ACONST_NULL || opcode == Opcodes.LCONST_0 || opcode == Opcodes.FCONST_0 || opcode == Opcodes.DCONST_0 -> {
                     push(Pushed.ZeroConstant(opcode))
-                else -> reject()
+                }
+
+                else -> {
+                    reject()
+                }
             }
         }
 
@@ -2734,11 +2750,22 @@ object BranchSiteAnalyzer {
                     if (pushed.size != 2 || !isOwnReferenceParameter || pushed[1] != Pushed.StringConstant) return reject()
                     pushed.clear()
                 }
-                owner != internalClassName -> reject()
-                this.name == "<init>" && opcode == Opcodes.INVOKESPECIAL && name == "<init>" && isDefaultShaped(name, descriptor) ->
+
+                owner != internalClassName -> {
+                    reject()
+                }
+
+                this.name == "<init>" && opcode == Opcodes.INVOKESPECIAL && name == "<init>" && isDefaultShaped(name, descriptor) -> {
                     twinDescriptor = descriptor
-                this.name != "<init>" && opcode == Opcodes.INVOKESTATIC && name == this.name + "\$default" -> twinDescriptor = descriptor
-                else -> reject()
+                }
+
+                this.name != "<init>" && opcode == Opcodes.INVOKESTATIC && name == this.name + "\$default" -> {
+                    twinDescriptor = descriptor
+                }
+
+                else -> {
+                    reject()
+                }
             }
         }
 
@@ -2822,9 +2849,18 @@ object BranchSiteAnalyzer {
                 val value = pushed[next++]
                 val ownType = ownParameters.getOrNull(ownLoaded)
                 when {
-                    ownType == type && value == Pushed.Load(loadOpcodeFor(type), ownSlots[ownLoaded]) -> ownLoaded++
-                    value == zeroValueOf(type) -> omitted[index / Int.SIZE_BITS] = omitted[index / Int.SIZE_BITS] or (1 shl (index % Int.SIZE_BITS))
-                    else -> return false
+                    ownType == type && value == Pushed.Load(loadOpcodeFor(type), ownSlots[ownLoaded]) -> {
+                        ownLoaded++
+                    }
+
+                    value == zeroValueOf(type) -> {
+                        omitted[index / Int.SIZE_BITS] =
+                            omitted[index / Int.SIZE_BITS] or (1 shl (index % Int.SIZE_BITS))
+                    }
+
+                    else -> {
+                        return false
+                    }
                 }
             }
             if (ownLoaded != ownParameters.size || omitted.all { it == 0 }) return false
