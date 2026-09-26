@@ -4,6 +4,7 @@ import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.Socket
 import java.net.URI
+import java.net.URLEncoder
 import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
@@ -290,8 +291,14 @@ fun httpGet(
     }
 }
 
+// The server's path for the demo service: under its namespace when one is named (server ADR 0038).
+val stackServicePath: String =
+    stackServiceNamespace?.let {
+        "/api/v1/namespaces/${URLEncoder.encode(it, Charsets.UTF_8).replace("+", "%20")}/services/$stackServiceName"
+    } ?: "/api/v1/services/$stackServiceName"
+
 fun readApi(path: String): Map<*, *> {
-    val result = httpGet("$stackServerUrl/api/v1/services/$stackServiceName$path", stackServerApiKey)
+    val result = httpGet("$stackServerUrl$stackServicePath$path", stackServerApiKey)
     if (result.status != 200) {
         throw GradleException("yukon demo: GET $path returned ${result.status}: ${result.body}")
     }
