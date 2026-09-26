@@ -93,9 +93,18 @@ fire. `demo-spring`'s `PricingConfiguration` is fully hit with the rule in place
   the suffix (seven to fifteen letters and digits, from `RandomString.hashOf` and flag characters)
   has the shape of a local class name, and `fun auxiliary()` holding a local class `Handler` gives
   `Power$auxiliary$Handler`. A first cut matched them and would have turned that class away. Also
-  not covered: ByteBuddy's fixed and caller naming modes (`-Dnet.bytebuddy.naming`, and GraalVM
-  native images), which end the name at `$ByteBuddy`, and Mockito's named-module helpers
-  (`$MockitoModuleProbe$`, `InjectionBase$<n>`). Weld names its own proxies and was not read.
+  not covered: Mockito's named-module helpers (`$MockitoModuleProbe$`, `InjectionBase$<n>`). Weld
+  names its own proxies and was not read.
+- ByteBuddy's fixed and caller naming modes, which a JVM selects with `-Dnet.bytebuddy.naming=fixed`
+  or `caller`, name a type `<base>$ByteBuddy`, the caller mode with the calling class and method
+  between as parts of their own, and no random tail (`ByteBuddy`'s static initialiser and
+  `NamingStrategy.Suffixing.BaseNameResolver.WithCallerSuffix`, 1.18.12). That shape is also a
+  nested class an adopter could name `ByteBuddy`, so a last part of `ByteBuddy` counts only while
+  the JVM's own property selects one of those modes; the agent runs in the same JVM and reads the
+  same property. A numeric value seeds the default random tail, already covered. GraalVM native
+  images pick the caller mode too, but a Java agent never runs in one. The property name is put
+  together at runtime, since the shaded jar relocates `net.bytebuddy` and would rewrite the literal
+  into the agent's own relocated property.
 - Hibernate (added 2026-09-23) generates four kinds of class beside an entity: the lazy-loading
   proxy, the basic proxy, the instantiator and the access optimizer (with, in 6.6 and later, the
   optimizer's bridge). 6.6 and 7.4 name the first three `<Entity>$HibernateProxy`,

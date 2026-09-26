@@ -49,6 +49,9 @@ adopter's collector forwards to one multi-tenant backend.
      version `go.mod` pins (the Dockerfile uses 1.27, `go.mod` pins 1.26),
      and add a HEALTHCHECK like the server's.
    - Agent: publish the jar and the testkit.
+   - Agent CI: move `buf.yml` from the deprecated `bufbuild/buf-setup-action`,
+     `buf-lint-action`, `buf-breaking-action` and `buf-push-action` to
+     `bufbuild/buf-action`. Nothing is broken today.
    - Server: it is not published; decide where its image is built and
      deployed from for the hosted service.
 
@@ -835,9 +838,11 @@ ByteBuddy, Mockito, javassist and JDK proxy classes were added on 2026-09-26;
 ADR 0029's consequences hold the spellings and sources. Review of that chunk
 narrowed ByteBuddy's and Mockito's markers to a random-shaped tail and dropped
 ByteBuddy's `$auxiliary$`, whose tail could be a Kotlin local class name. Not
-covered: ByteBuddy's auxiliary types and its fixed and caller naming modes,
-Mockito's named-module helpers (`$MockitoModuleProbe$`, `InjectionBase$<n>`),
-and Weld's proxies, whose naming has not been read from Weld's source.
+covered: ByteBuddy's auxiliary types, Mockito's named-module helpers
+(`$MockitoModuleProbe$`, `InjectionBase$<n>`), and Weld's proxies, whose
+naming has not been read from Weld's source. ByteBuddy's fixed and caller
+naming modes, which end the name at `$ByteBuddy`, were added the same day,
+recognised only while the JVM's own `net.bytebuddy.naming` selects them.
 
 Hibernate's bytecode enhancement adds public, non-synthetic `$$_hibernate_`
 methods to the entity class the adopter wrote. Settled 2026-09-26 in ADR 0047:

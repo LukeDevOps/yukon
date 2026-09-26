@@ -453,6 +453,41 @@ class TypeMatchPolicyTest {
     }
 
     /**
+     * ByteBuddy's fixed and caller naming modes, chosen with the JVM's own `net.bytebuddy.naming`
+     * property, end the name at `$ByteBuddy` with no random tail: `<base>$ByteBuddy`, or
+     * `<base>$<caller class>$<method>$ByteBuddy`. That shape is also a nested class an adopter could
+     * name `ByteBuddy`, so it counts only while the property selects one of those modes. A numeric
+     * value picks a seeded random tail, which the default rule already covers. Read out of
+     * `ByteBuddy`'s static initialiser and `NamingStrategy.Suffixing.BaseNameResolver.WithCallerSuffix`
+     * in ByteBuddy 1.18.12.
+     */
+    @Test
+    fun `a name ending in a ByteBuddy part is generated only under the fixed or caller naming mode`() {
+        val fixed = "com.example.target.Order\$ByteBuddy"
+        val caller = "com.example.target.Order\$com\$example\$Factory\$make\$ByteBuddy"
+        for (mode in listOf("fixed", "caller", "FIXED", "Caller")) {
+            assertTrue(TypeMatchPolicy.isRuntimeGenerated(fixed, mode), "$fixed under $mode")
+            assertTrue(TypeMatchPolicy.isRuntimeGenerated(caller, mode), "$caller under $mode")
+            assertFalse(TypeMatchPolicy.isRuntimeGenerated("com.example.target.Order\$ByteBuddySettings", mode), mode)
+            assertFalse(TypeMatchPolicy.isRuntimeGenerated("com.example.target.ByteBuddy", mode), mode)
+        }
+        for (mode in listOf(null, "", "12345", "random")) {
+            assertFalse(TypeMatchPolicy.isRuntimeGenerated(fixed, mode), "$fixed under $mode")
+            assertFalse(TypeMatchPolicy.isRuntimeGenerated(caller, mode), "$caller under $mode")
+        }
+    }
+
+    /**
+     * The shaded agent jar relocates `net.bytebuddy`, which would rewrite a literal property name
+     * to the agent's own relocated one, so the name is put together at runtime. This pins the
+     * value; the shaded jar's constant pool is checked by hand at review.
+     */
+    @Test
+    fun `the ByteBuddy naming property is the one ByteBuddy itself reads`() {
+        assertEquals(net.bytebuddy.ByteBuddy.DEFAULT_NAMING_PROPERTY, TypeMatchPolicy.BYTE_BUDDY_NAMING_PROPERTY)
+    }
+
+    /**
      * A Hibernate enhancement method is recognised by its name alone, and only by the prefix: a
      * method whose name mentions Hibernate some other way is the adopter's. See ADR 0047.
      */

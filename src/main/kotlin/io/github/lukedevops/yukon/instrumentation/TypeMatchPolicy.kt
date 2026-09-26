@@ -162,8 +162,9 @@ object TypeMatchPolicy {
      * ByteBuddy's `$auxiliary$<suffix>` is left out: its suffix is seven to fifteen letters and
      * digits, which is also the shape of a local class kotlinc names after a function called
      * `auxiliary` (`Power$auxiliary$Handler`), and turning away the adopter's code is the worse
-     * way to be wrong. So are the fixed and caller naming modes (`-Dnet.bytebuddy.naming`, and
-     * GraalVM native images), which end the name at `$ByteBuddy` with no tail.
+     * way to be wrong. The fixed and caller naming modes, which end the name at `$ByteBuddy` with
+     * no tail, are recognised separately, and only while the JVM's own property selects them
+     * ([isUntailedByteBuddyNaming]).
      */
     private val RANDOM_TAILED_PARTS = setOf("ByteBuddy", "MockitoMock")
 
@@ -246,13 +247,57 @@ object TypeMatchPolicy {
      *
      * Spring's CGLIB and javassist are recognised by a marker anywhere in the name, Hibernate by a
      * suffix that makes up a whole part of the name, ByteBuddy and Mockito by a whole part with a
-     * random-shaped tail after it, and JDK proxies by their whole simple name.
+     * random-shaped tail after it or, under ByteBuddy's fixed or caller naming mode, by a last part
+     * of `ByteBuddy`, and JDK proxies by their whole simple name.
      */
-    fun isRuntimeGenerated(className: String): Boolean =
+    fun isRuntimeGenerated(className: String): Boolean = isRuntimeGenerated(className, byteBuddyNamingMode())
+
+    /** [isRuntimeGenerated] with the JVM's ByteBuddy naming mode given as [byteBuddyNaming]. */
+    internal fun isRuntimeGenerated(
+        className: String,
+        byteBuddyNaming: String?,
+    ): Boolean =
         RUNTIME_GENERATED_NAME_MARKERS.any { it in className } ||
             isHibernateGenerated(className) ||
             isRandomTailed(className) ||
+            (isUntailedByteBuddyNaming(byteBuddyNaming) && endsInByteBuddyPart(className)) ||
             JDK_PROXY_SIMPLE_NAME.matches(className.substringAfterLast('.'))
+
+    /**
+     * The system property ByteBuddy reads once, in `ByteBuddy`'s static initialiser, to choose how
+     * a default instance names its types. Put together at runtime because the shaded agent jar
+     * relocates `net.bytebuddy`, and would otherwise rewrite this literal into the name of the
+     * agent's own relocated property, which no adopter sets.
+     */
+    internal val BYTE_BUDDY_NAMING_PROPERTY = listOf("net", "bytebuddy", "naming").joinToString(".")
+
+    private fun byteBuddyNamingMode(): String? =
+        try {
+            System.getProperty(BYTE_BUDDY_NAMING_PROPERTY)
+        } catch (_: SecurityException) {
+            null
+        }
+
+    /**
+     * Whether [byteBuddyNaming] selects ByteBuddy's fixed or caller naming mode, compared without
+     * case as ByteBuddy compares it. Both name a type `<base>$ByteBuddy`, the caller mode with the
+     * calling class and method in between as parts of their own
+     * (`NamingStrategy.Suffixing.BaseNameResolver.WithCallerSuffix`), and no random tail. A number
+     * seeds the default random tail instead, which [isRandomTailed] already covers. Read out of
+     * `ByteBuddy`'s static initialiser in ByteBuddy 1.18.12.
+     */
+    private fun isUntailedByteBuddyNaming(byteBuddyNaming: String?): Boolean =
+        byteBuddyNaming.equals("fixed", ignoreCase = true) || byteBuddyNaming.equals("caller", ignoreCase = true)
+
+    /**
+     * Whether the last part of [className]'s simple name, after at least one other, is `ByteBuddy`.
+     * Alone this is also a nested class the adopter named `ByteBuddy`, so it counts only under
+     * [isUntailedByteBuddyNaming]: a JVM whose own property makes ByteBuddy name its types so.
+     */
+    private fun endsInByteBuddyPart(className: String): Boolean {
+        val parts = className.substringAfterLast('.').split('$')
+        return parts.size > 1 && parts.last() == "ByteBuddy"
+    }
 
     /**
      * Whether a part of [className]'s simple name after the first is one of [RANDOM_TAILED_PARTS]
