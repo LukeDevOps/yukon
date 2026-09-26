@@ -7,6 +7,7 @@ import kotlin.coroutines.intrinsics.COROUTINE_SUSPENDED
 import kotlin.coroutines.intrinsics.suspendCoroutineUninterceptedOrReturn
 import kotlin.coroutines.resume
 import kotlin.coroutines.startCoroutine
+import kotlin.coroutines.suspendCoroutine
 
 /**
  * A suspension point that never actually suspends: [suspendCoroutineUninterceptedOrReturn]'s
@@ -29,6 +30,27 @@ fun resumePauseLater(value: Int) {
     val continuation = savedContinuation
     savedContinuation = null
     continuation?.resume(value)
+}
+
+/**
+ * A suspension point built on [suspendCoroutine] that resumes at once, with one adopter
+ * conditional. Two compares with the suspended marker straight off the stack, neither storing the
+ * marker to a local: the inlined `suspendCoroutine`'s debug-probe hook, and the return of the
+ * suspend call in tail position of a function returning `Unit`.
+ */
+suspend fun handOff(x: Int) {
+    val r = if (x > 0) x else -x // marker: handOff-if
+    suspendCoroutine { it.resume(r) }
+}
+
+/**
+ * A suspension point whose result is stored to a local and then compared by reference. The
+ * inlined intrinsic calls `getCOROUTINE_SUSPENDED()` without storing it, so the `ASTORE` of [r]
+ * that follows must not be taken for the marker's slot.
+ */
+suspend fun compareAfterMarker(a: Any): Boolean {
+    val r: Any = suspendCoroutineUninterceptedOrReturn { a }
+    return r === a // marker: compareAfterMarker-compare
 }
 
 /** A top-level suspend function with two suspension points and one adopter conditional. */
@@ -75,6 +97,8 @@ fun runTwoPointsSuspending(x: Int) = runSuspend { twoPointsSuspending(x) }
 
 fun runNoPoint(x: Int) = runSuspend { noPoint(x) }
 
+fun runHandOff(x: Int) = runSuspend { handOff(x) }
+
 fun runMember(x: Int) = runSuspend { Holder().member(x) }
 
 /** Builds a suspend lambda with one suspension point and one adopter conditional, and starts it. */
@@ -113,6 +137,35 @@ fun plainReferenceCompare(
     a: Any,
     b: Any,
 ): Boolean = a === b // marker: plainReferenceCompare-compare
+
+/**
+ * A plain, non-suspend function comparing a value with the suspended marker straight off the
+ * stack, the shape the stack form of (ii) matches. Not suspend-shaped, so it is kept.
+ */
+fun plainMarkerCompare(x: Any): Boolean = x === COROUTINE_SUSPENDED // marker: plainMarkerCompare-compare
+
+/**
+ * A suspend-shaped function comparing a value with the suspended marker itself: the adopter's
+ * compare loads the value rather than duplicating a call result, so it is kept.
+ */
+suspend fun adopterMarkerCompare(x: Any): Boolean = x === COROUTINE_SUSPENDED // marker: adopterMarkerCompare-compare
+
+/**
+ * A `Unit` function whose only suspension point is a tail call on one path, so kotlinc builds no
+ * state machine and returns the call's result through a stack-form compare. The other path stores
+ * a local and compares it by reference with no call in between, so only the jump ends the wait for
+ * a marker store.
+ */
+suspend fun earlyHandOff(
+    flag: Boolean,
+    a: Any,
+    b: Any,
+) {
+    if (flag) return handOff(1) // marker: earlyHandOff-if
+    val c = a
+    if (c === b) return // marker: earlyHandOff-compare
+    handOff(2)
+}
 
 /**
  * A suspend-shaped function whose own reference comparison, on its own locals, must not be

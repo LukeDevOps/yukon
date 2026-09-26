@@ -119,6 +119,88 @@ class CoroutineMachineryAnalysisTest {
     }
 
     @Test
+    fun `a Unit function tail-calling an inlined suspendCoroutine drops both stack-form compares and keeps the adopter's conditional`() {
+        val sites = analyze(facadeBytes, "handOff").sites
+
+        val dropped = sites.filter { it.dropReason != null }
+        val kept = sites.filter { it.dropReason == null }
+        assertEquals(2, dropped.size)
+        assertTrue(dropped.all { it.dropReason == BranchDropReason.COROUTINE_MACHINERY })
+        assertEquals(1, kept.size)
+        assertEquals(lineOf("handOff-if"), kept.single().line)
+    }
+
+    @Test
+    fun `an expanded suspendCoroutineUninterceptedOrReturn with no state machine drops its one stack-form compare`() {
+        val sites = analyze(facadeBytes, "pauseNow").sites
+
+        assertEquals(1, sites.size)
+        assertEquals(BranchDropReason.COROUTINE_MACHINERY, sites.single().dropReason)
+    }
+
+    @Test
+    fun `a local stored after a stack-form compare is not taken for the suspended marker's slot`() {
+        val sites = analyze(facadeBytes, "compareAfterMarker").sites
+
+        val kept = sites.filter { it.dropReason == null }
+        assertEquals(1, kept.size)
+        assertEquals(lineOf("compareAfterMarker-compare"), kept.single().line)
+        assertEquals(5, sites.count { it.dropReason == BranchDropReason.COROUTINE_MACHINERY })
+    }
+
+    @Test
+    fun `an adopter's own compare with the suspended marker inside a suspend function is kept`() {
+        val sites = analyze(facadeBytes, "adopterMarkerCompare").sites
+
+        assertEquals(1, sites.size)
+        assertNull(sites.single().dropReason)
+        assertEquals(lineOf("adopterMarkerCompare-compare"), sites.single().line)
+    }
+
+    @Test
+    fun `a tail-call return's stack-form compare is dropped, and a local stored after it with no call between is not the marker's slot`() {
+        val sites = analyze(facadeBytes, "earlyHandOff").sites
+
+        assertEquals(
+            listOf(null, BranchDropReason.COROUTINE_MACHINERY, null, BranchDropReason.COROUTINE_MACHINERY),
+            sites.map { it.dropReason },
+        )
+        assertEquals(
+            listOf(lineOf("earlyHandOff-if"), lineOf("earlyHandOff-compare")),
+            sites.filter { it.dropReason == null }.map { it.line },
+        )
+    }
+
+    @Test
+    fun `a stack-form compare outside a suspend-shaped method is kept`() {
+        val sites = analyze(facadeBytes, "plainMarkerCompare").sites
+
+        assertEquals(1, sites.size)
+        assertNull(sites.single().dropReason)
+        assertEquals(lineOf("plainMarkerCompare-compare"), sites.single().line)
+    }
+
+    @Test
+    fun `JaCoCo's inverted jumps still resolve the stack-form compares for an inlined suspendCoroutine`() {
+        val instrumented = Instrumenter(OfflineInstrumentationAccessGenerator()).instrument(facadeBytes, "CoroutineTargetKt")
+
+        val handOff = analyze(instrumented, "handOff").sites
+        assertEquals(2, handOff.count { it.dropReason == BranchDropReason.COROUTINE_MACHINERY })
+        assertEquals(1, handOff.count { it.dropReason == null })
+
+        val compareAfterMarker = analyze(instrumented, "compareAfterMarker").sites
+        assertEquals(5, compareAfterMarker.count { it.dropReason == BranchDropReason.COROUTINE_MACHINERY })
+        assertEquals(1, compareAfterMarker.count { it.dropReason == null })
+
+        val earlyHandOff = analyze(instrumented, "earlyHandOff").sites
+        assertEquals(2, earlyHandOff.count { it.dropReason == BranchDropReason.COROUTINE_MACHINERY })
+        assertEquals(2, earlyHandOff.count { it.dropReason == null })
+
+        val adopterMarkerCompare = analyze(instrumented, "adopterMarkerCompare").sites
+        assertEquals(listOf(null), adopterMarkerCompare.map { it.dropReason })
+    }
+
+    @Test
     fun `JaCoCo's inverted jumps still resolve the same drop and keep counts for a top-level suspend function`() {
         val instrumented = Instrumenter(OfflineInstrumentationAccessGenerator()).instrument(facadeBytes, "CoroutineTargetKt")
 

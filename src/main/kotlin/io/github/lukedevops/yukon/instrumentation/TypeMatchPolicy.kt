@@ -400,7 +400,8 @@ object TypeMatchPolicy {
      * its lambda bodies are plain private static methods, never synthetic.
      *
      * A method Hibernate's bytecode enhancement added ([isEnhancementMethod]) is left out the same
-     * way, though it is not synthetic. See ADR 0047.
+     * way, though it is not synthetic. See ADR 0047. So are the `create` and `invoke` kotlinc gives
+     * a suspend lambda's class ([isSuspendLambdaEntry]). See ADR 0025.
      */
     fun methodMatcher(isScalaClass: Boolean): ElementMatcher.Junction<MethodDescription> =
         not(isAbstract<MethodDescription>())
@@ -408,8 +409,46 @@ object TypeMatchPolicy {
             .and(not(isBridge()))
             .and(not(isTypeInitializer()))
             .and { method ->
-                (!method.isSynthetic || isProbedLambdaBody(method.name, isScalaClass)) && !isEnhancementMethod(method.name)
+                (!method.isSynthetic || isProbedLambdaBody(method.name, isScalaClass)) &&
+                    !isEnhancementMethod(method.name) &&
+                    !isSuspendLambdaEntry(method.name, method.isStatic) { superClassNameOf(method.declaringType.asErasure()) }
             }
+
+    /**
+     * A dotted suffix of a suspend lambda's class's direct superclass: `SuspendLambda`, or
+     * `RestrictedSuspendLambda` for a lambda with restricted suspension such as `sequence {}`'s.
+     * Matched by suffix for the reason [CONTINUATION_SUPERCLASS_SUFFIXES] gives.
+     */
+    internal val SUSPEND_LAMBDA_SUPERCLASS_SUFFIXES =
+        listOf(
+            ".coroutines.jvm.internal.SuspendLambda",
+            ".coroutines.jvm.internal.RestrictedSuspendLambda",
+        )
+
+    /**
+     * Whether a method named [name] is one of the two entry points kotlinc writes on a suspend
+     * lambda's class, whose direct superclass, dotted, [superClassName] gives: an instance `create`
+     * or `invoke`. The lambda's body is in `invokeSuspend`. A start through
+     * `createCoroutineUnintercepted` (`startCoroutine`, kotlinx `launch` and `async`, `withContext`
+     * onto another dispatcher) calls `create` and never `invoke`, so `invoke` reads as never hit on
+     * a lambda that ran; a direct call, the stdlib's `startCoroutineUninterceptedOrReturn` and
+     * kotlinx's undispatched starts (`coroutineScope`, `withContext` on the same dispatcher) call
+     * `invoke`, which calls `create`. `create` runs whenever the body is started, so its count
+     * repeats what `invokeSuspend` already says. A lambda with two or more parameters has no
+     * `create` and is always started through `invoke`. Neither is probed or declared, and a call
+     * to one is a pass-through. The name is enough: nothing can add a method to a Kotlin
+     * lambda, and `SuspendLambda` is internal to the stdlib. [superClassName] is read only for
+     * those two names. See ADR 0025.
+     */
+    fun isSuspendLambdaEntry(
+        name: String,
+        isStatic: Boolean,
+        superClassName: () -> String?,
+    ): Boolean {
+        if (isStatic || (name != "create" && name != "invoke")) return false
+        val superName = superClassName() ?: return false
+        return SUSPEND_LAMBDA_SUPERCLASS_SUFFIXES.any { superName.endsWith(it) }
+    }
 
     /**
      * The prefix of every method name Hibernate's bytecode enhancement adds to an entity: the fixed

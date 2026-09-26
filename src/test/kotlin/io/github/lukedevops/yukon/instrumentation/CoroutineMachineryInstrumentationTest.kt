@@ -177,10 +177,11 @@ class CoroutineMachineryInstrumentationTest {
 
         // Loading CoroutineTargetKt transforms every suspend-shaped method the file declares, not
         // only twoPoints, and calling runTwoPoints also loads its own suspend-lambda wrapper class:
-        // twoPoints (5) + twoPointsSuspending (5) + compareRefs (4) + the wrapper's own two
+        // twoPoints (5) + twoPointsSuspending (5) + compareRefs (4) + compareAfterMarker (5) +
+        // handOff (2) + earlyHandOff (2) + pauseNow (1) + pauseLater (1) + the wrapper's own two
         // machinery sites, with a zero-machinery adopter body, from CoroutineTargetKt$runTwoPoints$1.
-        assertEquals(16, branchDropCounts.countOf(BranchDropReason.COROUTINE_MACHINERY))
-        // CoroutineTargetKt (twoPoints, twoPointsSuspending, compareRefs, one record() call for
+        assertEquals(27, branchDropCounts.countOf(BranchDropReason.COROUTINE_MACHINERY))
+        // CoroutineTargetKt (every dropping method above, one record() call for
         // the whole class) and CoroutineTargetKt$runTwoPoints$1 (its own wrapper class): two
         // classes recorded a drop, not one per dropping method.
         assertEquals(2, branchDropCounts.classesWithDrops())

@@ -50,33 +50,22 @@ adopter's collector forwards to one multi-tenant backend.
      and `Unit` elements, symbolic names, value-class elements, aliased
      superclass parameters, local case classes that capture a value, and
      Scala versions other than 2.13 and 3.3.
-   - **Next up (2026-09-26), the two coroutine bullets below, as one chunk
-     under ADR 0025.** Verified with `javap -c` on the shapes demo's
-     `ShapesMainKt.handOff` (Kotlin 2.2.21): the inlined `suspendCoroutine`
-     ends `invokevirtual SafeContinuation.getOrThrow; dup; invokestatic
-     IntrinsicsKt.getCOROUTINE_SUSPENDED; if_acmpne L1; aload_0; invokestatic
-     DebugProbesKt.probeCoroutineSuspended; L1: dup; invokestatic
-     getCOROUTINE_SUSPENDED; if_acmpne L2; areturn; L2: pop`. Both jumps
-     compare the call result on the stack with `getCOROUTINE_SUSPENDED()`
-     directly, where ADR 0025's second shape compares a local stored from it;
-     add the stack form as a machinery shape, inside a suspend-shaped method
-     only, matched by suffix. For the suspend lambda's never-hit `invoke`
-     (`ShapesMainKt$main$1`, a `SuspendLambda` subclass whose
-     `invokeSuspend` holds the body), the recommendation, not yet put to
-     Luke, is to leave kotlinc's `create` and `invoke` on a `SuspendLambda`
-     subclass unprobed as coroutine machinery, the way ADR 0025 leaves a
-     continuation class out, rather than a new `GeneratedBy` value; confirm
-     with him first, then amend ADR 0025. Rerun `runShapesStack` to prove
-     both rows gone.
-   - `suspendCoroutine` leaves two conditions per call site,
-     `….orThrow === IntrinsicsKt.getCOROUTINE_SUSPENDED()` never true. The
-     inlined intrinsic compares the call result directly and never stores it
-     to a local, so ADR 0025's second shape does not match; every adopter
-     `suspendCoroutine` or `suspendCancellableCoroutine` gives these rows.
-   - A suspend lambda started through `startCoroutine` (and kotlinx
-     `launch` and `async`, which take the same path) reads with a never-hit
-     `invoke` at line -1: the coroutine machinery calls `create` and
-     `invokeSuspend`, never `invoke`.
+   - The two coroutine bullets landed on 2026-09-26 under ADR 0025, amended.
+     The stack form of the suspended-marker compare (`dup; invokestatic
+     getCOROUTINE_SUSPENDED; if_acmpne`: the debug-probe hook in an inlined
+     `suspendCoroutine`, and a `Unit` function's tail-call return) is
+     coroutine machinery inside a suspend-shaped method; the marker-slot
+     tracking the local-slot shape uses is cleared at the next jump, switch or
+     call, since an unrelated later `ASTORE` was being taken for the marker.
+     A suspend lambda's `create` and `invoke` (direct superclass
+     `SuspendLambda` or `RestrictedSuspendLambda`) get no probe, are not
+     declared, and pass through, the ADR 0047 mechanism: `invoke` never runs
+     when a library starts the lambda through `create` (stdlib 2.2.21
+     `IntrinsicsJvm.kt`), `create` only repeats `invokeSuspend`, which holds
+     the body. Put to Luke as "either one reads as never hit", which was wrong
+     about `create` (`invoke` calls it); the choice stands on the corrected
+     reason. A `runShapesStack` rerun under a fresh version shows neither
+     row; the shapes report's branch sites are the three the adopter wrote.
    - A Scala 3 lambda body, `callByName$$anonfun$1`, is not folded with the
      method that creates it and shows its raw name; Scala 2's
      `$anonfun$callByName$1` folds.

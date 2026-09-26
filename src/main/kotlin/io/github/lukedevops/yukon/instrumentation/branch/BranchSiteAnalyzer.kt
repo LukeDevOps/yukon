@@ -1349,8 +1349,9 @@ object BranchSiteAnalyzer {
      * a `$default` whose target the descriptor cannot name falls through to the general rule
      * below, since its body invokes the target anyway. Any cross-class candidate whose owner
      * declares it with a body the method tier would not probe
-     * (a bridge, an `access$` accessor, or any other synthetic method that is not a probed lambda
-     * body, see [wouldNotBeProbedByMethodTier]) is a pass-through the same way: its own raw
+     * (a bridge, an `access$` accessor, any other synthetic method that is not a probed lambda
+     * body, a Hibernate enhancement method, or a suspend lambda's `create` or `invoke`, see
+     * [wouldNotBeProbedByMethodTier]) is a pass-through the same way: its own raw
      * candidates, read from the owner's bytes via [readMethodTable], are substituted transitively.
      * Invoking a cross-class pass-through is itself a use of its owner, so it also adds an edge to
      * that owner's `<clinit>`, the same as a static field read or write on that owner (see
@@ -1642,7 +1643,9 @@ object BranchSiteAnalyzer {
                     }
                     return
                 }
-                if (declaredWithBody && !isConstructorOrInitializer && wouldNotBeProbedByMethodTier(access, name, table.isScalaClass)) {
+                if (declaredWithBody && !isConstructorOrInitializer &&
+                    wouldNotBeProbedByMethodTier(access, name, table.isScalaClass, table.superInternalName)
+                ) {
                     references += table.rawReferencesByMethod[name to descriptor].orEmpty()
                     table.rawCandidatesByMethod[name to descriptor].orEmpty().forEach(::visitInside)
                     visit(owner, "<clinit>", "()V", false, kind, 0, null)
@@ -1663,7 +1666,7 @@ object BranchSiteAnalyzer {
                         val (bodyName, bodyDescriptor) = bodyKey
                         if (bodyName == "<init>" || bodyName == "<clinit>") continue
                         if (bodyAccess and BODYLESS_FLAGS != 0) continue
-                        if (wouldNotBeProbedByMethodTier(bodyAccess, bodyName, table.isScalaClass)) continue
+                        if (wouldNotBeProbedByMethodTier(bodyAccess, bodyName, table.isScalaClass, table.superInternalName)) continue
                         val bodyNonVirtual = bodyAccess and NON_VIRTUAL_FLAGS != 0
                         edges += CallEdge(dottedOwner, bodyName, bodyDescriptor, !bodyNonVirtual, CallEdgeKind.CREATES, guard = guard)
                     }
@@ -1892,9 +1895,11 @@ object BranchSiteAnalyzer {
 
     /**
      * Whether the method tier would not probe a declared method with these [access] flags and
-     * [name], owned by a Scala class when [isScalaClass] is true: a bridge, always, a Hibernate
-     * enhancement method (ADR 0047), or a synthetic method that is not a lambda body the method
-     * tier does probe. Mirrors [TypeMatchPolicy.methodMatcher]'s own handling of those exactly, so
+     * [name], owned by a Scala class when [isScalaClass] is true and by a class whose direct
+     * superclass is [superInternalName]: a bridge, always, a Hibernate enhancement method (ADR
+     * 0047), a suspend lambda's `create` or `invoke` (ADR 0025), or a synthetic method that is
+     * not a lambda body the method tier does probe. Mirrors [TypeMatchPolicy.methodMatcher]'s own
+     * handling of those exactly, so
      * a method resolved as a cross-class pass-through here is never one the method tier also probes
      * in its own right. See ADR 0024.
      */
@@ -1902,9 +1907,13 @@ object BranchSiteAnalyzer {
         access: Int,
         name: String,
         isScalaClass: Boolean,
+        superInternalName: String?,
     ): Boolean {
         if (access and Opcodes.ACC_BRIDGE != 0) return true
         if (TypeMatchPolicy.isEnhancementMethod(name)) return true
+        if (TypeMatchPolicy.isSuspendLambdaEntry(name, access and Opcodes.ACC_STATIC != 0) { superInternalName?.replace('/', '.') }) {
+            return true
+        }
         if (access and Opcodes.ACC_SYNTHETIC != 0) return !TypeMatchPolicy.isProbedLambdaBody(name, isScalaClass)
         return false
     }
@@ -1922,7 +1931,7 @@ object BranchSiteAnalyzer {
 
     /**
      * The last few real instructions [DefaultSiteAwareMethodVisitor] has walked, enough to
-     * recognise one of [CoroutineShapes]'s four patterns at the moment a tracked jump or switch is
+     * recognise one of [CoroutineShapes]'s patterns at the moment a tracked jump or switch is
      * reached. Every instruction is pushed, jumps and switches included; `Label`, line-number and
      * frame events are not, since they are not instructions, so a pattern keyed on "immediately
      * preceding" is unaffected by debug info and stack-map frames.
@@ -1956,13 +1965,20 @@ object BranchSiteAnalyzer {
         /** `IAND`. */
         data object Iand : RecentInsn
 
+        /** `DUP`. */
+        data object Dup : RecentInsn
+
+        /** `INVOKESTATIC IntrinsicsKt.getCOROUTINE_SUSPENDED()`, matched by owner suffix. */
+        data object SuspendedMarkerCall : RecentInsn
+
         /** Any other instruction, kept only to break a pattern that needed something else here. */
         data object Other : RecentInsn
     }
 
     /**
-     * Recognises the four bytecode shapes kotlinc's coroutine state machine leaves in a
-     * suspend-shaped method, confirmed with `javap` against Kotlin 2.2.21 output. See ADR 0025.
+     * Recognises the bytecode shapes kotlinc's coroutine state machine leaves in a suspend-shaped
+     * method, confirmed with `javap` against Kotlin 2.2.21 output: ADR 0025's four, plus the
+     * stack form of the compare against the suspended marker. See ADR 0025.
      *
      * Every match is keyed on the instructions immediately preceding a tracked jump or switch, so
      * a coverage agent registered ahead of this one (JaCoCo) is tolerated the same way the
@@ -1974,8 +1990,9 @@ object BranchSiteAnalyzer {
         /**
          * A method is suspend-shaped when its descriptor's last parameter is a `Continuation`, or
          * when it is `invokeSuspend(Object)Object` on a class whose direct superclass is a suspend
-         * lambda's. Matched by suffix: `shadowJar` rewrites a literal starting with `kotlin/` or
-         * `kotlin.` in this agent's own code.
+         * lambda's ([TypeMatchPolicy.SUSPEND_LAMBDA_SUPERCLASS_SUFFIXES]). Matched by suffix:
+         * `shadowJar` rewrites a literal starting with `kotlin/` or `kotlin.` in this agent's own
+         * code.
          */
         fun isSuspendShaped(
             name: String,
@@ -1985,8 +2002,8 @@ object BranchSiteAnalyzer {
             val lastParameter = parseParameterDescriptors(descriptor).lastOrNull()
             if (lastParameter != null && lastParameter.endsWith("coroutines/Continuation;")) return true
             if (name != "invokeSuspend" || descriptor != "(Ljava/lang/Object;)Ljava/lang/Object;") return false
-            return ownerSuperInternalName != null &&
-                (ownerSuperInternalName.endsWith("/SuspendLambda") || ownerSuperInternalName.endsWith("/RestrictedSuspendLambda"))
+            val dottedSuper = ownerSuperInternalName?.replace('/', '.') ?: return false
+            return TypeMatchPolicy.SUSPEND_LAMBDA_SUPERCLASS_SUFFIXES.any { dottedSuper.endsWith(it) }
         }
 
         /** Shape (i): a `TABLESWITCH` whose immediately preceding real instruction reads the continuation's `label` field. */
@@ -2007,6 +2024,21 @@ object BranchSiteAnalyzer {
             suspendedMarkerSlots: Set<Int>,
         ): Boolean =
             isTrackedSuspendedLoad(mostRecent, suspendedMarkerSlots) || isTrackedSuspendedLoad(secondMostRecent, suspendedMarkerSlots)
+
+        /**
+         * Shape (ii), stack form: `DUP; INVOKESTATIC IntrinsicsKt.getCOROUTINE_SUSPENDED();
+         * IF_ACMPEQ|IF_ACMPNE`, comparing a duplicated result with the marker without storing the
+         * marker to a local, so the local-slot form above does not see it. kotlinc emits it in two
+         * places: the debug-probe hook in an expansion of `suspendCoroutineUninterceptedOrReturn`,
+         * which an inlined `suspendCoroutine` carries, and the return of a suspend call in tail
+         * position of a function returning `Unit`. The `DUP` keeps an adopter's own
+         * `x === COROUTINE_SUSPENDED`, which loads `x` instead. Confirmed with `javap` against
+         * Kotlin 2.2.21 output.
+         */
+        fun isSuspendedStackCompare(
+            mostRecent: RecentInsn,
+            secondMostRecent: RecentInsn,
+        ): Boolean = mostRecent == RecentInsn.SuspendedMarkerCall && secondMostRecent == RecentInsn.Dup
 
         private fun isTrackedSuspendedLoad(
             insn: RecentInsn,
@@ -2137,6 +2169,10 @@ object BranchSiteAnalyzer {
          * that bookkeeping is itself an `ASTORE`, so waiting for the next one rather than requiring
          * strict adjacency tolerates it the same way the rest of this analyser already tolerates
          * JaCoCo's inverted jumps.
+         *
+         * Cleared at the next jump, switch or call instead, none of which that bookkeeping holds:
+         * the stack form of the compare never stores the marker, and an `ASTORE` further on would
+         * otherwise mark an unrelated slot.
          */
         private var pendingSuspendedMarkerCall = false
 
@@ -2197,6 +2233,7 @@ object BranchSiteAnalyzer {
             if (eligible && ConditionalJump.isTracked(opcode)) {
                 recordSite(coroutineMachinery = suspendShaped && isCoroutineMachineryJump(opcode))
             }
+            pendingSuspendedMarkerCall = false
             pushInsn(RecentInsn.Other)
             if (testedBit >= 0 && opcode == Opcodes.IFEQ) {
                 fillStartsNext = testedBit
@@ -2213,6 +2250,7 @@ object BranchSiteAnalyzer {
             vararg labels: Label,
         ) {
             if (defaultShaped) resetMaskPhase()
+            pendingSuspendedMarkerCall = false
             if (eligible) {
                 recordSite(
                     switchOutcomeCount(dflt, labels),
@@ -2230,6 +2268,7 @@ object BranchSiteAnalyzer {
             labels: Array<out Label>,
         ) {
             if (defaultShaped) resetMaskPhase()
+            pendingSuspendedMarkerCall = false
             if (eligible) {
                 recordSite(switchOutcomeCount(dflt, labels), isSwitch = true)
             }
@@ -2244,7 +2283,8 @@ object BranchSiteAnalyzer {
         private fun isCoroutineMachineryJump(opcode: Int): Boolean =
             when (opcode) {
                 Opcodes.IF_ACMPEQ, Opcodes.IF_ACMPNE -> {
-                    CoroutineShapes.isSuspendedCompare(recentInsn1, recentInsn2, suspendedMarkerSlots)
+                    CoroutineShapes.isSuspendedCompare(recentInsn1, recentInsn2, suspendedMarkerSlots) ||
+                        CoroutineShapes.isSuspendedStackCompare(recentInsn1, recentInsn2)
                 }
 
                 Opcodes.IFEQ, Opcodes.IFNE -> {
@@ -2385,7 +2425,13 @@ object BranchSiteAnalyzer {
         }
 
         override fun visitInsn(opcode: Int) {
-            pushInsn(if (opcode == Opcodes.IAND) RecentInsn.Iand else RecentInsn.Other)
+            pushInsn(
+                when (opcode) {
+                    Opcodes.IAND -> RecentInsn.Iand
+                    Opcodes.DUP -> RecentInsn.Dup
+                    else -> RecentInsn.Other
+                },
+            )
             if (!defaultShaped) return
             when {
                 phase == 1 && opcode in Opcodes.ICONST_0..Opcodes.ICONST_5 -> {
@@ -2428,8 +2474,8 @@ object BranchSiteAnalyzer {
         ) {
             val isCoroutineSuspendedCall =
                 opcode == Opcodes.INVOKESTATIC && methodName == "getCOROUTINE_SUSPENDED" && owner.endsWith("/IntrinsicsKt")
-            if (isCoroutineSuspendedCall) pendingSuspendedMarkerCall = true
-            pushInsn(RecentInsn.Other)
+            pendingSuspendedMarkerCall = isCoroutineSuspendedCall
+            pushInsn(if (isCoroutineSuspendedCall) RecentInsn.SuspendedMarkerCall else RecentInsn.Other)
             if (defaultShaped) resetMaskPhase()
             super.visitMethodInsn(opcode, owner, methodName, methodDescriptor, isInterface)
         }
@@ -2457,6 +2503,7 @@ object BranchSiteAnalyzer {
             bootstrapMethodHandle: Handle,
             vararg bootstrapMethodArguments: Any,
         ) {
+            pendingSuspendedMarkerCall = false
             pushInsn(RecentInsn.Other)
             if (defaultShaped) resetMaskPhase()
             super.visitInvokeDynamicInsn(invokedName, invokedDescriptor, bootstrapMethodHandle, *bootstrapMethodArguments)

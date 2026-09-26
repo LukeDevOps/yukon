@@ -61,7 +61,7 @@ A branch site inside code the compiler copied from an inline function into a cal
 _Avoid_: inlined branch, foreign branch
 
 **Coroutine machinery**:
-The jumps kotlinc adds to a suspend function or suspend lambda for its state machine (the switch on the continuation's label, the compare against the suspended marker, the preamble's re-entry tests) and the continuation class it emits per suspend function. Never a probed branch site; the continuation class is never probed or declared at all.
+The jumps kotlinc adds to a suspend function or suspend lambda for its state machine (the switch on the continuation's label, the compare against the suspended marker, the preamble's re-entry tests), the continuation class it emits per suspend function, and the `create` and `invoke` it gives a suspend lambda's class, the entry points a coroutine library starts the body through. Never a probed branch site; the continuation class, `create` and `invoke` are never probed or declared at all.
 _Avoid_: coroutine noise, state-machine branches
 
 **Generated method**:

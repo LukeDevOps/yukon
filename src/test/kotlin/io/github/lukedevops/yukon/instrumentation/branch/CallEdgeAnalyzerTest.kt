@@ -3,6 +3,8 @@ package io.github.lukedevops.yukon.instrumentation.branch
 import io.github.lukedevops.yukon.export.CallEdge
 import io.github.lukedevops.yukon.export.CallEdgeKind
 import net.bytebuddy.dynamic.ClassFileLocator
+import net.bytebuddy.jar.asm.ClassWriter
+import net.bytebuddy.jar.asm.Opcodes
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -416,7 +418,7 @@ class CallEdgeAnalyzerTest {
     }
 
     @Test
-    fun `a suspend lambda is a body class, joined by its constructor edge to every probed method it declares`() {
+    fun `a suspend lambda is a body class, joined by its constructor edge to invokeSuspend and not to kotlinc's create and invoke`() {
         val analysis = analyzeTarget("SuspendLambdaTarget")
 
         assertEquals(
@@ -434,23 +436,59 @@ class CallEdgeAnalyzerTest {
                     virtual = false,
                     kind = CallEdgeKind.CREATES,
                 ),
-                CallEdge(
-                    "com.example.target.SuspendLambdaTarget\$usesSuspend\$1",
-                    "create",
-                    "(Lkotlin/coroutines/Continuation;)Lkotlin/coroutines/Continuation;",
-                    virtual = false,
-                    kind = CallEdgeKind.CREATES,
-                ),
-                CallEdge(
-                    "com.example.target.SuspendLambdaTarget\$usesSuspend\$1",
-                    "invoke",
-                    "(Lkotlin/coroutines/Continuation;)Ljava/lang/Object;",
-                    virtual = false,
-                    kind = CallEdgeKind.CREATES,
-                ),
                 CallEdge("com.example.target.SuspendLambdaTarget", "runIt", "(Lkotlin/jvm/functions/Function1;)V", virtual = false),
             ),
             analysis.callsOf("usesSuspend", "()V"),
+        )
+    }
+
+    @Test
+    fun `a direct call to a suspend lambda's invoke passes through to invokeSuspend, never naming create or invoke`() {
+        // Kotlin cannot name a lambda class, so the caller is built by hand: a method that calls
+        // invoke(Continuation) on CoroutineTargetKt$runLambda$1 directly.
+        val lambda = "com/example/target/CoroutineTargetKt\$runLambda\$1"
+        val writer = ClassWriter(ClassWriter.COMPUTE_MAXS)
+        writer.visit(
+            Opcodes.V17,
+            Opcodes.ACC_PUBLIC or Opcodes.ACC_SUPER,
+            "com/example/target/DirectLambdaCaller",
+            null,
+            "java/lang/Object",
+            null,
+        )
+        val method =
+            writer.visitMethod(
+                Opcodes.ACC_PUBLIC or Opcodes.ACC_STATIC,
+                "call",
+                "(L$lambda;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;",
+                null,
+                null,
+            )
+        method.visitCode()
+        method.visitVarInsn(Opcodes.ALOAD, 0)
+        method.visitVarInsn(Opcodes.ALOAD, 1)
+        method.visitMethodInsn(Opcodes.INVOKEVIRTUAL, lambda, "invoke", "(Lkotlin/coroutines/Continuation;)Ljava/lang/Object;", false)
+        method.visitInsn(Opcodes.ARETURN)
+        method.visitMaxs(0, 0)
+        method.visitEnd()
+        writer.visitEnd()
+
+        val analysis = BranchSiteAnalyzer.analyze(writer.toByteArray(), lookup, includePackages, emptyList()) { _, _ -> true }
+
+        // invoke passes through to create, whose `new` of the lambda class reaches its constructor
+        // and, as a body class, invokeSuspend; using a pass-through on the lambda class is a use of
+        // it, hence <clinit>; and invoke itself calls invokeSuspend.
+        val owner = lambda.replace('/', '.')
+        assertEquals(
+            listOf(
+                "$owner.<init>(ILkotlin/coroutines/Continuation;)V CALL",
+                "$owner.invokeSuspend(Ljava/lang/Object;)Ljava/lang/Object; CREATES",
+                "$owner.<clinit>()V CALL",
+                "$owner.invokeSuspend(Ljava/lang/Object;)Ljava/lang/Object; CALL",
+            ),
+            analysis
+                .callsOf("call", "(L$lambda;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;")
+                .map { "${it.className}.${it.methodName}${it.methodDescriptor} ${it.kind}" },
         )
     }
 
@@ -466,7 +504,13 @@ class CallEdgeAnalyzerTest {
                     "(Lcom/example/target/ObjectExpressionTarget;)V",
                     virtual = false,
                 ),
-                CallEdge("com.example.target.ObjectExpressionTarget\$makeHandler\$1", "run", "()V", virtual = true, kind = CallEdgeKind.CREATES),
+                CallEdge(
+                    "com.example.target.ObjectExpressionTarget\$makeHandler\$1",
+                    "run",
+                    "()V",
+                    virtual = true,
+                    kind = CallEdgeKind.CREATES,
+                ),
             ),
             analysis.callsOf("makeHandler", "()Ljava/lang/Runnable;"),
         )
@@ -507,7 +551,13 @@ class CallEdgeAnalyzerTest {
                     "(Lcom/example/target/AnonymousClassTarget;)V",
                     virtual = false,
                 ),
-                CallEdge("com.example.target.AnonymousClassTarget\$1LocalRunnable", "run", "()V", virtual = true, kind = CallEdgeKind.CREATES),
+                CallEdge(
+                    "com.example.target.AnonymousClassTarget\$1LocalRunnable",
+                    "run",
+                    "()V",
+                    virtual = true,
+                    kind = CallEdgeKind.CREATES,
+                ),
             ),
             analysis.callsOf("makeLocalClassRunnable", "()Ljava/lang/Runnable;"),
         )
