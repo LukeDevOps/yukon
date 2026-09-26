@@ -154,6 +154,14 @@ NEVER HIT: handleCheckout (DemoServerMain.kt:71) `System.getenv("ENABLE_LEGACY_D
 NEVER HIT: handleCheckout (DemoServerMain.kt:78) `discounted > 100.0` was never true, only path to DemoServerMain.kt:79, partly to DemoServerMain.kt:92 (instance 17e3afc3-76f1-435c-b30a-5e594350530f, class 0, probe 12) [BRANCH branch#3]
 ```
 
+A condition carries the string literals the source compared against, such
+as `"ENABLE_LEGACY_DISCOUNT"` above, and so does a string `when` case. The
+agent sends them as written; it has no redaction setting of its own. The
+collector can replace them before they leave your network (collector ADR
+0001), so a deployment that needs redaction sends through a collector with
+it switched on. An agent that posts straight to a backend sends literals in
+clear.
+
 Some outcomes are real but not worth a person's time when they never run.
 The agent reads each outcome's path in the bytecode and marks it with a
 routine kind (ADR 0046): the null side of a null check that calls nothing
