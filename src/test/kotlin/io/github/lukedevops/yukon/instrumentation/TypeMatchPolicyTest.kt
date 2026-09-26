@@ -479,9 +479,9 @@ class TypeMatchPolicyTest {
         listOf(
             "com.example.target.Order\$ByteBuddy\$Ab3dEf9h",
             "com.example.target.Outer\$Order\$ByteBuddy\$Ab3dEf9h",
-            "com.example.target.Order\$auxiliary\$Ab3dEf9h",
-            "com.example.target.Order\$ByteBuddy\$Ab3dEf9h\$auxiliary\$x7Yz",
+            "com.example.target.Order\$ByteBuddy\$Ab3dEf9h\$auxiliary\$x7Yz0S0",
             "com.example.target.OrderService\$MockitoMock\$Ab3dEf9h",
+            "com.example.target.OrderService\$MockitoMock\$Ab3dEf9x7Yz12aS",
             "com.example.target.Order_\$\$_jvst3f2_0",
             "com.example.target.Order_\$\$_jvst3f2_1a",
             "com.example.target.\$Proxy0",
@@ -500,9 +500,12 @@ class TypeMatchPolicyTest {
     }
 
     /**
-     * ByteBuddy's and Mockito's markers count only as a whole part with a random tail after it, and
-     * the JDK's only as the whole simple name, so a class an adopter names with the same words is
-     * kept.
+     * ByteBuddy's and Mockito's markers count only as a whole part followed by a part shaped like
+     * ByteBuddy's random tail, and the JDK's only as the whole simple name, so a class an adopter
+     * names with the same words is kept. kotlinc names a body class after its enclosing function,
+     * so a function named like a marker gives names such as `Power$ByteBuddy$1`. ByteBuddy's
+     * `$auxiliary$` is not a marker at all: its tail is seven to fifteen letters and digits, the
+     * shape of a local class name, so `Power$auxiliary$Handler` could be the adopter's.
      */
     @Test
     fun `an adopter class named like a ByteBuddy, Mockito or JDK proxy class is kept`() {
@@ -513,6 +516,13 @@ class TypeMatchPolicyTest {
             "com.example.target.Config\$ByteBuddy",
             "com.example.target.Config\$ByteBuddySettings",
             "com.example.target.Config\$auxiliary",
+            "com.example.target.Power\$auxiliary\$1",
+            "com.example.target.Power\$auxiliary\$Handler",
+            "com.example.target.Power\$auxiliary\$Ab3dEf9h",
+            "com.example.target.Power\$ByteBuddy\$1",
+            "com.example.target.Power\$ByteBuddy\$lambda\$0",
+            "com.example.target.Config\$ByteBuddy\$Inner",
+            "com.example.target.Power\$MockitoMock\$2",
             "com.example.target.MockitoMock",
             "com.example.target.Outer\$MockitoMockFactory\$Inner",
             "com.example.target.Proxy1",

@@ -98,8 +98,10 @@ Open from this chunk:
 - A `Throwable` is resolved through the analyser's class lookup. A class it
   cannot read counts as one when its name ends in `Exception` or `Error`.
 - The testkit and the stub collector fold sites as server ADR 0031 does
-  (2026-09-26): a site folds into its method's never-hit row, or into its
-  guard outcome when that outcome is never hit and not routine. The stub
+  (2026-09-26): a site folds when its method was never hit, a lone
+  constructor that is not a row included, or when its guard outcome is never
+  hit and not routine. Review of that chunk found the lone-constructor case
+  missing and it was fixed the same day. The stub
   lists four routine outcomes, and `PromoHandler.handle`'s `query ?: ""`
   site folds into the method's row.
 
@@ -830,7 +832,12 @@ scratch program driving hibernate-core 7.4.10's own generators under the agent
 showed all four kinds woven before the rule and none after.
 
 ByteBuddy, Mockito, javassist and JDK proxy classes were added on 2026-09-26;
-ADR 0029's consequences hold the spellings and sources.
+ADR 0029's consequences hold the spellings and sources. Review of that chunk
+narrowed ByteBuddy's and Mockito's markers to a random-shaped tail and dropped
+ByteBuddy's `$auxiliary$`, whose tail could be a Kotlin local class name. Not
+covered: ByteBuddy's auxiliary types and its fixed and caller naming modes,
+Mockito's named-module helpers (`$MockitoModuleProbe$`, `InjectionBase$<n>`),
+and Weld's proxies, whose naming has not been read from Weld's source.
 
 Hibernate's bytecode enhancement adds public, non-synthetic `$$_hibernate_`
 methods to the entity class the adopter wrote. Settled 2026-09-26 in ADR 0047:

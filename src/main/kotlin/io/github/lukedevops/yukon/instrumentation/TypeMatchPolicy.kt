@@ -146,22 +146,34 @@ object TypeMatchPolicy {
      * `$$FastClassBySpringCGLIB$$`). Both spellings were read out of `SpringNamingPolicy` and
      * `DefaultNamingPolicy` in spring-core 5.3.39, 6.2.19 and 7.0.9 rather than recalled.
      *
-     * javassist's `ProxyFactory`, which older Hibernate and Weld use, appends `_$$_jvst`, three hex
-     * digits from the generator's hash code, `_` and a hex counter to the superclass's name. Read
-     * out of `ProxyFactory.nameGenerator` in javassist 3.30.2-GA.
+     * javassist's `ProxyFactory` appends `_$$_jvst`, three hex digits from the generator's hash
+     * code, `_` and a hex counter to the superclass's name. Read out of `ProxyFactory.nameGenerator`
+     * in javassist 3.30.2-GA.
      */
     private val RUNTIME_GENERATED_NAME_MARKERS = listOf("\$\$SpringCGLIB\$\$", "BySpringCGLIB\$\$", "_\$\$_jvst")
 
     /**
-     * Parts of a name that ByteBuddy's naming strategies put between the base name and a random
-     * tail: `<base>$ByteBuddy$<random>` for a type made by a default `ByteBuddy` instance
-     * (`NamingStrategy.SuffixingRandom`), `<instrumented>$auxiliary$<random>` for an auxiliary
-     * type, and `<mocked>$MockitoMock$<random>` for a Mockito subclass mock. The tail is
-     * `RandomString` output, letters and digits only, so it is always the last part of the name.
-     * Read out of `NamingStrategy`, `ByteBuddy`, `AuxiliaryType` and `RandomString` in ByteBuddy
-     * 1.18.12, and `SubclassBytecodeGenerator` in mockito-core 5.14.2.
+     * Parts of a name that ByteBuddy's naming puts between the base name and a random tail:
+     * `<base>$ByteBuddy$<random>` for a type made by a default `ByteBuddy` instance
+     * (`NamingStrategy.SuffixingRandom`), and `<mocked>$MockitoMock$<random>` for a Mockito subclass
+     * mock. Read out of `NamingStrategy` and `ByteBuddy` in ByteBuddy 1.18.12, and
+     * `SubclassBytecodeGenerator` in mockito-core 5.14.2.
+     *
+     * ByteBuddy's `$auxiliary$<suffix>` is left out: its suffix is seven to fifteen letters and
+     * digits, which is also the shape of a local class kotlinc names after a function called
+     * `auxiliary` (`Power$auxiliary$Handler`), and turning away the adopter's code is the worse
+     * way to be wrong. So are the fixed and caller naming modes (`-Dnet.bytebuddy.naming`, and
+     * GraalVM native images), which end the name at `$ByteBuddy` with no tail.
      */
-    private val RANDOM_TAILED_PARTS = setOf("ByteBuddy", "auxiliary", "MockitoMock")
+    private val RANDOM_TAILED_PARTS = setOf("ByteBuddy", "MockitoMock")
+
+    /**
+     * The shape of the tail after a [RANDOM_TAILED_PARTS] marker: `RandomString.make()`'s eight
+     * letters and digits, or Mockito's fifteen under GraalVM (two `RandomString.hashOf` values and a
+     * flag). kotlinc's own tails after a function name (`$1`, `$lambda$0`) are shorter. Read out of
+     * `RandomString` in ByteBuddy 1.18.12.
+     */
+    private val RANDOM_TAIL = Regex("[0-9A-Za-z]{8,}")
 
     /**
      * The simple name the JDK gives a dynamic proxy class: `$Proxy` and a counter, straight after
@@ -234,7 +246,7 @@ object TypeMatchPolicy {
      *
      * Spring's CGLIB and javassist are recognised by a marker anywhere in the name, Hibernate by a
      * suffix that makes up a whole part of the name, ByteBuddy and Mockito by a whole part with a
-     * random tail after it, and JDK proxies by their whole simple name.
+     * random-shaped tail after it, and JDK proxies by their whole simple name.
      */
     fun isRuntimeGenerated(className: String): Boolean =
         RUNTIME_GENERATED_NAME_MARKERS.any { it in className } ||
@@ -244,17 +256,18 @@ object TypeMatchPolicy {
 
     /**
      * Whether a part of [className]'s simple name after the first is one of [RANDOM_TAILED_PARTS]
-     * with at least one part after it. Matched as a whole part, as Hibernate's suffixes are, so an
-     * adopter's `Config$ByteBuddySettings` is kept, and never as the last part, so a nested class
-     * the adopter named `ByteBuddy` is kept too.
+     * and the part right after it has the shape of [RANDOM_TAIL]. Matched as a whole part, as
+     * Hibernate's suffixes are, so an adopter's `Config$ByteBuddySettings` is kept, and only with a
+     * random-shaped tail, so a nested class the adopter named `ByteBuddy`, or a body class kotlinc
+     * named after a function called `ByteBuddy` (`Power$ByteBuddy$1`), is kept too.
      */
     private fun isRandomTailed(className: String): Boolean =
         className
             .substringAfterLast('.')
             .split('$')
             .drop(1)
-            .dropLast(1)
-            .any { it in RANDOM_TAILED_PARTS }
+            .zipWithNext()
+            .any { (part, next) -> part in RANDOM_TAILED_PARTS && RANDOM_TAIL.matches(next) }
 
     /**
      * A dotted suffix of a suspend function's own continuation class's direct superclass. Matched

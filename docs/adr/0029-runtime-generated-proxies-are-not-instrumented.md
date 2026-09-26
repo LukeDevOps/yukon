@@ -74,18 +74,28 @@ fire. `demo-spring`'s `PricingConfiguration` is fully hit with the rule in place
   and loud, not a silent wrong claim.
 - ByteBuddy, Mockito, javassist and JDK proxies were added on 2026-09-26, ahead of release rather
   than waiting for an adopter to show one. ByteBuddy names a type from a default `ByteBuddy`
-  instance `<base>$ByteBuddy$<random>` and an auxiliary type `<instrumented>$auxiliary$<random>`;
-  Mockito names a subclass mock `<mocked>$MockitoMock$<random>`, in the mocked type's package, so a
-  test JVM mocking an adopter's interface puts one inside the include prefix; the random tail is
-  `RandomString` output, letters and digits only. javassist's `ProxyFactory` appends
+  instance `<base>$ByteBuddy$<random>`, and Mockito names a subclass mock
+  `<mocked>$MockitoMock$<random>`, in the mocked type's package, so a test JVM mocking an adopter's
+  interface puts one inside the include prefix. The tail is `RandomString.make()`'s eight letters
+  and digits, or fifteen for Mockito under GraalVM. javassist's `ProxyFactory` appends
   `_$$_jvst<hex>_<hex counter>`. The JDK names a proxy `$Proxy<n>` and puts it in the package of a
   non-public interface it implements, otherwise in `jdk.proxyN`; a proxy class is final and not
   synthetic. Read out of ByteBuddy 1.18.12, mockito-core 5.14.2, javassist 3.30.2-GA and
-  `java.lang.reflect.Proxy` in JDK 11, 21 and 22. ByteBuddy's and Mockito's parts are matched as a
-  whole part with at least one part after it, and the JDK's as the whole simple name, so an
-  adopter's `Config$ByteBuddySettings` or `Outer$Proxy1` is kept. `RuntimeGeneratedClassTest` has
-  each generator define a class in the fixture package under the installed agent, confirms the
-  transformer is offered it, and checks it is neither woven, skipped nor swept.
+  `java.lang.reflect.Proxy` in JDK 11, 21 and 22. The JDK's is matched as the whole simple name.
+  ByteBuddy's and Mockito's are matched as a whole part followed by a part of eight or more letters
+  and digits, because kotlinc names a body class after its enclosing function: `fun ByteBuddy()`
+  holding an object expression gives `Power$ByteBuddy$1`, which is kept. `RuntimeGeneratedClassTest`
+  has ByteBuddy, javassist and the JDK each define a class in the fixture package under the
+  installed agent, confirms the transformer is offered it, and checks it is neither woven, skipped
+  nor swept. Mockito is not a test dependency; its name shape is made with ByteBuddy's own
+  `SuffixingRandom("MockitoMock")`.
+- Not covered, by choice: ByteBuddy's auxiliary types, `<instrumented>$auxiliary$<suffix>`, since
+  the suffix (seven to fifteen letters and digits, from `RandomString.hashOf` and flag characters)
+  has the shape of a local class name, and `fun auxiliary()` holding a local class `Handler` gives
+  `Power$auxiliary$Handler`. A first cut matched them and would have turned that class away. Also
+  not covered: ByteBuddy's fixed and caller naming modes (`-Dnet.bytebuddy.naming`, and GraalVM
+  native images), which end the name at `$ByteBuddy`, and Mockito's named-module helpers
+  (`$MockitoModuleProbe$`, `InjectionBase$<n>`). Weld names its own proxies and was not read.
 - Hibernate (added 2026-09-23) generates four kinds of class beside an entity: the lazy-loading
   proxy, the basic proxy, the instantiator and the access optimizer (with, in 6.6 and later, the
   optimizer's bridge). 6.6 and 7.4 name the first three `<Entity>$HibernateProxy`,
