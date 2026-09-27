@@ -146,9 +146,12 @@ adopter's collector forwards to one multi-tenant backend.
      a TLS proxy. Add several valid tokens for rotation, and `_FILE` token
      variables.
 5. **Release mechanics.**
-   - Collector: publish the image to GHCR with tags. Build it with the Go
-     version `go.mod` pins (the Dockerfile uses 1.27, `go.mod` pins 1.26),
-     and add a HEALTHCHECK like the server's.
+   - Collector: publish the image to GHCR with tags, and add a HEALTHCHECK
+     like the server's. The build image moved back to `golang:1.26-alpine`
+     on 2026-09-27 (collector `65989bc`): `go 1.26.0` in `go.mod` is the
+     floor for anyone importing `ingest` or `metrics`, kept for
+     compatibility, and a Dependabot bump had moved the image to 1.27;
+     Dependabot now ignores golang minor and major bumps.
    - Agent: publish the jar and the testkit.
    - Agent CI: move `buf.yml` from the deprecated `bufbuild/buf-setup-action`,
      `buf-lint-action`, `buf-breaking-action` and `buf-push-action` to
