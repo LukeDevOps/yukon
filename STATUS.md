@@ -145,9 +145,14 @@ adopter's collector forwards to one multi-tenant backend.
    tenant's own SAML or OIDC SSO connection, enforced), with the tenant
    check at login and the server's own sessions; `admin` and `viewer`
    roles; row-level security behind the tenant filter; API keys scoped
-   `ingest` or `read` with per-key ingest limits; audit events that show
-   operator actions to the tenant; hosting on GCP Cloud Run and Cloud
-   SQL; nothing costs money before a paying customer needs it.
+   `ingest` or `read` with an ingest limit per tenant; audit events that
+   show operator actions to the tenant; hosting on GCP Cloud Run and
+   Cloud SQL; nothing costs money before a paying customer needs it.
+   On 2026-09-28 chunks 1 to 9 had landed in all three repos and a
+   review of the whole session was running; chunk 10, the GCP deploy,
+   waits on a GCP account (sign-up blocked on phone verification). The
+   server STATUS's section has the commits, the open review and what
+   chunk 10 needs.
    - Server: the full Content-Security-Policy landed on 2026-09-27
      (server `788716b`). Its regression guard is chunk 2 of the server
      plan: a CI check on the built `dist/` and a jsdom Select test.
