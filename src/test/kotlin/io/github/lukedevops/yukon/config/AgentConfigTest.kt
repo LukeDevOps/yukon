@@ -1,9 +1,13 @@
 package io.github.lukedevops.yukon.config
 
 import java.time.Duration
+import java.util.logging.Handler
+import java.util.logging.LogRecord
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
+import java.util.logging.Level as JulLevel
+import java.util.logging.Logger as JulLogger
 
 class AgentConfigTest {
     @Test
@@ -304,5 +308,93 @@ class AgentConfigTest {
         val config = AgentConfig.parse(null, env = env::get)
 
         assertEquals(false, config.enabled)
+    }
+
+    @Test
+    fun `the endpoint's scheme is lowercased, and its host and path are kept as given`() {
+        assertEquals(
+            "http://Collector.Example.com:4319/Base",
+            parseQuietly("endpoint=HTTP://Collector.Example.com:4319/Base/").collectorEndpoint,
+        )
+        assertEquals("https://collector.example.com", parseQuietly("endpoint=HTTPS://collector.example.com").collectorEndpoint)
+    }
+
+    @Test
+    fun `a padded endpoint option is trimmed before its scheme is lowercased`() {
+        assertEquals("http://collector.example.com", parseQuietly("endpoint= Http://collector.example.com ").collectorEndpoint)
+    }
+
+    @Test
+    fun `a token sent to a plain http endpoint is warned about whatever the scheme's case`() {
+        for (scheme in listOf("http", "HTTP", "Http")) {
+            val warnings = warningsFrom { parseQuietly("endpoint=$scheme://collector.example.com,authToken=abc") }
+
+            assertEquals(1, warnings.count { it.contains("plain http") }, "scheme $scheme")
+        }
+    }
+
+    @Test
+    fun `a token from YUKON_AUTH_TOKEN sent to a plain http endpoint is warned about`() {
+        val env = mapOf("YUKON_AUTH_TOKEN" to "xyz")
+        val warnings = warningsFrom { parseQuietly("endpoint=HTTP://collector.example.com", env = env::get) }
+
+        assertEquals(1, warnings.count { it.contains("plain http") })
+    }
+
+    @Test
+    fun `a token sent to the default endpoint is warned about, since it is plain http`() {
+        val warnings = warningsFrom { parseQuietly("authToken=abc") }
+
+        assertEquals(1, warnings.count { it.contains("plain http") })
+    }
+
+    @Test
+    fun `a token sent to an https endpoint is not warned about whatever the scheme's case`() {
+        for (scheme in listOf("https", "HTTPS")) {
+            val warnings = warningsFrom { parseQuietly("endpoint=$scheme://collector.example.com,authToken=abc,unknownOption=1") }
+
+            assertEquals(1, warnings.count { it.contains("unknown agent option") }, "scheme $scheme: log capture saw nothing")
+            assertEquals(0, warnings.count { it.contains("plain http") }, "scheme $scheme")
+        }
+    }
+
+    @Test
+    fun `a plain http endpoint without a token is not warned about`() {
+        val warnings = warningsFrom { parseQuietly("endpoint=HTTP://collector.example.com,unknownOption=1") }
+
+        assertEquals(1, warnings.count { it.contains("unknown agent option") }, "log capture saw nothing")
+        assertEquals(0, warnings.count { it.contains("plain http") })
+    }
+
+    /** Parses [agentArgs] with no environment or system properties unless given, so the JVM running the tests cannot change the result. */
+    private fun parseQuietly(
+        agentArgs: String,
+        env: (String) -> String? = { null },
+    ): AgentConfig = AgentConfig.parse(agentArgs, env = env, systemProperties = { null }, detectServiceName = { null })
+
+    /** The messages of every WARNING [AgentConfig] logs while [block] runs. */
+    private fun warningsFrom(block: () -> Unit): List<String> {
+        val records = mutableListOf<LogRecord>()
+        val handler =
+            object : Handler() {
+                override fun publish(record: LogRecord) {
+                    records.add(record)
+                }
+
+                override fun flush() {}
+
+                override fun close() {}
+            }
+        val julLogger = JulLogger.getLogger(AgentConfig::class.java.name)
+        val originalLevel = julLogger.level
+        julLogger.addHandler(handler)
+        julLogger.level = JulLevel.ALL
+        try {
+            block()
+        } finally {
+            julLogger.removeHandler(handler)
+            julLogger.level = originalLevel
+        }
+        return records.filter { it.level == JulLevel.WARNING }.mapNotNull { it.message }
     }
 }

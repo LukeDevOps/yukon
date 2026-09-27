@@ -183,7 +183,8 @@ class StartupClasspathLister(
     /**
      * The jars [manifest]'s `Class-Path` names. Each entry is a URL, relative to [jar] unless it
      * names a scheme, the way the system loader reads it, so a space in a path arrives as `%20`.
-     * An entry that is not a valid URI, or names a scheme other than `file`, is dropped.
+     * An entry that is not a valid URI, or whose scheme is not `file` (compared ignoring case, as
+     * the system loader and `File(URI)` compare it), is dropped.
      */
     private fun classPathEntries(
         jar: File,
@@ -194,7 +195,7 @@ class StartupClasspathLister(
         return value.split(' ').filter { it.isNotBlank() }.mapNotNull { entry ->
             runCatching {
                 val resolved = base.resolve(URI(entry))
-                if (resolved.scheme == "file") File(resolved) else null
+                if ("file".equals(resolved.scheme, ignoreCase = true)) File(resolved) else null
             }.getOrNull()
         }
     }

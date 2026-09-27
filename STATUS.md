@@ -147,10 +147,14 @@ adopter's collector forwards to one multi-tenant backend.
      section (collector `b838535`, 2026-09-27) says it must sit behind a
      TLS-terminating proxy, since the agent-to-collector hop carries the
      token and literals redaction has not yet seen.
-   - Agent: the plain-http token warning in `AgentConfig` checks
-     `startsWith("http://")` case-sensitively while `parseEndpoint`
-     accepts any case, so `HTTP://host` with a token is not warned about.
-     Found reviewing the TLS section, not yet fixed.
+   - Agent: URL schemes are case-insensitive everywhere (2026-09-27).
+     `parseEndpoint` lowercases the endpoint's scheme, so `HTTP://host`
+     with a token gets the plain-http warning it used to skip; a `FILE:`
+     `Class-Path` entry is followed; and `CodeSourceLocation` reads
+     `jar:FILE:` and `Jar:Nested:` URLs. `java.net.URL` lowercases only the
+     outermost protocol, and `ReferencedClassLocator` matches its prefixes
+     ignoring case too, since a custom handler's `toExternalForm` can print
+     any case.
 5. **Release mechanics.**
    - Collector: publish the image to GHCR with tags. The HEALTHCHECK landed
      on 2026-09-27 (collector `e5d3e2f`): a `healthcheck` subcommand GETs

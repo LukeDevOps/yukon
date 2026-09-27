@@ -251,10 +251,12 @@ data class AgentConfig(
 
         /**
          * The exporter appends `/v1/yukon/...` to this, so a trailing slash is dropped rather than
-         * producing a `//` in every request path. A value that is not an absolute http(s) URL with
-         * a host falls back to the default with a warning: left as is, `URI.create` would throw on
-         * every attempt of every flush, so the collector would never be reached and the log would
-         * fill with the same stack trace at each tick.
+         * producing a `//` in every request path. The scheme is lowercased, since URL schemes are
+         * case-insensitive and anything reading the endpoint afterwards can then compare it
+         * exactly; the host and path are kept as given. A value that is not an absolute http(s) URL
+         * with a host falls back to the default with a warning: left as is, `URI.create` would
+         * throw on every attempt of every flush, so the collector would never be reached and the
+         * log would fill with the same stack trace at each tick.
          */
         private fun parseEndpoint(raw: String?): String {
             if (raw == null) return DEFAULT_ENDPOINT
@@ -267,7 +269,7 @@ data class AgentConfig(
                 )
                 return DEFAULT_ENDPOINT
             }
-            return trimmed
+            return uri.scheme.lowercase() + trimmed.substring(uri.scheme.length)
         }
 
         /**

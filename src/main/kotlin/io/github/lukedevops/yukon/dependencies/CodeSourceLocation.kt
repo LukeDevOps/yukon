@@ -33,6 +33,7 @@ internal sealed interface CodeSourceLocation {
 
     companion object {
         private val CLASSES_DIRECTORIES = setOf("BOOT-INF/classes", "WEB-INF/classes")
+        private const val FILE_PREFIX = "file:"
         private const val NESTED_PREFIX = "jar:nested:"
         private const val JAR_PREFIX = "jar:"
         private const val JAR_SEPARATOR = "!/"
@@ -47,13 +48,15 @@ internal sealed interface CodeSourceLocation {
          * - `jar:file:<outer>!/<entry>!/`, Spring Boot 2 to 3.1, or `jar:file:<jar>!/` from a
          *   plain `URLClassLoader` given a `jar:` URL.
          *
-         * Anything else is [Unsupported]. A malformed `file:` URI throws.
+         * Schemes are matched ignoring case, as the JDK matches them: `java.net.URL` lowercases only
+         * the outermost one, so a `jar:FILE:` URL reaches here as written. Anything else is
+         * [Unsupported]. A malformed `file:` URI throws.
          */
         fun parse(location: String): CodeSourceLocation =
             when {
-                location.startsWith("file:") -> OnDisk(Paths.get(URI(location)))
-                location.startsWith(NESTED_PREFIX) -> parseNested(location.removePrefix(NESTED_PREFIX))
-                location.startsWith(JAR_PREFIX) -> parseJarUrl(location.removePrefix(JAR_PREFIX))
+                location.startsWith(FILE_PREFIX, ignoreCase = true) -> OnDisk(Paths.get(URI(location)))
+                location.startsWith(NESTED_PREFIX, ignoreCase = true) -> parseNested(location.substring(NESTED_PREFIX.length))
+                location.startsWith(JAR_PREFIX, ignoreCase = true) -> parseJarUrl(location.substring(JAR_PREFIX.length))
                 else -> Unsupported
             }
 
@@ -82,7 +85,7 @@ internal sealed interface CodeSourceLocation {
             val split = rest.indexOf(JAR_SEPARATOR)
             if (split < 0) return Unsupported
             val outer = rest.substring(0, split)
-            if (!outer.startsWith("file:")) return Unsupported
+            if (!outer.startsWith(FILE_PREFIX, ignoreCase = true)) return Unsupported
             val outerPath = Paths.get(URI(outer))
             val entry = rest.substring(split + JAR_SEPARATOR.length).removeSuffix(JAR_SEPARATOR)
             return if (entry.isEmpty()) OnDisk(outerPath) else InJar(outerPath, entry)

@@ -49,6 +49,20 @@ class CodeSourceLocationTest {
     }
 
     @Test
+    fun `schemes are read whatever their case, as the JDK reads them`() {
+        assertEquals(CodeSourceLocation.OnDisk(Path.of("/libs/one.jar")), CodeSourceLocation.parse("FILE:/libs/one.jar"))
+        assertEquals(CodeSourceLocation.OnDisk(Path.of("/libs/one.jar")), CodeSourceLocation.parse("JAR:FILE:/libs/one.jar!/"))
+        assertEquals(
+            CodeSourceLocation.InJar(Path.of("/srv/demo.jar"), "BOOT-INF/lib/a.jar"),
+            CodeSourceLocation.parse("jar:File:/srv/demo.jar!/BOOT-INF/lib/a.jar!/"),
+        )
+        assertEquals(
+            CodeSourceLocation.InJar(Path.of("/srv/demo.jar"), "BOOT-INF/lib/a.jar"),
+            CodeSourceLocation.parse("Jar:Nested:/srv/demo.jar/!BOOT-INF/lib/a.jar!/"),
+        )
+    }
+
+    @Test
     fun `other schemes are unsupported`() {
         assertEquals(CodeSourceLocation.Unsupported, CodeSourceLocation.parse("jrt:/java.sql"))
         assertEquals(CodeSourceLocation.Unsupported, CodeSourceLocation.parse("jar:http://example.com/a.jar!/"))

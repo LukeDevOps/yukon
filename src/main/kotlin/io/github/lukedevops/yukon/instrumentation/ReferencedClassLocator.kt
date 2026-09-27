@@ -59,7 +59,7 @@ internal class ReferencedClassLocator(
                 null
             }
         if (url == null) return Found(null)
-        if (url.startsWith("jrt:")) return null
+        if (url.startsWith("jrt:", ignoreCase = true)) return null
         return classify(url, platformClasses.provides(className))
     }
 
@@ -78,15 +78,18 @@ internal class ReferencedClassLocator(
          * - `jar:`: kept, with the URL cut after its last `!/`, which is the jar's code-source
          *   location in both `jar:file:<jar>!/` and Spring Boot's `jar:nested:<outer>/!<entry>!/`.
          * - Anything else: kept with the whole URL, which resolves to no dependency.
+         *
+         * Schemes are matched ignoring case: `java.net.URL` lowercases its protocol, but a custom
+         * handler's `toExternalForm` may print it in any case.
          */
         fun classify(
             url: String?,
             providedByPlatform: Boolean,
         ): Found? {
             if (url == null) return Found(null)
-            if (url.startsWith("jrt:") || providedByPlatform) return null
-            if (url.startsWith("file:")) return null
-            if (url.startsWith("jar:")) {
+            if (url.startsWith("jrt:", ignoreCase = true) || providedByPlatform) return null
+            if (url.startsWith("file:", ignoreCase = true)) return null
+            if (url.startsWith("jar:", ignoreCase = true)) {
                 val separator = url.lastIndexOf(JAR_SEPARATOR)
                 return Found(if (separator < 0) url else url.substring(0, separator + JAR_SEPARATOR.length))
             }

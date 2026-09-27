@@ -91,6 +91,16 @@ class ReferencedClassLocatorTest {
     }
 
     @Test
+    fun `schemes are matched whatever their case, as a custom handler's toExternalForm may print them`() {
+        assertNull(ReferencedClassLocator.classify("JRT:/java.base/java/lang/String.class", providedByPlatform = false))
+        assertNull(ReferencedClassLocator.classify("FILE:/app/classes/org/acme/Foo.class", providedByPlatform = false))
+        assertEquals(
+            Found("JAR:file:/x.jar!/"),
+            ReferencedClassLocator.classify("JAR:file:/x.jar!/com/Foo.class", providedByPlatform = false),
+        )
+    }
+
+    @Test
     fun `a jrt resource is dropped even when the platform loader does not provide it`() {
         // A JDK module defined to the application loader, such as jdk.compiler, answers with a
         // jrt: URL the platform loader cannot see.

@@ -360,6 +360,15 @@ class StartupClasspathListerTest {
     }
 
     @Test
+    fun `a Class-Path entry naming the file scheme in any case is followed, as the system loader follows it`() {
+        val lib = TestJars.write(dir.resolve("lib-1.0.jar"), listOf(classEntry("org.l.L")))
+        val upper = "FILE:" + lib.toUri().toString().removePrefix("file:")
+        val app = TestJars.write(dir.resolve("app-1.0.jar"), listOf(classEntry("org.a.A")), mapOf("Class-Path" to upper))
+
+        assertEquals(listOf("app", "lib"), artifacts(lister(classPath(app)).list()))
+    }
+
+    @Test
     fun `a Class-Path jar is searched straight after the jar naming it, before the next classpath entry`() {
         TestJars.write(dir.resolve("libs/shared-1.0.jar"), listOf(pom("g", "shared", "1.0"), classEntry("org.s.S")))
         val first = TestJars.write(dir.resolve("first.jar"), listOf(classEntry("org.f.F")), mapOf("Class-Path" to "libs/shared-1.0.jar"))
