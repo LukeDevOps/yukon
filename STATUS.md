@@ -141,7 +141,16 @@ adopter's collector forwards to one multi-tenant backend.
      tenant that issued the login is the user's tenant, and give each
      tenant its own identity provider (the server STATUS lists this first
      under browser auth).
-   - Server: add a Content-Security-Policy.
+   - Server: a full Content-Security-Policy landed on 2026-09-27 (server
+     `788716b`): `default-src 'none'`, everything the UI loads from
+     `'self'`, no inline script, inline style, eval or `data:`. Base UI's
+     inline scrollbar `<style>` was the one violation found in Chrome; the
+     app runs under `CSPProvider disableStyleElements` with the rule in
+     `index.css`. Not guarded yet: a dependency could reintroduce an inline
+     style or worker and only a browser would notice. A jsdom test that
+     opens a Select and asserts no `<style>` exists, or a `report-to`
+     endpoint later, would catch it; the Vite dev server sends no CSP, so
+     dev never exercises the policy.
    - Collector: add several valid tokens for rotation, and `_FILE` token
      variables. TLS is documented rather than built: the README's TLS
      section (collector `b838535`, 2026-09-27) says it must sit behind a
