@@ -146,8 +146,12 @@ adopter's collector forwards to one multi-tenant backend.
      a TLS proxy. Add several valid tokens for rotation, and `_FILE` token
      variables.
 5. **Release mechanics.**
-   - Collector: publish the image to GHCR with tags, and add a HEALTHCHECK
-     like the server's. The build image moved back to `golang:1.26-alpine`
+   - Collector: publish the image to GHCR with tags. The HEALTHCHECK landed
+     on 2026-09-27 (collector `e5d3e2f`): a `healthcheck` subcommand GETs
+     `/healthz` with no proxy, loopback for an empty or unspecified host, a
+     2s deadline, and exit 2 for any other argument. The server's own probe
+     has the proxy and address gaps review found here, fixed next. The build
+     image moved back to `golang:1.26-alpine`
      on 2026-09-27 (collector `65989bc`): `go 1.26.0` in `go.mod` is the
      floor for anyone importing `ingest` or `metrics`, kept for
      compatibility, and a Dependabot bump had moved the image to 1.27;
