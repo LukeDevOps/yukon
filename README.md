@@ -306,7 +306,7 @@ address and credential can be overridden:
 | `-PyukonEndpoint` | `http://localhost:4319` |
 | `-PyukonAgentToken` | `local-stack-agent-token` |
 | `-PyukonServerUrl` | `http://localhost:4320` |
-| `-PyukonServerApiKey` | `yk_local-stack-api-key` |
+| `-PyukonServerReadApiKey` | `yk_stack-read-key-for-local-dev-only`, the stack's read key; the demo only reads the server's API. The retired `-PyukonServerApiKey` stops the run with a message naming this property |
 | `-PyukonServiceVersion` | `stack-demo`, `spring-stack-demo` for the Spring demo, `shapes-stack-demo` for the shapes run |
 
 The defaults match the compose stack's own development defaults, so with

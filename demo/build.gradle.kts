@@ -186,7 +186,10 @@ tasks.register("runSpringDemo") {
 val stackEndpoint = providers.gradleProperty("yukonEndpoint").getOrElse("http://localhost:4319")
 val stackAgentToken = providers.gradleProperty("yukonAgentToken").getOrElse("local-stack-agent-token")
 val stackServerUrl = providers.gradleProperty("yukonServerUrl").getOrElse("http://localhost:4320")
-val stackServerApiKey = providers.gradleProperty("yukonServerApiKey").getOrElse("yk_local-stack-api-key")
+// The demo only reads the server's API, so it needs a read key. The stack's collector holds the ingest key.
+val stackServerReadApiKey =
+    providers.gradleProperty("yukonServerReadApiKey").getOrElse("yk_stack-read-key-for-local-dev-only")
+val retiredServerApiKey = providers.gradleProperty("yukonServerApiKey")
 val stackServiceVersion = providers.gradleProperty("yukonServiceVersion").getOrElse("stack-demo")
 val springStackServiceVersion = providers.gradleProperty("yukonServiceVersion").getOrElse("spring-stack-demo")
 
@@ -273,6 +276,7 @@ fun runStackDemo(
     serverPortWaitSeconds: Long,
     clientArgs: List<String>,
 ) {
+    requireNoRetiredStackProperty()
     requireStackCollector()
     val javaBin = Jvm.current().javaExecutable.absolutePath
     val runInstanceId = UUID.randomUUID().toString()
@@ -314,6 +318,7 @@ fun runStackOneShot(
     includePackages: String,
     programArgs: List<String>,
 ) {
+    requireNoRetiredStackProperty()
     requireStackCollector()
     val javaBin = Jvm.current().javaExecutable.absolutePath
     val runInstanceId = UUID.randomUUID().toString()
@@ -347,6 +352,17 @@ fun runStackOneShot(
 // How long a one-shot program may run: its own wait before exiting, plus JVM start-up and the
 // agent's shutdown flush, with room to spare.
 val oneShotTimeoutSeconds = flushIntervalSeconds + 60
+
+// A run that sets yukonServerApiKey stops here with a message naming yukonServerReadApiKey. The demo only
+// reads, and the server's read API answers an ingest key with 403.
+fun requireNoRetiredStackProperty() {
+    if (retiredServerApiKey.isPresent) {
+        throw GradleException(
+            "yukon demo: -PyukonServerApiKey is not used. The demo reads the server's API with a read key; " +
+                "pass it as -PyukonServerReadApiKey=<read key> instead.",
+        )
+    }
+}
 
 fun requireStackCollector() {
     if (httpGet("$stackEndpoint/healthz", token = null).status != 200) {
@@ -468,7 +484,7 @@ fun readApi(
     service: StackService,
     path: String,
 ): Map<*, *> {
-    val result = httpGet("$stackServerUrl${service.path}$path", stackServerApiKey)
+    val result = httpGet("$stackServerUrl${service.path}$path", stackServerReadApiKey)
     if (result.status != 200) {
         throw GradleException("yukon demo: GET $path returned ${result.status}: ${result.body}")
     }
