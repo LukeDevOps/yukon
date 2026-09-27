@@ -169,9 +169,19 @@ adopter's collector forwards to one multi-tenant backend.
      compatibility, and a Dependabot bump had moved the image to 1.27;
      Dependabot now ignores golang minor and major bumps.
    - Agent: publish the jar and the testkit.
-   - Agent CI: move `buf.yml` from the deprecated `bufbuild/buf-setup-action`,
-     `buf-lint-action`, `buf-breaking-action` and `buf-push-action` to
-     `bufbuild/buf-action`. Nothing is broken today.
+   - Agent CI moved to `bufbuild/buf-action` on 2026-09-27, which also
+     checks formatting. It runs every check but not the push, which is a
+     `buf push --label master` step after it: the action's own push labels
+     from a live look at origin and fails once master has moved on. The
+     module's default label on the registry moved from `main` to `master`
+     to match; `main` stays frozen at `34b5239c`, and nothing refers to it.
+     The switch left two registry commits with identical content:
+     `24387a85` created `master`, and `91a74c73` moved it at the moment the
+     default switched, with the check state only default-label commits
+     carry, so most likely the switch itself re-committed it. Buf's docs do
+     not say so; unconfirmed. Runs queue per ref, since two publishes in
+     flight could move the label back, and a manual run checks a change to
+     the workflow alone without publishing.
    - Server: it is not published; decide where its image is built and
      deployed from for the hosted service.
 

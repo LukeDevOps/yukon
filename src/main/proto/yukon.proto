@@ -2,8 +2,8 @@ syntax = "proto3";
 
 package yukon;
 
-option java_package = "io.github.lukedevops.yukon.proto";
 option java_multiple_files = true;
+option java_package = "io.github.lukedevops.yukon.proto";
 
 // A probe is addressed on the wire as (class_id, probe_index) rather than a
 // flat global ID: class_id is assigned once per run and carried in

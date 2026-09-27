@@ -7,39 +7,49 @@ on:
       - "src/main/proto/**"
       - "buf.yaml"
   pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
     paths:
       - "src/main/proto/**"
       - "buf.yaml"
+      - ".github/workflows/buf.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+# Publishes to one fixed label, so runs on a ref go one at a time: two in flight could otherwise
+# land out of order and move the label back to the older schema.
+concurrency:
+  group: buf-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  lint-and-breaking:
+  buf:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: bufbuild/buf-setup-action@v1
-      - uses: bufbuild/buf-lint-action@v1
-      - uses: bufbuild/buf-breaking-action@v1
-        if: github.event_name == 'pull_request'
+      # Build, lint and format run on every event, and breaking does too unless a pull request
+      # carries the "buf skip breaking" label. A pull request is checked against its base commit.
+      # A push to master publishes, so it and a manual run are checked against what the registry
+      # already serves, not against the previous commit: a break that reached master unpublished is
+      # still caught, and shipping an intended break needs a manual push. A change to this file
+      # alone does not trigger a push run, so it never publishes an unchanged schema; run the
+      # workflow by hand to check it.
+      - uses: bufbuild/buf-action@v1
         with:
-          against: "https://github.com/${{ github.repository }}.git#branch=${{ github.event.pull_request.base.ref }}"
-      # A push to master publishes, so it is checked against what the registry already serves,
-      # not against the previous commit: a break that reached master unpublished is still caught.
-      - uses: bufbuild/buf-breaking-action@v1
+          token: ${{ secrets.BUF_TOKEN }}
+          lint: true
+          format: true
+          breaking: ${{ github.event_name != 'pull_request' || !contains(github.event.pull_request.labels.*.name, 'buf skip breaking') }}
+          breaking_against_registry: ${{ github.event_name != 'pull_request' }}
+          push: false
+      # Runs only when every check above passed, since the action fails its step otherwise. The
+      # action's own push uses --git-metadata, which labels the commit from a live look at origin
+      # and fails once master has moved past it; naming the module's default label directly does
+      # not depend on that.
+      - name: Push to the registry
         if: github.event_name == 'push'
-        with:
-          input: "src/main/proto"
-          against: "buf.build/lukedevops-oss/yukon"
-
-  push:
-    needs: lint-and-breaking
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: bufbuild/buf-setup-action@v1
-        with:
-          github_token: ${{ github.token }}
-      - uses: bufbuild/buf-push-action@v1
-        with:
-          buf_token: ${{ secrets.BUF_TOKEN }}
-          input: "src/main/proto"
+        env:
+          BUF_TOKEN: ${{ secrets.BUF_TOKEN }}
+        run: buf push --exclude-unnamed --label master --source-control-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/commit/$GITHUB_SHA"
