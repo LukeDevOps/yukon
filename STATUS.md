@@ -142,9 +142,15 @@ adopter's collector forwards to one multi-tenant backend.
      tenant its own identity provider (the server STATUS lists this first
      under browser auth).
    - Server: add a Content-Security-Policy.
-   - Collector: a TLS listener, or a README line saying it must sit behind
-     a TLS proxy. Add several valid tokens for rotation, and `_FILE` token
-     variables.
+   - Collector: add several valid tokens for rotation, and `_FILE` token
+     variables. TLS is documented rather than built: the README's TLS
+     section (collector `b838535`, 2026-09-27) says it must sit behind a
+     TLS-terminating proxy, since the agent-to-collector hop carries the
+     token and literals redaction has not yet seen.
+   - Agent: the plain-http token warning in `AgentConfig` checks
+     `startsWith("http://")` case-sensitively while `parseEndpoint`
+     accepts any case, so `HTTP://host` with a token is not warned about.
+     Found reviewing the TLS section, not yet fixed.
 5. **Release mechanics.**
    - Collector: publish the image to GHCR with tags. The HEALTHCHECK landed
      on 2026-09-27 (collector `e5d3e2f`): a `healthcheck` subcommand GETs
