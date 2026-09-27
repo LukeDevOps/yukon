@@ -116,8 +116,8 @@ adopter's collector forwards to one multi-tenant backend.
 3. **Settle the one-way doors before anything is published.** Next up
    (2026-09-27): every item 2 bullet from the real runs has landed, and
    the simple items in 4 and 5 were cleared first on 2026-09-27; what is
-   left in 4 and 5 is the per-tenant login check, collector token
-   rotation, and publishing. Item 3 is decisions, so it starts with a
+   left in 4 is settled and planned in the server STATUS, and 5 is
+   publishing. Item 3 is decisions, so it starts with a
    grill, one sub-item at a time. Facts gathered so far: the testkit's public surface is
    `YukonTestCollector` (about 40 public functions, from `awaitNextFlush`
    and `wasHit` to `unreachedClusters` and the dependency queries), the
@@ -137,23 +137,25 @@ adopter's collector forwards to one multi-tenant backend.
    - Settle versioning: the agent is `1.0-SNAPSHOT`, and no repo has
      tags. Add Maven publishing, signing, and licence metadata in the
      poms.
-4. **Security basics, sized to how the server is hosted.**
-   - Server: it is hosted for many tenants, so check at login that the
-     tenant that issued the login is the user's tenant, and give each
-     tenant its own identity provider (the server STATUS lists this first
-     under browser auth).
-   - Server: a full Content-Security-Policy landed on 2026-09-27 (server
-     `788716b`): `default-src 'none'`, everything the UI loads from
-     `'self'`, no inline script, inline style, eval or `data:`. Base UI's
-     inline scrollbar `<style>` was the one violation found in Chrome; the
-     app runs under `CSPProvider disableStyleElements` with the rule in
-     `index.css`. Not guarded yet: a dependency could reintroduce an inline
-     style or worker and only a browser would notice. A jsdom test that
-     opens a Select and asserts no `<style>` exists, or a `report-to`
-     endpoint later, would catch it; the Vite dev server sends no CSP, so
-     dev never exercises the policy.
-   - Collector: add several valid tokens for rotation, and `_FILE` token
-     variables. TLS is documented rather than built: the README's TLS
+4. **Security basics, sized to how the server is hosted.** Settled on
+   2026-09-27 in a grilling session: server ADRs 0040 to 0043 and
+   collector ADR 0003. The plan, its ten chunks and what is deferred are
+   in the server STATUS under "Security for the hosted service". In
+   short: WorkOS AuthKit for login (Google, Microsoft or GitHub, or a
+   tenant's own SAML or OIDC SSO connection, enforced), with the tenant
+   check at login and the server's own sessions; `admin` and `viewer`
+   roles; row-level security behind the tenant filter; API keys scoped
+   `ingest` or `read` with per-key ingest limits; audit events that show
+   operator actions to the tenant; hosting on GCP Cloud Run and Cloud
+   SQL; nothing costs money before a paying customer needs it.
+   - Server: the full Content-Security-Policy landed on 2026-09-27
+     (server `788716b`). Its regression guard is chunk 2 of the server
+     plan: a CI check on the built `dist/` and a jsdom Select test.
+   - Collector: its auth token takes a comma-separated list, and
+     `YUKON_COLLECTOR_AUTH_TOKEN_FILE` and
+     `YUKON_COLLECTOR_FORWARD_AUTH_TOKEN_FILE` read files that are
+     re-read every 30 seconds (collector ADR 0003; chunk 1 of the server
+     plan). TLS is documented rather than built: the README's TLS
      section (collector `b838535`, 2026-09-27) says it must sit behind a
      TLS-terminating proxy, since the agent-to-collector hop carries the
      token and literals redaction has not yet seen.
@@ -192,8 +194,9 @@ adopter's collector forwards to one multi-tenant backend.
      not say so; unconfirmed. Runs queue per ref, since two publishes in
      flight could move the label back, and a manual run checks a change to
      the workflow alone without publishing.
-   - Server: it is not published; decide where its image is built and
-     deployed from for the hosted service.
+   - Server: it is not published. Settled on 2026-09-27: GitHub
+     Actions builds it and deploys it to GCP Cloud Run by digest,
+     through Workload Identity Federation (chunk 10 of the server plan).
 
 After release: naming polish (`this$0`, facade names, the demo printer),
 the perf deferrals, gzip, a collector config file, agent-level redaction
