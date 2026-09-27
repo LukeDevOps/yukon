@@ -114,10 +114,11 @@ adopter's collector forwards to one multi-tenant backend.
      hit when only `copy`, `toString` and the class's own methods read the
      field; that is true, and noisy.
 3. **Settle the one-way doors before anything is published.** Next up
-   (2026-09-26): every item 2 bullet from the real runs has landed; what
-   is left there is marked not seen in these runs, or naming after
-   release. Item 3 is decisions, so it starts with a grill, one sub-item
-   at a time. Facts gathered so far: the testkit's public surface is
+   (2026-09-27): every item 2 bullet from the real runs has landed, and
+   the simple items in 4 and 5 were cleared first on 2026-09-27; what is
+   left in 4 and 5 is the per-tenant login check, collector token
+   rotation, and publishing. Item 3 is decisions, so it starts with a
+   grill, one sub-item at a time. Facts gathered so far: the testkit's public surface is
    `YukonTestCollector` (about 40 public functions, from `awaitNextFlush`
    and `wasHit` to `unreachedClusters` and the dependency queries), the
    top-level types beside it (`ProbeRef`, `ClassFindingRef`,
