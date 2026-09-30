@@ -188,7 +188,7 @@ val stackAgentToken = providers.gradleProperty("otherlodeAgentToken").getOrElse(
 val stackServerUrl = providers.gradleProperty("otherlodeServerUrl").getOrElse("http://localhost:4320")
 // The demo only reads the server's API, so it needs a read key. The stack's collector holds the ingest key.
 val stackServerReadApiKey =
-    providers.gradleProperty("otherlodeServerReadApiKey").getOrElse("yk_stack-read-key-for-local-dev-only")
+    providers.gradleProperty("otherlodeServerReadApiKey").getOrElse("otl_stack-read-key-for-local-dev-only")
 val stackServiceVersion = providers.gradleProperty("otherlodeServiceVersion").getOrElse("stack-demo")
 val springStackServiceVersion = providers.gradleProperty("otherlodeServiceVersion").getOrElse("spring-stack-demo")
 

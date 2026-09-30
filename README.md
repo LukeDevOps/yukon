@@ -306,7 +306,7 @@ address and credential can be overridden:
 | `-PotherlodeEndpoint` | `http://localhost:4319` |
 | `-PotherlodeAgentToken` | `local-stack-agent-token` |
 | `-PotherlodeServerUrl` | `http://localhost:4320` |
-| `-PotherlodeServerReadApiKey` | `yk_stack-read-key-for-local-dev-only`, the stack's read key; the demo only reads the server's API. |
+| `-PotherlodeServerReadApiKey` | `otl_stack-read-key-for-local-dev-only`, the stack's read key; the demo only reads the server's API. |
 | `-PotherlodeServiceVersion` | `stack-demo`, `spring-stack-demo` for the Spring demo, `shapes-stack-demo` for the shapes run |
 
 The defaults match the compose stack's own development defaults, so with
