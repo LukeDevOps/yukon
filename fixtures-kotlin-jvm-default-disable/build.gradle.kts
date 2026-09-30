@@ -9,7 +9,7 @@ plugins {
     kotlin("jvm")
 }
 
-group = "io.github.lukedevops"
+group = "dev.otherlode"
 
 repositories {
     mavenCentral()

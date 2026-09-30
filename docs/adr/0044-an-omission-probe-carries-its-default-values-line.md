@@ -23,6 +23,6 @@ An optional parameter read `DemoServerMain.kt:103`, the body line of `formatTota
 
 ## Consequences
 
-- No wire change. The `line` comment in `yukon.proto` states the meaning for this kind.
+- No wire change. The `line` comment in `otherlode.proto` states the meaning for this kind.
 - Lines differ between builds as defaults move, so a consumer that merges runs takes the line from the newest run, as it does for method lines.
 - A consumer that merges a parameter's probes takes the line from a probe whose line is not -1.

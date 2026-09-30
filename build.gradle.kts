@@ -8,17 +8,17 @@ plugins {
     id("me.champeau.jmh") version "0.7.3"
 }
 
-group = "io.github.lukedevops"
+group = "dev.otherlode"
 version = "1.0-SNAPSHOT"
 
 repositories {
     mavenCentral()
 }
 
-// `-Pyukon.testJdk=25` runs every project's tests on that JDK. Compilation keeps the JDK 21
+// `-Potherlode.testJdk=25` runs every project's tests on that JDK. Compilation keeps the JDK 21
 // toolchain; only the JVM that runs the tests changes. CI sets it so a JDK that renames an
 // internal the agent reads, such as the lambda factory members in ADR 0035, fails a test.
-val testJdk = providers.gradleProperty("yukon.testJdk")
+val testJdk = providers.gradleProperty("otherlode.testJdk")
 allprojects {
     plugins.withType<JavaBasePlugin> {
         val toolchains = extensions.getByType<JavaToolchainService>()
@@ -82,8 +82,8 @@ dependencies {
     implementation(project(":endpoints-otel-bridge"))
 
     // Wire schema for the delta batch and probe manifest payloads
-    // (see src/main/proto/yukon.proto). Generated classes are shaded under
-    // io.github.lukedevops.yukon.shaded.protobuf below, same rationale as
+    // (see src/main/proto/otherlode/v1/otherlode.proto). Generated classes are shaded under
+    // dev.otherlode.shaded.protobuf below, same rationale as
     // the ByteBuddy relocation.
     implementation("com.google.protobuf:protobuf-java:3.25.5")
 
@@ -126,14 +126,14 @@ java {
 // jar as loose files and drop the resource itself. The demo would not have caught that, since
 // its classpath also carries the plain jar where the resource survives; verifyAgentJar below
 // checks the shaded jar directly.
-val bootstrapResourcePath = "META-INF/yukon/bootstrap-jar.bin"
+val bootstrapResourcePath = "META-INF/otherlode/bootstrap-jar.bin"
 
 val embedBootstrapJar by tasks.registering(Sync::class) {
     from(project(":bootstrap").tasks.named<Jar>("jar")) {
         into(bootstrapResourcePath.substringBeforeLast('/'))
         rename { bootstrapResourcePath.substringAfterLast('/') }
     }
-    // This directory becomes a resource root, so the META-INF/yukon prefix above is what the
+    // This directory becomes a resource root, so the META-INF/otherlode prefix above is what the
     // resource path inside the agent jar ends up being.
     into(layout.buildDirectory.dir("generated-resources/bootstrap"))
 }
@@ -169,13 +169,13 @@ val verifyAgentJar by tasks.registering {
             check(bootstrapResourcePath in names) {
                 "agent jar is missing the embedded bootstrap holder at $bootstrapResourcePath"
             }
-            val loose = names.filter { it.startsWith("io/github/lukedevops/yukon/bootstrap/") && it.endsWith(".class") }
+            val loose = names.filter { it.startsWith("dev/otherlode/bootstrap/") && it.endsWith(".class") }
             check(loose.isEmpty()) {
                 "agent jar must not carry the bootstrap holder as loose classes, found: $loose"
             }
             val notice = checkNotNull(zip.getEntry("META-INF/NOTICE")) { "agent jar is missing META-INF/NOTICE" }
             val noticeFirstLine = zip.getInputStream(notice).bufferedReader().use { it.readLine() }
-            check(noticeFirstLine == "Yukon") {
+            check(noticeFirstLine == "Otherlode") {
                 "agent jar's META-INF/NOTICE is not this project's own; first line is \"$noticeFirstLine\""
             }
             check("META-INF/LICENSE" in names) { "agent jar is missing META-INF/LICENSE" }
@@ -195,21 +195,21 @@ val verifyAgentJar by tasks.registering {
             // itself (a private helper is a real call at the woven site), carry no synthetic
             // member (a lambda, a switch over an enum, or an assert compiles to one), and never
             // mention the relocated Kotlin stdlib. Passes trivially while the package is empty.
-            val adviceClassNames = names.filter { it.startsWith("io/github/lukedevops/yukon/endpoints/") && it.endsWith(".class") }
+            val adviceClassNames = names.filter { it.startsWith("dev/otherlode/endpoints/") && it.endsWith(".class") }
             val adviceProblems =
                 adviceClassNames.flatMap { entryName ->
                     val shape = parseClassShape(zip.getInputStream(zip.getEntry(entryName)).use { it.readBytes() })
                     val problems = mutableListOf<String>()
-                    if (shape.utf8Constants.any { "io/github/lukedevops/yukon/shaded/kotlin" in it }) {
+                    if (shape.utf8Constants.any { "dev/otherlode/shaded/kotlin" in it }) {
                         problems += "references the shaded Kotlin stdlib"
                     }
                     val foreignAgentClasses =
                         shape.referencedClasses.filter {
-                            it.startsWith("io/github/lukedevops/yukon/") &&
+                            it.startsWith("dev/otherlode/") &&
                                 it != shape.name &&
-                                it != "io/github/lukedevops/yukon/bootstrap/YukonEndpoints" &&
-                                !it.startsWith("io/github/lukedevops/yukon/bootstrap/YukonEndpoints$") &&
-                                !it.startsWith("io/github/lukedevops/yukon/shaded/bytebuddy/")
+                                it != "dev/otherlode/bootstrap/OtherlodeEndpoints" &&
+                                !it.startsWith("dev/otherlode/bootstrap/OtherlodeEndpoints$") &&
+                                !it.startsWith("dev/otherlode/shaded/bytebuddy/")
                         }
                     if (foreignAgentClasses.isNotEmpty()) problems += "references agent classes $foreignAgentClasses"
                     if (shape.selfMethodCalls.isNotEmpty()) problems += "calls its own methods ${shape.selfMethodCalls}"
@@ -377,23 +377,23 @@ tasks.test {
     val shadedAgentJar = tasks.shadowJar.flatMap { it.archiveFile }
     inputs.file(shadedAgentJar)
     doFirst {
-        systemProperty("yukon.agent.shadedJar", shadedAgentJar.get().asFile.absolutePath)
-        systemProperty("yukon.fixtures.scala3.dir", scala3FixtureClassesDir.get().asFile.absolutePath)
-        systemProperty("yukon.fixtures.scala3.classpath", scala3FixtureRuntimeClasspath.get().asPath)
-        systemProperty("yukon.fixtures.scala2.dir", scala2FixtureClassesDir.get().asFile.absolutePath)
-        systemProperty("yukon.fixtures.scala2.classpath", scala2FixtureRuntimeClasspath.get().asPath)
+        systemProperty("otherlode.agent.shadedJar", shadedAgentJar.get().asFile.absolutePath)
+        systemProperty("otherlode.fixtures.scala3.dir", scala3FixtureClassesDir.get().asFile.absolutePath)
+        systemProperty("otherlode.fixtures.scala3.classpath", scala3FixtureRuntimeClasspath.get().asPath)
+        systemProperty("otherlode.fixtures.scala2.dir", scala2FixtureClassesDir.get().asFile.absolutePath)
+        systemProperty("otherlode.fixtures.scala2.classpath", scala2FixtureRuntimeClasspath.get().asPath)
         systemProperty(
-            "yukon.fixtures.jvmdefaultdisable.dir",
+            "otherlode.fixtures.jvmdefaultdisable.dir",
             jvmDefaultDisableFixtureClassesDir.get().asFile.absolutePath,
         )
         systemProperty(
-            "yukon.fixtures.jvmdefaultdisable.classpath",
+            "otherlode.fixtures.jvmdefaultdisable.classpath",
             jvmDefaultDisableFixtureRuntimeClasspath.get().asPath,
         )
-        systemProperty("yukon.fixtures.classsam.dir", classSamFixtureClassesDir.get().asFile.absolutePath)
+        systemProperty("otherlode.fixtures.classsam.dir", classSamFixtureClassesDir.get().asFile.absolutePath)
         systemProperty(
-            "yukon.demo.serverMainSource",
-            project(":demo").file("src/main/kotlin/io/github/lukedevops/demo/server/DemoServerMain.kt").absolutePath,
+            "otherlode.demo.serverMainSource",
+            project(":demo").file("src/main/kotlin/com/example/demo/server/DemoServerMain.kt").absolutePath,
         )
     }
 }
@@ -443,7 +443,7 @@ fun benchmarkCorpusProperties(): Map<String, String> =
                 val path = files.asPath
                 // JMH joins the fork's JVM arguments with spaces, so a space in a path would split it.
                 check(' ' !in path) { "benchmark corpus $corpus.$classSet has a space in its path: $path" }
-                "yukon.benchmark.corpus.$corpus.$classSet" to path
+                "otherlode.benchmark.corpus.$corpus.$classSet" to path
             }
         }.toMap()
 
@@ -452,13 +452,13 @@ tasks.test {
     doFirst { systemProperties(benchmarkCorpusProperties()) }
 }
 
-// Fork, warmup and measurement settings live on the benchmark class. `-Pyukon.benchmark.corpus=demo`
+// Fork, warmup and measurement settings live on the benchmark class. `-Potherlode.benchmark.corpus=demo`
 // runs one corpus; a comma-separated list runs several.
 jmh {
     jmhVersion.set("1.37")
     includeTests.set(false)
     jvmArgsAppend.addAll(provider { benchmarkCorpusProperties().map { (key, value) -> "-D$key=$value" } })
-    providers.gradleProperty("yukon.benchmark.corpus").orNull?.let { selected ->
+    providers.gradleProperty("otherlode.benchmark.corpus").orNull?.let { selected ->
         benchmarkParameters.put("corpus", objects.listProperty<String>().value(selected.split(',').map { it.trim() }))
     }
 }
@@ -474,9 +474,9 @@ sourceSets.test {
     runtimeClasspath += sourceSets["jmh"].output
 }
 
-val agentMainClass = "io.github.lukedevops.yukon.Agent"
+val agentMainClass = "dev.otherlode.Agent"
 
-// The plain jar task would otherwise write to the same build/libs/yukon-*.jar
+// The plain jar task would otherwise write to the same build/libs/otherlode-agent-*.jar
 // path as shadowJar below (its classifier is cleared to make that the single
 // distributable file), and whichever task happened to run last would win,
 // silently overwriting the shaded agent jar with one missing the
@@ -496,30 +496,30 @@ tasks.shadowJar {
     archiveClassifier.set("")
 
     // Each per-framework endpoint module subproject ships its own
-    // META-INF/services/io.github.lukedevops.yukon.instrumentation.endpoints.api.EndpointModule
+    // META-INF/services/dev.otherlode.instrumentation.endpoints.api.EndpointModule
     // entry. Without this, shadow keeps only one such file (whichever dependency it copies
     // last), so every module but one would silently vanish from ServiceLoader discovery.
     mergeServiceFiles()
 
     // Relocate ByteBuddy so it can't collide with a possibly
     // differently-versioned copy already on the target application's classpath.
-    relocate("net.bytebuddy", "io.github.lukedevops.yukon.shaded.bytebuddy")
+    relocate("net.bytebuddy", "dev.otherlode.shaded.bytebuddy")
 
     // Same rationale for protobuf-java: the target app may already carry its
     // own, differently-versioned copy on the classpath.
-    relocate("com.google.protobuf", "io.github.lukedevops.yukon.shaded.protobuf")
+    relocate("com.google.protobuf", "dev.otherlode.shaded.protobuf")
 
     // Most of the agent itself is Kotlin, so kotlin-stdlib is unavoidably on this jar's own
     // classpath too. Left unrelocated, it collides exactly the same way ByteBuddy and protobuf
     // would: a Kotlin target app almost certainly carries its own, possibly differently-versioned
     // copy of the same classes on the system classloader the agent shares with it.
-    relocate("kotlin", "io.github.lukedevops.yukon.shaded.kotlin")
+    relocate("kotlin", "dev.otherlode.shaded.kotlin")
 
     // Transitive dependency of kotlin-stdlib (org.jetbrains:annotations). Same collision
     // rationale, lower stakes since these are stable marker annotations, but no reason to leave
     // them unshaded either.
-    relocate("org.jetbrains.annotations", "io.github.lukedevops.yukon.shaded.annotations")
-    relocate("org.intellij.lang.annotations", "io.github.lukedevops.yukon.shaded.intellij.annotations")
+    relocate("org.jetbrains.annotations", "dev.otherlode.shaded.annotations")
+    relocate("org.intellij.lang.annotations", "dev.otherlode.shaded.intellij.annotations")
 
     // META-INF/LICENSE and META-INF/NOTICE must describe this jar, not whichever dependency's
     // entries shadow happened to copy first, so every dependency's own copies are dropped and

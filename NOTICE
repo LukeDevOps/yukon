@@ -1,10 +1,10 @@
-Yukon
+Otherlode
 Copyright 2026 Luke Killick
 
 Licensed under the Apache License, Version 2.0. See LICENSE.
 
 The agent jar bundles the following third-party components, relocated
-under the io.github.lukedevops.yukon.shaded package so they cannot
+under the dev.otherlode.shaded package so they cannot
 collide with copies on the instrumented application's classpath. Their
 licence texts are under META-INF/licenses/ in the jar and under
 licenses/ in the source tree.

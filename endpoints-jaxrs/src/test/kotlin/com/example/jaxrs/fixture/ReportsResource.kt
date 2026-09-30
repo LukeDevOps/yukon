@@ -12,7 +12,7 @@ abstract class BaseReports {
 
 /**
  * A concrete subclass of [BaseReports], proving
- * [io.github.lukedevops.yukon.instrumentation.endpoints.jaxrs.JaxRsModule] resolves an inherited
+ * [dev.otherlode.instrumentation.endpoints.jaxrs.JaxRsModule] resolves an inherited
  * method's verb and path from a superclass, not only from an interface, while its own class-level
  * `@Path` (which the specification never treats as inherited in the first place) is simply read
  * from this class directly.

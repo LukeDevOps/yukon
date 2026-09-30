@@ -7,5 +7,5 @@ import com.example.fixture.used.Greeter
  * `DependencyUsageAgentTest` calls [greet], so the reference is held by a hit method.
  */
 class DependencyUser {
-    fun greet(): String = Greeter.greet("yukon")
+    fun greet(): String = Greeter.greet("otherlode")
 }

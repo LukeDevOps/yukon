@@ -1,8 +1,8 @@
 package com.example.testkittarget
 
 /**
- * The class-finding shapes of yukon-server's ADR 0034, for
- * [io.github.lukedevops.yukon.testkit.YukonTestCollectorEndToEndTest]. The test loads [AuditTrail],
+ * The class-finding shapes of otherlode-server's ADR 0034, for
+ * [dev.otherlode.testkit.OtherlodeTestCollectorEndToEndTest]. The test loads [AuditTrail],
  * [LinePrinter] and [Greeter] with `Class.forName(name, false, loader)`, which loads a class without
  * initialising it. It initialises [ReportWriter] without creating one, and exercises the rest.
  */

@@ -47,7 +47,7 @@ data class GeneratedPointWithDefault(
 
 /**
  * Hand-writes `copy` and `component1` but declares none of `equals`, `hashCode`, or `toString`:
- * the all-three requirement leaves every method here [io.github.lukedevops.yukon.export.GeneratedBy.NONE].
+ * the all-three requirement leaves every method here [dev.otherlode.export.GeneratedBy.NONE].
  */
 class HandWrittenCopy(
     val v: Int,
@@ -82,8 +82,8 @@ class NotDefaultImpls {
  * `@JvmOverloads` on a constructor and a member function. kotlinc adds `<init>(I)V`,
  * `<init>(ILjava/lang/String;)V` and `format(I)` beside the source's own full constructor and
  * function, each only forwarding to its `$default` twin. ADR 0040 marks those three
- * [io.github.lukedevops.yukon.export.GeneratedBy.JVM_OVERLOADS] and leaves the full pair
- * [io.github.lukedevops.yukon.export.GeneratedBy.NONE].
+ * [dev.otherlode.export.GeneratedBy.JVM_OVERLOADS] and leaves the full pair
+ * [dev.otherlode.export.GeneratedBy.NONE].
  */
 class Price
     @JvmOverloads
@@ -113,7 +113,7 @@ fun formatPrice(
 /**
  * A secondary constructor written in the source that passes every argument to the full
  * constructor. It calls the full `<init>`, not the `$default` one, so it stays
- * [io.github.lukedevops.yukon.export.GeneratedBy.NONE].
+ * [dev.otherlode.export.GeneratedBy.NONE].
  */
 class HandWrittenPrice(
     val amount: Int,

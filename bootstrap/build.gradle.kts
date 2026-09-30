@@ -8,7 +8,7 @@ plugins {
     java
 }
 
-group = "io.github.lukedevops"
+group = "dev.otherlode"
 
 java {
     toolchain {
@@ -17,5 +17,5 @@ java {
 }
 
 tasks.jar {
-    archiveBaseName.set("yukon-bootstrap")
+    archiveBaseName.set("otherlode-bootstrap")
 }

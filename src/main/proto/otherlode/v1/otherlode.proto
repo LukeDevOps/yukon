@@ -1,0 +1,828 @@
+syntax = "proto3";
+
+package otherlode.v1;
+
+option java_multiple_files = true;
+option java_package = "dev.otherlode.proto";
+
+// A probe is addressed on the wire as (class_id, probe_index) rather than a
+// flat global ID: class_id is assigned once per run and carried in
+// ProbeManifest, so delta batches don't repeat fully-qualified class names
+// on every flush.
+enum ProbeKind {
+  PROBE_KIND_UNSPECIFIED = 0;
+  METHOD = 1;
+  BRANCH = 2;
+  // Counts one omission of a Kotlin optional parameter, incremented in the
+  // compiler's $default method rather than the target function itself.
+  OPTIONAL_ARGUMENT = 3;
+}
+
+// What compiled a method into existence rather than the adopter writing its body: an enum's
+// values/valueOf/getEntries, a data class's componentN/copy and whichever of
+// equals/hashCode/toString the adopter did not override (the generated ones have no line-number
+// table), a $DefaultImpls method that only forwards to the interface's own default method, a
+// Java record's equals/hashCode/toString, an overload @JvmOverloads adds, or Scala's case-class
+// plumbing, static forwarders and object serialization (ADR 0048). A branch probe
+// carries the mark of the method it sits in. A collector leaves a generated probe out of never-hit,
+// stale-hit, and the call graph by default, since the compiler will emit the method again
+// regardless of what the adopter does; its hit count is still evidence, so the probe itself is
+// kept rather than dropped. See ADR 0026.
+enum GeneratedBy {
+  GENERATED_BY_NONE = 0;
+  ENUM = 1;
+  DATA_CLASS = 2;
+  DEFAULT_IMPLS = 3;
+  RECORD = 4;
+  // An overload kotlinc adds for a @JvmOverloads constructor or function. Its body only passes its
+  // own arguments, a zero value for each omitted one and the mask to the $default twin in its own
+  // class. The agent reads this from the body, never from the annotation, which sits on the source
+  // declaration and not on the overloads. The source's own full constructor or function is not
+  // marked. See ADR 0040.
+  JVM_OVERLOADS = 5;
+  // A function of a multi-file facade, the class @file:JvmMultifileClass makes. Its body only loads
+  // its arguments, calls the static method with the same name and descriptor on a part class in
+  // the same package, and returns. kotlinc's parameter null checks may come first. The part's
+  // function holds the code and is not marked. See ADR 0041.
+  MULTIFILE_FACADE = 6;
+  // A Scala case class's plumbing (canEqual, copy, equals, hashCode, toString, productArity,
+  // productElement and its Name variants, productIterator, productPrefix, Scala 3's _1, _2 and on,
+  // and Scala 2's <name>$access$<n>), and its companion's apply, unapply, toString and fromProduct,
+  // each marked only when its body is the one scalac writes for that member of that class. A field
+  // accessor and a member the adopter wrote with any other body are not marked. See ADR 0048.
+  CASE_CLASS = 7;
+  // A static method scalac puts on an object's own class, or on a case class for its companion's
+  // methods. Its body only reads the object's MODULE$ field, loads its arguments, calls the method
+  // with its own name and descriptor on the object, and returns. The object's method holds the
+  // code and is not marked. See ADR 0048.
+  STATIC_FORWARDER = 8;
+  // A Scala object's private writeReplace, whose body only constructs a
+  // scala.runtime.ModuleSerializationProxy for the object's class. See ADR 0048.
+  SCALA_OBJECT = 9;
+}
+
+// Who sent a payload. DeltaBatch, ProbeManifest and StaticBaseline each carry one, and one process
+// stamps the same values on all three.
+message ResourceAttributes {
+  string service_name = 1;
+  optional string service_version = 2;
+  string service_instance_id = 3;
+  optional string environment = 4;
+  // A random id the agent makes once per process at startup. It names one run of one instance:
+  // every payload from that process carries the same value, and a new process always gets a new
+  // one, even under a pinned service_instance_id. class_id, endpoint_id and every cumulative total
+  // mean something only within one run, so a consumer keeps each run's data apart and merges with
+  // max() only within a run. Empty means missing, and a consumer rejects the payload. See ADR 0032.
+  string run_id = 5;
+  // The group the service belongs to, as OpenTelemetry's service.namespace. A service is known by
+  // its namespace and its name together. Absent or blank means the unspecified namespace, which
+  // never matches a named one. The agent never works one out for itself. See ADR 0045.
+  optional string service_namespace = 6;
+}
+
+// hits_total is a cumulative count from process start, not the count since
+// the last flush. A collector merges it with max() across retries and
+// reordering, so a re-delivered or reordered value cannot double-count.
+//
+// first_seen_at is stamped by the first flush that observed a non-zero
+// count, not by the hit itself: the hot path is a bare array increment
+// with no clock read. Its precision is therefore one flush interval, and
+// it says "first observed by" rather than "first happened at".
+message ProbeDelta {
+  int32 class_id = 1;
+  int32 probe_index = 2;
+  ProbeKind kind = 3;
+  int64 first_seen_at = 4;
+  int64 hits_total = 5;
+}
+
+// Sent frequently (every 30-60s). Only carries probes and endpoints whose
+// hits_total changed since the last successfully delivered batch, not a
+// full snapshot, so payload size stays independent of total probe or
+// endpoint count.
+message DeltaBatch {
+  ResourceAttributes resource = 1;
+  repeated ProbeDelta deltas = 2;
+  repeated EndpointDelta endpoint_deltas = 3;
+  // Set on every delta batch the agent's shutdown hook sends. A collector uses it to tell an
+  // instance that ended cleanly from one that went silent, and may report how many instances
+  // stopped without one, since up to one flush interval of their hits may be missing. Never set
+  // on a scheduled flush.
+  bool final_flush = 4;
+  // One entry per dependency whose loaded_classes_total changed since the last successfully
+  // delivered batch. See DependencyDelta.
+  repeated DependencyDelta dependency_deltas = 5;
+}
+
+message ProbeLocation {
+  int32 class_id = 1;
+  int32 probe_index = 2;
+  ProbeKind kind = 3;
+  string class_name = 4;
+  string method_name = 5;
+  string method_descriptor = 6;
+  // The source line, or -1 when the method has no line-number table. An OPTIONAL_ARGUMENT probe
+  // carries its default value's line, not its target's. See ADR 0044.
+  int32 line = 7;
+  // Unset for method-level probes; set for branch-level probes.
+  optional int32 branch_index = 8;
+  // A Kotlin inline function, or a branch inside one. A Kotlin caller copies the body into its
+  // own call site instead of invoking this method, so a zero hits_total is not evidence of dead
+  // code.
+  bool inline = 9;
+  // Set only for an OPTIONAL_ARGUMENT probe: the parameter's zero-based value index. Kotlin does
+  // not count receivers; a Scala extension receiver counts, since it is an ordinary first JVM
+  // parameter and the getter's own number counts it too.
+  optional int32 parameter_index = 10;
+  // Set only for an OPTIONAL_ARGUMENT probe: the parameter's name from the target's
+  // LocalVariableTable, or empty when the target carries no debug info.
+  string parameter_name = 11;
+  // Set only for an OPTIONAL_ARGUMENT probe. A collector claims "never supplied" (omission total
+  // equals the target's hit total) only when this is false and inline is false, since an
+  // overridable target's omissions are spread across whichever override actually ran, which this
+  // location cannot relate. It claims "always supplied" (omission total zero while the target was
+  // hit) for any target, so long as inline is false.
+  bool overridable = 12;
+  // Set only for an OPTIONAL_ARGUMENT probe whose target lives in another class: a Scala
+  // constructor getter declared on a companion module class, whose target constructor lives on
+  // the class the module compiles for. Empty when the target is in the probe's own class, and
+  // never set for Kotlin. A collector joins an omission probe to its target's METHOD probe by
+  // target_class_name when set, otherwise by class_name.
+  string target_class_name = 13;
+  // Set only for a METHOD probe: the in-scope call edges read from this method's own bytecode at
+  // transform time. A pass-through's callees are attributed to whichever probed method referenced
+  // it, so they never appear under the pass-through's own name.
+  repeated CallEdge calls = 14;
+  // Set only for a BRANCH probe that is a kept inlined copy: a site inside code kotlinc copied
+  // from an inline function's body into this probe's own method, whose origin class is in scope.
+  // Dotted, and empty when the probe is the class's own code.
+  string inlined_from_class_name = 15;
+  // Set for a METHOD probe, for a BRANCH probe as the mark of the method it sits in, and for an
+  // OPTIONAL_ARGUMENT probe as its target's own mark, so a collector leaves a generated method's
+  // conditionals out of never-hit with the method, and abstains from never-supplied and
+  // always-supplied on a generated target (a data class's copy) the way it abstains on an inline
+  // one. GENERATED_BY_NONE (the default) for an ordinary method the adopter wrote; see GeneratedBy.
+  GeneratedBy generated_by = 16;
+  // Set only for a METHOD probe: the out-of-scope classes this method's own bytecode references,
+  // dotted. A reference is wider than a call edge: runtime-visible annotations, casts and type
+  // tests, types in a descriptor or generic signature, catch types and class literals all count;
+  // see CONTEXT.md, "Reference". Classes the bootstrap or platform loader provides, and classes read
+  // from a directory on the classpath, are never listed. A name's ExternalClass entry may arrive on a later manifest than the name itself,
+  // since it is resolved only once the startup listing has finished; a name that never gets one
+  // belongs to no dependency (a jar of the adopter's own, an agent jar) and a collector ignores it.
+  // See ADR 0030.
+  repeated string referenced_classes = 17;
+  // Set only for a BRANCH probe: an opaque lowercase hex token naming this outcome across builds
+  // and instances, compared only for equality. Unset when the agent cannot name the outcome
+  // safely. A collector treats a missing key as an outcome it has never seen. See ADR 0031.
+  optional string branch_key = 18;
+  // Set only for a METHOD probe. True when the method is a lambda body: an invokedynamic in its own
+  // class names it as the LambdaMetafactory implementation (directly or through scalac's boxing
+  // forwarder), and its name is one a compiler gives a body the source never named (javac's
+  // lambda$..., scalac's $anonfun$... or Scala 3's <owner>$$anonfun$N, never an $adapted
+  // forwarder, or kotlinc's ...$lambda$N, nested ones included). A body Scala 3 lifted out of a
+  // nested class, whose creator stays in that class, is marked by its name alone, Scala 3's
+  // expanded <class>$$_$...$$anonfun$N. False for a named method passed by reference, and for
+  // every other method. The method that creates the body is the source of its CREATES edge. See
+  // ADR 0034.
+  bool lambda_body = 19;
+  // Set only for a METHOD probe: the method's kept branch sites, in site_index order, each with its
+  // outcomes listed inside it. A dropped site (coroutine machinery, an inlined copy from
+  // out-of-scope code, the jumps a compiler adds to lower a string or enum switch) is not listed,
+  // and a type initializer's METHOD probe lists none. See ADRs 0037 and 0038.
+  repeated BranchSite branch_sites = 20;
+  // Set only for a BRANCH probe: the site_index of the site this outcome belongs to, which the
+  // METHOD probe of the same method lists in branch_sites. This probe's branch_index picks its
+  // outcome in that site. See ADR 0037.
+  optional int32 site_index = 21;
+  // Set only for a METHOD probe: true when the method has ACC_STATIC. False for a constructor and
+  // for the <clinit> probe, whose meaning a consumer takes from its name. See ADR 0040.
+  bool static = 22;
+  // Set only for a METHOD probe: the names of the method's declared parameters, one per
+  // method_descriptor parameter, in order. They come from the MethodParameters attribute when it
+  // names every parameter, and otherwise from the LocalVariableTable entries that start at the
+  // method's first instruction in each parameter's slot. An instance method's this is not a
+  // declared parameter. Names are sent as the class file writes them, compiler names such as
+  // $this$shout, $completion or a lambda body's captured values included. Empty when the method
+  // has no parameters, when the class file names none of them, and when it names only some, so a
+  // list is never partial. Empty for the <clinit> probe. See ADR 0043.
+  repeated string parameter_names = 23;
+  // Set only for a METHOD probe: the method's Signature attribute exactly as the class file writes
+  // it, which keeps the generic types method_descriptor erases. Empty when the method has none,
+  // and for the <clinit> probe. See ADR 0043.
+  string generic_signature = 24;
+  // Set only for a METHOD probe: true when the method's first declared parameter is a Kotlin
+  // extension receiver, that is, its name in parameter_names starts with $this$ or is $receiver,
+  // the name older kotlinc gave it. False when parameter_names is empty. See ADR 0043.
+  bool extension_receiver = 25;
+}
+
+// What one outcome of a branch site is within its site. See ADR 0037.
+enum BranchRole {
+  BRANCH_ROLE_UNSPECIFIED = 0;
+  // A conditional's taken jump.
+  TAKEN = 1;
+  // A conditional's fall-through: the jump's own test was false.
+  FALL_THROUGH = 2;
+  // One case entry of a switch. Two cases that share a body are still two outcomes.
+  CASE = 3;
+  // A switch's default, which a value with no case entry of its own also reaches.
+  DEFAULT = 4;
+}
+
+// Why a kept branch outcome is real but not worth a person's time when it never runs. The agent
+// reads it from the bytecode of the outcome's path. A collector keeps the probe and its count, but
+// leaves a routine outcome out of every never-hit finding and counts it apart. See ADR 0046.
+enum RoutineKind {
+  // Not routine: the outcome is judged like any other.
+  ROUTINE_KIND_NONE = 0;
+  // The null side of a null check whose path calls nothing before it rejoins the other side or
+  // leaves the method. It only yields null, a constant or a local, or returns early, as the null
+  // side of `value?.length`, `?: 0.0` and `?: return` do.
+  NULL_DEFAULT = 1;
+  // The path only builds an exception and throws it. It may create the exception, build its
+  // message and call the exception's constructor, and nothing else. A lateinit check and the
+  // throwing else of an exhaustive when are routine this way.
+  THROW_ONLY = 2;
+  // An outcome of a site inside the exception-path copy of a finally body: a catch-any handler
+  // that stores what it caught and ends by throwing it again. The normal path's copy of the same
+  // body is not routine, and neither is a site in a typed catch block.
+  FINALLY_COPY = 3;
+}
+
+// One outcome of a BranchSite.
+message BranchOutcome {
+  // The outcome's branch_index, the same value its BRANCH probe carries in a manifest.
+  int32 branch_index = 1;
+  BranchRole role = 2;
+  // Set only for CASE: the case key value as the switch instruction names it. Unset for a CASE
+  // when the agent could not read the switch's case keys, and for a CASE with a case_label.
+  optional int32 case_key = 3;
+  // The lines that run only through this outcome: every instruction the method places on each
+  // line is dominated by this outcome's edge in the method's control-flow graph, exception edges
+  // included. Code inside a nested site counts too. A line inside an in-scope inlined copy is
+  // named at its origin line in the origin's own source file. A line copied from out-of-scope code
+  // is not listed. Empty when the outcome guards nothing, as the skip side of an if with no else
+  // does. See ADR 0037.
+  repeated LineRange guarded_lines = 4;
+  // The lines where some instructions run only through this outcome and others are reached another
+  // way, such as a line that holds a whole `?: return` expression. Named the same way as
+  // guarded_lines. See ADR 0037.
+  repeated LineRange partly_guarded_lines = 5;
+  // Set only for a CASE of a switch the agent read back from a string or enum lowering: the label
+  // the source names, as one part. An enum constant, a class pattern's type, an integer or `null`
+  // is one CODE part, and a string is one STRING_LITERAL part, so collector redaction covers it.
+  // Such a CASE has no case_key. See ADR 0038.
+  repeated ConditionPart case_label = 6;
+  // Why this outcome is routine, or ROUTINE_KIND_NONE when it is not. See ADR 0046.
+  RoutineKind routine = 7;
+}
+
+// A run of consecutive source lines in one file, both ends inclusive. See ADR 0037.
+message LineRange {
+  // The source file's name as its class file's SourceFile attribute or its SMAP names it, such as
+  // DemoServerMain.kt. A file name, never a path. Empty when the class has no SourceFile.
+  string source_file = 1;
+  int32 first_line = 2;
+  int32 last_line = 3;
+}
+
+// One kept conditional jump or switch in a method, with its outcomes listed inside it. A consumer
+// groups outcomes into sites by this message. See ADR 0037.
+message BranchSite {
+  // The site's ordinal within its class, in bytecode order across every method, dropped sites
+  // counted. It names the site within one build only, never across builds.
+  int32 site_index = 1;
+  // An opaque lowercase hex token naming this site across builds and instances, compared only for
+  // equality. Made the way a branch_key is, without the outcome, and unset in exactly the cases
+  // the site's branch keys are unset. A consumer groups a site's outcomes across builds by it, and
+  // within one run by site_index when it is unset. See ADRs 0031 and 0037.
+  optional string site_key = 2;
+  // The same line the site's BRANCH probes carry, including the origin line for a kept inlined
+  // copy.
+  int32 line = 3;
+  // A conditional lists TAKEN then FALL_THROUGH. A switch lists one CASE per case entry, in the
+  // order the switch instruction names them, then DEFAULT last. A switch read back from a string or
+  // enum lowering lists no DEFAULT when its default only throws an exception the compiler added.
+  // See ADR 0038.
+  repeated BranchOutcome outcomes = 4;
+  // The branch_index of the innermost kept outcome that dominates this site's jump or switch, or
+  // unset when nothing in the method stands between its entry and the site. Coroutine machinery,
+  // out-of-scope inlined copies and the jumps of a string or enum switch's lowering have no
+  // outcomes of their own here, so a guard looks through them to the next kept outcome. See ADRs
+  // 0037 and 0038.
+  optional int32 guard = 5;
+  // The expression the site tests, in the class's source language, as the fall-through side reads
+  // it: the jump's own test negated. A switch's condition is its subject. Adjacent parts render
+  // one after the other with nothing between them. Empty when the agent could not write the
+  // expression in source terms. See ADR 0037.
+  repeated ConditionPart condition = 6;
+}
+
+// What one part of a condition holds. See ADR 0037.
+enum ConditionPartKind {
+  CONDITION_PART_KIND_UNSPECIFIED = 0;
+  // Source text, such as `discounted > ` or `System.getenv(`.
+  CODE = 1;
+  // A string constant from the class's bytecode. The text is the string's value, not quoted and
+  // not escaped. A consumer quotes it for display, and a collector can redact it without parsing
+  // anything.
+  STRING_LITERAL = 2;
+  // One sub-expression the agent could not write in source terms. The text is empty. A consumer
+  // shows it as `…`.
+  PLACEHOLDER = 3;
+}
+
+// One part of a BranchSite's condition. See ADR 0037.
+message ConditionPart {
+  ConditionPartKind kind = 1;
+  string text = 2;
+}
+
+// What a CallEdge records. A collector reaches the target of either kind the same way; the kind
+// only changes how the edge is named and drawn. See ADR 0034.
+enum CallEdgeKind {
+  // The caller runs the callee: an invoke instruction, a new, or a static field use that runs the
+  // owner's initializer. Every edge that is not CREATES.
+  CALL = 0;
+  // The caller hands a body to someone else to run, so the body can only run after the caller ran.
+  // It is the edge to the implementation method of a LambdaMetafactory invokedynamic, whether a
+  // lambda body or a named method passed by reference. It is also the edge to each probed method of
+  // a body class the caller creates with new or reads with getstatic INSTANCE. The constructor
+  // edge of that new, and the initializer edge of that getstatic, stay CALL edges, since the caller
+  // runs them itself.
+  CREATES = 1;
+}
+
+// One caller method's static reference to one callee method, read from the caller's bytecode at
+// transform time.
+message CallEdge {
+  // The callee's owner class, dotted, as the caller's own bytecode names it. Verbatim, not
+  // resolved: the agent never has the type hierarchy for the class it is transforming.
+  string class_name = 1;
+  string method_name = 2;
+  string method_descriptor = 3;
+  // True for an invokevirtual or invokeinterface call, false for invokestatic or invokespecial,
+  // except that a same-class call to a private, static, or final target is reported false even
+  // when the raw instruction is invokevirtual, since such a target can never be overridden. A
+  // collector widens a virtual edge to every override it knows about, and treats a non-virtual
+  // edge as naming its one real target exactly.
+  bool virtual = 4;
+  // CALL, the zero value, or CREATES; see CallEdgeKind. An edge that takes the place of a
+  // pass-through is CREATES when either the edge to the pass-through or the pass-through's own
+  // edge is CREATES, since what a created body reaches runs only once that body runs. Otherwise it
+  // is CALL. An edge a lambda body's own bytecode records is judged like any other method's.
+  CallEdgeKind kind = 5;
+  // Set only on a CREATES edge from an invokedynamic: how many of the target descriptor's leading
+  // parameters take values captured at the call site rather than the functional interface's own
+  // arguments. It is read from the call site's invokedType. A receiver bound by a reference to an
+  // instance method is not counted, since it is not in the target's parameter list. 0 on every
+  // other edge, and on a CREATES edge that captures nothing.
+  uint32 captured_count = 6;
+  // The branch_index of the innermost kept outcome that dominates the instruction recording this
+  // edge, or unset when nothing in the method stands between its entry and that instruction. The
+  // instruction is the invoke, the invokedynamic, the new of a body class, or the getstatic or
+  // putstatic that stands for an initializer. An edge that takes a pass-through's place keeps the
+  // guard of the call to the pass-through. A catch handler has no guard unless a kept outcome
+  // dominates its whole try. One callee reached under two guards gives two edges. See ADR 0037.
+  optional int32 guard = 7;
+  // Set only on a CREATES edge from an invokedynamic: the interface the call site returns, which is
+  // the return type of its invokedType. It is dotted and named as the bytecode names it, such as
+  // com.sun.net.httpserver.HttpHandler, java.lang.Runnable or kotlin.jvm.functions.Function1. The
+  // agent sends every interface and leaves it to the reader to judge which names help. It travels
+  // with the CREATES kind: an edge that takes the place of a pass-through keeps the interface of
+  // the edge it takes its kind from. An implied edge to a class's <clinit> carries none, since an
+  // initialiser implements nothing. Empty on a CALL edge, and on a CREATES edge from the new or
+  // getstatic INSTANCE of a body class, whose own interfaces travel on its ClassLocation. One body
+  // created for two interfaces gives two edges. See ADR 0042.
+  string implemented_interface = 8;
+}
+
+// What a loaded class's own header says about it, sent once per class alongside its probes. Its
+// superclass and direct interfaces let a collector widen a CallEdge.virtual call to every type that
+// overrides or inherits its callee (ADR 0024). Its source file lets a collector say where the
+// class's code is (ADR 0034).
+message ClassLocation {
+  int32 class_id = 1;
+  // Dotted, as the class header names it. Empty only for java.lang.Object itself, which this
+  // agent never instruments. An interface's own super_class_name is java.lang.Object, the same
+  // as any other type, since that is what the class file's own super_class entry names.
+  string super_class_name = 2;
+  repeated string interface_names = 3;
+  // The class file's SourceFile attribute exactly as it appears, such as DemoServerMain.kt. It is
+  // a file name and never a path, since the class file records nothing more. Empty when the class
+  // has none. The agent does not clean it: a value such as <generated> is sent as it is, and
+  // whoever displays it decides whether it names a real file.
+  string source_file = 4;
+  // What kind of body class this is; see BodyKind. NONE, the zero value, when the class is not a
+  // body class.
+  BodyKind body_kind = 5;
+  // The name the source gave a LOCAL_CLASS, such as Local for Foo$1Local, read from the class's
+  // own InnerClasses entry. Set only for LOCAL_CLASS, and empty for every other kind.
+  string source_name = 6;
+  // What kind of class kotlinc says this is, read from the k element of the class's
+  // kotlin.Metadata. KOTLIN_KIND_NONE, the zero value, for a class with no kotlin.Metadata. See
+  // KotlinKind and ADR 0041.
+  KotlinKind kotlin_kind = 7;
+}
+
+// What kind of body class a class is, read from its own class file. A body class exists only to
+// carry a body its creator hands to someone else, and a class is one only when it has an
+// EnclosingMethod attribute. The agent checks LAMBDA_CLASS, then the class's own InnerClasses
+// entry for LOCAL_CLASS, OBJECT_EXPRESSION and ANONYMOUS_CLASS, and the first match wins. See
+// ADR 0034.
+enum BodyKind {
+  // The class has no EnclosingMethod attribute, so it is not a body class. The zero value.
+  NONE = 0;
+  // An anonymous class, such as javac's new Runnable() { ... }: the class's own InnerClasses entry
+  // has no name and the class carries no kotlin.Metadata, or the class has no InnerClasses entry
+  // for itself at all. A Kotlin body class of a shape the agent does not know, such as one
+  // extending a new Kotlin runtime base class, reads as OBJECT_EXPRESSION instead, since it has an
+  // unnamed entry and kotlin.Metadata.
+  ANONYMOUS_CLASS = 1;
+  // A Kotlin object expression, such as object : Runnable { ... }: the class's own InnerClasses
+  // entry has no name, and the class carries kotlin.Metadata.
+  OBJECT_EXPRESSION = 2;
+  // A class declared inside a method: the class's own InnerClasses entry has a name, which is
+  // source_name.
+  LOCAL_CLASS = 3;
+  // A Kotlin lambda compiled to a class, or any suspend lambda: the superclass is
+  // kotlin.jvm.internal.Lambda, kotlin.coroutines.jvm.internal.SuspendLambda or
+  // kotlin.coroutines.jvm.internal.RestrictedSuspendLambda.
+  LAMBDA_CLASS = 4;
+  // A Kotlin function or property reference class has no kind, and 5 stays unused. kotlinc marks
+  // such a class synthetic, so the agent never sends it, and its creator's CREATES edges pass
+  // through it to the function it names.
+  reserved 5;
+  reserved "REFERENCE";
+}
+
+// What kind of class kotlinc says a class is: the k element of its kotlin.Metadata, which the agent
+// reads as one int and decodes nothing else from. The values match k. A consumer names a file
+// facade or a multi-file part by its source file, not its JVM name. See ADR 0041.
+enum KotlinKind {
+  // No kotlin.Metadata on the class, such as a Java or Scala class. Also a k outside 1 to 5, which
+  // kotlin.Metadata's own documentation says is read as a class that is not Kotlin's. The zero
+  // value.
+  KOTLIN_KIND_NONE = 0;
+  // A class, interface, object, enum or annotation class, or a companion. kotlin.Metadata's k
+  // defaults to 1, so an annotation with no k element is this kind too.
+  KOTLIN_CLASS = 1;
+  // The class kotlinc makes for one source file's top-level functions and properties, such as
+  // DemoServerMainKt for DemoServerMain.kt, or the name @file:JvmName gives it.
+  FILE_FACADE = 2;
+  // A class kotlinc makes that has no Kotlin declaration of its own, such as a lambda class, a
+  // $DefaultImpls class or a $WhenMappings class.
+  SYNTHETIC_CLASS = 3;
+  // The class @file:JvmMultifileClass makes to join several files under one name. It holds only
+  // forwarders to its parts, which GeneratedBy marks MULTIFILE_FACADE. It has no SourceFile
+  // attribute, since it has no one file.
+  MULTIFILE_CLASS_FACADE = 4;
+  // One file's part of a multi-file facade. It holds that file's code, and its source_file names
+  // the file. kotlinc marks it synthetic, but the agent probes it as it probes any other class.
+  MULTIFILE_CLASS_PART = 5;
+}
+
+// A class the JVM has loaded that reached no manifest, neither as a probed
+// class nor as a skipped one. The agent has no reason to give: a class it
+// turned away on purpose carries one, and this is what is left over after
+// those are accounted for. Carries no reason field for that reason.
+//
+// first_seen_unreported_at is when a sweep first found it, which separates a
+// blind spot that existed from startup from one that appeared later. See
+// ADR 0027.
+message UnreportedClass {
+  string class_name = 1;
+  int64 first_seen_unreported_at = 2;
+}
+
+// A class the agent matched but could not instrument (e.g. bytecode
+// ByteBuddy refuses to redefine), so it never gets a class_id or any probes.
+// Reported by name rather than class_id for exactly that reason: it never
+// enters the class_id-assigning path a successfully instrumented class does.
+message SkippedClass {
+  string class_name = 1;
+  string reason = 2;
+  int64 skipped_at = 3;
+}
+
+// Sent once per (service, version), not per flush, so the collector can
+// resolve probe IDs to source locations without the agent repeating this
+// metadata on every delta batch. Endpoints and disabled endpoint modules
+// share the same incremental delivery: only entries not yet sent, or an
+// endpoint whose handler join changed since it was sent, go out on a
+// given flush.
+//
+// class_id is assigned by each process's own registry, in whatever order
+// that process's classes happen to load, so the same class_id can mean a
+// different class in two instances of the same (service, version), or in
+// two runs of one pinned instance. A collector keys every class_id and
+// endpoint_id on the resource's service_instance_id and run_id, the same
+// way it keys a delta batch's. See ADRs 0011 and 0032.
+message ProbeManifest {
+  reserved 1, 2, 5;
+  reserved "service_name", "service_version", "service_instance_id";
+  // The same resource this process stamps on its delta batches and static baseline.
+  ResourceAttributes resource = 14;
+  repeated ProbeLocation probes = 3;
+  repeated SkippedClass skipped_classes = 4;
+  repeated EndpointLocation endpoints = 6;
+  repeated DisabledEndpointModule disabled_endpoint_modules = 7;
+  // Sent once per class alongside its probes, staged and committed the same way. See ADRs 0024
+  // and 0034.
+  repeated ClassLocation class_locations = 8;
+  // Found by the sweep, not by a transform. Delivered incrementally like the
+  // rest of this message. See ADR 0027.
+  repeated UnreportedClass unreported_classes = 9;
+  // The dependencies this instance has seen, each sent once and delivered incrementally like
+  // classes. See DependencyLocation.
+  repeated DependencyLocation dependencies = 10;
+  // Class-level references for a loaded class, sent once alongside its probes. See
+  // ClassReferences.
+  repeated ClassReferences class_references = 11;
+  // The mapping from each referenced class name to its dependency, or to absent. See
+  // ExternalClass.
+  repeated ExternalClass external_classes = 12;
+  // True when this instance records references, which it does only when its include rules are
+  // set: with every class in scope nothing is out of scope to reference, so empty reference lists
+  // would otherwise read as "no dependency is referenced". Set on every manifest the instance
+  // sends. A collector claims unreferenced or unreached only for an instance that sent it true.
+  // See ADR 0030.
+  bool references_recorded = 13;
+  // True once every dependency the startup listing found, and every reference mapping recorded
+  // before the listing ended, has been delivered on a confirmed manifest. Each dependency's entry
+  // is sent only after a confirmed delta send carried its first counts, so a collector can judge a
+  // dependency once its entry arrives. Once true, it is set on every manifest the instance sends.
+  // A listing that failed never sets it. Before it is true, an empty list of dependencies or
+  // absent references means "not listed yet", not "none". See ADR 0036.
+  bool dependencies_listed = 15;
+}
+
+// No line field, unlike ProbeLocation. A method's first source line is
+// read from the LineNumberTable at transform time, alongside the branch
+// analysis; the static scan reads a class's bytecode only for the inline
+// marker and records no line. Identity is (class, method_name,
+// method_descriptor), which is how a collector joins a declared method to
+// a manifest probe.
+message DeclaredMethod {
+  string method_name = 1;
+  string method_descriptor = 2;
+  // Read from the LocalVariableTable, the same rule as ProbeLocation.inline.
+  bool inline = 3;
+  // The in-scope call edges read from this method's own bytecode, the same rule
+  // ProbeLocation.calls uses. A collector treats a baseline edge and a manifest edge as one
+  // graph: for a class the agent both scanned and later loaded, the two describe the same
+  // bytecode. See ADR 0024.
+  repeated CallEdge calls = 4;
+  // Read from the same class shape the METHOD probe rule uses; see ProbeLocation.generated_by
+  // and GeneratedBy. GENERATED_BY_NONE for the class's own <clinit> entry.
+  GeneratedBy generated_by = 5;
+  // The out-of-scope classes this method's own bytecode references, the same rule
+  // ProbeLocation.referenced_classes uses. See ADR 0030.
+  repeated string referenced_classes = 6;
+  // The same rule as ProbeLocation.lambda_body, read from the same class. False for the class's
+  // own <clinit> entry. See ADR 0034.
+  bool lambda_body = 7;
+  // The method's kept branch sites, the same rule ProbeLocation.branch_sites uses, read from the
+  // same class. Empty for the class's own <clinit> entry. A site's branch_index values resolve
+  // without any BRANCH probe. See ADR 0037.
+  repeated BranchSite branch_sites = 8;
+  // The same rule as ProbeLocation.static: true when the method has ACC_STATIC. False for a
+  // constructor and for the class's own <clinit> entry. See ADR 0040.
+  bool static = 9;
+  // The same rule as ProbeLocation.parameter_names, read from the same class. Empty for the
+  // class's own <clinit> entry. See ADR 0043.
+  repeated string parameter_names = 10;
+  // The same rule as ProbeLocation.generic_signature. Empty for the class's own <clinit> entry.
+  // See ADR 0043.
+  string generic_signature = 11;
+  // The same rule as ProbeLocation.extension_receiver. False for the class's own <clinit> entry.
+  // See ADR 0043.
+  bool extension_receiver = 12;
+}
+
+message DeclaredClass {
+  string class_name = 1;
+  repeated DeclaredMethod methods = 2;
+  // The class's superclass and direct interfaces, the same fields ClassLocation carries for a
+  // loaded class, and read the same way: dotted, as the class file's own super_class and
+  // interfaces entries name them. Empty only for java.lang.Object itself, which this agent never
+  // instruments; an interface's own super_class_name is java.lang.Object too. Null (empty string
+  // on the wire) when the class's bytes could not be read, alongside its own empty calls list.
+  // See ADR 0024.
+  string super_class_name = 3;
+  repeated string interface_names = 4;
+  // The out-of-scope classes this class references outside any probed method: annotations on the
+  // class, its supertypes, its field types, the signatures of methods without a probe, and
+  // anything else not held by a probed method. Method-level
+  // references travel on DeclaredMethod.referenced_classes. The same listing rule as
+  // ProbeLocation.referenced_classes applies. See ADR 0030.
+  repeated string referenced_classes = 5;
+  // The class file's SourceFile attribute, the same field ClassLocation carries for a loaded class
+  // and read the same way. Empty when the class has none, or when its bytes could not be read.
+  // See ADR 0034.
+  string source_file = 6;
+  // The same field ClassLocation carries for a loaded class, read the same way. NONE when the
+  // class is not a body class, or when its bytes could not be read. See ADR 0034.
+  BodyKind body_kind = 7;
+  // The same field ClassLocation carries for a loaded class, read the same way. Set only for
+  // LOCAL_CLASS, and empty for every other kind. See ADR 0034.
+  string source_name = 8;
+  // The same field ClassLocation carries for a loaded class, read the same way. KOTLIN_KIND_NONE
+  // when the class has no kotlin.Metadata, or when its bytes could not be read. See ADR 0041.
+  KotlinKind kotlin_kind = 9;
+}
+
+// A class the static scanner found on the classpath but judged unsafe to
+// instrument without loading it, using the same @Target-legality check
+// applied at transform time. Kept separate from DeclaredClass so it is
+// never conflated with a confidently-dead class.
+message StaticallyUnsafeClass {
+  string class_name = 1;
+  string reason = 2;
+}
+
+// A class file the scanner found but could not read (a corrupt entry, an
+// unusual bytecode version). class_name is best-effort, derived from its
+// path within the classpath root rather than from parsed bytecode.
+message UnreadableClass {
+  string class_name = 1;
+  string reason = 2;
+}
+
+// An in-scope class with no concrete method to put a probe in: an
+// interface with only abstract methods, an annotation type. The agent
+// never registers such a class dynamically, so it can never appear in a
+// ProbeManifest, and a collector must not read its absence there as
+// "never loaded". Kept as its own bucket so it stays visible rather than
+// silently dropped from the inventory.
+message UnprobedClass {
+  string class_name = 1;
+  string reason = 2;
+}
+
+// Sent once per process, independent of the reactive ProbeManifest: a
+// load-independent inventory of what exists on the classpath under
+// includePackages, built by reading bytecode directly rather than
+// waiting for the JVM to load it. The collector diffs this against
+// classes that actually register dynamically; one declared here and
+// never reported dynamically was never even constructed.
+//
+// One scan may arrive as several messages. Every chunk of the same scan
+// carries the same resource and scanned_at, so (service_instance_id,
+// run_id, scanned_at) identifies the scan; chunk_index (0-based) and chunk_count
+// say which part this is and how many to expect. A collector should only
+// diff a scan once it holds every chunk; a partial scan can only say
+// "declared" for the classes it has, never "never loaded" for the rest.
+message StaticBaseline {
+  ResourceAttributes resource = 1;
+  repeated DeclaredClass declared_classes = 2;
+  repeated StaticallyUnsafeClass statically_unsafe_classes = 3;
+  repeated UnreadableClass unreadable_classes = 4;
+  int64 scanned_at = 5;
+  repeated UnprobedClass unprobed_classes = 6;
+  int32 chunk_index = 7;
+  int32 chunk_count = 8;
+  // Maps class names the declared classes' referenced_classes list to their dependency, or to
+  // absent. Each name is sent once per instance, in this payload or the manifest, so a chunk need
+  // not carry an entry for every name it references. See ExternalClass.
+  repeated ExternalClass external_classes = 9;
+}
+
+// How the agent learned of an endpoint.
+enum EndpointDiscoverySource {
+  ENDPOINT_DISCOVERY_SOURCE_UNSPECIFIED = 0;
+  // The framework declared it: a registration hook, or, for JAX-RS,
+  // annotations read at transform time.
+  REGISTRATION = 1;
+  // A request matched an endpoint no registration had declared.
+  DISPATCH = 2;
+}
+
+// One endpoint the framework serves. endpoint_id is per instance, like
+// class_id: cross-instance identity is (verb, route_template), never
+// endpoint_id.
+//
+// A record may be re-sent when a field learned later (the handler join)
+// changes; a collector upserts by (service_instance_id, run_id, endpoint_id).
+message EndpointLocation {
+  int32 endpoint_id = 1;
+  // Uppercase HTTP method, or "*" when the framework leaves it unconstrained.
+  string verb = 2;
+  // Normalised identity. See CONTEXT.md, "Route template".
+  string route_template = 3;
+  // The framework's own spelling, kept for display only.
+  string verbatim_template = 4;
+  // Module name, e.g. "spring-webmvc-6", "ktor-3", "jdk-httpserver".
+  string framework = 5;
+  EndpointDiscoverySource discovery_source = 6;
+  // Handler join, set when the framework exposes one. All three are set for
+  // a method; only handler_class is set when only the handler object's
+  // class is known.
+  optional string handler_class = 7;
+  optional string handler_method = 8;
+  optional string handler_descriptor = 9;
+}
+
+// hits_total has the same cumulative, max()-merged semantics as
+// ProbeDelta.hits_total. first_seen_at has the same "first observed by a
+// flush" precision.
+message EndpointDelta {
+  int32 endpoint_id = 1;
+  int64 first_seen_at = 2;
+  int64 hits_total = 3;
+}
+
+// An endpoint module that switched itself off, typically a linkage failure
+// against an unexpected framework version. Reported so a collector can
+// tell "no endpoints" from "endpoints not instrumented", the same reason
+// SkippedClass exists for classes.
+message DisabledEndpointModule {
+  string module = 1;
+  string reason = 2;
+  int64 disabled_at = 3;
+}
+
+// How the agent learned of a dependency.
+enum DependencyDiscoverySource {
+  DEPENDENCY_DISCOVERY_SOURCE_UNSPECIFIED = 0;
+  // Listed from the startup classpath: java.class.path, and a Spring Boot fat jar's nested jars.
+  STARTUP_CLASSPATH = 1;
+  // Seen only when a class from it loaded, such as a jar in a WAR's WEB-INF/lib that the app
+  // server opened after premain. A dependency found this way can never read as unloaded, since a
+  // class from it has loaded.
+  LOAD = 2;
+}
+
+// Where a dependency's identity was read from, most to least reliable.
+enum DependencyIdentitySource {
+  DEPENDENCY_IDENTITY_SOURCE_UNSPECIFIED = 0;
+  // META-INF/maven/<group>/<artifact>/pom.properties inside the jar.
+  POM_PROPERTIES = 1;
+  // Never produced: a manifest's Implementation-Title is a display name, not an artifact ID, and
+  // several jars can share one. Kept so the number is not reused. See ADR 0030.
+  JAR_MANIFEST = 2;
+  // The jar's filename with its version suffix stripped, the version taken from the filename or,
+  // when it carries none, from the manifest's Implementation-Version. group_id is empty.
+  FILENAME = 3;
+}
+
+// One library a dependency carries. The version is an attribute beside the identity, not part of
+// it.
+message DependencyIdentity {
+  // Empty when the identity source carries no group.
+  string group_id = 1;
+  string artifact_id = 2;
+  // Empty when unknown.
+  string version = 3;
+}
+
+// One dependency this instance has seen: a jar that is not the adopter's own code.
+//
+// dependency_id is per instance, like class_id and endpoint_id. A dependency's cross-instance
+// identity is the sorted set of group_id:artifact_id pairs in identities (for an ordinary jar, the
+// one pair), never dependency_id. Version is an attribute, not identity. See ADR 0030.
+//
+// Send-once, delivered incrementally like classes: a dependency discovered by load arrives on the
+// flush after it was first seen.
+message DependencyLocation {
+  int32 dependency_id = 1;
+  // At least one. A shaded jar that bundles several libraries carries one per library, since it
+  // cannot be half-removed.
+  repeated DependencyIdentity identities = 2;
+  DependencyIdentitySource identity_source = 3;
+  // For display only, such as the jar path or BOOT-INF/lib/x.jar.
+  string location = 4;
+  DependencyDiscoverySource discovery_source = 5;
+  // Total classes in the jar, set when the listing knows it.
+  optional int32 class_count = 6;
+}
+
+// loaded_classes_total counts distinct class names ever seen loaded from the dependency. It is
+// cumulative from process start and merged with max(), like ProbeDelta.hits_total. first_loaded_at
+// has the same "first observed by a flush" precision as ProbeDelta.first_seen_at.
+message DependencyDelta {
+  int32 dependency_id = 1;
+  int64 first_loaded_at = 2;
+  int64 loaded_classes_total = 3;
+}
+
+// A loaded class's own references outside any probed method: annotations on the class, its
+// supertypes, its field types, the signatures of methods without a probe (abstract, native), and
+// anything else not held by a probed method. The same listing rule as
+// ProbeLocation.referenced_classes applies.
+message ClassReferences {
+  int32 class_id = 1;
+  repeated string referenced_classes = 2;
+}
+
+// Where one referenced class name lives. Send-once per class name per instance. dependency_id
+// refers to that instance's DependencyLocation records, whichever payload, manifest or baseline,
+// carries the mapping.
+message ExternalClass {
+  string class_name = 1;
+  // Set exactly when absent is false.
+  optional int32 dependency_id = 2;
+  // No loader could find the class, such as code guarded by a check for an optional library.
+  bool absent = 3;
+}

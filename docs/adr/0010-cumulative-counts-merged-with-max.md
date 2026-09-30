@@ -15,7 +15,7 @@ There is no bounded queue or drop policy. The data is not a stream. It is a set 
 
 ## Consequences
 
-- A cumulative count reopens the counter-reset problem Prometheus lives with. Yukon closes it by construction: `service.instance.id` defaults to a fresh UUID per process, so a restart is a new merge stream. An adopter who pins the instance ID to something that survives a restart (a fixed pod name) takes on that hazard themselves. The agent does not enforce this; it is a documented invariant.
+- A cumulative count reopens the counter-reset problem Prometheus lives with. Otherlode closes it by construction: `service.instance.id` defaults to a fresh UUID per process, so a restart is a new merge stream. An adopter who pins the instance ID to something that survives a restart (a fixed pod name) takes on that hazard themselves. The agent does not enforce this; it is a documented invariant.
 - A count that goes backwards should not happen with static attach, but the registry logs a one-time warning per probe if it does, rather than sending the lower value silently.
 - Delta batches are capped at 20000 probes and manifest chunks at 5000 entries, split on class boundaries, so one oversized POST cannot fail forever. Each chunk is confirmed on its own.
 - Staged state is bound to the snapshot it was computed from and applied newest-wins per class, so a shutdown flush racing a scheduled one cannot mark hits as delivered that only went out in the send that failed.

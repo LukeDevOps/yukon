@@ -26,11 +26,11 @@ jobs:
             ${{ matrix.test-jdk }}
             21
       - uses: gradle/actions/setup-gradle@v4
-      # `build` runs every module's tests, shadowJar, and verifyAgentJar. yukon.testJdk picks the
+      # `build` runs every module's tests, shadowJar, and verifyAgentJar. otherlode.testJdk picks the
       # JVM the tests run on; compilation stays on the JDK 21 toolchain.
       - run: >-
           ./gradlew build --no-daemon
-          -Pyukon.testJdk=${{ matrix.test-jdk }}
+          -Potherlode.testJdk=${{ matrix.test-jdk }}
           -Porg.gradle.java.installations.fromEnv=JAVA_HOME_21_X64,JAVA_HOME_${{ matrix.test-jdk }}_X64
       - uses: actions/upload-artifact@v4
         if: failure()

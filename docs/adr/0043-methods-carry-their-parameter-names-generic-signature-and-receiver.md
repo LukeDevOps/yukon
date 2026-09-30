@@ -4,7 +4,7 @@ status: accepted
 
 # Methods carry their parameter names, generic signature and extension receiver
 
-Decided on 2026-09-25 with `yukon-server`, whose ADR 0037 holds how a signature reads.
+Decided on 2026-09-25 with `otherlode-server`, whose ADR 0037 holds how a signature reads.
 
 A Kotlin finding read `formatTotal(double, String, int)`: Java's view of `formatTotal(total: Double, currency: String, decimals: Int)`. The descriptor has no names and erases generics, and an extension function's receiver reads as a plain first parameter named `$this$shout`. The class file holds all three facts: the LocalVariableTable names each parameter, the `Signature` attribute keeps the generic types, and kotlinc names an extension receiver `$this$<function>` in the LocalVariableTable.
 
@@ -14,7 +14,7 @@ A Kotlin finding read `formatTotal(double, String, int)`: Java's view of `format
 - **`generic_signature`.** The method's `Signature` attribute exactly as written, empty when the method has none.
 - **`extension_receiver`.** True when the method's first parameter is a Kotlin extension receiver: its LocalVariableTable name starts with `$this$`, or is `$receiver`, the name older kotlinc gave it. It is read once here, from bytecode, so no consumer reads a compiler name.
 - **No nullability.** kotlinc writes `@NotNull` and `@Nullable` only on public and protected members, so a private function's nullability lives only in `kotlin.Metadata`'s encoded payload, which ADR 0026 does not decode. The agent sends none.
-- **Parity.** `yukon-testkit` and the stub collector keep the fields.
+- **Parity.** `otherlode-testkit` and the stub collector keep the fields.
 
 ## Considered options
 
@@ -23,5 +23,5 @@ A Kotlin finding read `formatTotal(double, String, int)`: Java's view of `format
 
 ## Consequences
 
-- A wire change: three fields on two messages, published to the Buf registry, and a binding bump in `yukon-server`.
+- A wire change: three fields on two messages, published to the Buf registry, and a binding bump in `otherlode-server`.
 - A class built without a LocalVariableTable shows types only.

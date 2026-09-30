@@ -5,7 +5,7 @@
 Report a vulnerability privately through GitHub's private vulnerability
 reporting:
 
-https://github.com/LukeDevOps/yukon/security/advisories/new
+https://github.com/otherlodehq/otherlode-agent/security/advisories/new
 
 Do not open a public issue, pull request or discussion about it.
 
@@ -26,10 +26,10 @@ meant as a test-scope dependency and should never ship in production. It
 is in scope. A problem in it is rated lower, since it runs only in tests.
 
 Problems in the collector belong in the
-[yukon-collector](https://github.com/LukeDevOps/yukon-collector) repository.
-Report problems in the hosted Yukon service through the collector's
+[otherlode-collector](https://github.com/otherlodehq/otherlode-collector) repository.
+Report problems in the hosted Otherlode service through the collector's
 link:
-https://github.com/LukeDevOps/yukon-collector/security/advisories/new
+https://github.com/otherlodehq/otherlode-collector/security/advisories/new
 
 ## Supported versions
 

@@ -1,6 +1,6 @@
 package com.example.testkittarget
 
-/** A tiny fixture instrumented by the end-to-end [io.github.lukedevops.yukon.testkit.YukonTestCollectorEndToEndTest]. */
+/** A tiny fixture instrumented by the end-to-end [dev.otherlode.testkit.OtherlodeTestCollectorEndToEndTest]. */
 class SampleTarget {
     fun exercised(): String = "used"
 

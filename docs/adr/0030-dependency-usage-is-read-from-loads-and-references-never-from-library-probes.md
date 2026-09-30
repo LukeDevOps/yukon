@@ -109,7 +109,7 @@ referenced class that no loader can find is an *absent reference* and is reporte
   directories, `BOOT-INF/classes` and `WEB-INF/classes` the adopter's, every jar a dependency);
   ADR 0033 made the agent refuse to start without include rules, and that rule was removed.
 - A jar whose manifest carries `Premain-Class` or `Launcher-Agent-Class` is never a dependency, so
-  Yukon's own jar, an OpenTelemetry agent or a profiler never reads as unreferenced.
+  Otherlode's own jar, an OpenTelemetry agent or a profiler never reads as unreferenced.
 - Unreferenced and unreached are claimed only for instances whose include rules are set, since with
   every class in scope library-to-library references would count as the adopter's. Every manifest
   carries `references_recorded`, true exactly when the include rules are set, so a collector can
@@ -166,5 +166,5 @@ referenced class that no loader can find is an *absent reference* and is reporte
   entry each in the manifest and baseline chunk caps.
 - Instances merge by identity across versions, and a report shows the versions seen. A dependency
   follows its instance on prune and on a version-change wipe, like endpoints.
-- `yukon-testkit` gains `dependency(group, artifact)` and `unloadedDependencies()`, applying the
+- `otherlode-testkit` gains `dependency(group, artifact)` and `unloadedDependencies()`, applying the
   collector's rules within one JVM.

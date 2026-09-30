@@ -1,7 +1,7 @@
 package com.example.testkittarget
 
 /**
- * The demo's checkout shape, for [io.github.lukedevops.yukon.testkit.YukonTestCollectorEndToEndTest].
+ * The demo's checkout shape, for [dev.otherlode.testkit.OtherlodeTestCollectorEndToEndTest].
  * The true side of one `if` constructs [LegacyCalculator], calls [LegacyCalculator.apply] and reads
  * [LegacyFees.FLAT_FEE], so every method of both classes runs only through that side.
  */

@@ -1,10 +1,10 @@
 ---
-status: accepted
+status: accepted, amended by ADR 0049
 ---
 
 # Every option resolves from three sources, in a fixed precedence order
 
-Every agent option can be set from the `-javaagent` args string, a JVM system property, or an environment variable, in that precedence order, falling back to the option's own default if none is set. A blank value at any level counts as unset and falls through to the next one. The property and environment variable names are derived mechanically from the option's camelCase name, split on word boundaries and rejoined (`yukon.service.name`, `YUKON_SERVICE_NAME`), so a name exists at exactly one place and cannot drift between the two derived forms.
+Every agent option can be set from the `-javaagent` args string, a JVM system property, or an environment variable, in that precedence order, falling back to the option's own default if none is set. A blank value at any level counts as unset and falls through to the next one. The property and environment variable names are derived mechanically from the option's camelCase name, split on word boundaries and rejoined (`otherlode.service.name`, `OTHERLODE_SERVICE_NAME`), so a name exists at exactly one place and cannot drift between the two derived forms.
 
 ## Considered options
 

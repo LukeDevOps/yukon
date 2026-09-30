@@ -5,7 +5,7 @@ plugins {
     `jvm-test-suite`
 }
 
-group = "io.github.lukedevops"
+group = "dev.otherlode"
 
 repositories {
     mavenCentral()
@@ -18,7 +18,7 @@ dependencies {
     // ResourceMethodAdvice references nothing framework-specific at all.
     implementation(project(":endpoints-api"))
 
-    // Compile-time only: at runtime YukonEndpoints comes from the target JVM's bootstrap
+    // Compile-time only: at runtime OtherlodeEndpoints comes from the target JVM's bootstrap
     // classloader, where BootstrapHolder appends the embedded jar (see the root project's
     // build.gradle.kts for the full rationale).
     compileOnly(project(":bootstrap"))
@@ -31,7 +31,7 @@ dependencies {
     // dependency once this module's classes are merged into the shaded agent jar.
     compileOnly("net.bytebuddy:byte-buddy:1.18.12")
 
-    // Gives EndpointRegistry, EndpointInstrumentation, ProbeRegistry, YukonInstrumentation, and
+    // Gives EndpointRegistry, EndpointInstrumentation, ProbeRegistry, OtherlodeInstrumentation, and
     // BootstrapHolder to JaxRsTestAgent and the integration test below, the same way
     // :endpoints-spring-webmvc's own tests depend on the root project.
     testImplementation(project(":"))
@@ -66,7 +66,7 @@ java {
 // before any test method's own first statement runs. A -javaagent installs the transformer
 // during premain, which the JVM runs before any application class loads at all, discovery
 // included, the same reasoning Ktor3TestAgent's Javadoc gives in full. The jar packages the
-// whole compiled test output; everything the agent's premain references (YukonInstrumentation,
+// whole compiled test output; everything the agent's premain references (OtherlodeInstrumentation,
 // EndpointInstrumentation, ByteBuddy) resolves off the test JVM's ordinary classpath, which is
 // already in place before any agent's premain runs.
 val jaxRsTestAgentJar =
@@ -75,7 +75,7 @@ val jaxRsTestAgentJar =
         destinationDirectory.set(layout.buildDirectory.dir("test-agent"))
         from(sourceSets.test.get().output)
         manifest {
-            attributes["Premain-Class"] = "io.github.lukedevops.yukon.instrumentation.endpoints.jaxrs.JaxRsTestAgent"
+            attributes["Premain-Class"] = "dev.otherlode.instrumentation.endpoints.jaxrs.JaxRsTestAgent"
         }
     }
 
@@ -127,7 +127,7 @@ val javaxTestAgentJar =
         destinationDirectory.set(layout.buildDirectory.dir("test-agent"))
         from(testing.suites.named<JvmTestSuite>("javaxTest").map { it.sources.output })
         manifest {
-            attributes["Premain-Class"] = "io.github.lukedevops.yukon.instrumentation.endpoints.jaxrs.JaxRsTestAgent"
+            attributes["Premain-Class"] = "dev.otherlode.instrumentation.endpoints.jaxrs.JaxRsTestAgent"
         }
     }
 

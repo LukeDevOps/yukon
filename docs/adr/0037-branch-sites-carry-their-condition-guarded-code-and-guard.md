@@ -4,7 +4,7 @@ status: accepted
 
 # Branch sites carry their condition, and each outcome its guarded code
 
-Decided on 2026-09-24 in a grilling session that spanned this repo, `yukon-collector` and `yukon-server`.
+Decided on 2026-09-24 in a grilling session that spanned this repo, `otherlode-collector` and `otherlode-server`.
 
 A never-hit branch outcome reaches a person as "Branch 12, `DemoServerMain.kt:121`". That says nothing about which condition it belongs to, which side never ran, or what code that side leads to. Line 122 of the demo has two never-hit outcomes that cannot be told apart. `branch_index` is a per-build counter and `branch_key` is a digest, and ADR 0031 designed both for machines. Nothing on the wire says which outcomes share a site. The agent reads everything a person needs from the bytecode, so it sends it: the site as a unit, the site's condition in source terms, and for each outcome the code that runs only through it.
 
@@ -32,7 +32,7 @@ A never-hit branch outcome reaches a person as "Branch 12, `DemoServerMain.kt:12
 ## Consequences
 
 - A site key and a branch key digest the condition's constants. Redacting a literal stops it from being shown or stored, but anyone holding the keys and the rest of the condition can test guesses against a weak secret offline. Keys have to stay a pure function of the bytecode to join builds, so this is accepted. A secret compared in a condition is for the adopter's own secret scanning to find.
-- Guarded calls prepare the ground for rooting an unreached cluster at a never-taken outcome, not at each callee behind it. The cluster rules are `yukon-server`'s decision.
+- Guarded calls prepare the ground for rooting an unreached cluster at a never-taken outcome, not at each callee behind it. The cluster rules are `otherlode-server`'s decision.
 - A consumer that ignores the new fields keeps working. `branch_index`, `branch_key` and `line` keep their meaning.
 - Each compiler shape the condition writer reads back to source must be confirmed against `javap` output before it is coded, as ADR 0025 requires for coroutine shapes.
 - Deciding which outcomes are real but not worth a person's time (the null path of `?.`, `!!`, a `finally` copy) stays the collector's job under ADR 0025. Readable conditions make it possible. They do not make it.

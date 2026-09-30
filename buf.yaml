@@ -1,17 +1,15 @@
 version: v2
 modules:
   - path: src/main/proto
-    name: buf.build/lukedevops-oss/yukon
+    name: buf.build/otherlode/otherlode
 lint:
   use:
     - STANDARD
   except:
-    # Renaming to satisfy these would rename the generated Java enum
-    # constants and move the package (yukon -> yukon.v1), a breaking change
-    # for the agent and collector's existing generated code. Not worth it
-    # for a schema that already ships.
-    - PACKAGE_DIRECTORY_MATCH
-    - PACKAGE_VERSION_SUFFIX
+    # The rule requires each value to start with its enum's name. Every
+    # generated constant would then repeat the type name (Go
+    # ProbeKind_PROBE_KIND_METHOD, Java ProbeKind.PROBE_KIND_METHOD), and the
+    # value names the collector and server read would change.
     - ENUM_VALUE_PREFIX
     # GeneratedBy's zero value means "not generated", a legitimate and common
     # value rather than an absent or invalid one, unlike ProbeKind's own

@@ -1,8 +1,8 @@
 package com.example.agenttarget
 
-import io.github.lukedevops.yukon.testkit.DependencyUsage
-import io.github.lukedevops.yukon.testkit.YukonTestCollector
-import io.github.lukedevops.yukon.testkit.junit5.YukonExtension
+import dev.otherlode.testkit.DependencyUsage
+import dev.otherlode.testkit.OtherlodeTestCollector
+import dev.otherlode.testkit.junit5.OtherlodeExtension
 import org.junit.jupiter.api.Order
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.extension.ExtendWith
@@ -15,12 +15,12 @@ import kotlin.test.assertTrue
  * carries two fixture jars, one this test calls into through [DependencyUser] and one nothing
  * loads. Runs after the other classes in this suite; see `junit-platform.properties`.
  */
-@ExtendWith(YukonExtension::class)
+@ExtendWith(OtherlodeExtension::class)
 @Order(3)
 class DependencyUsageAgentTest {
     @Test
-    fun `a startup dependency nothing loads is unloaded, and one a hit method calls is used`(collector: YukonTestCollector) {
-        assertEquals("hello yukon", DependencyUser().greet())
+    fun `a startup dependency nothing loads is unloaded, and one a hit method calls is used`(collector: OtherlodeTestCollector) {
+        assertEquals("hello otherlode", DependencyUser().greet())
 
         collector.awaitDependency("com.example.fixture", "dep-used", Duration.ofSeconds(30))
         collector.awaitDependency(null, "dep-unused", Duration.ofSeconds(30))

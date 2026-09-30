@@ -114,7 +114,7 @@ shape.
   `ordinal`, `fromOrdinal`, `$new`) was not read. Nor are Scala 2 `Enumeration` and `lazy val`
   plumbing. The fixtures have Scala 3 enums, but no
   run has loaded them; `STATUS.md` carries them until a run shows what they produce.
-- `yukon-server` displays an unknown `GeneratedBy` as `none` until it gains labels for the three
+- `otherlode-server` displays an unknown `GeneratedBy` as `none` until it gains labels for the three
   values, though it already leaves such methods out of findings.
 - Every fact above was read from `javap` output for fixtures compiled with Scala 2.13.15 and
   3.3.4. Other versions (2.12, later 3.x) degrade to unmarked plumbing until their shapes are read.

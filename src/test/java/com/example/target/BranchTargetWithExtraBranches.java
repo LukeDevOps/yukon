@@ -3,7 +3,7 @@ package com.example.target;
 /**
  * Same methods as {@link BranchTarget}, but {@code classify} carries two conditionals instead of
  * one. A test swaps these bytes in for {@code BranchTarget}'s through a transformer registered
- * ahead of Yukon's, standing in for another agent that rewrote the class first.
+ * ahead of Otherlode's, standing in for another agent that rewrote the class first.
  */
 public class BranchTargetWithExtraBranches {
 

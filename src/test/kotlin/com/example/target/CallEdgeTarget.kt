@@ -25,7 +25,7 @@ fun applyOp(
 ): Int = op(value)
 
 /**
- * Exercises every call-edge shape [io.github.lukedevops.yukon.instrumentation.branch.BranchSiteAnalyzer]
+ * Exercises every call-edge shape [dev.otherlode.instrumentation.branch.BranchSiteAnalyzer]
  * records: a private same-class call, another in-scope class's constructor and method, a static
  * in-scope function, a JDK call and a Kotlin stdlib call (both out of scope), an interface call, a
  * dropped self-edge, a cross-class `$default` pass-through, and a lambda passed to a non-inline

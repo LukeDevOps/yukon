@@ -5,7 +5,7 @@ plugins {
     `jvm-test-suite`
 }
 
-group = "io.github.lukedevops"
+group = "dev.otherlode"
 
 repositories {
     mavenCentral()
@@ -18,7 +18,7 @@ val ktorVersion = "3.5.2"
 dependencies {
     implementation(project(":endpoints-api"))
 
-    // Compile-time only: at runtime YukonEndpoints comes from the target JVM's bootstrap
+    // Compile-time only: at runtime OtherlodeEndpoints comes from the target JVM's bootstrap
     // classloader, where BootstrapHolder appends the embedded jar (see the root project's
     // build.gradle.kts for the full rationale).
     compileOnly(project(":bootstrap"))
@@ -75,7 +75,7 @@ val ktor3TestAgentJar =
         destinationDirectory.set(layout.buildDirectory.dir("test-agent"))
         from(sourceSets.test.get().output)
         manifest {
-            attributes["Premain-Class"] = "io.github.lukedevops.yukon.instrumentation.endpoints.ktor3.Ktor3TestAgent"
+            attributes["Premain-Class"] = "dev.otherlode.instrumentation.endpoints.ktor3.Ktor3TestAgent"
         }
     }
 
@@ -124,7 +124,7 @@ val ktor30TestAgentJar =
         destinationDirectory.set(layout.buildDirectory.dir("test-agent"))
         from(testing.suites.named<JvmTestSuite>("ktor3_0Test").map { it.sources.output })
         manifest {
-            attributes["Premain-Class"] = "io.github.lukedevops.yukon.instrumentation.endpoints.ktor3.Ktor3TestAgent"
+            attributes["Premain-Class"] = "dev.otherlode.instrumentation.endpoints.ktor3.Ktor3TestAgent"
         }
     }
 

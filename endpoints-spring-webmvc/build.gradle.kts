@@ -3,7 +3,7 @@ plugins {
     `jvm-test-suite`
 }
 
-group = "io.github.lukedevops"
+group = "dev.otherlode"
 
 repositories {
     mavenCentral()
@@ -15,7 +15,7 @@ val byteBuddyVersion = "1.18.12"
 dependencies {
     implementation(project(":endpoints-api"))
 
-    // Compile-time only: at runtime YukonEndpoints comes from the target JVM's bootstrap
+    // Compile-time only: at runtime OtherlodeEndpoints comes from the target JVM's bootstrap
     // classloader, where BootstrapHolder appends the embedded jar (see the root project's
     // build.gradle.kts for the full rationale).
     compileOnly(project(":bootstrap"))

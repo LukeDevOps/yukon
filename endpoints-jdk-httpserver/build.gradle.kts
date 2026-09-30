@@ -2,7 +2,7 @@ plugins {
     kotlin("jvm") version "2.2.21"
 }
 
-group = "io.github.lukedevops"
+group = "dev.otherlode"
 
 repositories {
     mavenCentral()
@@ -11,7 +11,7 @@ repositories {
 dependencies {
     implementation(project(":endpoints-api"))
 
-    // Compile-time only: at runtime YukonEndpoints comes from the target JVM's bootstrap
+    // Compile-time only: at runtime OtherlodeEndpoints comes from the target JVM's bootstrap
     // classloader, where BootstrapHolder appends the embedded jar (see the root project's
     // build.gradle.kts for the full rationale).
     compileOnly(project(":bootstrap"))

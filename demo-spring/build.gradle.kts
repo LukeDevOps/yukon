@@ -6,7 +6,7 @@ plugins {
     kotlin("plugin.spring") version "2.2.21"
 }
 
-group = "io.github.lukedevops"
+group = "dev.otherlode"
 
 repositories {
     mavenCentral()
@@ -35,7 +35,7 @@ java {
 }
 
 springBoot {
-    mainClass.set("io.github.lukedevops.demo.spring.SpringDemoApplicationKt")
+    mainClass.set("com.example.demo.spring.SpringDemoApplicationKt")
 }
 
 tasks.bootJar {

@@ -12,7 +12,7 @@ READMEs and CI. It covers all three repos, since a release ships them
 together. The order: what is hard to undo once published, and what would
 make an adopter's first report wrong, comes before polish. The release
 publishes the agent (with its testkit) and the collector as open source.
-`yukon-server` stays closed source and hosted (server ADR 0001), so every
+`otherlode-server` stays closed source and hosted (server ADR 0001), so every
 adopter's collector forwards to one multi-tenant backend.
 
 1. **Run on a real Spring Boot service.** Done on 2026-09-26 against the
@@ -119,13 +119,13 @@ adopter's collector forwards to one multi-tenant backend.
    left in 4 is settled and planned in the server STATUS, and 5 is
    publishing. Item 3 is decisions, so it starts with a
    grill, one sub-item at a time. Facts gathered so far: the testkit's public surface is
-   `YukonTestCollector` (about 40 public functions, from `awaitNextFlush`
+   `OtherlodeTestCollector` (about 40 public functions, from `awaitNextFlush`
    and `wasHit` to `unreachedClusters` and the dependency queries), the
    top-level types beside it (`ProbeRef`, `ClassFindingRef`,
    `UnreachedCluster`, `WholeClass`, `OptionalParameterRef`, `EndpointRef`,
    `DependencyStatus` and its parts, three `Unknown…Exception`s, and the
    `RootKind`, `ClassFinding` and `DependencyUsage` enums), and
-   `junit5/YukonExtension`. The per-instance question is written up under
+   `junit5/OtherlodeExtension`. The per-instance question is written up under
    "Generators other than Spring and Hibernate are not recognised" below.
    Not yet read: ADR 0016, `AgentConfig`'s option list, and the Gradle
    publishing, group id and licence state of each repo.
@@ -157,8 +157,8 @@ adopter's collector forwards to one multi-tenant backend.
      (server `788716b`). Its regression guard is chunk 2 of the server
      plan: a CI check on the built `dist/` and a jsdom Select test.
    - Collector: its auth token takes a comma-separated list, and
-     `YUKON_COLLECTOR_AUTH_TOKEN_FILE` and
-     `YUKON_COLLECTOR_FORWARD_AUTH_TOKEN_FILE` read files that are
+     `OTHERLODE_COLLECTOR_AUTH_TOKEN_FILE` and
+     `OTHERLODE_COLLECTOR_FORWARD_AUTH_TOKEN_FILE` read files that are
      re-read every 30 seconds (collector ADR 0003; chunk 1 of the server
      plan). TLS is documented rather than built: the README's TLS
      section (collector `b838535`, 2026-09-27) says it must sit behind a
@@ -210,9 +210,19 @@ routine and OpenTelemetry edge cases in the entries below.
 
 ## TODO
 
+### The rename from Yukon to Otherlode: landed in this repo
+
+The rename landed here on 2026-09-30 (ADR 0049): the package and Maven
+group `dev.otherlode`, the schema as package `otherlode.v1` in
+`otherlode/v1/otherlode.proto` on `buf.build/otherlode/otherlode`,
+`otherlode.*` and `OTHERLODE_*` settings, `/v1/otherlode/...` ingest paths,
+and the testkit's `OtherlodeTestCollector` and `OtherlodeExtension`. The
+collector, the server and GCP still carry the old name and follow. Until the
+collector serves `/v1/otherlode/...`, this agent cannot send to it.
+
 ### Routine outcomes: landed in all three repos
 
-Settled 2026-09-26 in a grilling session with `yukon-server`: ADR 0046 here,
+Settled 2026-09-26 in a grilling session with `otherlode-server`: ADR 0046 here,
 server ADR 0039, server STATUS item 17. Some outcomes are real but not worth
 a person's time when they never run, and the agent reads them exactly from
 the bytecode, where a backend would have to guess from condition text.
@@ -269,7 +279,7 @@ the values an adopter has already given OpenTelemetry.
 
 Chunk 1, the agent: a `serviceNamespace` option with no default, and
 `ResourceAttributes.service_namespace` (field 6), sent only when set. The
-name, the namespace and the environment fall back from Yukon's own three
+name, the namespace and the environment fall back from Otherlode's own three
 sources to OpenTelemetry's own settings, resolved as its Java agent
 resolves them: `otel.service.name` and `otel.resource.attributes` each come
 whole from the system property, else from `OTEL_SERVICE_NAME` or
@@ -278,7 +288,7 @@ is ignored whole, as the specification says. The name then falls back to `Servic
 OpenTelemetry's Spring Boot, manifest and jar detectors, and last to
 `unknown_service:java` in place of `unknown-service`. The stub collector
 and `runDemoStack` print a namespace when there is one, and `runDemoStack`
-passes `YUKON_SERVICE_NAMESPACE` to the demo server.
+passes `OTHERLODE_SERVICE_NAMESPACE` to the demo server.
 
 The rest landed the same day: the collector's namespace processor and
 shard key (collector `38b1a0e`), the server's keying, routes and web UI
@@ -287,7 +297,7 @@ its namespace (`a18a278`). A name or namespace of `.` or `..` is skipped
 with a warning at each source (`bd3052b`), since browsers drop dot
 segments from the URL the server shows it at; the collector rejects such
 a payload too (`c36c608`). Checked end to end with two `runDemoStack`
-runs, one with `YUKON_SERVICE_NAMESPACE=shop`: see the server's STATUS,
+runs, one with `OTHERLODE_SERVICE_NAMESPACE=shop`: see the server's STATUS,
 item 16.
 
 Open:
@@ -304,7 +314,7 @@ Open:
 ### Readable branch findings: landed in all three repos
 
 Settled 2026-09-24 in a grilling session across all three repos, after
-reading the `yukon-server` UI against the demo. A never-hit outcome reached a
+reading the `otherlode-server` UI against the demo. A never-hit outcome reached a
 person as "Branch 12, `DemoServerMain.kt:121`": no condition, no side, and
 nothing about what code it leads to. ADRs 0037 (sites, conditions, guarded
 code, guards) and 0038 (string and enum switches read back to source
@@ -449,29 +459,29 @@ The `demo` corpus is the demo module's whole Kotlin output, so
 `runShapesStack`'s shapes (2026-09-26) add eight classes to it; numbers
 measured after that are not comparable with the tables above.
 
-Chunk 6 landed in `yukon-collector` (`a09f9cd`): a `Redaction`
+Chunk 6 landed in `otherlode-collector` (`a09f9cd`): a `Redaction`
 processor replaces `STRING_LITERAL` parts a blocked pattern matches, or all
 of them, and clears unknown fields while it is on. The collector's bindings
 moved to `v1.36.12-20260924225937-af331e73c211.2`, generated from `b2618cd`.
 The review kept one deviation and recorded it in collector ADR 0001: an
-unreadable `YUKON_COLLECTOR_REDACT_ALL_LITERALS` stops startup instead of
+unreadable `OTHERLODE_COLLECTOR_REDACT_ALL_LITERALS` stops startup instead of
 reading as false.
 
-Chunk 7 landed in `yukon-server` (`8f28a79`): migration 0002 stores sites,
+Chunk 7 landed in `otherlode-server` (`8f28a79`): migration 0002 stores sites,
 outcomes, conditions, case labels, guarded lines and guards per run and per
 scan, and the guard joins each call edge table's key through `UNIQUE NULLS NOT
 DISTINCT`. The review found Postgres cannot store NUL in jsonb or text, so a
 part whose text holds NUL is stored as a placeholder instead of failing its
 payload on every retry.
 
-Chunk 8 landed in `yukon-server` (`3c1990f`): never-hit and stale-hit
+Chunk 8 landed in `otherlode-server` (`3c1990f`): never-hit and stale-hit
 return `rows`, each a method row or a site row carrying every outcome with
 `in_finding`, and paging counts rows. A merged row's display fields come from
 the newest in-scope run. The report has `methods` and `branch_sites` in place
 of the mixed probe triple. An outcome with no site forms a site of its own
 rather than dropping out.
 
-Chunk 9 landed in `yukon-server` (`b6c649b`): the never-hit and stale-hit
+Chunk 9 landed in `otherlode-server` (`b6c649b`): the never-hit and stale-hit
 tables, the graph's expanded method nodes and the headline read sites through
 one module, and the branch index and key are shown nowhere. The browser check
 found the mono font drawing `!=` as one glyph, which blurs `==` against
@@ -485,7 +495,7 @@ only path to `DemoServerMain.kt:59`. The browser shows the same rows, and the
 graph's `totalParam` node lists its four conditions with a true and false
 marker each.
 
-The follow-ups this left in `yukon-server`'s STATUS have since landed there:
+The follow-ups this left in `otherlode-server`'s STATUS have since landed there:
 folding a dead method's branches into its row (item 2), rooting clusters at
 a never-taken outcome (item 3), and routine outcomes (item 17, with ADR 0046
 here). Redaction stays out of the server; agent-level redaction is parked
@@ -494,7 +504,7 @@ there as item 18.
 ### Readable names and findings, UI items 3 and 6 to 10: landed in both repos
 
 Settled 2026-09-25 and 2026-09-26 in grilling sessions driven by
-`yukon-server`'s STATUS list "Names and findings a person can act on",
+`otherlode-server`'s STATUS list "Names and findings a person can act on",
 each checked end to end with `runDemoStack` and in the browser. The
 server side of each is in that repo's ADRs 0032 and 0034 to 0037; the
 agent side, one ADR and chunk each:
@@ -530,19 +540,19 @@ Open from these:
 - `LoadedClassSweep` still drops every synthetic class, so a multi-file
   part that reached no transformer is not reported.
 - A javac inner-class constructor with no generic types has no
-  `Signature` to drop its outer instance by, so `yukon-server` shows
+  `Signature` to drop its outer instance by, so `otherlode-server` shows
   `this$0`. A flag read from the class's `InnerClasses` attribute would
   close it.
 - A receiver lambda whose captured values come first gets no
   `extension_receiver` flag, since only the first parameter is read.
 - `runDemoStack`'s printer still prints JVM names on its endpoint and
   optional-parameter lines, and an any-verb route as `* /checkout`
-  where `yukon-server` shows `ANY /checkout`.
+  where `otherlode-server` shows `ANY /checkout`.
 
 ### Nothing is published anywhere
 
 No build in this repo publishes an artifact. An adopter cannot depend on the
-agent jar or on `yukon-testkit` except by building them, which also means the
+agent jar or on `otherlode-testkit` except by building them, which also means the
 testkit's whole reason for existing, letting someone else's test suite assert
 on dead code, has no distribution. The wire schema is the one thing that is
 published, to the Buf Schema Registry, and CI does that on every push that
@@ -597,7 +607,7 @@ walk and its dispatch advice. A `$sam$` wrapper keeps its own name,
 since it only calls the function value it holds. No wire or collector
 change in either chunk.
 
-`yukon-server` followed on 2026-09-24 (`37f690b`): `/endpoints` rows
+`otherlode-server` followed on 2026-09-24 (`37f690b`): `/endpoints` rows
 carry the handler's `created_in`, lambda-body flag and captured count,
 so its endpoints table reads `/__shutdown`'s handler as "lambda in
 `main`". Checked end to end on 2026-09-24 with `runDemoStack` against
@@ -630,11 +640,11 @@ second run id under a known instance id, and lists both in
 public query and wait throw `IllegalStateException` listing the reasons, so a
 test fails even if it never checks `rejectedPayloads()`.
 
-The other two repos followed on 2026-09-22. `yukon-collector` (`b40113a`)
+The other two repos followed on 2026-09-22. `otherlode-collector` (`b40113a`)
 bumped its bindings, reads the manifest's identity from `resource`, and
 rejects any payload with an empty run id; its shard key stays service plus
 instance, so a restart does not move an instance to another shard.
-`yukon-server` (`704a8ff`, its ADR 0024) keeps each run as its own row
+`otherlode-server` (`704a8ff`, its ADR 0024) keeps each run as its own row
 under its instance, with every per-run table hanging off the run, and
 merges with `max()` within a run. That replaced its reset-aware merge and
 its wipe on a version change. `runDemoStack` passes against the rebuilt
@@ -739,12 +749,12 @@ pass on missing data. The two-batch gate `dependency()` had at first is
 replaced by ADR 0036's delivery order; see "Dependency delivery order". The
 `agentTest` suite runs with `staticBaselineEnabled=true` at no measurable cost
 and proves unloaded, used and the split end to end against two fixture jars.
-Chunk 7 has landed in `yukon-collector` (`4bc51e7`): its generated bindings
+Chunk 7 has landed in `otherlode-collector` (`4bc51e7`): its generated bindings
 are bumped to BSR commit `df061083`, which carries every dependency field, it
 forwards them untouched, and `LogSink` logs their counts and
 `references_recorded`; the relay round-trip tests carry each field.
 
-Chunk 8 has landed in `yukon-server` (`f417d3b`): migration 0012, a port of
+Chunk 8 has landed in `otherlode-server` (`f417d3b`): migration 0012, a port of
 the rules with all 25 of the demo's cases as store subtests, `GET
 /api/v1/services/{s}/dependencies` with a status filter, `GET
 /absent-references`, and a `dependencies` block on `report` with a
@@ -758,7 +768,7 @@ in the "never loaded" mark on a site, never in a status. Protobuf-java and
 byte-buddy were the agent's own libraries, on the demo server's classpath by
 mistake; since `94d64af` the plain demo lists only annotations (unloaded) and
 kotlin-stdlib (used). The stack run was repeated on 2026-09-24, after
-`yukon-server` took up the flag, and the server's answer matched.
+`otherlode-server` took up the flag, and the server's answer matched.
 
 Open, recorded rather than started:
 - A `byte-buddy-agent` jar sitting flat in an exploded war's `WEB-INF/lib`
@@ -781,8 +791,8 @@ Landing order as built, one chunk and one commit each:
    names, is the unreferenced case, which needs the baseline flag in `runDemo`;
    one reference in the never-hit promo branch is the unreached case.
 6. Testkit.
-7. `yukon-collector` bindings bump.
-8. `yukon-server`: `GET /api/v1/services/{s}/dependencies` with a status
+7. `otherlode-collector` bindings bump.
+8. `otherlode-server`: `GET /api/v1/services/{s}/dependencies` with a status
    filter, and a `dependencies` block on `report`.
 
 ### Dependency delivery order: landed in both repos
@@ -807,7 +817,7 @@ Landing order, one chunk and one commit each, built with `/chunked-build`:
 2. Testkit and stub collector: a dependency is judged once its entry arrives;
    list queries and `absentReferences()` throw until every instance sent the
    flag; `awaitDependenciesListed`; the stub logs the flag.
-3. `yukon-collector`: bindings bump, `LogSink` logs the flag.
+3. `otherlode-collector`: bindings bump, `LogSink` logs the flag.
 
 Chunk 0 has landed (`c243ff3`): field 15 on `ProbeManifest`, the agent's model
 and codec. Chunk 1 has landed (`761a475`): counting generations in `DependencyRegistry`,
@@ -834,10 +844,10 @@ used jar as unreferenced. The store writes mappings first, entries next and
 the flag last. `dependency()` judges on the instances whose entry has arrived;
 with several instances, `awaitDependenciesListed` first covers the rest.
 
-Chunk 3 has landed in `yukon-collector` (`74d7a9b`): bindings bumped to BSR commit
+Chunk 3 has landed in `otherlode-collector` (`74d7a9b`): bindings bumped to BSR commit
 `084ba94b`, `LogSink` logs the flag, and the relay round-trip test carries it.
 
-`yukon-server` takes the flag up under its ADR 0029: dependency reads carry
+`otherlode-server` takes the flag up under its ADR 0029: dependency reads carry
 `listing_complete` and the instance list `dependencies_listed`.
 
 Recorded, not planned:
@@ -889,8 +899,8 @@ Progress:
   same gate, and two that only made sense for it were rewritten to pin the new
   meaning. The testkit's timeout message and KDoc example, and the README's
   attach example and options table, name `includePackages` as required.
-  `runDemo` reports as before. No change in `yukon-collector` or
-  `yukon-server`: `references_recorded` keeps its meaning.
+  `runDemo` reports as before. No change in `otherlode-collector` or
+  `otherlode-server`: `references_recorded` keeps its meaning.
 
 ### Generated methods: branches marked, two over-marks closed: landed in both repos
 
@@ -933,7 +943,7 @@ Landing order, one Opus chunk and one commit each:
    asserts `DATA_CLASS` on the branches of a generated `equals` and `NONE` on
    an ordinary method's; `TaxRate` goes back to a `data class` and the Spring
    demo's report stays at four never-hit rows.
-4. `yukon-server`: the `read.go` comments that say a BRANCH probe never
+4. `otherlode-server`: the `read.go` comments that say a BRANCH probe never
    carries the mark. No logic change.
 
 Progress:
@@ -960,7 +970,7 @@ Progress:
   and 10, the six extra rows all `TaxRate#equals` branches at line -1; with
   it, 34 and the same 4, with 11 generated and not judged. A single-`Double`
   data class's `hashCode` has no branch site, so only `equals` showed.
-- Chunk 4 landed in `yukon-server` (`e5f53f4`): the `Probe` comment in
+- Chunk 4 landed in `otherlode-server` (`e5f53f4`): the `Probe` comment in
   `read.go` and the README say a branch probe carries its method's mark. No
   logic change and no bindings bump, since the proto changed only in comments.
 
@@ -1037,22 +1047,22 @@ that decision:
 ### Stable branch identity: landed in both repos
 
 `branch_index` is a class-wide ordinal. Sites are numbered in bytecode order
-across every method of the class (`YukonInstrumentation.kt`, `BranchSite.kt`),
+across every method of the class (`OtherlodeInstrumentation.kt`, `BranchSite.kt`),
 and dropped sites keep their place. The number holds still when the scope or
 a drop rule changes. It does not hold still when the code changes: one new
 conditional in an early method shifts every later branch in the class,
 including branches in other methods. Nothing on the wire ties branch 14 in
 one release to branch 12 in the one before.
 
-`yukon-server` needs that tie to date a branch across releases. Its fix for
+`otherlode-server` needs that tie to date a branch across releases. Its fix for
 the capped location dates keeps one row per location for the whole service,
 but it cannot key a branch that way: a row keyed on `branch_index` would move
 an old date onto a new branch and call it dead for years. So branch probes
 keep per-instance dates there, capped by scope and marked `dates_capped`,
 and `known_for_days` still drops the ones whose capped date is too recent.
-See the service-wide dates entry in `yukon-server`'s STATUS.md.
+See the service-wide dates entry in `otherlode-server`'s STATUS.md.
 
-The server side landed on 2026-09-22 (`yukon-server` `4ee1026`, its ADR
+The server side landed on 2026-09-22 (`otherlode-server` `4ee1026`, its ADR
 0025): a keyed branch outcome gets a service-wide date row and groups by
 its key across builds, and only keyless outcomes stay capped.
 
@@ -1100,7 +1110,7 @@ Progress:
   inside the condition: an edit to its true arm keeps the outer key and
   an edit to its false arm changes it, as the Consequences say.
 
-The server work this unblocked landed on 2026-09-22 (`yukon-server`
+The server work this unblocked landed on 2026-09-22 (`otherlode-server`
 `4ee1026`, its ADR 0025, BSR `15053c3b6627`): a keyed branch outcome gets a
 service row and groups by its key across builds, and a keyless one stays capped,
 with never-hit under `known_for_days` and stale-hit reporting what they hide as
@@ -1169,7 +1179,7 @@ dispatch for the other modules.
   building if an adopter needs to turn one module off by hand.
 
 OpenAPI as a source of endpoints was set aside (ADR 0017). A contract-diff
-feature built on it is parked in `yukon-server`'s STATUS.
+feature built on it is parked in `otherlode-server`'s STATUS.
 
 ## Parked
 
@@ -1226,7 +1236,7 @@ server a thin wrapper over it, so the contract outlives changes to the MCP
 spec.
 
 Age metadata, so the threshold stays the adopter's. The manifest carries how
-long each finding has been dead and sets no threshold of its own. Yukon
+long each finding has been dead and sets no threshold of its own. Otherlode
 cannot know about a month-end batch job, a disaster recovery path or a flag
 that is off until it is not, and the adopter can. This is the ADR 0015
 posture on a new surface: report the observation and its span, and let the
@@ -1241,10 +1251,10 @@ observation window per instance, and `last_hit_at` is derived already as
 stale-hit finding, null when nothing ever hit it. Putting these on the
 never-hit rows is read-path work, not a schema change. Two facts have to
 travel together, because either alone misleads: how long the finding has been
-dead, and how long Yukon has been watching. "Dead for 90 days" says nothing
+dead, and how long Otherlode has been watching. "Dead for 90 days" says nothing
 until the reader knows whether the window is 90 days or three years.
 
-The age gap this once waited on is closed. `yukon-server` keeps location
+The age gap this once waited on is closed. `otherlode-server` keeps location
 dates once per service (its "Service-wide dates" entry), so a method's age no
 longer stops at the oldest in-scope instance or the retention window, and
 every reply carries `watched_since`. The server also keeps service-wide
@@ -1255,14 +1265,14 @@ can still be method level, which the JaCoCo join below already assumes.
 Phase two, JaCoCo for the vacuous test case. Needed only for the surviving
 case above, and only once the manifest stands on its own. JaCoCo's runtime
 dumps and resets execution data per test (`IAgent.getExecutionData(true)`),
-which gives a test-to-method map to intersect with the never-hit set. Yukon
+which gives a test-to-method map to intersect with the never-hit set. Otherlode
 never runs in the test JVM: the join is offline on class, method name and
 descriptor, the key both already carry. The two agree more than they appear
 to, since ADR 0003 takes its per-class count array from JaCoCo, ADR 0015 uses
 JaCoCo's own `SyntheticFilter` allow-list with one refinement, and
 `BranchSiteAnalyzer` already tolerates JaCoCo-instrumented bytecode as input,
 confirmed against 0.8.13's offline `Instrumenter`. Branch level will not
-join, because JaCoCo's branch identity is merge-point based while Yukon's
+join, because JaCoCo's branch identity is merge-point based while Otherlode's
 slots are allocated in encounter order, so a first cut is method level only.
 Inline probes stay excluded, as ADR 0025 and the server's rules exclude them
 already. Set JaCoCo's `includes` to the agent's `includePackages`: it bounds
@@ -1321,7 +1331,7 @@ comparison against the loaded set can see it: it is present, and its counts
 sit at zero exactly like a class that loaded and was never initialised.
 
 The one signal that separates them is reading the loaded class for
-`$yukonProbeCounts`, and `Class.getDeclaredFields()` resolves every field's
+`$otherlodeProbeCounts`, and `Class.getDeclaredFields()` resolves every field's
 type. Confirmed on JDK 22: a field type `findLoadedClass` reported absent was
 loaded by the call itself. A detector that manufactures class loads corrupts
 the data it reports on, which is worse than the gap. It also needs a second

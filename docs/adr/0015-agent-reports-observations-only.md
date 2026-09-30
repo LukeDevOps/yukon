@@ -13,8 +13,8 @@ Kotlin's generated `componentN`, `copy`, and data-class `equals`/`hashCode`/`toS
 ## Consequences
 
 - A native method gets no slot. ByteBuddy declines to weave advice into a method with no body, so a slot there would read zero forever and be reported as code that could never, by construction, be observed running.
-- `yukon-testkit` stops at query primitives (`wasHit`, `hitCount`, `neverHit`, `skippedClasses`, `neverLoaded`). A CI threshold is an adopter's composition, not a built-in.
-- The collector's merge policy for a genuine counter reset under a pinned instance ID (plain `max()` versus reset-aware accumulation) is a collector decision, recorded in `yukon-collector`.
+- `otherlode-testkit` stops at query primitives (`wasHit`, `hitCount`, `neverHit`, `skippedClasses`, `neverLoaded`). A CI threshold is an adopter's composition, not a built-in.
+- The collector's merge policy for a genuine counter reset under a pinned instance ID (plain `max()` versus reset-aware accumulation) is a collector decision, recorded in `otherlode-collector`.
 - Probing every synthetic method was rejected. In this repo's own output about a thousand synthetic and bridge methods are forwarders. A bridge reads zero whenever callers use the exact signature, so it would be a false never-hit on a method the compiler is obliged to emit, and `$default` already belongs to the omission tier.
 - The lambda allow-list is a compiler contract. If a spelling changes, the failure is a body with no probe, which is the earlier behaviour, never a wrong claim.
 - A Kotlin `object` holding only `const val`s has a `<clinit>` that never runs, because callers inline the constants. Its probe reads zero honestly; whether that is dead code is the collector's call, as for every other row.

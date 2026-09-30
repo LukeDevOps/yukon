@@ -2,7 +2,7 @@ package com.example.testkittarget
 
 /**
  * Branch sites of each shape server ADR 0031's fold rule tells apart, for
- * [io.github.lukedevops.yukon.testkit.YukonTestCollectorEndToEndTest]. The test creates one
+ * [dev.otherlode.testkit.OtherlodeTestCollectorEndToEndTest]. The test creates one
  * instance and calls every method but [neverCalled].
  */
 class SiteFolds {

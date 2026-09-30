@@ -1,4 +1,4 @@
-# Yukon
+# Otherlode
 
 A Java agent that instruments a running JVM application to find code that's
 reachable but never actually exercised at runtime: unused endpoints, methods
@@ -24,7 +24,7 @@ probes never fired.
 ./gradlew build
 ```
 
-Produces a shaded agent jar at `build/libs/yukon-<version>.jar` with
+Produces a shaded agent jar at `build/libs/otherlode-agent-<version>.jar` with
 ByteBuddy and protobuf relocated, so it won't collide with copies already on
 the target application's classpath.
 
@@ -32,15 +32,15 @@ the target application's classpath.
 
 ```
 ./gradlew jmh
-./gradlew jmh -Pyukon.benchmark.corpus=demo
-./gradlew jmh -Pyukon.benchmark.corpus=demo,scala
+./gradlew jmh -Potherlode.benchmark.corpus=demo
+./gradlew jmh -Potherlode.benchmark.corpus=demo,scala
 ```
 
 A JMH benchmark in `src/jmh/kotlin` times the branch analyser over five
 corpora of real class files: `demo`, `demo-spring`, `scala` (both Scala
 fixture modules), `spring-webmvc` (the jar `demo-spring` resolves) and
 `ktor-server-core` (the jar `endpoints-ktor-3` tests against). The first command runs all five, about 40
-seconds each. `-Pyukon.benchmark.corpus` picks one or more by name. The
+seconds each. `-Potherlode.benchmark.corpus` picks one or more by name. The
 score is the average time to analyse the whole corpus once. Each run prints
 the corpus's class count, so the time per class is the score divided by that
 count. Results go to `build/results/jmh/results.txt`.
@@ -48,7 +48,7 @@ count. Results go to `build/results/jmh/results.txt`.
 ## Attach it to an app
 
 ```
--javaagent:/path/to/yukon-<version>.jar=serviceName=my-service,endpoint=http://localhost:4319,includePackages=com.acme.myservice
+-javaagent:/path/to/otherlode-agent-<version>.jar=serviceName=my-service,endpoint=http://localhost:4319,includePackages=com.acme.myservice
 ```
 
 Options (comma-separated `key=value`, `includePackages`/`excludePackages` use
@@ -64,12 +64,12 @@ described below):
 | `serviceInstanceId` | random UUID | Reported to the collector. |
 | `environment` | *(none)* | Reported to the collector. Falls back to OpenTelemetry's `deployment.environment.name`, then `deployment.environment`. |
 | `endpoint` | `http://localhost:4319` | Collector base URL. |
-| `authToken` | *(none)* | Bearer token sent to the collector as `Authorization: Bearer <token>`. Prefer setting it through `YUKON_AUTH_TOKEN` rather than this option: agent arguments are visible to every user on the host via `ps`, and an environment variable is not. |
+| `authToken` | *(none)* | Bearer token sent to the collector as `Authorization: Bearer <token>`. Prefer setting it through `OTHERLODE_AUTH_TOKEN` rather than this option: agent arguments are visible to every user on the host via `ps`, and an environment variable is not. |
 | `flushIntervalSeconds` | `60` | How often deltas/manifest updates are sent. |
 | `includePackages` | *(required)* | Only instrument types whose name starts with one of these prefixes, `;`-separated. Without it the agent logs an ERROR and stays disabled for the life of the JVM: nothing is instrumented and nothing is exported. The ERROR suggests the main class's package when it can find one. |
 | `excludePackages` | *(none)* | Never instrument types whose name starts with one of these prefixes, `;`-separated, even if `includePackages` also matches them. Exclusion always wins. |
 | `staticBaselineEnabled` | `false` | Scan the classpath once at startup (async, off the critical path) for classes under `includePackages` that never load at all. Off by default: unlike every other option here, a full classpath walk has a cost that scales with the classpath's size. |
-| `enabled` | `true` | Set to `false` to turn the agent off entirely: nothing is instrumented and nothing is exported. Meant to be set from `YUKON_ENABLED` so a deployment can disable the agent without rebuilding the image that bakes in `-javaagent`. |
+| `enabled` | `true` | Set to `false` to turn the agent off entirely: nothing is instrumented and nothing is exported. Meant to be set from `OTHERLODE_ENABLED` so a deployment can disable the agent without rebuilding the image that bakes in `-javaagent`. |
 | `endpointsEnabled` | `true` | Set to `false` to switch off every framework endpoint module (Spring MVC, Ktor, JAX-RS, the JDK's `HttpServer`) at once. There are no per-framework flags. |
 | `otelBridgeEnabled` | `false` | Also count the route OpenTelemetry's own HTTP server instrumentation resolved, for a framework no endpoint module covers. Off by default because it hooks OpenTelemetry internals rather than a framework's public registration API. |
 
@@ -82,22 +82,22 @@ as unset and falls through to the next one.
 
 The property and environment variable names are derived mechanically from
 the option name: split it on camelCase boundaries, then join with `.` and
-lowercase it for the property (prefixed `yukon.`), or join with `_` and
-uppercase it for the environment variable (prefixed `YUKON_`). For example:
+lowercase it for the property (prefixed `otherlode.`), or join with `_` and
+uppercase it for the environment variable (prefixed `OTHERLODE_`). For example:
 
-- `serviceName` → system property `yukon.service.name`, environment variable `YUKON_SERVICE_NAME`
-- `flushIntervalSeconds` → system property `yukon.flush.interval.seconds`, environment variable `YUKON_FLUSH_INTERVAL_SECONDS`
+- `serviceName` → system property `otherlode.service.name`, environment variable `OTHERLODE_SERVICE_NAME`
+- `flushIntervalSeconds` → system property `otherlode.flush.interval.seconds`, environment variable `OTHERLODE_FLUSH_INTERVAL_SECONDS`
 
 ## Reading OpenTelemetry's settings
 
 A service that already runs OpenTelemetry has named itself once in
-OpenTelemetry's settings. Yukon reads those, so its findings carry the same
+OpenTelemetry's settings. Otherlode reads those, so its findings carry the same
 name as the service's traces. The service name, the namespace and the
 environment each come from the first of these sources that gives a value
 that is not blank, and each value is trimmed:
 
-1. Yukon's own three sources above: the agent-args string, the `yukon.*`
-   system property, then the `YUKON_*` environment variable.
+1. Otherlode's own three sources above: the agent-args string, the
+   `otherlode.*` system property, then the `OTHERLODE_*` environment variable.
 2. OpenTelemetry's own settings, resolved as its Java agent resolves them:
    each of `otel.service.name` and `otel.resource.attributes` from its
    system property, else its environment variable (`OTEL_SERVICE_NAME`,
@@ -118,18 +118,18 @@ Each OpenTelemetry setting comes whole from one place, so a set
 `otel.resource.attributes` system property hides `OTEL_RESOURCE_ATTRIBUTES`
 entirely, and `OTEL_SERVICE_NAME` wins over a `service.name` inside that
 system property. A list is `key=value` pairs split by commas, with
-percent-encoded values. If any pair is not `key=value`, Yukon ignores the
+percent-encoded values. If any pair is not `key=value`, Otherlode ignores the
 whole list and logs a warning, as the OpenTelemetry specification says. Set
-a Yukon option to name the service differently in Yukon on purpose, since
-Yukon's own sources win.
+an Otherlode option to name the service differently in Otherlode on purpose,
+since Otherlode's own sources win.
 
 In Kubernetes, the OpenTelemetry Operator sets `service.namespace` from the
 pod's `resource.opentelemetry.io/service.namespace` annotation, or else from
 the pod's Kubernetes namespace, and passes it in `OTEL_RESOURCE_ATTRIBUTES`.
-Yukon reads it from there. Set `YUKON_SERVICE_NAMESPACE` to override it.
-Yukon never works out a namespace for itself.
+Otherlode reads it from there. Set `OTHERLODE_SERVICE_NAMESPACE` to override it.
+Otherlode never works out a namespace for itself.
 
-Yukon needs somewhere to send data to. See the `demo` module below for a
+Otherlode needs somewhere to send data to. See the `demo` module below for a
 minimal stub, or point it at a real collector.
 
 ## Try the demo
@@ -190,7 +190,7 @@ calls `farewellNote`, so its part never loads and prints by its file:
 NEVER LOADED: DemoTextFarewell.kt (methods: farewellNote)
 ```
 
-Some findings are about a whole class, not a method in it (yukon-server's
+Some findings are about a whole class, not a method in it (otherlode-server's
 ADR 0034). `main` names `AuditLog` and `ReceiptPrinter` through class
 literals, which load a class without initialising it. `AuditLog` is an
 object, so its static initialiser is where its one instance is made; that
@@ -200,8 +200,8 @@ constructors ran, so it is never instantiated. The report prints both, and
 the never-hit list leaves out the methods that can only run through them:
 
 ```
-NEVER INITIALISED: io.github.lukedevops.demo.server.AuditLog (methods: constructor, record) (instances loading: 1)
-NEVER INSTANTIATED: io.github.lukedevops.demo.server.ReceiptPrinter (methods: constructor, print, print$lambda$0) (instances loading: 1)
+NEVER INITIALISED: com.example.demo.server.AuditLog (methods: constructor, record) (instances loading: 1)
+NEVER INSTANTIATED: com.example.demo.server.ReceiptPrinter (methods: constructor, print, print$lambda$0) (instances loading: 1)
 ```
 
 A static initialiser is never a row of its own, and a constructor is a row
@@ -214,7 +214,7 @@ overload generated, so it is never reported. Constructors print with their
 parameter types:
 
 ```
-NEVER HIT: io.github.lukedevops.demo.server.Money#constructor(int, int):10 [CONSTRUCTOR, unused overload] (instance 17e3afc3-76f1-435c-b30a-5e594350530f, class 5, probe 1)
+NEVER HIT: com.example.demo.server.Money#constructor(int, int):10 [CONSTRUCTOR, unused overload] (instance 17e3afc3-76f1-435c-b30a-5e594350530f, class 5, probe 1)
 ```
 
 The last report groups those never-hit probes into unreached clusters: a
@@ -235,10 +235,10 @@ demo's own code calls `handle`, only the server does, which is why the root
 is uncalled rather than reached from hit:
 
 ```
-UNREACHED CLUSTER: root io.github.lukedevops.demo.server.PromoHandler#handle (uncalled), 4 methods, 1 never-loaded classes routes=[* /promo]
-  io.github.lukedevops.demo.server.PromoRepository (whole class, never loaded, 2 methods)
+UNREACHED CLUSTER: root com.example.demo.server.PromoHandler#handle (uncalled), 4 methods, 1 never-loaded classes routes=[* /promo]
+  com.example.demo.server.PromoRepository (whole class, never loaded, 2 methods)
   applyPromoCode (DemoServerMain.kt)
-  io.github.lukedevops.demo.server.PromoHandler#handle
+  com.example.demo.server.PromoHandler#handle
 ```
 
 `/checkout` is registered the other way, as a function reference that
@@ -259,8 +259,8 @@ Deleting that side of the `if` removes both classes whole:
 
 ```
 UNREACHED CLUSTER: root `System.getenv("ENABLE_LEGACY_DISCOUNT") == "true"` was never true, only path to DemoServerMain.kt:72, in handleCheckout (DemoServerMain.kt:71) (untaken outcome), 3 methods, 2 never-loaded classes routes=[* /checkout]
-  io.github.lukedevops.demo.server.LegacyDiscountCalculator (whole class, never loaded, 2 methods)
-  io.github.lukedevops.demo.server.LegacyRates (whole class, never loaded, 1 methods)
+  com.example.demo.server.LegacyDiscountCalculator (whole class, never loaded, 2 methods)
+  com.example.demo.server.LegacyRates (whole class, never loaded, 1 methods)
 ```
 
 A class that holds a class finding roots a cluster of its own when nothing
@@ -289,34 +289,34 @@ reference is reached from the handler and never appears in a cluster.
 Runs the same instrumented demo server and client, but against a real
 collector instead of the stub, then prints what the backend behind it
 reports. `runSpringDemoStack` does the same for the Spring Boot fat-jar
-demo, as service `yukon-spring-demo`. `runShapesStack` runs three short
-programs one after another, each as its own service: `yukon-shapes`
+demo, as service `otherlode-spring-demo`. `runShapesStack` runs three short
+programs one after another, each as its own service: `otherlode-shapes`
 touches Java anonymous classes and a lambda, a companion object, a data
 class and a suspend function, each with a part that never runs, and
-`yukon-fixtures-scala2` and `yukon-fixtures-scala3` call some of the Scala
+`otherlode-fixtures-scala2` and `otherlode-fixtures-scala3` call some of the Scala
 fixture modules' `Driver` methods and leave the rest. Each prints: probe and class counts, the never-hit probes, the never-loaded,
 never-initialised and never-instantiated classes, and the unreached
 clusters. It expects a collector at `http://localhost:4319` and the
-yukon-server read API at `http://localhost:4320`, which is what
-yukon-server's `docker compose --profile stack up --build` provides. Every
+otherlode-server read API at `http://localhost:4320`, which is what
+otherlode-server's `docker compose --profile stack up --build` provides. Every
 address and credential can be overridden:
 
 | Property | Default |
 |---|---|
-| `-PyukonEndpoint` | `http://localhost:4319` |
-| `-PyukonAgentToken` | `local-stack-agent-token` |
-| `-PyukonServerUrl` | `http://localhost:4320` |
-| `-PyukonServerReadApiKey` | `yk_stack-read-key-for-local-dev-only`, the stack's read key; the demo only reads the server's API. The retired `-PyukonServerApiKey` stops the run with a message naming this property |
-| `-PyukonServiceVersion` | `stack-demo`, `spring-stack-demo` for the Spring demo, `shapes-stack-demo` for the shapes run |
+| `-PotherlodeEndpoint` | `http://localhost:4319` |
+| `-PotherlodeAgentToken` | `local-stack-agent-token` |
+| `-PotherlodeServerUrl` | `http://localhost:4320` |
+| `-PotherlodeServerReadApiKey` | `yk_stack-read-key-for-local-dev-only`, the stack's read key; the demo only reads the server's API. |
+| `-PotherlodeServiceVersion` | `stack-demo`, `spring-stack-demo` for the Spring demo, `shapes-stack-demo` for the shapes run |
 
 The defaults match the compose stack's own development defaults, so with
 the stack up it works with no arguments. Each run registers as a new
 instance, and the server keeps everything it has seen, so the report
 covers every run of that service and version so far; pass a fresh
-`-PyukonServiceVersion` to start a clean slate.
+`-PotherlodeServiceVersion` to start a clean slate.
 
 The demo runs in the unspecified namespace. To run it in a named one, set
-`YUKON_SERVICE_NAMESPACE` in the environment of the Gradle command; the
+`OTHERLODE_SERVICE_NAMESPACE` in the environment of the Gradle command; the
 tasks pass it to the demo server, and the report names the namespace.
 
 ## Test your app against the agent
@@ -327,9 +327,9 @@ as it does in production: start the collector, point the agent's `endpoint=`
 at it, exercise your app, then ask the collector what it saw.
 
 ```kotlin
-YukonTestCollector.start().use { collector ->
+OtherlodeTestCollector.start().use { collector ->
     // Launch your app with
-    // -javaagent:yukon.jar=endpoint=${collector.endpoint},flushIntervalSeconds=1,includePackages=com.acme
+    // -javaagent:otherlode-agent.jar=endpoint=${collector.endpoint},flushIntervalSeconds=1,includePackages=com.acme
     // and exercise it, then:
     collector.awaitProbe("com.acme.OrderService", "checkout", Duration.ofSeconds(10))
     collector.awaitNextFlush(Duration.ofSeconds(10))
@@ -385,9 +385,9 @@ agent, the collector, and those records share.
 - A small number of classes can't be safely instrumented (for example,
   Kotlin files using `@file:JvmName`). These are skipped and reported, not
   silently dropped from coverage.
-- Wire schema (`src/main/proto/yukon.proto`) is published to the Buf Schema
-  Registry as `buf.build/lukedevops-oss/yukon` for external consumers (e.g.
-  a separately-versioned collector).
+- Wire schema (`src/main/proto/otherlode/v1/otherlode.proto`) is published
+  to the Buf Schema Registry as `buf.build/otherlode/otherlode` for external
+  consumers (e.g. a separately-versioned collector).
 
 ## Licence
 

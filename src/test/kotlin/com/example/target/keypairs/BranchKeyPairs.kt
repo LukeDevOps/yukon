@@ -1,8 +1,8 @@
 package com.example.target.keypairs
 
-import io.github.lukedevops.yukon.instrumentation.branch.BranchKeys
-import io.github.lukedevops.yukon.instrumentation.branch.BranchSite
-import io.github.lukedevops.yukon.instrumentation.branch.BranchSiteAnalyzer
+import dev.otherlode.instrumentation.branch.BranchKeys
+import dev.otherlode.instrumentation.branch.BranchSite
+import dev.otherlode.instrumentation.branch.BranchSiteAnalyzer
 import net.bytebuddy.jar.asm.ClassReader
 import net.bytebuddy.jar.asm.ClassWriter
 import net.bytebuddy.jar.asm.commons.ClassRemapper

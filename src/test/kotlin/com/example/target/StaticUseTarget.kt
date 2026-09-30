@@ -25,7 +25,7 @@ class FinalMethodTarget {
 }
 
 /**
- * Exercises every field-use call-edge shape [io.github.lukedevops.yukon.instrumentation.branch.BranchSiteAnalyzer]
+ * Exercises every field-use call-edge shape [dev.otherlode.instrumentation.branch.BranchSiteAnalyzer]
  * records: a static read and a static write on another in-scope class (deduplicated to one edge),
  * an out-of-scope static read, an instance field on another in-scope class (no edge beyond its
  * own existing constructor edge), and a call to another in-scope class's final method.

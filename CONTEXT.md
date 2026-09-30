@@ -1,4 +1,4 @@
-# Yukon
+# Otherlode
 
 A Java agent that instruments a running JVM application to find code paths that are reachable but never exercised: unused endpoints, methods never invoked, conditionals that only ever go one way. The agent records and exports; a collector aggregates and judges.
 
@@ -126,7 +126,7 @@ A random ID the agent makes once per process at startup and stamps on every payl
 _Avoid_: process ID (the operating system's PID), boot ID
 
 **Collector**:
-Whatever receives the payloads and merges them across instances. `yukon-collector` is the production one; the demo's stub and the testkit's `YukonTestCollector` play the role in this repo.
+Whatever receives the payloads and merges them across instances. `otherlode-collector` is the production one; the demo's stub and the testkit's `OtherlodeTestCollector` play the role in this repo.
 _Avoid_: backend, server, ingest
 
 ### Endpoints
@@ -241,7 +241,7 @@ A root plus every never-hit method reachable from it through call edges whose ev
 _Avoid_: dead cluster, dead code (a collector's verdict, not an observation)
 
 **Root**:
-The never-hit code that starts an unreached cluster. A method root is *reached from hit* when one of its callers has hits, and names those callers; it is *uncalled* when nothing in scope calls it. An *untaken outcome* root is a never-hit outcome in a method that ran, with at least one method behind it. See ADR 0039. A *class finding* root is a class that holds a class finding, with no caller or a caller that has hits. Its cluster is listed only when it holds a method or class besides the methods the finding folds. A `<clinit>` is never a root, and neither is a never-run constructor of a class nothing constructed that holds no class finding, such as a utility class's private constructor; the cluster reaches through it but never lists it. See yukon-server ADR 0034.
+The never-hit code that starts an unreached cluster. A method root is *reached from hit* when one of its callers has hits, and names those callers; it is *uncalled* when nothing in scope calls it. An *untaken outcome* root is a never-hit outcome in a method that ran, with at least one method behind it. See ADR 0039. A *class finding* root is a class that holds a class finding, with no caller or a caller that has hits. Its cluster is listed only when it holds a method or class besides the methods the finding folds. A `<clinit>` is never a root, and neither is a never-run constructor of a class nothing constructed that holds no class finding, such as a utility class's private constructor; the cluster reaches through it but never lists it. See otherlode-server ADR 0034.
 _Avoid_: entry point (a root may be deep inside the code), node
 
 ### Dependencies
@@ -311,7 +311,7 @@ A class declared by a complete static baseline that never appears in any manifes
 _Avoid_: dead (a collector's verdict, not an observation)
 
 **Class finding**:
-A finding about a whole class rather than a method in it: never loaded, never initialised or never instantiated. A class holds at most one, the strongest that applies, and a method that can only run through it is not listed on its own. A lambda body folds with the methods that create it: a never-hit lambda body is not listed when every creator is covered by a class finding or is a never-hit method that is listed. A collector judges it, and the agent sends the facts it rests on, such as each method's static and lambda-body flags. See yukon-server ADR 0034 and ADR 0040.
+A finding about a whole class rather than a method in it: never loaded, never initialised or never instantiated. A class holds at most one, the strongest that applies, and a method that can only run through it is not listed on its own. A lambda body folds with the methods that create it: a never-hit lambda body is not listed when every creator is covered by a class finding or is a never-hit method that is listed. A collector judges it, and the agent sends the facts it rests on, such as each method's static and lambda-body flags. See otherlode-server ADR 0034 and ADR 0040.
 _Avoid_: unused class, dead class
 
 **Never initialised**:

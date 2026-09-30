@@ -4,7 +4,7 @@ status: accepted
 
 # Initialise probe arrays through a bootstrap-resident holder
 
-The `:bootstrap` module contains one Java class, `YukonProbeArrays`. The agent embeds it in its jar as `META-INF/yukon/bootstrap-jar.bin` and appends it to the bootstrap classloader at `premain`. Each instrumented class gets a `<clinit>` prelude that fills `$yukonProbeCounts` with one call to `YukonProbeArrays.resolve(className, layoutHash, probeCount, classLoader)`, every argument a constant. The agent plugs its registry in through `YukonProbeArrays.install(Resolver)`. Because the holder sits on the bootstrap loader, a class defined by any loader can reach it from its own initializer.
+The `:bootstrap` module contains one Java class, `OtherlodeProbeArrays`. The agent embeds it in its jar as `META-INF/otherlode/bootstrap-jar.bin` and appends it to the bootstrap classloader at `premain`. Each instrumented class gets a `<clinit>` prelude that fills `$otherlodeProbeCounts` with one call to `OtherlodeProbeArrays.resolve(className, layoutHash, probeCount, classLoader)`, every argument a constant. The agent plugs its registry in through `OtherlodeProbeArrays.install(Resolver)`. Because the holder sits on the bootstrap loader, a class defined by any loader can reach it from its own initializer.
 
 ## Considered options
 

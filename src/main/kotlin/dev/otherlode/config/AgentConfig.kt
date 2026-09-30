@@ -1,0 +1,316 @@
+package dev.otherlode.config
+
+import java.lang.System.Logger.Level
+import java.net.URI
+import java.time.Duration
+import java.util.UUID
+
+/**
+ * Agent options, passed as comma-separated key=value pairs on the
+ * `-javaagent:otherlode-agent.jar=key=value,key=value` command line.
+ *
+ * A value cannot contain a comma, since the comma is the pair separator and
+ * there is no quoting. A value that needs one (an endpoint with a query
+ * string, a token) is set through the matching system property or
+ * environment variable instead; see [parse].
+ */
+data class AgentConfig(
+    /**
+     * The service name. When no Otherlode source sets it, it comes from OpenTelemetry's own settings,
+     * then from detection by [ServiceNameDetector], then [DEFAULT_SERVICE_NAME]. See ADR 0045.
+     */
+    val serviceName: String,
+    /**
+     * The group the service belongs to, as OpenTelemetry's `service.namespace`. When no Otherlode source
+     * sets it, it comes from OpenTelemetry's own settings. It has no default: null is the
+     * unspecified namespace. The agent never works one out for itself. See ADR 0045.
+     */
+    val serviceNamespace: String?,
+    val serviceVersion: String?,
+    val serviceInstanceId: String,
+    /**
+     * The deployment environment. When no Otherlode source sets it, it comes from OpenTelemetry's
+     * `deployment.environment.name` or older `deployment.environment` resource attribute.
+     */
+    val environment: String?,
+    /** Base URL of the collector. The exporter appends `/v1/otherlode/{deltas,manifest,static-baseline}`. */
+    val collectorEndpoint: String,
+    /**
+     * Sent to the collector as `Authorization: Bearer <token>`. Prefer the `OTHERLODE_AUTH_TOKEN`
+     * environment variable over the `authToken` agent option: a `-javaagent` argument is visible
+     * to every user on the host through `ps` and `/proc/<pid>/cmdline`, so a secret passed that
+     * way is readable by anyone who can list processes.
+     */
+    val authToken: String?,
+    val flushInterval: Duration,
+    /**
+     * Only types under one of these prefixes are instrumented. Required: when empty,
+     * [dev.otherlode.Agent] refuses to start, logs one ERROR and instruments and exports
+     * nothing. See ADR 0033.
+     */
+    val instrumentedPackagePrefixes: List<String>,
+    /**
+     * A type under one of these prefixes is never instrumented, even if [instrumentedPackagePrefixes]
+     * also matches it. Exclusion always wins over inclusion.
+     */
+    val excludedPackagePrefixes: List<String>,
+    /**
+     * Off unless explicitly enabled. Unlike every other capability here, a full classpath scan
+     * has a cost that genuinely scales with an adopter's classpath size, so it does not inherit
+     * this agent's usual "on unless configured otherwise" default.
+     */
+    val staticBaselineEnabled: Boolean,
+    /**
+     * On by default. When false, [dev.otherlode.Agent] logs one line and does
+     * nothing else: no bootstrap holder, no transformer, no exporter, no scheduler. Lets an
+     * adopter bake `-javaagent` into a container image and switch the agent off per deployment
+     * with `OTHERLODE_ENABLED=false`, with no image rebuild.
+     */
+    val enabled: Boolean,
+    /**
+     * On by default. One switch for every endpoint module (Spring, Ktor, `jdk.httpserver`,
+     * JAX-RS); there are no per-framework flags, by design. See ADR 0017.
+     */
+    val endpointsEnabled: Boolean,
+    /**
+     * Off by default, unlike [endpointsEnabled]: the route bridge module hooks OpenTelemetry
+     * instrumentation internals rather than a framework's own public registration hooks, so its
+     * correctness is tied to the OpenTelemetry version present, a coupling ADR 0017 declined for
+     * every other module. An adopter opts in knowingly, for a framework no other module covers.
+     * See ADR 0019.
+     */
+    val otelBridgeEnabled: Boolean,
+) {
+    companion object {
+        /** OpenTelemetry's name for a Java service that names none. */
+        const val DEFAULT_SERVICE_NAME = "unknown_service:java"
+
+        private const val DEFAULT_ENDPOINT = "http://localhost:4319"
+        private val DEFAULT_FLUSH_INTERVAL: Duration = Duration.ofSeconds(60)
+        private val log = System.getLogger(AgentConfig::class.java.name)
+
+        private val KNOWN_KEYS =
+            setOf(
+                "serviceName",
+                "serviceNamespace",
+                "serviceVersion",
+                "serviceInstanceId",
+                "environment",
+                "endpoint",
+                "authToken",
+                "flushIntervalSeconds",
+                "includePackages",
+                "excludePackages",
+                "staticBaselineEnabled",
+                "enabled",
+                "endpointsEnabled",
+                "otelBridgeEnabled",
+            )
+
+        /**
+         * Every option in [KNOWN_KEYS] resolves the same way: the agent-args string wins, then a
+         * JVM system property, then an environment variable, then the option's own built-in
+         * default. [OptionNames] derives the property and environment variable names from the
+         * option name itself, so the three sources can never drift apart from each other.
+         *
+         * A blank value at any source counts as unset and falls through to the next one, the
+         * same way a blank `authToken` option already fell through to `OTHERLODE_AUTH_TOKEN`.
+         *
+         * The service name, the namespace and the environment go on past Otherlode's three sources, in
+         * this order, and the first value that is not blank wins (ADR 0045):
+         *
+         * 1. OpenTelemetry's own settings, resolved as its Java agent resolves them by
+         *    [OtelResourceSettings.resolve]: each of `otel.service.name` and
+         *    `otel.resource.attributes` from its system property, else its environment variable;
+         *    the name from `otel.service.name`, else `service.name` in the attributes.
+         * 2. For the name only, [detectServiceName], which runs only when every source above is
+         *    empty.
+         * 3. For the name only, [DEFAULT_SERVICE_NAME].
+         *
+         * [OtelResourceSettings] lists the resource-attribute keys each value reads.
+         */
+        fun parse(
+            agentArgs: String?,
+            env: (String) -> String? = System::getenv,
+            systemProperties: (String) -> String? = System::getProperty,
+            detectServiceName: () -> String? = { ServiceNameDetector.forThisProcess(env, systemProperties).detect() },
+        ): AgentConfig {
+            val options = parseOptions(agentArgs)
+            for (key in options.keys - KNOWN_KEYS) {
+                log.log(Level.WARNING, "otherlode: ignoring unknown agent option '$key' (known options: ${KNOWN_KEYS.sorted()})")
+            }
+
+            fun resolve(key: String): String? = resolveOption(key, options, systemProperties, env)
+
+            val otel = OtelResourceSettings.resolve(systemProperties, env)
+
+            val prefixes = parsePackagePrefixes(resolve("includePackages"))
+            val excludedPrefixes = parsePackagePrefixes(resolve("excludePackages"))
+            val endpoint = parseEndpoint(resolve("endpoint"))
+            val authToken = resolve("authToken")
+            if (authToken != null && endpoint.startsWith("http://")) {
+                log.log(Level.WARNING, "otherlode: endpoint uses plain http, so the auth token is sent unencrypted")
+            }
+            return AgentConfig(
+                serviceName =
+                    resolveIdentity("serviceName", options, systemProperties, env)
+                        ?: otel.serviceName
+                        ?: ServiceIdentityValues.usable(detectedServiceName(detectServiceName), "service name detection")
+                        ?: DEFAULT_SERVICE_NAME,
+                serviceNamespace = resolveIdentity("serviceNamespace", options, systemProperties, env) ?: otel.serviceNamespace,
+                serviceVersion = resolve("serviceVersion"),
+                serviceInstanceId = resolve("serviceInstanceId") ?: UUID.randomUUID().toString(),
+                environment = resolve("environment") ?: otel.environment,
+                collectorEndpoint = endpoint,
+                authToken = authToken,
+                flushInterval = parseFlushInterval(resolve("flushIntervalSeconds")),
+                instrumentedPackagePrefixes = prefixes,
+                excludedPackagePrefixes = excludedPrefixes,
+                staticBaselineEnabled = parseBoolean("staticBaselineEnabled", resolve("staticBaselineEnabled"), default = false),
+                enabled = parseBoolean("enabled", resolve("enabled"), default = true),
+                endpointsEnabled = parseBoolean("endpointsEnabled", resolve("endpointsEnabled"), default = true),
+                otelBridgeEnabled = parseBoolean("otelBridgeEnabled", resolve("otelBridgeEnabled"), default = false),
+            )
+        }
+
+        /**
+         * Walks the three sources for [key] in precedence order: the agent-args option, then the
+         * matching system property, then the matching environment variable. A blank value at any
+         * source is treated as unset, so it falls through instead of masking a value from a
+         * lower-precedence source.
+         */
+        private fun resolveOption(
+            key: String,
+            options: Map<String, String>,
+            systemProperties: (String) -> String?,
+            env: (String) -> String?,
+        ): String? =
+            valueOrNull(options[key])
+                ?: valueOrNull(systemProperties(OptionNames.systemProperty(key)))
+                ?: valueOrNull(env(OptionNames.environmentVariable(key)))
+
+        /**
+         * Walks the three sources for [key] as [resolveOption] does, for a service name or
+         * namespace. A value that [ServiceIdentityValues.usable] skips falls through to the next
+         * source, as a blank one does.
+         */
+        private fun resolveIdentity(
+            key: String,
+            options: Map<String, String>,
+            systemProperties: (String) -> String?,
+            env: (String) -> String?,
+        ): String? {
+            val property = OptionNames.systemProperty(key)
+            val variable = OptionNames.environmentVariable(key)
+            return ServiceIdentityValues.usable(valueOrNull(options[key]), "the agent option $key")
+                ?: ServiceIdentityValues.usable(valueOrNull(systemProperties(property)), "the system property $property")
+                ?: ServiceIdentityValues.usable(valueOrNull(env(variable)), "the environment variable $variable")
+        }
+
+        private fun valueOrNull(raw: String?): String? = raw?.trim()?.ifBlank { null }
+
+        /** [detect]'s name, trimmed, or null when it finds none or throws. This runs in `premain`. */
+        private fun detectedServiceName(detect: () -> String?): String? =
+            try {
+                valueOrNull(detect())
+            } catch (e: Exception) {
+                null
+            }
+
+        /**
+         * Accepts `true`/`false` case-insensitively. Any other non-blank value logs a WARNING
+         * and falls back to [default], the same way an out-of-range [parseFlushInterval] value
+         * does, rather than silently reading as false.
+         */
+        private fun parseBoolean(
+            key: String,
+            raw: String?,
+            default: Boolean,
+        ): Boolean {
+            if (raw == null) return default
+            val parsed = raw.lowercase().toBooleanStrictOrNull()
+            if (parsed == null) {
+                log.log(Level.WARNING, "otherlode: $key must be 'true' or 'false', ignoring '$raw' and using the default of $default")
+                return default
+            }
+            return parsed
+        }
+
+        /**
+         * A trailing dot on a prefix is dropped so `com.acme.` and `com.acme` mean the same thing;
+         * [dev.otherlode.instrumentation.TypeMatchPolicy] matches on package boundaries
+         * either way, so `com.acme` never also matches `com.acmeinternal`. Shared by
+         * `includePackages` and `excludePackages`, which use the same `;`-separated syntax.
+         */
+        private fun parsePackagePrefixes(raw: String?): List<String> =
+            raw
+                ?.split(";")
+                ?.map { it.trim().trimEnd('.') }
+                ?.filter { it.isNotEmpty() }
+                ?: emptyList()
+
+        /**
+         * The exporter appends `/v1/otherlode/...` to this, so a trailing slash is dropped rather than
+         * producing a `//` in every request path. The scheme is lowercased, since URL schemes are
+         * case-insensitive and anything reading the endpoint afterwards can then compare it
+         * exactly; the host and path are kept as given. A value that is not an absolute http(s) URL
+         * with a host falls back to the default with a warning: left as is, `URI.create` would
+         * throw on every attempt of every flush, so the collector would never be reached and the
+         * log would fill with the same stack trace at each tick.
+         */
+        private fun parseEndpoint(raw: String?): String {
+            if (raw == null) return DEFAULT_ENDPOINT
+            val trimmed = raw.trim().trimEnd('/')
+            val uri = runCatching { URI(trimmed) }.getOrNull()
+            if (uri == null || uri.scheme?.lowercase() !in setOf("http", "https") || uri.host == null) {
+                log.log(
+                    Level.WARNING,
+                    "otherlode: endpoint must be an absolute http or https URL, ignoring '$raw' and using the default $DEFAULT_ENDPOINT",
+                )
+                return DEFAULT_ENDPOINT
+            }
+            return uri.scheme.lowercase() + trimmed.substring(uri.scheme.length)
+        }
+
+        /**
+         * Falls back to the default for any non-positive or non-numeric value. This guards
+         * [dev.otherlode.export.ExportScheduler]: `scheduleAtFixedRate` throws for a
+         * non-positive period. That call happens inside `Agent.premain`, and the
+         * `java.lang.instrument` contract says an uncaught exception there aborts the whole
+         * target JVM. Without this fallback, one bad flag value could take down the entire app
+         * at startup.
+         */
+        private fun parseFlushInterval(raw: String?): Duration {
+            if (raw == null) return DEFAULT_FLUSH_INTERVAL
+            val seconds = raw.toLongOrNull()?.takeIf { it > 0 }
+            if (seconds == null) {
+                log.log(
+                    Level.WARNING,
+                    "otherlode: flushIntervalSeconds must be a positive integer, ignoring '$raw' " +
+                        "and using the default of ${DEFAULT_FLUSH_INTERVAL.seconds}s",
+                )
+                return DEFAULT_FLUSH_INTERVAL
+            }
+            return Duration.ofSeconds(seconds)
+        }
+
+        private fun parseOptions(agentArgs: String?): Map<String, String> {
+            if (agentArgs.isNullOrBlank()) return emptyMap()
+            return agentArgs
+                .split(",")
+                .mapNotNull { pair ->
+                    val separator = pair.indexOf('=')
+                    if (separator <= 0) {
+                        log.log(
+                            Level.WARNING,
+                            "otherlode: ignoring malformed agent option '$pair' (expected key=value; a value cannot contain a " +
+                                "comma, set such a value through a system property or environment variable instead)",
+                        )
+                        null
+                    } else {
+                        pair.take(separator).trim() to pair.substring(separator + 1).trim()
+                    }
+                }.toMap()
+        }
+    }
+}

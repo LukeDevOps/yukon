@@ -5,7 +5,7 @@ inline fun isPositive(x: Int): Boolean = x > 0
 
 /**
  * Exercises the branch key's collision rule against a real inlined condition rather than a
- * hand-built [io.github.lukedevops.yukon.instrumentation.branch.BranchSite]:
+ * hand-built [dev.otherlode.instrumentation.branch.BranchSite]:
  *
  * [calledTwiceInOneMethod] inlines [isPositive] twice in one method, so both copies share a
  * method name, descriptor, fingerprint and origin class, and collide.

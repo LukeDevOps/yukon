@@ -4,7 +4,7 @@ plugins {
     kotlin("jvm") version "2.2.21"
 }
 
-group = "io.github.lukedevops"
+group = "dev.otherlode"
 
 repositories {
     mavenCentral()
@@ -16,7 +16,7 @@ val ktorVersion = "2.3.13"
 dependencies {
     implementation(project(":endpoints-api"))
 
-    // Compile-time only: at runtime YukonEndpoints comes from the target JVM's bootstrap
+    // Compile-time only: at runtime OtherlodeEndpoints comes from the target JVM's bootstrap
     // classloader, where BootstrapHolder appends the embedded jar (see the root project's
     // build.gradle.kts for the full rationale).
     compileOnly(project(":bootstrap"))
@@ -73,7 +73,7 @@ val ktor2TestAgentJar =
         destinationDirectory.set(layout.buildDirectory.dir("test-agent"))
         from(sourceSets.test.get().output)
         manifest {
-            attributes["Premain-Class"] = "io.github.lukedevops.yukon.instrumentation.endpoints.ktor2.Ktor2TestAgent"
+            attributes["Premain-Class"] = "dev.otherlode.instrumentation.endpoints.ktor2.Ktor2TestAgent"
         }
     }
 
@@ -90,7 +90,7 @@ tasks.test {
 // A second JVM Test Suite against Ktor 2.0.3, the floor of the 2.x line, was attempted here the
 // same way :endpoints-spring-webmvc adds a suite per supported major version. It was dropped:
 // Ktor2ModuleTest's HTTP requests hang against a real 2.0.3 CIO server on this project's JDK 21
-// toolchain, confirmed with the Yukon agent removed entirely, so the hang is a property of
+// toolchain, confirmed with the Otherlode agent removed entirely, so the hang is a property of
 // Ktor 2.0.3's own CIO engine and the kotlinx-coroutines-core 1.6.2 it pulls transitively, not
 // of this module's advice; registration was independently confirmed correct against 2.0.3 by
 // reading EndpointRegistry.endpoints() before the request that never returns. 2.3.13 remains the

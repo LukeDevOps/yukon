@@ -8,7 +8,7 @@ import jakarta.ws.rs.Produces
 
 /**
  * An interface resource, carrying class-level `@Path` and every method annotation, proving
- * [io.github.lukedevops.yukon.instrumentation.endpoints.jaxrs.JaxRsModule] resolves an inherited
+ * [dev.otherlode.instrumentation.endpoints.jaxrs.JaxRsModule] resolves an inherited
  * method's verb and path from the interface it declares them on.
  */
 @Path("/api/orders")

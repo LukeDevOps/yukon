@@ -15,7 +15,7 @@ annotation class PURGE
 
 /**
  * A `jakarta.ws.rs` resource fixture proving
- * [io.github.lukedevops.yukon.instrumentation.endpoints.jaxrs.JaxRsModule] end to end: an ordinary
+ * [dev.otherlode.instrumentation.endpoints.jaxrs.JaxRsModule] end to end: an ordinary
  * verb-and-path method, a method carrying only a verb, two methods this module's own test never
  * calls, a sub-resource locator, and a custom verb built on `@HttpMethod`.
  */

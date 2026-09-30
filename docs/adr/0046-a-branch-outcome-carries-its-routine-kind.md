@@ -4,7 +4,7 @@ status: accepted
 
 # A branch outcome carries its routine kind
 
-Decided on 2026-09-26 in a grilling session with `yukon-server` (server ADR 0039). This revises the last consequence of ADR 0025, and of ADR 0037, which left this call to the collector.
+Decided on 2026-09-26 in a grilling session with `otherlode-server` (server ADR 0039). This revises the last consequence of ADR 0025, and of ADR 0037, which left this call to the collector.
 
 Some outcomes the adopter wrote are real but not worth a person's time when they never run. In the demo, four of the six conditions listed as never hit are null paths in `totalParam`: `query ?: return 0.0`, `?.getOrNull(1)`, `value?.toDoubleOrNull()` and `?: 0.0`. A backend sees only the condition text, and from text it would have to guess: a hand-written `if (x == null) throw …` reads like the compiler's own check. The agent reads the bytecode, where these shapes are exact. So the agent classifies each outcome, and the backend judges.
 

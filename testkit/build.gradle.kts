@@ -5,7 +5,7 @@ plugins {
     `jvm-test-suite`
 }
 
-group = "io.github.lukedevops"
+group = "dev.otherlode"
 
 repositories {
     mavenCentral()
@@ -17,7 +17,7 @@ dependencies {
     implementation(project(":"))
     implementation("com.google.protobuf:protobuf-java:3.25.5")
 
-    // compileOnly: an adopter who does not use JUnit pays nothing for YukonExtension, the same
+    // compileOnly: an adopter who does not use JUnit pays nothing for OtherlodeExtension, the same
     // shape OpenTelemetry uses for opentelemetry-sdk-testing. JUnit's own launcher supplies the
     // real jar at test time for anyone who does add it. Pinned to the version already resolved
     // on this module's test classpath (checked with `./gradlew :testkit:dependencies
@@ -27,7 +27,7 @@ dependencies {
     testImplementation(kotlin("test"))
 
     // byte-buddy-agent gives the end-to-end test ByteBuddyAgent.install() to self-attach.
-    // Plain byte-buddy is needed too: YukonInstrumentation.install()/uninstall() are typed in
+    // Plain byte-buddy is needed too: OtherlodeInstrumentation.install()/uninstall() are typed in
     // terms of net.bytebuddy.agent.builder.ResettableClassFileTransformer, which is only an
     // implementation (not api) dependency of the root project and so does not arrive on this
     // module's compile classpath transitively.
@@ -52,7 +52,7 @@ java {
 }
 
 tasks.jar {
-    archiveBaseName.set("yukon-testkit")
+    archiveBaseName.set("otherlode-testkit")
 }
 
 // The Scala fixture modules, wired in the way the root build wires them: a task dependency and two
@@ -71,14 +71,14 @@ tasks.test {
         for (module in scalaFixtureModules) {
             val fixture = project(":fixtures-$module")
             systemProperty(
-                "yukon.fixtures.$module.dir",
+                "otherlode.fixtures.$module.dir",
                 fixture.layout.buildDirectory
                     .dir("classes/scala/main")
                     .get()
                     .asFile.absolutePath,
             )
             systemProperty(
-                "yukon.fixtures.$module.classpath",
+                "otherlode.fixtures.$module.classpath",
                 fixture.configurations
                     .named("runtimeClasspath")
                     .get()
@@ -88,7 +88,7 @@ tasks.test {
     }
 }
 
-// Proves YukonExtension against the real, shaded agent jar rather than hand-built payloads or a
+// Proves OtherlodeExtension against the real, shaded agent jar rather than hand-built payloads or a
 // self-attach. A distinct port (4329) and a distinct source set keep this suite from colliding
 // with anything an adopter runs on the agent's own default port (4319), and from putting
 // -javaagent on the plain `test` suite above, whose tests self-attach instead and must stay
@@ -122,8 +122,8 @@ testing {
             }
             dependencies {
                 // A registered suite, unlike the built-in `test` suite, does not inherit this
-                // project's own main output automatically: project() gives it YukonTestCollector
-                // and YukonExtension. kotlin("test") is a build-script-scoped helper, not
+                // project's own main output automatically: project() gives it OtherlodeTestCollector
+                // and OtherlodeExtension. kotlin("test") is a build-script-scoped helper, not
                 // available inside a suite's own dependencies block, so this names the same
                 // artifact directly, as the endpoints-spring-webmvc and endpoints-jaxrs suites
                 // already do.
@@ -151,7 +151,7 @@ testing {
                                     "serviceName=testkit-agent-test," +
                                     "endpointsEnabled=false," +
                                     "endpoint=http://localhost:$agentTestCollectorPort",
-                                "-Dyukon.testkit.port=$agentTestCollectorPort",
+                                "-Dotherlode.testkit.port=$agentTestCollectorPort",
                             )
                         }
                     }

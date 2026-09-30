@@ -13,7 +13,7 @@ plugins {
     kotlin("jvm") version "2.2.21"
 }
 
-group = "io.github.lukedevops"
+group = "dev.otherlode"
 
 repositories {
     mavenCentral()
@@ -27,8 +27,8 @@ val demoAppRuntime by configurations.creating
 
 dependencies {
     // The stub collector decodes the root project's generated protobuf
-    // classes directly (io.github.lukedevops.yukon.proto.*); the demo server
-    // and client don't reference Yukon at all, matching how a real
+    // classes directly (dev.otherlode.proto.*); the demo server
+    // and client don't reference Otherlode at all, matching how a real
     // consumer's app never depends on the agent at compile time.
     implementation(project(":"))
     implementation("com.google.protobuf:protobuf-java:3.25.5")
@@ -51,9 +51,9 @@ java {
     targetCompatibility = JavaVersion.VERSION_21
 }
 
-val demoServerMainClass = "io.github.lukedevops.demo.server.DemoServerMainKt"
-val demoClientMainClass = "io.github.lukedevops.demo.client.DemoClientMainKt"
-val stubCollectorMainClass = "io.github.lukedevops.demo.collector.StubCollectorMainKt"
+val demoServerMainClass = "com.example.demo.server.DemoServerMainKt"
+val demoClientMainClass = "com.example.demo.client.DemoClientMainKt"
+val stubCollectorMainClass = "com.example.demo.collector.StubCollectorMainKt"
 val flushIntervalSeconds = 3L
 val portWaitTimeoutSeconds = 15L
 
@@ -76,27 +76,27 @@ tasks.register("runDemo") {
                 .get()
                 .asFile
 
-        println("yukon demo: starting stub collector")
+        println("otherlode demo: starting stub collector")
         val (collector, collectorPort) = startStubCollector("collector", javaBin, demoClasspath)
         try {
-            println("yukon demo: starting instrumented demo server")
+            println("otherlode demo: starting instrumented demo server")
             val agentArg =
                 "-javaagent:${agentJar.absolutePath}=" +
-                    "serviceName=yukon-demo," +
+                    "serviceName=otherlode-demo," +
                     "flushIntervalSeconds=$flushIntervalSeconds," +
                     "endpoint=http://localhost:$collectorPort," +
-                    "includePackages=io.github.lukedevops.demo.server," +
+                    "includePackages=com.example.demo.server," +
                     "staticBaselineEnabled=true"
             val server = startProcess("server", javaBin, listOf(agentArg, "-cp", appClasspath, demoServerMainClass))
             try {
                 waitForPort(DemoPorts.SERVER_PORT, portWaitTimeoutSeconds)
 
-                println("yukon demo: running demo client")
+                println("otherlode demo: running demo client")
                 val client = startProcess("client", javaBin, listOf("-cp", appClasspath, demoClientMainClass))
                 client.process.waitFor()
                 client.outputThread.join()
 
-                println("yukon demo: waiting for one more flush and the static baseline scan before shutdown")
+                println("otherlode demo: waiting for one more flush and the static baseline scan before shutdown")
                 Thread.sleep((flushIntervalSeconds + 2) * 1000)
             } finally {
                 gracefulShutdown("server", server, DemoPorts.SERVER_PORT)
@@ -104,11 +104,11 @@ tasks.register("runDemo") {
         } finally {
             gracefulShutdown("collector", collector, collectorPort)
         }
-        println("yukon demo: done")
+        println("otherlode demo: done")
     }
 }
 
-val springDemoClientMainClass = "io.github.lukedevops.demo.client.SpringDemoClientMainKt"
+val springDemoClientMainClass = "com.example.demo.client.SpringDemoClientMainKt"
 
 // Boot's context refresh is slower to reach a listening port than the plain demo server's bare
 // HttpServer.create/start, so this task gets its own, longer port-wait timeout rather than
@@ -145,17 +145,17 @@ tasks.register("runSpringDemo") {
                 .get()
                 .asFile
 
-        println("yukon spring demo: starting stub collector")
+        println("otherlode spring demo: starting stub collector")
         val (collector, collectorPort) = startStubCollector("spring-collector", javaBin, demoClasspath)
         try {
-            println("yukon spring demo: starting instrumented Spring Boot fat jar")
+            println("otherlode spring demo: starting instrumented Spring Boot fat jar")
             val agentArg =
                 "-javaagent:${agentJar.absolutePath}=" +
-                    "serviceName=yukon-spring-demo," +
+                    "serviceName=otherlode-spring-demo," +
                     "serviceVersion=spring-demo," +
                     "flushIntervalSeconds=$flushIntervalSeconds," +
                     "endpoint=http://localhost:$collectorPort," +
-                    "includePackages=io.github.lukedevops.demo.spring," +
+                    "includePackages=com.example.demo.spring," +
                     "staticBaselineEnabled=true"
             val server =
                 startProcess(
@@ -166,12 +166,12 @@ tasks.register("runSpringDemo") {
             try {
                 waitForPort(DemoPorts.SPRING_SERVER_PORT, springPortWaitTimeoutSeconds)
 
-                println("yukon spring demo: running spring demo client")
+                println("otherlode spring demo: running spring demo client")
                 val client = startProcess("spring-client", javaBin, listOf("-cp", appClasspath, springDemoClientMainClass))
                 client.process.waitFor()
                 client.outputThread.join()
 
-                println("yukon spring demo: waiting for one more flush and the static baseline scan before shutdown")
+                println("otherlode spring demo: waiting for one more flush and the static baseline scan before shutdown")
                 Thread.sleep((flushIntervalSeconds + 2) * 1000)
             } finally {
                 gracefulShutdown("spring-server", server, DemoPorts.SPRING_SERVER_PORT)
@@ -179,19 +179,18 @@ tasks.register("runSpringDemo") {
         } finally {
             gracefulShutdown("spring-collector", collector, collectorPort)
         }
-        println("yukon spring demo: done")
+        println("otherlode spring demo: done")
     }
 }
 
-val stackEndpoint = providers.gradleProperty("yukonEndpoint").getOrElse("http://localhost:4319")
-val stackAgentToken = providers.gradleProperty("yukonAgentToken").getOrElse("local-stack-agent-token")
-val stackServerUrl = providers.gradleProperty("yukonServerUrl").getOrElse("http://localhost:4320")
+val stackEndpoint = providers.gradleProperty("otherlodeEndpoint").getOrElse("http://localhost:4319")
+val stackAgentToken = providers.gradleProperty("otherlodeAgentToken").getOrElse("local-stack-agent-token")
+val stackServerUrl = providers.gradleProperty("otherlodeServerUrl").getOrElse("http://localhost:4320")
 // The demo only reads the server's API, so it needs a read key. The stack's collector holds the ingest key.
 val stackServerReadApiKey =
-    providers.gradleProperty("yukonServerReadApiKey").getOrElse("yk_stack-read-key-for-local-dev-only")
-val retiredServerApiKey = providers.gradleProperty("yukonServerApiKey")
-val stackServiceVersion = providers.gradleProperty("yukonServiceVersion").getOrElse("stack-demo")
-val springStackServiceVersion = providers.gradleProperty("yukonServiceVersion").getOrElse("spring-stack-demo")
+    providers.gradleProperty("otherlodeServerReadApiKey").getOrElse("yk_stack-read-key-for-local-dev-only")
+val stackServiceVersion = providers.gradleProperty("otherlodeServiceVersion").getOrElse("stack-demo")
+val springStackServiceVersion = providers.gradleProperty("otherlodeServiceVersion").getOrElse("spring-stack-demo")
 
 // One service as the stack's read API knows it: the name and version a demo's agent reports under.
 class StackService(
@@ -206,11 +205,11 @@ class StackService(
         } ?: "/api/v1/services/$name"
 }
 
-// The demo runs in the unspecified namespace unless YUKON_SERVICE_NAMESPACE names one. The agent
+// The demo runs in the unspecified namespace unless OTHERLODE_SERVICE_NAMESPACE names one. The agent
 // reads it from its own environment, so the stack tasks hand it to the demo server as it is.
 val stackServiceNamespace: String? =
     providers
-        .environmentVariable("YUKON_SERVICE_NAMESPACE")
+        .environmentVariable("OTHERLODE_SERVICE_NAMESPACE")
         .orNull
         ?.trim()
         ?.ifEmpty { null }
@@ -219,14 +218,14 @@ tasks.register("runDemoStack") {
     group = "application"
     description =
         "Runs the -javaagent-instrumented demo server and client against a real collector, " +
-        "then prints what the yukon-server read API reports for it."
+        "then prints what the otherlode-server read API reports for it."
     dependsOn(rootProject.tasks.named("shadowJar"), tasks.named("classes"))
 
     doLast {
         val demoClasspath = demoAppClasspath()
         runStackDemo(
-            service = StackService("yukon-demo", stackServiceVersion, stackServiceNamespace),
-            includePackages = "io.github.lukedevops.demo.server",
+            service = StackService("otherlode-demo", stackServiceVersion, stackServiceNamespace),
+            includePackages = "com.example.demo.server",
             serverArgs = listOf("-cp", demoClasspath, demoServerMainClass),
             serverPort = DemoPorts.SERVER_PORT,
             serverPortWaitSeconds = portWaitTimeoutSeconds,
@@ -239,7 +238,7 @@ tasks.register("runSpringDemoStack") {
     group = "application"
     description =
         "Runs the -javaagent-instrumented Spring Boot fat-jar demo and its client against a real collector, " +
-        "then prints what the yukon-server read API reports for it."
+        "then prints what the otherlode-server read API reports for it."
     dependsOn(
         rootProject.tasks.named("shadowJar"),
         project(":demo-spring").tasks.named("bootJar"),
@@ -256,8 +255,8 @@ tasks.register("runSpringDemoStack") {
                 .get()
                 .asFile
         runStackDemo(
-            service = StackService("yukon-spring-demo", springStackServiceVersion, stackServiceNamespace),
-            includePackages = "io.github.lukedevops.demo.spring",
+            service = StackService("otherlode-spring-demo", springStackServiceVersion, stackServiceNamespace),
+            includePackages = "com.example.demo.spring",
             serverArgs = listOf("-jar", springBootJar.absolutePath, "--server.port=${DemoPorts.SPRING_SERVER_PORT}"),
             serverPort = DemoPorts.SPRING_SERVER_PORT,
             serverPortWaitSeconds = springPortWaitTimeoutSeconds,
@@ -276,29 +275,28 @@ fun runStackDemo(
     serverPortWaitSeconds: Long,
     clientArgs: List<String>,
 ) {
-    requireNoRetiredStackProperty()
     requireStackCollector()
     val javaBin = Jvm.current().javaExecutable.absolutePath
     val runInstanceId = UUID.randomUUID().toString()
     println(
-        "yukon demo: starting instrumented ${service.name}${stackNamespaceSuffix()} against $stackEndpoint as instance $runInstanceId",
+        "otherlode demo: starting instrumented ${service.name}${stackNamespaceSuffix()} against $stackEndpoint as instance $runInstanceId",
     )
     val server =
         startProcess(
             "server",
             javaBin,
             listOf(stackAgentArg(service, includePackages, runInstanceId)) + serverArgs,
-            env = mapOf("YUKON_AUTH_TOKEN" to stackAgentToken) + stackServiceNamespaceEnv(),
+            env = mapOf("OTHERLODE_AUTH_TOKEN" to stackAgentToken) + stackServiceNamespaceEnv(),
         )
     try {
         waitForPort(serverPort, serverPortWaitSeconds)
 
-        println("yukon demo: running demo client")
+        println("otherlode demo: running demo client")
         val client = startProcess("client", javaBin, clientArgs)
         client.process.waitFor()
         client.outputThread.join()
 
-        println("yukon demo: waiting for one more flush and the static baseline scan before shutdown")
+        println("otherlode demo: waiting for one more flush and the static baseline scan before shutdown")
         Thread.sleep((flushIntervalSeconds + 2) * 1000)
     } finally {
         gracefulShutdown("server", server, serverPort)
@@ -306,7 +304,7 @@ fun runStackDemo(
     }
 
     printStackReport(service)
-    println("yukon demo: done")
+    println("otherlode demo: done")
 }
 
 // Runs one program under the agent against the stack's collector until it exits by itself, waits
@@ -318,23 +316,22 @@ fun runStackOneShot(
     includePackages: String,
     programArgs: List<String>,
 ) {
-    requireNoRetiredStackProperty()
     requireStackCollector()
     val javaBin = Jvm.current().javaExecutable.absolutePath
     val runInstanceId = UUID.randomUUID().toString()
     println(
-        "yukon demo: running instrumented ${service.name}${stackNamespaceSuffix()} against $stackEndpoint as instance $runInstanceId",
+        "otherlode demo: running instrumented ${service.name}${stackNamespaceSuffix()} against $stackEndpoint as instance $runInstanceId",
     )
     val program =
         startProcess(
             service.name,
             javaBin,
             listOf(stackAgentArg(service, includePackages, runInstanceId)) + programArgs,
-            env = mapOf("YUKON_AUTH_TOKEN" to stackAgentToken) + stackServiceNamespaceEnv(),
+            env = mapOf("OTHERLODE_AUTH_TOKEN" to stackAgentToken) + stackServiceNamespaceEnv(),
         )
     try {
         if (!program.process.waitFor(oneShotTimeoutSeconds, TimeUnit.SECONDS)) {
-            throw GradleException("yukon demo: ${service.name} did not exit within ${oneShotTimeoutSeconds}s")
+            throw GradleException("otherlode demo: ${service.name} did not exit within ${oneShotTimeoutSeconds}s")
         }
     } finally {
         // A program that hung, or a build that was cancelled mid-wait, must not leave a JVM behind
@@ -343,7 +340,7 @@ fun runStackOneShot(
         program.outputThread.join()
     }
     val exitCode = program.process.exitValue()
-    if (exitCode != 0) throw GradleException("yukon demo: ${service.name} exited with $exitCode")
+    if (exitCode != 0) throw GradleException("otherlode demo: ${service.name} exited with $exitCode")
     awaitShutdownFlush(service, runInstanceId)
 
     printStackReport(service)
@@ -353,22 +350,11 @@ fun runStackOneShot(
 // agent's shutdown flush, with room to spare.
 val oneShotTimeoutSeconds = flushIntervalSeconds + 60
 
-// A run that sets yukonServerApiKey stops here with a message naming yukonServerReadApiKey. The demo only
-// reads, and the server's read API answers an ingest key with 403.
-fun requireNoRetiredStackProperty() {
-    if (retiredServerApiKey.isPresent) {
-        throw GradleException(
-            "yukon demo: -PyukonServerApiKey is not used. The demo reads the server's API with a read key; " +
-                "pass it as -PyukonServerReadApiKey=<read key> instead.",
-        )
-    }
-}
-
 fun requireStackCollector() {
     if (httpGet("$stackEndpoint/healthz", token = null).status != 200) {
         throw GradleException(
-            "yukon demo: no collector answering at $stackEndpoint/healthz. Start the stack with " +
-                "`docker compose --profile stack up --build` in yukon-server, or pass -PyukonEndpoint=<url>.",
+            "otherlode demo: no collector answering at $stackEndpoint/healthz. Start the stack with " +
+                "`docker compose --profile stack up --build` in otherlode-server, or pass -PotherlodeEndpoint=<url>.",
         )
     }
 }
@@ -396,7 +382,7 @@ fun stackAgentArg(
         "staticBaselineEnabled=true"
 }
 
-val shapesStackServiceVersion = providers.gradleProperty("yukonServiceVersion").getOrElse("shapes-stack-demo")
+val shapesStackServiceVersion = providers.gradleProperty("otherlodeServiceVersion").getOrElse("shapes-stack-demo")
 
 // The Scala fixture modules' `Driver` methods runShapesStack calls. The rest of each module's
 // classes and methods are left for the report to show as never run.
@@ -407,7 +393,7 @@ tasks.register("runShapesStack") {
     group = "application"
     description =
         "Runs the code shapes run and the Scala 2 and 3 fixture drivers under the agent against a real collector, " +
-        "then prints what the yukon-server read API reports for each."
+        "then prints what the otherlode-server read API reports for each."
     dependsOn(
         rootProject.tasks.named("shadowJar"),
         tasks.named("classes"),
@@ -418,9 +404,9 @@ tasks.register("runShapesStack") {
     doLast {
         val waitSeconds = (flushIntervalSeconds + 2).toString()
         runStackOneShot(
-            service = StackService("yukon-shapes", shapesStackServiceVersion, stackServiceNamespace),
-            includePackages = "io.github.lukedevops.demo.shapes",
-            programArgs = listOf("-cp", demoAppClasspath(), "io.github.lukedevops.demo.shapes.ShapesMainKt", waitSeconds),
+            service = StackService("otherlode-shapes", shapesStackServiceVersion, stackServiceNamespace),
+            includePackages = "com.example.demo.shapes",
+            programArgs = listOf("-cp", demoAppClasspath(), "com.example.demo.shapes.ShapesMainKt", waitSeconds),
         )
         for (module in listOf("fixtures-scala2", "fixtures-scala3")) {
             val fixtureClasspath =
@@ -436,22 +422,22 @@ tasks.register("runShapesStack") {
                     .get()
                     .asFile.absolutePath
             runStackOneShot(
-                service = StackService("yukon-$module", shapesStackServiceVersion, stackServiceNamespace),
+                service = StackService("otherlode-$module", shapesStackServiceVersion, stackServiceNamespace),
                 includePackages = "com.example.scalatarget",
                 programArgs =
                     listOf(
                         "-cp",
                         "$driverClasspath${File.pathSeparator}$fixtureClasspath",
-                        "io.github.lukedevops.demo.fixtures.ScalaDriverMain",
+                        "com.example.demo.fixtures.ScalaDriverMain",
                         waitSeconds,
                     ) + scalaDriverCalls,
             )
         }
-        println("yukon demo: done")
+        println("otherlode demo: done")
     }
 }
 
-fun stackServiceNamespaceEnv(): Map<String, String> = stackServiceNamespace?.let { mapOf("YUKON_SERVICE_NAMESPACE" to it) } ?: emptyMap()
+fun stackServiceNamespaceEnv(): Map<String, String> = stackServiceNamespace?.let { mapOf("OTHERLODE_SERVICE_NAMESPACE" to it) } ?: emptyMap()
 
 // A suffix that names the namespace for a printed line, or an empty string when there is none.
 fun stackNamespaceSuffix(): String = stackServiceNamespace?.let { " in namespace $it" } ?: ""
@@ -486,7 +472,7 @@ fun readApi(
 ): Map<*, *> {
     val result = httpGet("$stackServerUrl${service.path}$path", stackServerReadApiKey)
     if (result.status != 200) {
-        throw GradleException("yukon demo: GET $path returned ${result.status}: ${result.body}")
+        throw GradleException("otherlode demo: GET $path returned ${result.status}: ${result.body}")
     }
     return groovy.json.JsonSlurper().parseText(result.body) as Map<*, *>
 }
@@ -519,7 +505,7 @@ fun awaitShutdownFlush(
         Thread.sleep(250)
     }
     println(
-        "yukon demo: warning: the shutdown flush for instance $instanceId did not reach the server within 15s; the report may be missing its final hits",
+        "otherlode demo: warning: the shutdown flush for instance $instanceId did not reach the server within 15s; the report may be missing its final hits",
     )
 }
 
@@ -678,7 +664,7 @@ fun printStackReport(service: StackService) {
     val classes = report["classes"] as Map<*, *>
     val instances = report["instances"] as Map<*, *>
     println(
-        "yukon demo: report for ${service.name}@${service.version}${stackNamespaceSuffix()} from $stackServerUrl " +
+        "otherlode demo: report for ${service.name}@${service.version}${stackNamespaceSuffix()} from $stackServerUrl " +
             "(${instances["total"]} instance(s) so far)",
     )
     println(
@@ -794,7 +780,7 @@ class DemoProcess(
 // the compose stack's collector on 4319 and of the testkit's. Reading it rather than picking a
 // free port here and passing it in leaves no window between choosing the port and binding it for
 // something else to take it.
-val collectorPortPattern = Regex("""yukon stub collector listening on (\d+)""")
+val collectorPortPattern = Regex("""otherlode stub collector listening on (\d+)""")
 
 fun startStubCollector(
     tag: String,
@@ -813,7 +799,7 @@ fun startStubCollector(
             collector.captured.get(portWaitTimeoutSeconds, TimeUnit.SECONDS)
         } catch (e: Exception) {
             collector.process.destroy()
-            throw GradleException("yukon demo: the stub collector never reported a port ($e)")
+            throw GradleException("otherlode demo: the stub collector never reported a port ($e)")
         }
     return collector to port.toInt()
 }
@@ -848,7 +834,7 @@ fun startProcess(
             // The stream ends when the process does, so a process that died before printing what
             // was wanted fails its waiter here instead of leaving it to time out.
             captured.completeExceptionally(IOException("$tag exited without matching $capturePattern"))
-        }, "yukon-demo-$tag-output").apply {
+        }, "otherlode-demo-$tag-output").apply {
             isDaemon = true
             start()
         }
@@ -872,7 +858,7 @@ fun gracefulShutdown(
         connection.responseCode
         connection.disconnect()
     } catch (e: IOException) {
-        println("yukon demo: graceful shutdown request to $tag failed ($e), falling back to destroy")
+        println("otherlode demo: graceful shutdown request to $tag failed ($e), falling back to destroy")
     }
     if (!demoProcess.process.waitFor(15, TimeUnit.SECONDS)) {
         demoProcess.process.destroy()
@@ -894,7 +880,7 @@ fun waitForPort(
             Thread.sleep(200)
         }
     }
-    throw GradleException("yukon demo: timed out waiting for port $port")
+    throw GradleException("otherlode demo: timed out waiting for port $port")
 }
 
 // The stub collector's port is not here: the demo tasks let it bind an ephemeral one and read

@@ -12,4 +12,4 @@ Kotlin with the intrinsics suppressed by compiler flags. Rejected because the fa
 
 ## Consequences
 
-Advice classes stay tiny and live in their own package, `io.github.lukedevops.yukon.advice`. Everything else in the agent is Kotlin.
+Advice classes stay tiny and live in their own package, `dev.otherlode.advice`. Everything else in the agent is Kotlin.

@@ -4,7 +4,7 @@ status: accepted
 
 # The testkit's JUnit extension runs one collector per test JVM, on a fixed port, against a real `-javaagent`
 
-The JUnit 5 extension in `yukon-testkit` starts a single `YukonTestCollector` for the life of the test JVM, held in JUnit's root extension store, and binds it to a fixed port that defaults to 4319, the agent's own default `endpoint`. The adopter attaches the agent to the test task with the ordinary `-javaagent` flag; the extension never self-attaches. Before the first test runs it waits for the agent's first liveness heartbeat and fails with a message naming the flag and the flush interval option if none arrives.
+The JUnit 5 extension in `otherlode-testkit` starts a single `OtherlodeTestCollector` for the life of the test JVM, held in JUnit's root extension store, and binds it to a fixed port that defaults to 4319, the agent's own default `endpoint`. The adopter attaches the agent to the test task with the ordinary `-javaagent` flag; the extension never self-attaches. Before the first test runs it waits for the agent's first liveness heartbeat and fails with a message naming the flag and the flush interval option if none arrives.
 
 ## Considered options
 
