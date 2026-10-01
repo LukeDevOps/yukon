@@ -1193,9 +1193,12 @@ final flush. The demo's
 stub collector answers a test run's payloads and keeps nothing from them.
 The testkit ignores the flag.
 
-Left after the agent's part: the collector's bump to bindings that carry
-`test_run`, since its redaction strips a field it does not know, and the
-server's chunks.
+The collector carries and logs the flag (collector `3c2f22a`), and the
+server names the tests (server `3d5de82` and `426ec92`). Checked end to
+end on 2026-10-01: `runDemoStack` as the production run, then a Java test
+under the agent with `testRun=true`, through a collector redacting all
+literals. `Money#constructor(int, int)` read called only by tests, with
+both tests named, one of them through its lambda.
 
 ## Parked
 
