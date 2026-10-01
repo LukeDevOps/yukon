@@ -1181,6 +1181,57 @@ dispatch for the other modules.
 OpenAPI as a source of endpoints was set aside (ADR 0017). A contract-diff
 feature built on it is parked in `otherlode-server`'s STATUS.
 
+### Code that only tests call
+
+Explore, not designed. Raised by Luke on 2026-10-01. No part of the
+agent, the collector or the server can say that a method is called only
+by tests.
+
+What happens now: the production JVM holds no test classes, so a method
+that only tests call has no call edge in scope. It reads as never hit
+and as an uncalled root, the same as code nothing calls at all. The
+adopter's IDE shows the test usages, so the finding looks wrong to the
+person reading it. That costs trust in exactly the findings that are
+easiest to delete: the method goes, and so do the tests that call it.
+
+What the finding would add, on a never-hit method or cluster root:
+- "Called only by tests", with the test methods that call it. The root
+  kind would sit beside reached from hit and uncalled.
+- The same for a cluster whose only outside callers are tests, so the
+  deletion unit names the tests that go with it.
+- Possibly the reverse count: how much production code tests exercise
+  that production never runs.
+
+Two ways to get the data, not yet weighed:
+1. Static. Read call edges from the test classes at build time, with the
+   same caller and callee keys the agent sends (owner, name,
+   descriptor), and send them as a test baseline. The server then marks
+   a never-hit method whose only callers are test methods. Needs a
+   build step (a Gradle or Maven plugin, or a CLI run over the test
+   output) and a new payload, since the agent never sees test classes.
+2. Dynamic. Run the agent in the test JVM, as the testkit already does,
+   and report to an environment such as `test`. A method never hit in
+   production but hit in `test` runs only under tests. Cheaper, since
+   no new payload is needed, but server ADR 0027 keeps environments
+   apart and no read combines them, so this needs a new ADR. It also
+   says "runs under tests", not "called by tests": setup code and a
+   path a test reaches by accident count the same.
+
+Related: the parked "Deletion manifest over MCP" entry rejected a report
+of tests that guard only dead code, partly because IntelliJ's Safe
+Delete lists the tests that name a method. That argument does not cover
+this case. Safe Delete shows test usages, but it cannot say the
+production code never runs. Otherlode can, and the two facts together
+are what make the deletion safe to propose.
+
+Open before any of this is built:
+- Static or dynamic, or static first with dynamic later.
+- How a test class is told apart: by source set, by a separate include
+  rule, or by what the build step scans.
+- Whether test fixtures and shared test helpers count as tests.
+- Whether the testkit's query API, which publishing freezes, needs room
+  for this first.
+
 ## Parked
 
 ### Deletion manifest over MCP, and why the CI skip was rejected
