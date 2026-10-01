@@ -102,6 +102,9 @@ enum class KotlinKind {
  * [serviceNamespace] is the group the service belongs to, as OpenTelemetry's `service.namespace`.
  * Null means the unspecified namespace. It comes last, with a default, so that a caller that
  * passes the other values by position cannot shift them. See ADR 0045.
+ *
+ * [testRun] marks a run in a JVM that runs the adopter's tests. It also comes last, with a
+ * default, for the same reason. See ADR 0050.
  */
 data class ResourceAttributes(
     val serviceName: String,
@@ -110,6 +113,7 @@ data class ResourceAttributes(
     val environment: String?,
     val runId: String,
     val serviceNamespace: String? = null,
+    val testRun: Boolean = false,
 ) {
     companion object {
         /** [config]'s identity with a new random [runId]. The agent calls this once per process. */
@@ -121,6 +125,7 @@ data class ResourceAttributes(
                 environment = config.environment,
                 runId = UUID.randomUUID().toString(),
                 serviceNamespace = config.serviceNamespace,
+                testRun = config.testRun,
             )
     }
 }

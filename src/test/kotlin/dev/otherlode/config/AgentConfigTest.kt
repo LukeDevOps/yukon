@@ -27,6 +27,7 @@ class AgentConfigTest {
         assertEquals(true, config.enabled)
         assertEquals(true, config.endpointsEnabled)
         assertEquals(false, config.otelBridgeEnabled)
+        assertEquals(false, config.testRun)
         assertEquals(null, config.authToken)
     }
 
@@ -97,6 +98,37 @@ class AgentConfigTest {
 
         val fromEnv = AgentConfig.parse(null, env = mapOf("OTHERLODE_OTEL_BRIDGE_ENABLED" to "true")::get)
         assertEquals(true, fromEnv.otelBridgeEnabled)
+    }
+
+    @Test
+    fun `testRun defaults to false and can be opted into`() {
+        assertEquals(false, parseQuietly("serviceName=checkout").testRun)
+        assertEquals(true, parseQuietly("testRun=true").testRun)
+        assertEquals(true, parseQuietly("testRun=TRUE").testRun)
+        assertEquals(false, parseQuietly("testRun=maybe").testRun)
+    }
+
+    @Test
+    fun `testRun resolves from a system property and an environment variable`() {
+        val fromProperty = AgentConfig.parse(null, env = { null }, systemProperties = mapOf("otherlode.test.run" to "true")::get)
+        assertEquals(true, fromProperty.testRun)
+
+        val fromEnv = AgentConfig.parse(null, env = mapOf("OTHERLODE_TEST_RUN" to "true")::get, systemProperties = { null })
+        assertEquals(true, fromEnv.testRun)
+    }
+
+    @Test
+    fun `a test run that no source names an environment for reports to test`() {
+        assertEquals("test", parseQuietly("testRun=true").environment)
+        assertEquals(null, parseQuietly("testRun=false").environment)
+    }
+
+    @Test
+    fun `a test run keeps an environment that any source names`() {
+        assertEquals("ci", parseQuietly("testRun=true,environment=ci").environment)
+
+        val fromOtel = parseQuietly("testRun=true", env = mapOf("OTEL_RESOURCE_ATTRIBUTES" to "deployment.environment.name=ci")::get)
+        assertEquals("ci", fromOtel.environment)
     }
 
     @Test

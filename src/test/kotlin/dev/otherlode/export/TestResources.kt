@@ -19,5 +19,6 @@ object TestResources {
             environment = config.environment,
             runId = RUN_ID,
             serviceNamespace = config.serviceNamespace,
+            testRun = config.testRun,
         )
 }

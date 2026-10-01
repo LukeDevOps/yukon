@@ -125,6 +125,10 @@ _Avoid_: session, boot, incarnation
 A random ID the agent makes once per process at startup and stamps on every payload that process sends. A new process always gets a new one, even under a pinned instance ID, so a collector can keep each run's data apart.
 _Avoid_: process ID (the operating system's PID), boot ID
 
+**Test run**:
+A run whose agent was started with the test-run flag, in a JVM that runs the adopter's tests. A collector keeps it out of every finding about production and reads only its call edges, to name the tests that call production code.
+_Avoid_: test environment (an environment is a deployment, and a test run is told apart by its flag), test JVM, test instance
+
 **Collector**:
 Whatever receives the payloads and merges them across instances. `otherlode-collector` is the production one; the demo's stub and the testkit's `OtherlodeTestCollector` play the role in this repo.
 _Avoid_: backend, server, ingest
@@ -241,7 +245,7 @@ A root plus every never-hit method reachable from it through call edges whose ev
 _Avoid_: dead cluster, dead code (a collector's verdict, not an observation)
 
 **Root**:
-The never-hit code that starts an unreached cluster. A method root is *reached from hit* when one of its callers has hits, and names those callers; it is *uncalled* when nothing in scope calls it. An *untaken outcome* root is a never-hit outcome in a method that ran, with at least one method behind it. See ADR 0039. A *class finding* root is a class that holds a class finding, with no caller or a caller that has hits. Its cluster is listed only when it holds a method or class besides the methods the finding folds. A `<clinit>` is never a root, and neither is a never-run constructor of a class nothing constructed that holds no class finding, such as a utility class's private constructor; the cluster reaches through it but never lists it. See otherlode-server ADR 0034.
+The never-hit code that starts an unreached cluster. A method root is *reached from hit* when one of its callers has hits, and names those callers; it is *uncalled* when nothing in scope calls it, and *called only by tests* when nothing in scope calls it, a test caller does, and a complete static baseline of production rules out a caller in a class that never loaded. An *untaken outcome* root is a never-hit outcome in a method that ran, with at least one method behind it. See ADR 0039. A *class finding* root is a class that holds a class finding, with no caller or a caller that has hits. Its cluster is listed only when it holds a method or class besides the methods the finding folds. A `<clinit>` is never a root, and neither is a never-run constructor of a class nothing constructed that holds no class finding, such as a utility class's private constructor; the cluster reaches through it but never lists it. See otherlode-server ADR 0034.
 _Avoid_: entry point (a root may be deep inside the code), node
 
 ### Dependencies

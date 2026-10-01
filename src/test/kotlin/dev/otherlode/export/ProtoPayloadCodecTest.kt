@@ -97,6 +97,21 @@ class ProtoPayloadCodecTest {
     }
 
     @Test
+    fun `the test-run flag round-trips on every payload and is false by default`() {
+        val testRun = ResourceAttributes("checkout", null, "i-1", "test", "run-1", testRun = true)
+        val production = ResourceAttributes("checkout", null, "i-1", null, "run-1")
+
+        assertTrue(ProtoDeltaBatch.parseFrom(ProtoPayloadCodec.encode(DeltaBatch(testRun, emptyList()))).resource.testRun)
+        assertFalse(ProtoDeltaBatch.parseFrom(ProtoPayloadCodec.encode(DeltaBatch(production, emptyList()))).resource.testRun)
+        assertEquals(testRun, ProtoPayloadCodec.decodeDeltaBatch(ProtoPayloadCodec.encode(DeltaBatch(testRun, emptyList()))).resource)
+        assertTrue(ProtoProbeManifest.parseFrom(ProtoPayloadCodec.encode(ProbeManifest(testRun, emptyList()))).resource.testRun)
+        assertEquals(testRun, ProtoPayloadCodec.decodeProbeManifest(ProtoPayloadCodec.encode(ProbeManifest(testRun, emptyList()))).resource)
+        val baseline = StaticBaseline(resource = testRun, declaredClasses = emptyList(), scannedAt = 1000L)
+        assertTrue(ProtoStaticBaseline.parseFrom(ProtoPayloadCodec.encode(baseline)).resource.testRun)
+        assertEquals(testRun, ProtoPayloadCodec.decodeStaticBaseline(ProtoPayloadCodec.encode(baseline)).resource)
+    }
+
+    @Test
     fun `a probe manifest carries the service namespace`() {
         val manifest = ProbeManifest(ResourceAttributes("checkout", null, "i-1", null, "run-1", serviceNamespace = "shop"), emptyList())
 

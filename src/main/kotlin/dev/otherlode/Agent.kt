@@ -41,6 +41,7 @@ import java.time.Duration
 /** `-javaagent:otherlode-agent.jar` entry point. */
 object Agent {
     private val SHUTDOWN_FLUSH_TIMEOUT: Duration = Duration.ofSeconds(10)
+    private val TEST_RUN_SCAN_WAIT: Duration = Duration.ofSeconds(15)
     private const val OTEL_BRIDGE_MODULE_NAME = "otel"
     private val log = System.getLogger(Agent::class.java.name)
 
@@ -208,12 +209,18 @@ object Agent {
 
         startDependencyListing(config, dependencyRegistry)
 
-        if (config.staticBaselineEnabled) {
-            val referenceFilter = BaselineReferenceFilter(dependencyRegistry, externalClassRegistry)
-            startStaticBaselineScan(config, resource, exporter, registry, staticBaselineMismatchDetector, referenceFilter)
-        }
+        val scanWorker =
+            if (config.staticBaselineEnabled) {
+                val referenceFilter = BaselineReferenceFilter(dependencyRegistry, externalClassRegistry)
+                startStaticBaselineScan(config, resource, exporter, registry, staticBaselineMismatchDetector, referenceFilter)
+            } else {
+                null
+            }
 
-        val shutdownHook = Thread({ scheduler.flushOnShutdown(SHUTDOWN_FLUSH_TIMEOUT) }, "otherlode-shutdown-hook")
+        val shutdownHook =
+            Thread({
+                shutdown(config.testRun, scanWorker, TEST_RUN_SCAN_WAIT) { scheduler.flushOnShutdown(SHUTDOWN_FLUSH_TIMEOUT) }
+            }, "otherlode-shutdown-hook")
         Runtime.getRuntime().addShutdownHook(shutdownHook)
         return Running(
             scheduler,
@@ -265,13 +272,36 @@ object Agent {
         registry: ProbeRegistry,
         mismatchDetector: StaticBaselineMismatchDetector,
         referenceFilter: BaselineReferenceFilter,
-    ) {
+    ): Thread {
         val scanner = StaticBaselineScanner(config.instrumentedPackagePrefixes, config.excludedPackagePrefixes)
         val publisher =
             StaticBaselinePublisher(scanner::scan, exporter, registry, mismatchDetector, filterReferences = referenceFilter::filter)
         val worker = Thread({ publisher.run(resource) }, "otherlode-static-baseline-scan")
         worker.isDaemon = true
         worker.start()
+        return worker
+    }
+
+    /**
+     * What the shutdown hook does: [flush], then, for a test run, wait up to [scanWait] for the
+     * static baseline scan on [scanWorker] to end. A test JVM often exits before the scan ends, and
+     * the scan is where a collector reads the edges of test classes that never loaded. The flush
+     * goes first, so a JVM halted during the wait still sends the final manifest. The scan sends
+     * through the exporter, not the scheduler's pool, so it still works after the flush. See
+     * ADR 0050.
+     */
+    internal fun shutdown(
+        testRun: Boolean,
+        scanWorker: Thread?,
+        scanWait: Duration,
+        flush: () -> Unit,
+    ) {
+        flush()
+        if (!testRun || scanWorker == null) return
+        scanWorker.join(scanWait.toMillis())
+        if (scanWorker.isAlive) {
+            log.log(Level.WARNING, "otherlode: the static baseline scan did not end within ${scanWait.seconds}s of shutdown, so this test run may send no complete scan")
+        }
     }
 
     /**

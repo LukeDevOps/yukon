@@ -497,6 +497,7 @@ private fun handleShutdown(exchange: HttpExchange) {
 private fun handleDeltaBatch(exchange: HttpExchange) {
     val batch = DeltaBatch.parseFrom(exchange.requestBody.readBytes())
     val run = runOf(batch.resource) ?: return respondBadRequest(exchange, "delta batch")
+    if (batch.resource.testRun) return ignoreTestRun(exchange, "delta batch", batch.resource)
     allRuns += run
     for (delta in batch.deltasList) {
         val key = InstanceProbeKey(run, delta.classId, delta.probeIndex)
@@ -527,6 +528,7 @@ private fun handleDeltaBatch(exchange: HttpExchange) {
 private fun handleManifest(exchange: HttpExchange) {
     val manifest = ProbeManifest.parseFrom(exchange.requestBody.readBytes())
     val run = runOf(manifest.resource) ?: return respondBadRequest(exchange, "manifest")
+    if (manifest.resource.testRun) return ignoreTestRun(exchange, "manifest", manifest.resource)
     for (location in manifest.probesList) {
         manifestProbes[InstanceProbeKey(run, location.classId, location.probeIndex)] =
             ProbeInfo(
@@ -631,6 +633,7 @@ private fun handleManifest(exchange: HttpExchange) {
 private fun handleStaticBaseline(exchange: HttpExchange) {
     val baseline = StaticBaseline.parseFrom(exchange.requestBody.readBytes())
     val run = runOf(baseline.resource) ?: return respondBadRequest(exchange, "static baseline")
+    if (baseline.resource.testRun) return ignoreTestRun(exchange, "static baseline", baseline.resource)
     for (declaredClass in baseline.declaredClassesList) {
         staticallyDeclaredClasses[declaredClass.className] =
             declaredClass.methodsList.map {
@@ -702,6 +705,19 @@ private fun respondOk(exchange: HttpExchange) {
 /** A ` namespace=` field for a log line when [resource] names a namespace, else nothing. See ADR 0045. */
 private fun namespaceField(resource: ResourceAttributes): String =
     if (resource.hasServiceNamespace() && resource.serviceNamespace.isNotBlank()) " namespace=${resource.serviceNamespace}" else ""
+
+/**
+ * Answers 200 to a [payload] from a test run, logs it, and keeps nothing from it. The stub does not
+ * name the tests that call production code, so a test run has nothing to add. See ADR 0050.
+ */
+private fun ignoreTestRun(
+    exchange: HttpExchange,
+    payload: String,
+    resource: ResourceAttributes,
+) {
+    println("[test-run] ignored $payload: service=${resource.serviceName}${namespaceField(resource)} instance=${resource.serviceInstanceId}")
+    respondOk(exchange)
+}
 
 /** Answers 400 to a [payload] whose resource has no run id, and keeps nothing from it. See ADR 0032. */
 private fun respondBadRequest(
@@ -1346,7 +1362,7 @@ private fun printEndpointReport() {
  * The diff only runs once every chunk of every scan has arrived. A partial scan can say
  * "declared" for the classes it carries, but never "never loaded" for the ones it is missing.
  */
-private fun printNeverLoadedReport() {
+internal fun printNeverLoadedReport() {
     println()
     println("=== otherlode demo: never-loaded report (static baseline) ===")
     val incomplete = scans.filterValues { !it.complete }

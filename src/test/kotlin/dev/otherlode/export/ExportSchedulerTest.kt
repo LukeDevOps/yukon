@@ -32,6 +32,7 @@ import kotlin.random.Random
 import kotlin.system.measureTimeMillis
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
@@ -408,6 +409,15 @@ class ExportSchedulerTest {
         assertEquals(first.serviceInstanceId, second.serviceInstanceId)
         assertTrue(first.runId.isNotEmpty() && second.runId.isNotEmpty())
         assertNotEquals(first.runId, second.runId, "two runs must never share a run id")
+    }
+
+    @Test
+    fun `a new run carries the test-run flag and the test environment from its config`() {
+        val testRun = ResourceAttributes.forNewRun(AgentConfig.parse("testRun=true", env = { null }, systemProperties = { null }, detectServiceName = { null }))
+
+        assertTrue(testRun.testRun)
+        assertEquals("test", testRun.environment)
+        assertFalse(ResourceAttributes.forNewRun(config).testRun)
     }
 
     @Test

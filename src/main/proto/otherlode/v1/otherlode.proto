@@ -78,6 +78,12 @@ message ResourceAttributes {
   // its namespace and its name together. Absent or blank means the unspecified namespace, which
   // never matches a named one. The agent never works one out for itself. See ADR 0045.
   optional string service_namespace = 6;
+  // True when the agent was started with testRun, which the adopter sets in the JVM that runs their
+  // tests. Every payload of the run carries the same value. A consumer keeps a test run out of every
+  // finding about production and uses its call edges to name the tests that call production code.
+  // When no source names an environment, the agent sets it to "test" for a test run, so a consumer
+  // that drops this field still keeps the run apart from production. See ADR 0050.
+  bool test_run = 7;
 }
 
 // hits_total is a cumulative count from process start, not the count since

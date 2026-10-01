@@ -1183,9 +1183,19 @@ feature built on it is parked in `otherlode-server`'s STATUS.
 
 ### Code that only tests call
 
-Tracked in `otherlode-server`'s STATUS. Agent work, such as a build step
-that reads call edges from test classes, gets its own entry here once
-an approach is chosen.
+Designed on 2026-10-01 in a grilling session with Luke: ADR 0050 here,
+server ADR 0047. The server's STATUS tracks the finding and its chunks.
+The agent's part is the `testRun` option, which puts `test_run` on every
+payload's `ResourceAttributes` and names the environment `test` when no
+source names one, plus the README section on running the agent in a test
+JVM. A test run's shutdown waits up to 15 seconds for its scan, after the
+final flush. The demo's
+stub collector answers a test run's payloads and keeps nothing from them.
+The testkit ignores the flag.
+
+Left after the agent's part: the collector's bump to bindings that carry
+`test_run`, since its redaction strips a field it does not know, and the
+server's chunks.
 
 ## Parked
 

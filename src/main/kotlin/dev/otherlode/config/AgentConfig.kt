@@ -30,7 +30,8 @@ data class AgentConfig(
     val serviceInstanceId: String,
     /**
      * The deployment environment. When no Otherlode source sets it, it comes from OpenTelemetry's
-     * `deployment.environment.name` or older `deployment.environment` resource attribute.
+     * `deployment.environment.name` or older `deployment.environment` resource attribute. When no
+     * source names one and [testRun] is on, it is [TEST_RUN_ENVIRONMENT].
      */
     val environment: String?,
     /** Base URL of the collector. The exporter appends `/v1/otherlode/{deltas,manifest,static-baseline}`. */
@@ -80,10 +81,22 @@ data class AgentConfig(
      * See ADR 0019.
      */
     val otelBridgeEnabled: Boolean,
+    /**
+     * Off by default. Marks every payload of this run as a test run, for an agent in a JVM that
+     * runs the adopter's tests. A collector then uses the run's call edges only to name the tests
+     * that call production code. See ADR 0050.
+     */
+    val testRun: Boolean,
 ) {
     companion object {
         /** OpenTelemetry's name for a Java service that names none. */
         const val DEFAULT_SERVICE_NAME = "unknown_service:java"
+
+        /**
+         * The environment a test run reports to when no source names one. A collector that drops
+         * the test-run flag still keeps the run apart from production. See ADR 0050.
+         */
+        const val TEST_RUN_ENVIRONMENT = "test"
 
         private const val DEFAULT_ENDPOINT = "http://localhost:4319"
         private val DEFAULT_FLUSH_INTERVAL: Duration = Duration.ofSeconds(60)
@@ -105,6 +118,7 @@ data class AgentConfig(
                 "enabled",
                 "endpointsEnabled",
                 "otelBridgeEnabled",
+                "testRun",
             )
 
         /**
@@ -126,6 +140,7 @@ data class AgentConfig(
          * 2. For the name only, [detectServiceName], which runs only when every source above is
          *    empty.
          * 3. For the name only, [DEFAULT_SERVICE_NAME].
+         * 4. For the environment only, [TEST_RUN_ENVIRONMENT] when [testRun] is on (ADR 0050).
          *
          * [OtelResourceSettings] lists the resource-attribute keys each value reads.
          */
@@ -151,6 +166,7 @@ data class AgentConfig(
             if (authToken != null && endpoint.startsWith("http://")) {
                 log.log(Level.WARNING, "otherlode: endpoint uses plain http, so the auth token is sent unencrypted")
             }
+            val testRun = parseBoolean("testRun", resolve("testRun"), default = false)
             return AgentConfig(
                 serviceName =
                     resolveIdentity("serviceName", options, systemProperties, env)
@@ -160,7 +176,7 @@ data class AgentConfig(
                 serviceNamespace = resolveIdentity("serviceNamespace", options, systemProperties, env) ?: otel.serviceNamespace,
                 serviceVersion = resolve("serviceVersion"),
                 serviceInstanceId = resolve("serviceInstanceId") ?: UUID.randomUUID().toString(),
-                environment = resolve("environment") ?: otel.environment,
+                environment = resolve("environment") ?: otel.environment ?: TEST_RUN_ENVIRONMENT.takeIf { testRun },
                 collectorEndpoint = endpoint,
                 authToken = authToken,
                 flushInterval = parseFlushInterval(resolve("flushIntervalSeconds")),
@@ -170,6 +186,7 @@ data class AgentConfig(
                 enabled = parseBoolean("enabled", resolve("enabled"), default = true),
                 endpointsEnabled = parseBoolean("endpointsEnabled", resolve("endpointsEnabled"), default = true),
                 otelBridgeEnabled = parseBoolean("otelBridgeEnabled", resolve("otelBridgeEnabled"), default = false),
+                testRun = testRun,
             )
         }
 

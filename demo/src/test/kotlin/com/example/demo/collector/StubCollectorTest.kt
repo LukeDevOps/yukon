@@ -5,6 +5,8 @@ import dev.otherlode.proto.BranchOutcome
 import dev.otherlode.proto.BranchRole
 import dev.otherlode.proto.BranchSite
 import dev.otherlode.proto.ClassLocation
+import dev.otherlode.proto.DeclaredClass
+import dev.otherlode.proto.DeclaredMethod
 import dev.otherlode.proto.DeltaBatch
 import dev.otherlode.proto.KotlinKind
 import dev.otherlode.proto.ProbeDelta
@@ -76,6 +78,36 @@ class StubCollectorTest {
     }
 
     @Test
+    fun `a test run's payloads are answered 200 and left out of the reports`() {
+        val testRun = resource("run-test").toBuilder().setTestRun(true).build()
+        val probe =
+            ProbeLocation
+                .newBuilder()
+                .setClassId(0)
+                .setKind(ProbeKind.METHOD)
+                .setClassName("com.acme.testrun.OnlyInTests")
+                .setMethodName("check")
+                .setMethodDescriptor("()V")
+        val declared =
+            DeclaredClass
+                .newBuilder()
+                .setClassName("com.acme.testrun.NeverLoadedFixture")
+                .addMethods(DeclaredMethod.newBuilder().setMethodName("help").setMethodDescriptor("()V"))
+        val finalFlushLine = { neverHitReport().single { it.startsWith("runs that sent a final flush:") } }
+        val before = finalFlushLine()
+
+        assertEquals(200, post("manifest", ProbeManifest.newBuilder().setResource(testRun).addProbes(probe).build()))
+        assertEquals(200, post("deltas", DeltaBatch.newBuilder().setResource(testRun).setFinalFlush(true).build()))
+        val firstOfTwoChunks = StaticBaseline.newBuilder().setChunkCount(2).setScannedAt(1L).addDeclaredClasses(declared)
+        assertEquals(200, post("static-baseline", firstOfTwoChunks.setResource(testRun).build()))
+
+        assertTrue(neverHitReport().none { it.contains("OnlyInTests") })
+        assertEquals(before, finalFlushLine())
+        val neverLoaded = report(::printNeverLoadedReport)
+        assertTrue(neverLoaded.none { it.contains("NeverLoadedFixture") || it.contains("INCOMPLETE SCAN") }, neverLoaded.joinToString("\n"))
+    }
+
+    @Test
     fun `a file facade and a multi-file part print as their source file, and a multi-file facade carries a tag`() {
         fun probe(
             classId: Int,
@@ -126,12 +158,15 @@ class StubCollectorTest {
     }
 
     /** What [printNeverHitReport] prints, captured from standard output. */
-    private fun neverHitReport(): List<String> {
+    private fun neverHitReport(): List<String> = report(::printNeverHitReport)
+
+    /** What [print] prints, captured from standard output. */
+    private fun report(print: () -> Unit): List<String> {
         val captured = ByteArrayOutputStream()
         val original = System.out
         System.setOut(PrintStream(captured, true))
         try {
-            printNeverHitReport()
+            print()
         } finally {
             System.setOut(original)
         }

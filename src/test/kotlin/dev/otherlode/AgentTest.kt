@@ -25,6 +25,7 @@ import java.nio.file.Path
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -35,6 +36,46 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class AgentTest {
+    @Test
+    fun `a test run's shutdown flushes, then waits for a scan that ends`() {
+        val events = mutableListOf<String>()
+        val flushed = CountDownLatch(1)
+        val scan =
+            Thread {
+                flushed.await()
+                synchronized(events) { events += "scan ended" }
+            }.apply { start() }
+
+        Agent.shutdown(testRun = true, scanWorker = scan, scanWait = Duration.ofSeconds(10)) {
+            synchronized(events) { events += "flushed" }
+            flushed.countDown()
+        }
+
+        assertEquals(listOf("flushed", "scan ended"), synchronized(events) { events.toList() })
+    }
+
+    @Test
+    fun `a test run's shutdown gives up on a scan that does not end, and a production run never waits`() {
+        val stuck = CompletableFuture<Unit>()
+        val blocked = Thread { stuck.join() }.apply { isDaemon = true; start() }
+        var flushes = 0
+        try {
+            val started = System.nanoTime()
+            Agent.shutdown(testRun = true, scanWorker = blocked, scanWait = Duration.ofMillis(100)) { flushes++ }
+            assertTrue(Duration.ofNanos(System.nanoTime() - started) < Duration.ofSeconds(5))
+
+            val production = System.nanoTime()
+            Agent.shutdown(testRun = false, scanWorker = blocked, scanWait = Duration.ofSeconds(30)) { flushes++ }
+            assertTrue(Duration.ofNanos(System.nanoTime() - production) < Duration.ofSeconds(5))
+
+            Agent.shutdown(testRun = true, scanWorker = null, scanWait = Duration.ofSeconds(30)) { flushes++ }
+            assertEquals(3, flushes)
+            assertTrue(blocked.isAlive)
+        } finally {
+            stuck.complete(Unit)
+        }
+    }
+
     /**
      * Compares the thread names present before and after a call, rather than asserting an
      * absolute count. The test JVM can already be carrying `otherlode-*` threads left by other test

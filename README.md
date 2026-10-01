@@ -62,7 +62,7 @@ described below):
 | `serviceNamespace` | *(none)* | The group the service belongs to, as OpenTelemetry's `service.namespace`. A service is known by its namespace and its name together. Falls back to OpenTelemetry's settings. With none, the service is in the unspecified namespace. A name or namespace of `.` or `..` is ignored with a warning, since no URL can name it. |
 | `serviceVersion` | *(none)* | Reported to the collector. |
 | `serviceInstanceId` | random UUID | Reported to the collector. |
-| `environment` | *(none)* | Reported to the collector. Falls back to OpenTelemetry's `deployment.environment.name`, then `deployment.environment`. |
+| `environment` | *(none)*, `test` for a test run | Reported to the collector. Falls back to OpenTelemetry's `deployment.environment.name`, then `deployment.environment`, then `test` when `testRun` is on. |
 | `endpoint` | `http://localhost:4319` | Collector base URL. |
 | `authToken` | *(none)* | Bearer token sent to the collector as `Authorization: Bearer <token>`. Prefer setting it through `OTHERLODE_AUTH_TOKEN` rather than this option: agent arguments are visible to every user on the host via `ps`, and an environment variable is not. |
 | `flushIntervalSeconds` | `60` | How often deltas/manifest updates are sent. |
@@ -72,6 +72,7 @@ described below):
 | `enabled` | `true` | Set to `false` to turn the agent off entirely: nothing is instrumented and nothing is exported. Meant to be set from `OTHERLODE_ENABLED` so a deployment can disable the agent without rebuilding the image that bakes in `-javaagent`. |
 | `endpointsEnabled` | `true` | Set to `false` to switch off every framework endpoint module (Spring MVC, Ktor, JAX-RS, the JDK's `HttpServer`) at once. There are no per-framework flags. |
 | `otelBridgeEnabled` | `false` | Also count the route OpenTelemetry's own HTTP server instrumentation resolved, for a framework no endpoint module covers. Off by default because it hooks OpenTelemetry internals rather than a framework's public registration API. |
+| `testRun` | `false` | Mark this run as a test run, for an agent in the JVM that runs your tests. A collector then leaves the run out of every finding about production and uses its call edges to name the tests that call production code. With no environment set, a test run reports to `test`. See "Name the tests that call your code" below. |
 
 ## Where an option's value comes from
 
@@ -111,6 +112,7 @@ that is not blank, and each value is trimmed:
    the class path, then `bootstrap.*` on the class path), then the main
    jar's `Implementation-Title`, then the main jar's file name.
 4. For the name only, OpenTelemetry's default `unknown_service:java`.
+5. For the environment only, `test` when `testRun` is on.
 
 The resource-attribute keys are `service.name`, `service.namespace`, and
 `deployment.environment.name`, then the older `deployment.environment`.
@@ -365,6 +367,57 @@ and "no idea" from ever looking the same.
 The module isn't published yet. Use it from a multi-project build as
 `testImplementation(project(":testkit"))`, or build the jar with
 `./gradlew :testkit:jar`.
+
+## Name the tests that call your code
+
+Production holds no test classes, so a method that only your tests call
+reads as uncalled, the same as a method that nothing calls. To have the
+collector name those tests, run the agent in your test JVM too, against the
+same collector, with `testRun=true` (ADR 0050):
+
+```kotlin
+// build.gradle.kts
+tasks.test {
+    jvmArgs(
+        "-javaagent:/path/to/otherlode-agent.jar=serviceName=my-service,testRun=true," +
+            "staticBaselineEnabled=true,serviceInstanceId=my-service-unit-tests," +
+            "includePackages=com.acme.myservice,endpoint=http://localhost:4319",
+    )
+}
+```
+
+- `serviceName` and `serviceNamespace` must match production's, or the
+  test run belongs to another service.
+- `includePackages` must cover your test classes as well as the production
+  code. They usually share packages, so production's value works.
+- `staticBaselineEnabled=true` sends call edges from every test class on
+  the classpath, not only from the tests that ran.
+- Pin `serviceInstanceId` once per test task. The collector reads each
+  test instance's newest complete scan and its newest run's manifest, so a
+  pinned id gives one current picture per task. A random id makes every
+  test JVM its own instance, and its edges stay until the run is pruned.
+  With `maxParallelForks` above 1, the forks of one task share the id, so
+  the newest fork's manifest hides the others'. The scan covers every test
+  class whichever fork sends it.
+- A test run waits up to 15 seconds at shutdown for its scan to end, after
+  its final flush. A test JVM often exits before the scan ends. So a test
+  task can take that much longer to finish, more when the collector is slow
+  or unreachable. A collector with an environment of its own counts each
+  test-run payload as an environment mismatch.
+- Leave the environment unset in the test JVM, including
+  `OTEL_RESOURCE_ATTRIBUTES` and `OTHERLODE_ENVIRONMENT` that CI may pass
+  down. The `test` default is what keeps a test run apart from production
+  if a collector drops the flag.
+- Set `staticBaselineEnabled=true` in production too. Without a complete
+  production scan, the collector cannot rule out a caller in a production
+  class that never loaded. It then names the tests but does not call the
+  method "called only by tests".
+
+A collector built before `test_run` existed drops the flag when its
+redaction is on. The run then reaches the backend as an ordinary run in the
+`test` environment, apart from production's. If that collector also stamps
+its environment with `upsert`, the test run lands in production's
+environment. So update the collector before you turn `testRun` on.
 
 ## Design notes
 
