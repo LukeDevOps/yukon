@@ -314,6 +314,21 @@ Recorded, not built:
   and the `lookupswitch`, so its null check, hash switch and every `equals`
   check stay plain sites.
 
+  Being grilled on 2026-10-03, and the order goes wrong both ways. JaCoCo
+  ahead of this agent is the case above: our marks and keys are read from
+  JaCoCo's output. This agent ahead of JaCoCo breaks JaCoCo instead: it
+  identifies a class by a CRC64 of the bytes it receives
+  (`Instrumenter.java:75`, 0.8.13) and its report hashes the class file
+  (`Analyzer.java:106`), so every class we weave reads "Execution data for
+  class X does not match" with zero coverage. That second order is Gradle's
+  default for an adopter: `Test.jvmArgs("-javaagent:...")` is copied ahead of
+  the `jacoco` plugin's argument provider (`DefaultJavaForkOptions.copyTo`,
+  8.14), so following the testkit's setup breaks the adopter's coverage
+  report. Our own suite only shows the first order because its tests
+  self-attach after JaCoCo's `premain`. The fix and the standing check must
+  cover both orders, and the JAX-RS module counts too, since it weaves the
+  adopter's resource classes.
+
   To reproduce, apply JaCoCo 0.8.13 from a Gradle init script outside the
   repo (`allprojects { plugins.withId("java") { apply(plugin = "jacoco") } }`)
   and run `./gradlew --init-script <file> build --continue`. The 64 failures

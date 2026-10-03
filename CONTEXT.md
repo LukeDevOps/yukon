@@ -84,6 +84,18 @@ _Avoid_: failed class, excluded class (excluded means outside `includePackages`)
 A class the agent wove whose definition it has not yet seen evidence of. Its probes are held out of the manifest until a count goes above zero or the JVM reports it loaded. One that never confirms is withheld for good and named in a log, so a class that failed to define is never reported as dead code.
 _Avoid_: withheld class, undefined class, failed class (a skipped class is the one that failed)
 
+**Class file**:
+A class's bytes as the compiler wrote them, read through the class's own loader. Everything the agent reads from a body's shape comes from it, so an instance with another agent ahead of this one reports the same marks, conditions and keys as one without.
+_Avoid_: on-disk bytes (it may be a jar entry), original bytes, captured bytes
+
+**Received bytes**:
+A class's bytes as they reach this agent's transformer, after every earlier transformer. The probes are woven into these, since another agent's changes must survive.
+_Avoid_: captured bytes, transformed bytes
+
+**Earlier transformer**:
+Another agent's transformer that the JVM calls before this one on the same class, such as JaCoCo's or AspectJ's weaver.
+_Avoid_: foreign agent, other instrumentation
+
 ### Export
 
 **Flush**:
