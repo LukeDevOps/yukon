@@ -556,4 +556,35 @@ class DependencyRegistryTest {
         registry.deliverAll()
         assertFalse(registry.hasSendableUndelivered())
     }
+
+    @Test
+    fun `a location under the home folder is stored with the home folder as a tilde`() {
+        val registry = DependencyRegistry(homeDirectory = "/Users/alice")
+        registry.add(DependencyIdentity("g", "a", "1"), location = "/Users/alice/.m2/repository/g/a/1/a-1.jar")
+        registry.add(DependencyIdentity("g", "b", "1"), location = "/Users/alice/app.jar!/BOOT-INF/lib/b-1.jar")
+        registry.add(DependencyIdentity("g", "c", "1"), location = "/opt/app/lib/c-1.jar")
+
+        assertEquals(
+            listOf("~/.m2/repository/g/a/1/a-1.jar", "~/app.jar!/BOOT-INF/lib/b-1.jar", "/opt/app/lib/c-1.jar"),
+            registry.entries().map { it.location },
+        )
+    }
+
+    @Test
+    fun `only a whole leading home folder becomes a tilde`() {
+        assertEquals("~/x.jar", withHomeAsTilde("/home/al/x.jar", "/home/al/"))
+        assertEquals("/home/alice/x.jar", withHomeAsTilde("/home/alice/x.jar", "/home/al"))
+        assertEquals("/srv/home/al/x.jar", withHomeAsTilde("/srv/home/al/x.jar", "/home/al"))
+        assertEquals("BOOT-INF/lib/x.jar", withHomeAsTilde("BOOT-INF/lib/x.jar", "/home/al"))
+        assertEquals("/x.jar", withHomeAsTilde("/x.jar", "/"))
+        assertEquals("/x.jar", withHomeAsTilde("/x.jar", ""))
+        assertEquals("/x.jar", withHomeAsTilde("/x.jar", null))
+    }
+
+    @Test
+    fun `a Windows home folder matches ignoring case when the platform does`() {
+        val location = """C:\Users\Alice\.m2\repository\x.jar"""
+        assertEquals("""~\.m2\repository\x.jar""", withHomeAsTilde(location, """c:\users\alice""", ignoreCase = true))
+        assertEquals(location, withHomeAsTilde(location, """c:\users\alice""", ignoreCase = false))
+    }
 }

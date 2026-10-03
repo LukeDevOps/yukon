@@ -5,6 +5,7 @@ import dev.otherlode.export.DependencyDiscoverySource
 import dev.otherlode.export.DependencyIdentity
 import dev.otherlode.export.DependencyIdentitySource
 import dev.otherlode.export.DependencyLocation
+import java.io.File
 import java.nio.file.Path
 import java.time.Duration
 import java.util.concurrent.ConcurrentHashMap
@@ -63,11 +64,16 @@ sealed interface DependencyOrigin {
  * calls [markCountsDelivered] with it. [computeManifestEntries] offers only records whose
  * generation has been delivered this way ([isSendable]).
  *
+ * A record's location is for display, and a jar under the user's home folder, such as one in
+ * `~/.m2`, would put the user's name on the wire. So [register] stores it with the home folder
+ * written as `~` ([withHomeAsTilde]), and [homeDirectory] is `user.home` unless a test sets it.
+ *
  * Safe to use from several threads: the listing thread registers, the sweep records loads and
  * registers jars found at load on the scheduler thread, and the send pool computes and advances.
  */
 class DependencyRegistry(
     indexClassNames: Boolean = false,
+    private val homeDirectory: String? = System.getProperty("user.home"),
 ) {
     /** How the startup listing ended, as [awaitListing] saw it. */
     enum class ListingOutcome {
@@ -218,7 +224,8 @@ class DependencyRegistry(
         classNames: Collection<String> = emptyList(),
     ): Int {
         require(identities.isNotEmpty()) { "a dependency at $location needs at least one identity" }
-        val id = registerEntry(identities, identitySource, location, discoverySource, classCount, origin)
+        val shown = withHomeAsTilde(location, homeDirectory)
+        val id = registerEntry(identities, identitySource, shown, discoverySource, classCount, origin)
         classIndex?.let { index -> for (className in classNames) index.putIfAbsent(className, id) }
         return id
     }
@@ -429,5 +436,27 @@ class DependencyRegistry(
 
         private fun canonicalPath(path: Path): Path =
             runCatching { path.toFile().canonicalFile.toPath() }.getOrDefault(path.toAbsolutePath())
+    }
+}
+
+/**
+ * [location] with a leading [home] written as `~`, as in `~/.m2/repository/x.jar` or
+ * `~/app.jar!/BOOT-INF/lib/x.jar`. Only a whole leading folder matches, followed by `/` or `\`,
+ * so `/home/al` leaves `/home/alice/x.jar` alone. On Windows, where paths ignore case, so does the
+ * match. A null, blank or root [home] changes nothing, nor does a location that does not start
+ * with it, such as `BOOT-INF/lib/x.jar`.
+ */
+internal fun withHomeAsTilde(
+    location: String,
+    home: String?,
+    ignoreCase: Boolean = File.separatorChar == '\\',
+): String {
+    val folder = home?.trimEnd('/', '\\') ?: return location
+    if (folder.isEmpty() || !location.startsWith(folder, ignoreCase)) return location
+    val rest = location.substring(folder.length)
+    return when {
+        rest.isEmpty() -> "~"
+        rest[0] == '/' || rest[0] == '\\' -> "~$rest"
+        else -> location
     }
 }
