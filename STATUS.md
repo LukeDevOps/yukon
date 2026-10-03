@@ -243,6 +243,27 @@ after-release line above; what, if anything, gates CI (shared runners are too
 noisy for thresholds); and which JDKs and collectors count. Load tests shaped
 like one adopter's traffic wait for an adopter.
 
+### An unrecognised body reads as the adopter's code: to grill
+
+Raised 2026-10-03, while grilling the JaCoCo fix below; not yet grilled.
+Every exact-body rule (ADR 0026 marks, ADR 0046 routine kinds, ADR 0048
+Scala plumbing, switch lowering) falls back to "plain adopter code" when it
+cannot recognise a body, and plain code that never ran is a never-hit row.
+So the symptom the JaCoCo fix removes, `neverHit()` listing `canEqual`,
+`productElement` and `unapply` as dead, has other causes that fix does not
+touch: ADR 0048 accepts that Scala 2.12 and 3.x past 3.3.4 "degrade to
+unmarked plumbing until their shapes are read", with no JaCoCo involved, and
+the JaCoCo fix's own fallback (no class file, or one that does not line up)
+is a third.
+
+Options to weigh: keep reading compiler versions as they appear (ADR 0048's
+stance); have the agent say that a class is a case class, data class or enum
+whose plumbing it could not read, so consumers label or abstain instead of
+claiming dead code; or recognise plumbing by name in such a class, which ADR
+0048 rejected because it hid hand-written methods. The question is the
+default when the agent cannot tell, set against ADR 0007's "silent,
+confident, wrong".
+
 ### Deep review of 2026-10-03: landed, with follow-ups
 
 A review of the whole repo by a reviewer agent, each finding verified with a
