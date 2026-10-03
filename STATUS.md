@@ -210,6 +210,17 @@ routine and OpenTelemetry edge cases in the entries below.
 
 ## TODO
 
+### Library paths show the home folder as `~`: landed
+
+Landed on 2026-10-03 (ADR 0051, `13368e7`), from the hosted service's
+privacy review. `DependencyRegistry.register` stores a dependency's
+display location with a leading `user.home` written as `~`, so neither
+the registry nor the wire holds the running user's name. Only a whole
+leading folder matches, and on Windows the match ignores case. The real
+path stays in `DependencyOrigin`, which never leaves the agent. A path
+under another user's home folder still shows that user's name; the
+hosted service's privacy policy says so.
+
 ### The rename from Yukon to Otherlode: landed in this repo
 
 The rename landed here on 2026-09-30 (ADR 0049): the package and Maven
