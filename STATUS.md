@@ -212,6 +212,37 @@ routine and OpenTelemetry edge cases in the entries below.
 
 ## TODO
 
+### Runtime overhead is unmeasured: to grill
+
+Raised 2026-10-03, not yet grilled. The design calls the woven code close to
+nothing in several places and nothing measures it. `./gradlew jmh` times
+`BranchSiteAnalyzer.analyze` only, which is transform time. Unmeasured: the
+per-hit cost in the adopter's code, startup, heap held by the registry, and
+the cost of one flush. The woven work keeps growing (the `<clinit>` prelude,
+the omission loop in `$default`, a map lookup per request in endpoint advice,
+the lambda-factory hook, a `getAllLoadedClasses()` walk every flush), and the
+one number that is measured moved 27% on `demo` in a single chunk of the
+readable-findings round.
+
+Proposed for the grill, in order:
+
+1. Hot-path JMH: a fixture woven through the real pipeline against its
+   unwoven bytes, a branchy method and an endpoint dispatch, at one thread
+   and at one per core. The multi-thread run checks the non-atomic `arr[N]++`
+   for cache-line contention when every core runs one hot method, which
+   JaCoCo's precedent does not answer since JaCoCo mostly runs in test JVMs.
+2. Startup: time to first request for `demo-spring` with no agent, the agent,
+   and the agent with the static baseline.
+3. One flush and the registry's heap on a Spring Boot app of about 10k loaded
+   classes.
+
+Questions to settle: whether item 1 lands before release (its number is the
+one a README would publish, and an adopter asks for it before adding a
+`-javaagent` to production); whether these join the "perf deferrals" in the
+after-release line above; what, if anything, gates CI (shared runners are too
+noisy for thresholds); and which JDKs and collectors count. Load tests shaped
+like one adopter's traffic wait for an adopter.
+
 ### Deep review of 2026-10-03: landed, with follow-ups
 
 A review of the whole repo by a reviewer agent, each finding verified with a
