@@ -123,3 +123,4 @@ shape.
   parameter scalac aliases to a superclass `val`, a local case class that captures a local value
   (its constructor takes the capture beside the elements) are not recognised and stay unmarked. (Scala 2 writes no
   `unapply` past 22 elements, so there is nothing to recognise there.)
+- Amended on 2026-10-03 by ADR 0052: the shapes this record reads are read from the class file, not the received bytes, so an earlier transformer such as JaCoCo leaves them unchanged.

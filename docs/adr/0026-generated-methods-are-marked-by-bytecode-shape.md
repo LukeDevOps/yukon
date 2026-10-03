@@ -26,3 +26,4 @@ The agent marks the probe once, with a `GeneratedBy` reason (`ENUM`, `DATA_CLASS
 - A generated method is not a call-graph node, so a data class that is only ever constructed cannot root an unreached cluster at its own `copy`.
 - An omission probe carries its target's mark, the way it carries the target's inline flag under ADR 0022, so a collector makes no never-supplied or always-supplied claim about a data class's `copy` parameters: `copy(x = 1)` omitting `y` is how `copy` is meant to be used, not a dead default.
 - A Kotlin `value class` (`box-impl`, `unbox-impl`, `equals-impl`, `hashCode-impl`) and kotlinx.serialization's output are not covered; they wait for an adopter who has them.
+- Amended on 2026-10-03 by ADR 0052: the shapes this record reads are read from the class file, not the received bytes, so an earlier transformer such as JaCoCo leaves them unchanged.

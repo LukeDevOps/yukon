@@ -113,11 +113,18 @@ adopter's collector forwards to one multi-tenant backend.
      `x$0` parameter names. A data class property's getter reads as never
      hit when only `copy`, `toString` and the class's own methods read the
      field; that is true, and noisy.
-3. **Settle the one-way doors before anything is published.** Next up
+3. **Another agent ahead of or behind this one.** Grilled on 2026-10-03;
+   ADRs 0052 and 0053. With JaCoCo ahead, every exact-body result is read
+   from JaCoCo's output; with this agent ahead, which is Gradle's default
+   for an adopter's test task, JaCoCo's report loses every woven class. The
+   plan is the TODO entry "Another agent ahead of or behind this one". It
+   sits here because the testkit's first report is wrong and the adopter's
+   coverage report breaks.
+4. **Settle the one-way doors before anything is published.** Next up
    (2026-09-27): every item 2 bullet from the real runs has landed, and
-   the simple items in 4 and 5 were cleared first on 2026-09-27; what is
-   left in 4 is settled and planned in the server STATUS, and 5 is
-   publishing. Item 3 is decisions, so it starts with a
+   the simple items in 5 and 6 were cleared first on 2026-09-27; what is
+   left in 5 is settled and planned in the server STATUS, and 6 is
+   publishing. Item 4 is decisions, so it starts with a
    grill, one sub-item at a time. Facts gathered so far: the testkit's public surface is
    `OtherlodeTestCollector` (about 40 public functions, from `awaitNextFlush`
    and `wasHit` to `unreachedClusters` and the dependency queries), the
@@ -137,7 +144,7 @@ adopter's collector forwards to one multi-tenant backend.
    - Settle versioning: the agent is `1.0-SNAPSHOT`, and no repo has
      tags. Add Maven publishing, signing, and licence metadata in the
      poms.
-4. **Security basics, sized to how the server is hosted.** Settled on
+5. **Security basics, sized to how the server is hosted.** Settled on
    2026-09-27 in a grilling session: server ADRs 0040 to 0043 and
    collector ADR 0003. The plan, its ten chunks and what is deferred are
    in the server STATUS under "Security for the hosted service". In
@@ -172,7 +179,7 @@ adopter's collector forwards to one multi-tenant backend.
      outermost protocol, and `ReferencedClassLocator` matches its prefixes
      ignoring case too, since a custom handler's `toExternalForm` can print
      any case.
-5. **Release mechanics.**
+6. **Release mechanics.**
    - Collector: publish the image to GHCR with tags. The HEALTHCHECK landed
      on 2026-09-27 (collector `e5d3e2f`): a `healthcheck` subcommand GETs
      `/healthz` with no proxy, loopback for an empty or unspecified host, a
@@ -234,7 +241,9 @@ Proposed for the grill, in order:
 2. Startup: time to first request for `demo-spring` with no agent, the agent,
    and the agent with the static baseline.
 3. One flush and the registry's heap on a Spring Boot app of about 10k loaded
-   classes.
+   classes, plus the off-heap copy the JVM keeps of each woven class once
+   the transformer is retransformation-capable (ADR 0053), and the extra
+   class-file read per woven class (ADR 0052).
 
 Questions to settle: whether item 1 lands before release (its number is the
 one a README would publish, and an adopter asks for it before adding a
@@ -263,6 +272,86 @@ claiming dead code; or recognise plumbing by name in such a class, which ADR
 0048 rejected because it hid hand-written methods. The question is the
 default when the agent cannot tell, set against ADR 0007's "silent,
 confident, wrong".
+
+### Another agent ahead of or behind this one: grilled, three chunks
+
+Found in the deep review of 2026-10-03 and grilled the same day; ADRs 0052
+and 0053, pre-release checklist item 3. Terms: class file, received bytes,
+earlier transformer.
+
+The order goes wrong both ways. With JaCoCo ahead, every result read from a
+body's shape is read from JaCoCo's output: `GeneratedBy` marks, routine
+kinds, switch lowering and throwing defaults fall back to plain, so generated
+plumbing reads as never-hit adopter code, and branch keys, conditions, guards
+and the layout hash differ from an instance without JaCoCo. A `finally` copy
+reads as `NONE`, since a probe sits between the handler's `aload` and
+`athrow`; a `NULL_DEFAULT` or `THROW_ONLY` path holds a probe's `bastore`;
+scalac's string match is not recognised, since a probe sits between
+`hashCode` and the `lookupswitch`. With this agent ahead, JaCoCo breaks
+instead: it identifies a class by a CRC64 of the bytes it receives
+(`Instrumenter.java:75`, 0.8.13) and its report hashes the class file
+(`Analyzer.java:106`), so every woven class reads "Execution data for class X
+does not match" with zero coverage. That is Gradle's default for an adopter:
+`Test.jvmArgs("-javaagent:...")` is copied ahead of the `jacoco` plugin's
+argument provider (`DefaultJavaForkOptions.copyTo`, 8.14). Our own suite only
+shows the first order, because its tests self-attach after JaCoCo's
+`premain`. The JAX-RS module counts too: it weaves the adopter's resource
+classes.
+
+Facts the plan rests on, read from source: the JVM calls every transformer
+that is not retransformation-capable before every one that is
+(`jvmtiExport.cpp:975`, jdk21u), and JaCoCo, AspectJ's weaver and Spring's
+weaver carrying Hibernate's enhancer are not; JaCoCo keeps every original
+conditional jump and switch of a method, in order, adds none inside one, and
+inverts a jump whose target needs a probe; on a retransformation, a capable
+transformer receives the bytes from before it ran, and a field missing from
+its output fails the whole batch.
+
+1. **Read the class file.** The analysis reads the class file through the
+   class's loader; the rewrite walks the received bytes. Per method, the Nth
+   site in the class file pairs with the Nth tracked jump or switch received,
+   with its polarity: the same opcode, the inverse (outcomes swapped), or a
+   failed pairing. Identical arrays skip the pairing. A method that does not
+   pair keeps its METHOD probe and marks and gets no branch probes, its sites
+   left out rather than reported at zero, one INFO line per class. No class
+   file: the received bytes, logged at FINE. Layout hash, keys, marks,
+   routine kinds, conditions and guards all come from the class file, and
+   which methods and `<clinit>` get probes too, so a `<clinit>` JaCoCo adds
+   to a Java 8 to 10 interface gets the prelude and no probe. ADR 0052 and
+   its pointers in 0025, 0026, 0037, 0038, 0046 and 0048. Proof: the 63
+   JaCoCo-only failures green under the init script; JaCoCo's offline
+   `Instrumenter` for inverted jumps; a fake earlier transformer adding a
+   branch for the fallback.
+2. **Retransformation-capable.** Both tiers register as capable, with nothing
+   retransformed at install. On a retransformation, a class this agent wove
+   is re-woven to identical bytes and every other class gets null; type
+   descriptions come from the passed bytes, since ByteBuddy's default reads
+   the loaded class, which already has the field; no second registry commit
+   and no second JAX-RS declaration. ADR 0053 and the ADR 0005 amendment.
+   Proof: a second agent retransforms a woven class, the call succeeds, and
+   counts keep going.
+3. **Both orders, the standing check, the docs.** A forked-JVM test with
+   `jacocoagent.jar` in both command-line orders, each asserting our manifest
+   equals a run without JaCoCo and JaCoCo's ids match the class files'
+   CRC64; the retransform leg; a CI job on every push running the whole
+   suite with JaCoCo applied by an init script under `gradle/`, which must
+   pass; the testkit README; this entry closed; CLAUDE.md's design sections.
+   The job lands last, since a red job on `master` would block every push
+   between.
+
+The JVM keeps an off-heap copy of each woven class's received bytes once the
+transformer is capable, about one class-file length each; no flag, and the
+overhead entry measures it. The default when a body is not recognised, which
+this fix's fallback can still reach, is its own entry.
+
+To reproduce today: apply JaCoCo 0.8.13 from a Gradle init script outside the
+repo (`allprojects { plugins.withId("java") { apply(plugin = "jacoco") } }`)
+and run `./gradlew --init-script <file> test --continue`. 63 failures on
+2026-10-03: `ScalaGeneratedMethodMarkingTest` 45, `StaticBaselineScannerTest`
+4, `GuardedCodeInstrumentationTest` 3, `OtherlodeTestCollectorEndToEndTest` 3,
+`SwitchLoweringInstrumentationTest` 2, `GeneratedMethodMarkingTest` 2,
+`ScalaNeverHitEndToEndTest` 2, `ConditionInstrumentationTest` 1,
+`KotlinKindInstrumentationTest` 1.
 
 ### Deep review of 2026-10-03: landed, with follow-ups
 
@@ -296,52 +385,9 @@ read lock for queries, and injects into `PER_CLASS` constructors.
 
 Recorded, not built:
 
-- **A coverage agent ahead of this one silently drops marks.** When JaCoCo
-  rewrites a class first, every exact-body rule misreads its probes:
-  `GeneratedBy` marks, routine kinds, switch lowering and throwing defaults
-  all fall back to plain, so generated plumbing reads as never-hit adopter
-  code. 64 tests fail only under JaCoCo (59 root, 5 testkit), the
-  `ScalaGeneratedMethodMarkingTest` family above all. The fix, a chunk of its
-  own with an ADR amendment to 0025, 0026, 0046 and 0048: take per-method
-  marks and per-site results from the class's on-disk bytes, matched by site
-  ordinal, and keep slot numbering on the captured bytes. Run the suite under
-  JaCoCo in CI as a standing check. The same root cause loses every routine
-  kind under JaCoCo: a `finally` copy reads as `NONE`, since a probe sits
-  between the handler's `aload` and `athrow`, and a `NULL_DEFAULT` or
-  `THROW_ONLY` path holds a probe's `bastore`, which the routine rules forbid. String `when` collision outcomes from kotlinc are the
-  exception: their check steps over JaCoCo's probe. scalac's string match is
-  not recognised at all under JaCoCo, since a probe sits between `hashCode`
-  and the `lookupswitch`, so its null check, hash switch and every `equals`
-  check stay plain sites.
-
-  Being grilled on 2026-10-03, and the order goes wrong both ways. JaCoCo
-  ahead of this agent is the case above: our marks and keys are read from
-  JaCoCo's output. This agent ahead of JaCoCo breaks JaCoCo instead: it
-  identifies a class by a CRC64 of the bytes it receives
-  (`Instrumenter.java:75`, 0.8.13) and its report hashes the class file
-  (`Analyzer.java:106`), so every class we weave reads "Execution data for
-  class X does not match" with zero coverage. That second order is Gradle's
-  default for an adopter: `Test.jvmArgs("-javaagent:...")` is copied ahead of
-  the `jacoco` plugin's argument provider (`DefaultJavaForkOptions.copyTo`,
-  8.14), so following the testkit's setup breaks the adopter's coverage
-  report. Our own suite only shows the first order because its tests
-  self-attach after JaCoCo's `premain`. The fix and the standing check must
-  cover both orders, and the JAX-RS module counts too, since it weaves the
-  adopter's resource classes.
-
-  To reproduce, apply JaCoCo 0.8.13 from a Gradle init script outside the
-  repo (`allprojects { plugins.withId("java") { apply(plugin = "jacoco") } }`)
-  and run `./gradlew --init-script <file> build --continue`. The 64 failures
-  at the 2026-10-03 review, by test class: `ScalaGeneratedMethodMarkingTest`
-  45, `StaticBaselineScannerTest` 4, `OtherlodeTestCollectorEndToEndTest` 3,
-  `GuardedCodeInstrumentationTest` 3, `SwitchLoweringInstrumentationTest` 2,
-  `ScalaNeverHitEndToEndTest` 2, `GeneratedMethodMarkingTest` 2, and one each
-  in `ReferenceInstrumentationTest`, `KotlinKindInstrumentationTest` and
-  `ConditionInstrumentationTest`. `ReferenceInstrumentationTest`'s had its own
-  cause, JaCoCo's injected `java.lang.$JaCoCo` read as an absent reference,
-  and the review fixed it by dropping an unresolvable `java.` name. The kotlinc
-  string-`when` collision fix may also have turned the switch failures green;
-  rerun before counting.
+- **A coverage agent ahead of this one silently drops marks.** Grilled and
+  planned in its own entry above, "Another agent ahead of or behind this
+  one".
 - **A nested `try`/`finally` written on one line loses one `FINALLY_COPY`.**
   kotlinc emits no line number for the outer `finally`'s exception copy in
   `try { try { … } finally { … } } finally { if (b > 7) … }` on one line, so
@@ -1199,7 +1245,7 @@ list each copy's probes on their own. Open from that, found at review:
   clusters and `hitCount`. With two instances, one that ran `Foo(1)` and one
   that loaded `Foo` and ran nothing, `neverHit()` lists the second instance's
   constructors and methods. Rare in a test JVM, which reports as one
-  instance; settle it with the testkit query API review (checklist item 3),
+  instance; settle it with the testkit query API review (checklist item 4),
   since it changes which instance a `ProbeRef` names.
 - A branch row groups copies by `branch_index`; the server groups by
   `branch_key` when one is set. Two different builds of one class in one

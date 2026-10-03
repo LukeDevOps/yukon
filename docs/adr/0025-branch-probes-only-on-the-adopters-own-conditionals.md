@@ -25,3 +25,4 @@ Those sites get no probe. An inlined copy is recognised from the class's `Source
 - The four coroutine shapes must each be confirmed against `javap` output before they are coded, and the recogniser must accept the inverted jumps JaCoCo's offline instrumenter leaves, pinned by the same test the omission tier uses.
 - A same-class inline function's copies carry the class's own name as `inlined_from_class_name`, since the fact stated is "copied from an inline body", not "from another class".
 - Sites that are true but uninteresting (the null path of a safe call, a `!!` check, a `finally` copy on the exception path) are not covered. They are conditionals the adopter wrote, and telling them from dead code is the collector's classification job under ADR 0015.
+- Amended on 2026-10-03 by ADR 0052: the shapes this record reads are read from the class file, not the received bytes, so an earlier transformer such as JaCoCo leaves them unchanged.

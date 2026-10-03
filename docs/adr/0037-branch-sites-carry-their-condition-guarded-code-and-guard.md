@@ -36,3 +36,4 @@ A never-hit branch outcome reaches a person as "Branch 12, `DemoServerMain.kt:12
 - A consumer that ignores the new fields keeps working. `branch_index`, `branch_key` and `line` keep their meaning.
 - Each compiler shape the condition writer reads back to source must be confirmed against `javap` output before it is coded, as ADR 0025 requires for coroutine shapes.
 - Deciding which outcomes are real but not worth a person's time (the null path of `?.`, `!!`, a `finally` copy) stays the collector's job under ADR 0025. Readable conditions make it possible. They do not make it.
+- Amended on 2026-10-03 by ADR 0052: the shapes this record reads are read from the class file, not the received bytes, so an earlier transformer such as JaCoCo leaves them unchanged.
