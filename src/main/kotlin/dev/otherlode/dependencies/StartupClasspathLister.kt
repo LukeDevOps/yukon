@@ -27,7 +27,7 @@ data class ListedDependency(
 )
 
 /**
- * Lists the dependencies on the startup classpath. See ADR 0030.
+ * Lists the dependencies on the startup classpath.
  *
  * Walks every entry of [classPath] (split on [File.pathSeparator]) and every jar a manifest
  * `Class-Path` attribute reaches from one, resolved against the referencing jar the way the JDK's

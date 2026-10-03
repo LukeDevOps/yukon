@@ -2,6 +2,7 @@ package dev.otherlode.dependencies
 
 import java.io.File
 import java.net.URI
+import java.net.URISyntaxException
 import java.net.URLDecoder
 import java.nio.file.Path
 import java.nio.file.Paths
@@ -10,7 +11,7 @@ import java.nio.file.Paths
  * A class's code-source location, reduced to where its bytes live on disk. See [parse].
  */
 internal sealed interface CodeSourceLocation {
-    /** A file or directory, from a `file:` URL or a `jar:file:<jar>!/` URL naming no entry. */
+    /** A file or directory, from a `file:` URL, or a `jar:file:<jar>!/` or `jar:nested:` URL naming no entry. */
     data class OnDisk(
         val path: Path,
     ) : CodeSourceLocation
@@ -54,10 +55,22 @@ internal sealed interface CodeSourceLocation {
          */
         fun parse(location: String): CodeSourceLocation =
             when {
-                location.startsWith(FILE_PREFIX, ignoreCase = true) -> OnDisk(Paths.get(URI(location)))
+                location.startsWith(FILE_PREFIX, ignoreCase = true) -> OnDisk(filePath(location))
                 location.startsWith(NESTED_PREFIX, ignoreCase = true) -> parseNested(location.substring(NESTED_PREFIX.length))
                 location.startsWith(JAR_PREFIX, ignoreCase = true) -> parseJarUrl(location.substring(JAR_PREFIX.length))
                 else -> Unsupported
+            }
+
+        /**
+         * The path a `file:` URL names. A loader that built its URLs with the deprecated
+         * `File.toURL()` leaves characters such as a space unescaped, which `URI` rejects, so such
+         * a URL is read as raw path text instead.
+         */
+        private fun filePath(fileUrl: String): Path =
+            try {
+                Paths.get(URI(fileUrl))
+            } catch (_: URISyntaxException) {
+                Paths.get(URI("file", null, fileUrl.substring(FILE_PREFIX.length), null))
             }
 
         private fun parseNested(rest: String): CodeSourceLocation {
@@ -86,7 +99,7 @@ internal sealed interface CodeSourceLocation {
             if (split < 0) return Unsupported
             val outer = rest.substring(0, split)
             if (!outer.startsWith(FILE_PREFIX, ignoreCase = true)) return Unsupported
-            val outerPath = Paths.get(URI(outer))
+            val outerPath = filePath(outer)
             val entry = rest.substring(split + JAR_SEPARATOR.length).removeSuffix(JAR_SEPARATOR)
             return if (entry.isEmpty()) OnDisk(outerPath) else InJar(outerPath, entry)
         }

@@ -517,7 +517,7 @@ class TypeMatchPolicyTest {
 
     /**
      * A Hibernate enhancement method is recognised by its name alone, and only by the prefix: a
-     * method whose name mentions Hibernate some other way is the adopter's. See ADR 0047.
+     * method whose name mentions Hibernate some other way is the adopter's.
      */
     @Test
     fun `only a name starting with the Hibernate enhancement prefix is an enhancement method`() {

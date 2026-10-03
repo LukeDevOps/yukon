@@ -8,7 +8,7 @@ import java.time.Duration
 
 /**
  * Filters a static scan's references and maps each one kept to its dependency, without a defining
- * loader. See ADR 0030.
+ * loader.
  *
  * At transform time a reference is looked up through the loader defining the referencing class.
  * The scan has no such loader, and in a Spring Boot fat jar the system loader cannot see

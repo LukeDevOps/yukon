@@ -18,7 +18,7 @@ class JarClassifierTest {
     ): ListedDependency? = classifier.classifyFlat(contents, "lib-1.0.jar", jarPath.toString(), DependencyOrigin.FlatJar(jarPath))
 
     /**
-     * ADR 0033: an empty include list admits no class, so no jar is the adopter's own and every
+     * An empty include list admits no class, so no jar is the adopter's own and every
      * ordinary jar, whatever packages it holds, is a dependency.
      */
     @Test

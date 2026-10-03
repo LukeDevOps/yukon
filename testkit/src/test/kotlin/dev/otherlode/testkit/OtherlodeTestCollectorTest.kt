@@ -357,6 +357,23 @@ class OtherlodeTestCollectorTest {
     }
 
     @Test
+    fun `an unknown probe on a class the sweep found loaded says no transformer saw it`() {
+        val target = startCollector()
+        exporterFor(target).exportManifest(
+            ProbeManifest(
+                ResourceAttributes("svc", null, "i-1", null, "run-1"),
+                emptyList(),
+                unreportedClasses = listOf(UnreportedClass("com.acme.Unseen", 1L)),
+            ),
+        )
+
+        val failure = assertFailsWith<UnknownProbeException> { target.wasHit("com.acme.Unseen", "m") }
+        assertTrue(failure.message!!.contains("no transformer"), failure.message)
+        val omission = assertFailsWith<UnknownProbeException> { target.omissionCount("com.acme.Unseen", "m", parameterIndex = 0) }
+        assertTrue(omission.message!!.contains("no transformer"), omission.message)
+    }
+
+    @Test
     fun `an unknown probe reports it was declared by the static baseline but never loaded`() {
         val target = startCollector()
         val exporter = exporterFor(target)
@@ -813,7 +830,7 @@ class OtherlodeTestCollectorTest {
     /**
      * A Scala constructor default getter's own class is the companion module (`Cc$`), but its
      * target `<init>` lives on `Cc`. `omissionCount` and the finding rules both name the parameter
-     * by the target's own class, per ADR 0023, not the class the omission probe's slot lives on.
+     * by the target's own class, not the class the omission probe's slot lives on.
      */
     @Test
     fun `omissionCount and the finding rules join an omission probe to its target across a class boundary`() {
@@ -865,7 +882,7 @@ class OtherlodeTestCollectorTest {
      * forwarder for the same getter name, resolved in class to that same `<init>`. Scala callers
      * only ever reach the module getter, so the forwarder's own probe stays at zero. Judging each
      * probe on its own would report the forwarder as always supplied beside the module getter's
-     * never supplied for the same parameter; both must be summed and judged once. See ADR 0023.
+     * never supplied for the same parameter; both must be summed and judged once.
      */
     @Test
     fun `neverSupplied and alwaysSupplied sum every omission probe naming the same target parameter`() {
@@ -1075,20 +1092,17 @@ class OtherlodeTestCollectorTest {
     }
 
     @Test
-    fun `a malformed body is rejected with 400 and nothing is recorded`() {
+    fun `a body that does not decode is answered 400, keeps nothing, and fails every later query`() {
         val target = startCollector()
-        val client = HttpClient.newHttpClient()
-        val request =
-            HttpRequest
-                .newBuilder(URI.create("${target.endpoint}/v1/otherlode/deltas"))
-                .header("Content-Type", "application/x-protobuf")
-                .POST(HttpRequest.BodyPublishers.ofByteArray(byteArrayOf(0, 0, 0, 0)))
-                .build()
+        val garbage = byteArrayOf(0, 0, 0, 0)
 
-        val response = client.send(request, HttpResponse.BodyHandlers.discarding())
+        val statuses = listOf("deltas", "manifest", "static-baseline").map { postStatus(target, it, garbage) }
 
-        assertEquals(400, response.statusCode())
-        assertFailsWith<TimeoutException> { target.awaitNextFlush(Duration.ofMillis(150)) }
+        assertEquals(listOf(400, 400, 400), statuses)
+        assertEquals(3, target.rejectedPayloads().size)
+        assertTrue(target.rejectedPayloads().all { "could not be decoded" in it }, "${target.rejectedPayloads()}")
+        assertFailsWith<IllegalStateException> { target.neverHit() }
+        assertFailsWith<IllegalStateException> { target.awaitNextFlush(Duration.ofMillis(150)) }
     }
 
     private fun postStatus(
@@ -1169,6 +1183,80 @@ class OtherlodeTestCollectorTest {
 
         exporter.exportDeltaBatch(DeltaBatch(ResourceAttributes("svc", null, "i-2", null, "run-2"), emptyList()))
         assertEquals(3, target.rejectedPayloads().size, "another instance's own first run is accepted")
+    }
+
+    @Test
+    fun `a collector serving one test JVM rejects a second instance, naming parallel forks`() {
+        val target = OtherlodeTestCollector.startForOneJvm(0)
+        collector = target
+        val exporter = exporterFor(target)
+        exporter.exportDeltaBatch(DeltaBatch(ResourceAttributes("svc", null, "fork-1", null, "run-1"), emptyList()))
+
+        assertEquals(
+            400,
+            postStatus(
+                target,
+                "deltas",
+                ProtoPayloadCodec.encode(DeltaBatch(ResourceAttributes("svc", null, "fork-2", null, "run-9"), emptyList())),
+            ),
+        )
+
+        assertTrue(target.rejectedPayloads().single().contains("maxParallelForks"), "${target.rejectedPayloads()}")
+        assertFailsWith<IllegalStateException> { target.neverHit() }
+    }
+
+    @Test
+    fun `a payload that fails while it is applied is answered 400 once and recorded once`() {
+        val target = startCollector()
+        target.beforeApply = { throw IllegalStateException("simulated apply failure") }
+
+        val status =
+            postStatus(
+                target,
+                "deltas",
+                ProtoPayloadCodec.encode(DeltaBatch(ResourceAttributes("svc", null, "i-1", null, "run-1"), emptyList())),
+            )
+
+        assertEquals(400, status)
+        assertEquals(1, target.rejectedPayloads().size, "${target.rejectedPayloads()}")
+        assertTrue("could not be applied" in target.rejectedPayloads().single())
+    }
+
+    @Test
+    fun `a query waits while a payload is being applied, so it never sees half of one`() {
+        val target = startCollector()
+        val applying = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val handler =
+            thread {
+                target.whileApplying {
+                    applying.countDown()
+                    release.await()
+                }
+            }
+        applying.await()
+
+        val query =
+            java.util.concurrent.CompletableFuture
+                .supplyAsync { target.neverHit() }
+        Thread.sleep(150)
+        assertFalse(query.isDone, "the query ran while the payload was half applied")
+        release.countDown()
+        handler.join()
+        assertEquals(emptyList(), query.get())
+    }
+
+    @Test
+    fun `closing the collector fails a wait in progress at once`() {
+        val target = startCollector()
+        val started = System.nanoTime()
+        thread {
+            Thread.sleep(100)
+            target.close()
+        }
+
+        assertFailsWith<IllegalStateException> { target.awaitNextFlush(Duration.ofSeconds(30)) }
+        assertTrue(Duration.ofNanos(System.nanoTime() - started) < Duration.ofSeconds(10))
     }
 
     @Test
@@ -2050,12 +2138,13 @@ class OtherlodeTestCollectorTest {
     }
 
     /**
-     * Server ADR 0034's unjudged constructor in the cluster rule. Util and Dead hold only static
-     * methods and were never constructed, so neither holds a class finding and neither private
-     * constructor roots a cluster. Util.parse ran and Util.format did not, so format roots its own
-     * cluster. No Dead method ran, so Dead.only roots a cluster holding Dead whole, its constructor
-     * left out. A never-run factory still reaches through a never-constructed class's constructor
-     * to the helper only it calls, and lists neither constructor.
+     * The cluster rule leaves out a never-run constructor of a never-constructed class with no
+     * finding. Util and Dead hold only static methods and were never constructed, so neither holds
+     * a class finding and neither private constructor roots a cluster. Util.parse ran and
+     * Util.format did not, so format roots its own cluster. No Dead method ran, so Dead.only roots
+     * a cluster holding Dead whole, its constructor left out. A never-run factory still reaches
+     * through a never-constructed class's constructor to the helper only it calls, and lists
+     * neither constructor.
      */
     @Test
     fun `an unjudged constructor is never a root, is never listed, and is still reached through`() {
@@ -2446,7 +2535,7 @@ class OtherlodeTestCollectorTest {
      * Copy 1 ran `<clinit>` and `run`, and took outcome 0 but never outcome 1; copy 2 loaded and ran
      * nothing. Summed across the copies, only outcome 1 never ran: it is listed once, and neither
      * copy 2's zero on outcome 0 or `run` nor its `<clinit>`, which on its own reads zero, makes or
-     * folds a row. See server ADR 0031.
+     * folds a row.
      */
     @Test
     fun `a class two loaders define in one instance is judged once, with its copies' hits summed`() {

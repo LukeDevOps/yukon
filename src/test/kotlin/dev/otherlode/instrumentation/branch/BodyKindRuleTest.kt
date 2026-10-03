@@ -6,7 +6,7 @@ import dev.otherlode.instrumentation.branch.BodyKindRule.OwnInnerClassEntry
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
-/** Proves each branch of [BodyKindRule.classify], in ADR 0034's order, on facts alone. */
+/** Proves each branch of [BodyKindRule.classify], in order, on facts alone. */
 class BodyKindRuleTest {
     private val anonymousEntry = OwnInnerClassEntry(innerName = null)
 
@@ -21,7 +21,10 @@ class BodyKindRuleTest {
     fun `a class with no EnclosingMethod attribute is not a body class, whatever else it states`() {
         assertEquals(Classification.NONE, classify(hasEnclosingMethod = false))
         assertEquals(Classification.NONE, classify(hasEnclosingMethod = false, superInternalName = "kotlin/jvm/internal/Lambda"))
-        assertEquals(Classification.NONE, classify(hasEnclosingMethod = false, superInternalName = "kotlin/jvm/internal/FunctionReferenceImpl"))
+        assertEquals(
+            Classification.NONE,
+            classify(hasEnclosingMethod = false, superInternalName = "kotlin/jvm/internal/FunctionReferenceImpl"),
+        )
         assertEquals(Classification.NONE, classify(hasEnclosingMethod = false, ownInnerClassEntry = OwnInnerClassEntry("Nested")))
         assertEquals(Classification.NONE, classify(hasEnclosingMethod = false, hasKotlinMetadata = true))
     }
@@ -43,7 +46,10 @@ class BodyKindRuleTest {
             Classification(BodyKind.LAMBDA_CLASS),
             classify(superInternalName = "kotlin/jvm/internal/Lambda", ownInnerClassEntry = OwnInnerClassEntry("Named")),
         )
-        assertEquals(Classification(BodyKind.LAMBDA_CLASS), classify(superInternalName = "kotlin/jvm/internal/Lambda", ownInnerClassEntry = null))
+        assertEquals(
+            Classification(BodyKind.LAMBDA_CLASS),
+            classify(superInternalName = "kotlin/jvm/internal/Lambda", ownInnerClassEntry = null),
+        )
     }
 
     @Test

@@ -24,7 +24,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Drives references end to end through the real pipeline (ADR 0030): an in-scope class compiled
+ * Drives references end to end through the real pipeline: an in-scope class compiled
  * against library types, served at run time from a jar this test builds and lists as a dependency,
  * transformed by [OtherlodeInstrumentation], and resolved on the export side through the same
  * [DependencyResolver] the loaded-class count uses.

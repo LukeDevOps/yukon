@@ -21,7 +21,7 @@ import java.util.logging.LogRecord as JulLogRecord
 import java.util.logging.Logger as JulLogger
 
 /**
- * Drives ADR 0028 end to end: ByteBuddy matches and transforms a class whose supertype cannot be
+ * Drives probe withholding end to end: ByteBuddy matches and transforms a class whose supertype cannot be
  * defined, [ProbeRegistry.register] commits its probes from `onTransformation` before that failure
  * happens, `defineClass` then raises `NoClassDefFoundError`, and two [LoadedClassSweep] passes
  * withhold the class for good rather than publishing it at zero forever.
@@ -217,10 +217,10 @@ class ProbesWithheldForUndefinedClassTest {
                 sweep.run(runForwardPass = false) // already withheld, must not warn again
             }
         // The registry keeps only a WeakReference to loader, and a collected loader is confirmed
-        // rather than withheld, per ADR 0028's "a collected loader publishes" rule. loader has no
-        // other referent once Class.forName returns, so without this fence the JIT is free to treat
-        // it as unreachable before the sweeps above run, which turns this test flaky rather than
-        // wrong: the class would be confirmed by the loader-collected path instead of withheld.
+        // rather than withheld. loader has no other referent once Class.forName returns, so
+        // without this fence the JIT is free to treat it as unreachable before the sweeps above
+        // run, which turns this test flaky rather than wrong: the class would be confirmed by the
+        // loader-collected path instead of withheld.
         Reference.reachabilityFence(loader)
 
         val warnings = records.filter { it.level == JulLevel.WARNING && it.message.contains(VANISHING_SUB) }

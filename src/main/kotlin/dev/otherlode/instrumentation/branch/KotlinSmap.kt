@@ -48,17 +48,28 @@ class KotlinSmap internal constructor(
     private val entries: List<SmapEntry>,
     private val fileNamesById: Map<Int, String>,
     private val sourceFilesById: Map<Int, String> = emptyMap(),
+    private val ownerInternalName: String? = null,
 ) {
+    /**
+     * Whether file id 1 is the class's own source. kotlinc names the class itself there, except
+     * in a class it regenerates from an object inside an inlined function
+     * (`Foo$bar$$inlined$sortedBy$1`), where file 1 is the class it copied, such as the standard
+     * library's. A bare entry with no path line, or a parse with no owner given, is taken as own.
+     */
+    private val firstFileIsOwn: Boolean =
+        ownerInternalName == null ||
+            fileNamesById[1].let { it == null || it == sourceFilesById[1] || it == ownerInternalName }
+
     /**
      * Where [outputLine] came from, or null when it is the class's own code: either no entry
      * covers it, or the covering entry maps it to itself in file id 1, the identity mapping every
-     * unmodified source line gets.
+     * unmodified source line gets, and file 1 is the class's own source.
      */
     fun originOf(outputLine: Int): SmapOrigin? {
         for (entry in entries) {
             val index = entry.indexOf(outputLine) ?: continue
             val inputLine = entry.inputStartLine + index
-            if (entry.fileId == 1 && inputLine == outputLine) return null
+            if (entry.fileId == 1 && inputLine == outputLine && firstFileIsOwn) return null
             val fileName = fileNamesById[entry.fileId] ?: return null
             return SmapOrigin(inputLine, fileName.replace('/', '.'), sourceFilesById[entry.fileId] ?: fileName)
         }
@@ -78,7 +89,15 @@ class KotlinSmap internal constructor(
 object KotlinSmapParser {
     private val lineEntryPattern = Regex("""^(\d+)(?:#(\d+))?(?:,(\d+))?:(\d+)(?:,(\d+))?$""")
 
-    fun parse(debug: String?): KotlinSmap {
+    /**
+     * Parses [debug], the `SourceDebugExtension` text of the class named [ownerInternalName]. The
+     * name tells a regenerated class's copied file 1 apart from the class's own; see
+     * [KotlinSmap.originOf].
+     */
+    fun parse(
+        debug: String?,
+        ownerInternalName: String? = null,
+    ): KotlinSmap {
         if (debug.isNullOrEmpty()) return KotlinSmap.EMPTY
         val lines = debug.split('\n')
         var i = findKotlinStratum(lines) ?: return KotlinSmap.EMPTY
@@ -89,28 +108,30 @@ object KotlinSmapParser {
         val sourceFilesById = mutableMapOf<Int, String>()
         i = parseFileSection(lines, i, fileNamesById, sourceFilesById)
 
-        if (i >= lines.size || lines[i] != "*L") return KotlinSmap(emptyList(), fileNamesById, sourceFilesById)
+        if (i >= lines.size || lines[i] != "*L") return KotlinSmap(emptyList(), fileNamesById, sourceFilesById, ownerInternalName)
         i++
 
         val entries = mutableListOf<SmapEntry>()
         var lastFileId = 1
         while (i < lines.size && !lines[i].startsWith("*")) {
             val match = lineEntryPattern.matchEntire(lines[i])
-            if (match != null) {
+            val inputStartLine = match?.groupValues?.get(1)?.toIntOrNull()
+            val outputStartLine = match?.groupValues?.get(4)?.toIntOrNull()
+            if (match != null && inputStartLine != null && outputStartLine != null) {
                 val fileId = match.groupValues[2].toIntOrNull() ?: lastFileId
                 lastFileId = fileId
                 entries +=
                     SmapEntry(
-                        inputStartLine = match.groupValues[1].toInt(),
+                        inputStartLine = inputStartLine,
                         fileId = fileId,
-                        outputStartLine = match.groupValues[4].toInt(),
+                        outputStartLine = outputStartLine,
                         outputLineIncrement = match.groupValues[5].toIntOrNull() ?: 1,
                         repeatCount = match.groupValues[3].toIntOrNull() ?: 1,
                     )
             }
             i++
         }
-        return KotlinSmap(entries, fileNamesById, sourceFilesById)
+        return KotlinSmap(entries, fileNamesById, sourceFilesById, ownerInternalName)
     }
 
     /** The index right after a `*S Kotlin` line, or null if the SMAP has no such stratum. */

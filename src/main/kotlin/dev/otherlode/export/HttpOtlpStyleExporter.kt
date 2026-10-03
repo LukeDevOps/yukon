@@ -7,7 +7,7 @@ import java.net.http.HttpResponse
 import java.time.Duration
 
 /**
- * Sends both payload shapes to a collector at [endpoint] over plain HTTP/1.1.
+ * Sends every payload shape to a collector at [endpoint] over plain HTTP/1.1.
  * This uses the JDK's built-in [HttpClient]. It avoids a shaded gRPC/Netty
  * dependency.
  *
@@ -25,9 +25,9 @@ import java.time.Duration
  * bounded by default. Without a timeout, a collector that accepts a
  * connection but never responds would block a send indefinitely. This can
  * happen if the collector is wedged, or if the network silently drops
- * packets. An indefinite block would stall [ExportScheduler]'s single flush
- * thread, including its liveness heartbeat, instead of failing into the
- * retry/backoff path above.
+ * packets. An indefinite block would stall the [ExportScheduler] send it
+ * runs on, and the flush waiting for it, liveness heartbeat included,
+ * instead of failing into the retry/backoff path above.
  *
  * The collector may require a bearer token, passed as [authToken]. A 401 or 403 is a permanent
  * failure like any other 4xx: resending with the same token cannot change the answer.
@@ -89,11 +89,13 @@ class HttpOtlpStyleExporter(
         throw lastError ?: ExportFailedException("otherlode: export to $uri failed")
     }
 
-    /** 408 and 429 are the two 4xx codes that describe the server's state at that moment, not the request itself. */
-    private fun isRetryable(status: Int): Boolean = status >= 500 || status == 408 || status == 429
+    private fun isRetryable(status: Int): Boolean = isRetryableStatus(status)
 
-    private companion object {
-        val DEFAULT_TIMEOUT: Duration = Duration.ofSeconds(10)
+    companion object {
+        private val DEFAULT_TIMEOUT: Duration = Duration.ofSeconds(10)
+
+        /** 408 and 429 are the two 4xx codes that describe the server's state at that moment, not the request itself. */
+        private fun isRetryableStatus(status: Int): Boolean = status >= 500 || status == 408 || status == 429
     }
 }
 

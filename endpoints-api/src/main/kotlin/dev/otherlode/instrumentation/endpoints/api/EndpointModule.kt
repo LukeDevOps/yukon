@@ -9,8 +9,9 @@ import net.bytebuddy.matcher.ElementMatcher
  *
  * A per-framework subproject (Spring MVC, Ktor, JAX-RS, the JDK's own `HttpServer`) implements
  * this to declare which types carry that framework's routing, and which advice turns a match into
- * a call into the endpoint seam. See ADR 0017 for why endpoints are counted at a framework's own
- * dispatch point instead of inferred from the method tier.
+ * a call into the endpoint seam. Endpoints are counted at the framework's own dispatch point
+ * rather than inferred from the method tier, since one handler can back two endpoints, be a lambda
+ * with no stable class name, or sit outside the include rules.
  */
 interface EndpointModule {
     /** The framework id carried on the wire, and the module name the endpoint seam reports failures under. */
@@ -30,14 +31,13 @@ interface EndpointModule {
      * JDK's lambda factory and records which method each lambda class for that interface calls.
      * The module's advice reads it back through `OtherlodeEndpoints.lambdaImplementation`. The method
      * tier also keeps a forwarder table for these interfaces, so a handler reported as a
-     * pass-through joins to the method it forwards to. See ADR 0035.
+     * pass-through joins to the method it forwards to.
      *
      * The lambda factory reports the interface the lambda was written for. A lambda for a
      * subinterface is recorded only when the subinterface is named here too.
      */
     val handlerInterfaces: Set<String> get() = emptySet()
 
-    /** Which types this module instruments. */
     fun typeMatcher(): ElementMatcher<in TypeDescription>
 
     /**

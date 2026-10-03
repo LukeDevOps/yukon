@@ -14,9 +14,9 @@ import net.bytebuddy.jar.asm.Type
 
 /**
  * The methods scalac emits from a declaration rather than from a body the adopter wrote, marked
- * from bytecode shape alone, per ADR 0048. Nothing here decodes `ScalaSig` or TASTy, and no line
- * number is read: each generated method is recognised by its body, which is fixed compiler output
- * whatever the source layout. Every shape below was read out of `javap -c -p` over the
+ * from bytecode shape alone. Nothing here decodes `ScalaSig` or TASTy, and no line number is read:
+ * each generated method is recognised by its body, which is fixed compiler output whatever the
+ * source layout. Every shape below was read out of `javap -c -p` over the
  * `:fixtures-scala2` and `:fixtures-scala3` modules, compiled with Scala 2.13.15 and 3.3.4
  * (`Targets.scala` and `CaseShapes.scala`). Output of another Scala version is expected to miss a
  * shape here and stay unmarked, since a body that is not exactly one of these marks nothing.
@@ -66,8 +66,8 @@ internal object ScalaGeneratedMethods {
     /**
      * The generated methods of the Scala class [classBytes], keyed by name and descriptor. The
      * caller has already found a `Scala` or `ScalaSig` attribute on the class. [lookup] reads a
-     * companion's partner the way ADR 0023 reads a constructor getter's target: as bytes, never
-     * loading it. A lookup that returns null or throws marks nothing on the partner's account.
+     * companion's partner as bytes, never loading it. A lookup that returns null or throws marks
+     * nothing on the partner's account.
      *
      * Each method gets at most one mark, tried in this order: [GeneratedBy.STATIC_FORWARDER] (see
      * [ClassShape.staticForwarders]), then [GeneratedBy.CASE_CLASS] on a case class's own plumbing
@@ -391,11 +391,12 @@ internal object ScalaGeneratedMethods {
      * Declaration order is no substitute: Scala 2.13.15 declares a body `lazy val`'s field before
      * the elements' fields. An auxiliary constructor opens with its call to the primary one and
      * contributes nothing. The stores are read even from a constructor with a try-catch block,
-     * which a `try` in the class body puts there (`TryBody`), since they come before any handler. Scala 2.13.15 reads a `private` or `protected` element through
-     * `<name>$access$<index>`, a name Scala 3.3.4 never gives an element's accessor, so a Scala 3
-     * class always reads its elements through the accessor named like the field. Either is null
-     * when the class does not have that shape, and then no method whose body depends on the
-     * elements is marked.
+     * which a `try` in the class body puts there (`TryBody`), since they come before any handler.
+     * Scala 2.13.15 reads a `private` or `protected` element through `<name>$access$<index>`, a name
+     * Scala 3.3.4 never gives an element's accessor, so a Scala 3 class always reads its elements
+     * through the accessor named like the field. [arity] and [elements] are each null when the
+     * class does not have that shape, and then no method whose body depends on the elements is
+     * marked.
      */
     private class CaseClass(
         val shape: ClassShape,
@@ -1721,7 +1722,7 @@ internal object ScalaGeneratedMethods {
             take { insn -> (insn as? Insn.Var)?.takeIf { it.opcode == opcode && slots[name] == it.slot } }
         }
 
-        /** A store to a slot past `this` and the parameters, which start at [firstLocal], bound to [name]. */
+        /** A store to a slot at or after [firstLocal], the first slot past `this` and the parameters, bound to [name]. */
         fun store(
             opcode: Int,
             name: String,

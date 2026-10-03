@@ -210,6 +210,106 @@ routine and OpenTelemetry edge cases in the entries below.
 
 ## TODO
 
+## TODO
+
+### Deep review of 2026-10-03: landed, with follow-ups
+
+A review of the whole repo by a reviewer agent, each finding verified with a
+failing test before its fix. Landed: Spring MVC joins an inherited mapping to
+its declaring class, counts the best of several matching patterns, counts the
+default handler under `/*` instead of one endpoint per URL, declares
+`registerMapping` endpoints (Actuator), declares a nest's method-only routes,
+and skips CORS preflights; a JDK `HttpServer` handler the JDK refused never
+becomes the join; Ktor's dispatch advice ignores its own coroutine
+resumptions; the endpoint pipeline leaves runtime-generated proxies alone;
+route templates keep every parameter in a segment and a regex holding `/`;
+the OTel bridge treats `*` and `HEAD` endpoints as owned; the endpoint
+registry holds framework route objects weakly. In the branch tier: kotlinc's
+and scalac's string `when` no longer probe an outcome only a hash collision
+reaches; a `finally` body with no normal-path copy, a throw the method
+catches itself, and a counting null side are no longer routine; a class
+kotlinc regenerated from a library's inlined object is not read as own code;
+a `label` field of the adopter's own is not taken for the state machine;
+branch keys include an `invokedynamic`'s constants and method references;
+dropped inlined copies keep their origin, so key presence no longer depends
+on scope. Elsewhere: a static baseline send that fails is retried after a
+confirmed flush; a jar with no classes reads as resources only in the testkit
+and the stub; the testkit depends on a new `:wire` module only, and the
+shaded agent relocates its own wire packages, so the agent runs from its
+`-javaagent` jar alone; redefinition of a woven class is ignored (ADR 0005);
+a sub-resource class declares no JAX-RS endpoints (ADR 0020); a flush
+interval above one day falls back to the default; the testkit rejects a
+second instance in extension mode, records undecodable payloads, takes a
+read lock for queries, and injects into `PER_CLASS` constructors.
+
+Recorded, not built:
+
+- **A coverage agent ahead of this one silently drops marks.** When JaCoCo
+  rewrites a class first, every exact-body rule misreads its probes:
+  `GeneratedBy` marks, routine kinds, switch lowering and throwing defaults
+  all fall back to plain, so generated plumbing reads as never-hit adopter
+  code. 64 tests fail only under JaCoCo (59 root, 5 testkit), the
+  `ScalaGeneratedMethodMarkingTest` family above all. The fix, a chunk of its
+  own with an ADR amendment to 0025, 0026, 0046 and 0048: take per-method
+  marks and per-site results from the class's on-disk bytes, matched by site
+  ordinal, and keep slot numbering on the captured bytes. Run the suite under
+  JaCoCo in CI as a standing check. The same root cause loses every routine
+  kind under JaCoCo: a `finally` copy reads as `NONE`, since a probe sits
+  between the handler's `aload` and `athrow`, and a `NULL_DEFAULT` or
+  `THROW_ONLY` path holds a probe's `bastore`, which the routine rules forbid. String `when` collision outcomes from kotlinc are the
+  exception: their check steps over JaCoCo's probe. scalac's string match is
+  not recognised at all under JaCoCo, since a probe sits between `hashCode`
+  and the `lookupswitch`, so its null check, hash switch and every `equals`
+  check stay plain sites.
+
+  To reproduce, apply JaCoCo 0.8.13 from a Gradle init script outside the
+  repo (`allprojects { plugins.withId("java") { apply(plugin = "jacoco") } }`)
+  and run `./gradlew --init-script <file> build --continue`. The 64 failures
+  at the 2026-10-03 review, by test class: `ScalaGeneratedMethodMarkingTest`
+  45, `StaticBaselineScannerTest` 4, `OtherlodeTestCollectorEndToEndTest` 3,
+  `GuardedCodeInstrumentationTest` 3, `SwitchLoweringInstrumentationTest` 2,
+  `ScalaNeverHitEndToEndTest` 2, `GeneratedMethodMarkingTest` 2, and one each
+  in `ReferenceInstrumentationTest`, `KotlinKindInstrumentationTest` and
+  `ConditionInstrumentationTest`. `ReferenceInstrumentationTest`'s had its own
+  cause, JaCoCo's injected `java.lang.$JaCoCo` read as an absent reference,
+  and the review fixed it by dropping an unresolvable `java.` name. The kotlinc
+  string-`when` collision fix may also have turned the switch failures green;
+  rerun before counting.
+- **A nested `try`/`finally` written on one line loses one `FINALLY_COPY`.**
+  kotlinc emits no line number for the outer `finally`'s exception copy in
+  `try { try { … } finally { … } } finally { if (b > 7) … }` on one line, so
+  that copy inherits the inner body's line, finds no twin there and reads
+  `NONE`. Normally formatted, the same nesting is marked. Contrived; noted so
+  nobody rediscovers it.
+- **The other two repos read `RESOURCES_ONLY`.** The server needs the rule
+  the testkit and the stub apply: a dependency every listing counted no class
+  in is never unloaded. No wire change: `class_count` already carries it.
+- **Ktor regex routes merge with their parent.** `PathSegmentRegexRouteSelector`
+  contributes nothing to the template. It is absent from Ktor 2.0.3, and its
+  `getRegex()` returns a `kotlin.text.Regex` the shaded jar would rename, so a
+  fix reads `toString()` (`Regex(<pattern>)`) and has to decide how a pattern
+  holding `/` or `:` becomes one identity segment.
+- **The OTel bridge still duplicates a route under a servlet context path.**
+  OpenTelemetry's route includes it and a framework module's identity does
+  not.
+- **A class kotlinc regenerated from a library's inlined object keeps its
+  method probes.** Its branch sites are now dropped as library copies, but
+  `Foo$bar$$inlined$sortedBy$1.compare` is still a METHOD probe at a library
+  line, and a never-hit row when the sort saw one element.
+- **Branch keys of conditions holding an `invokedynamic` changed** with the
+  fingerprint fix, a one-time break in their cross-build history. Nothing is
+  live, so `DERIVATION_TAG` was not bumped.
+- **Small edges the follow-up review left.** Spring's annotation-mapped side
+  still counts a CORS preflight as a hit of the `GET` it asks about, since its
+  dispatch advice sees no request; the functional side skips preflights. A
+  route normalised before this review as `/{id:\d+}.json` normalises now as
+  `/{id}.json`, so a fleet mixing agent versions sees one endpoint under two
+  identities until it upgrades. An unclosed brace in a template swallows the
+  slashes after it, and a regex holding `}` (`{p:[^}]+}`) closes early. Weld's
+  proxies are not recognised as runtime-generated, so a JAX-RS resource under
+  CDI still counts twice. The OTel bridge records OpenTelemetry's `HTTP` verb
+  for an unknown method as its own endpoint.
+
 ### Library paths show the home folder as `~`: landed
 
 Landed on 2026-10-03 (ADR 0051, `13368e7`), from the hosted service's
@@ -1300,8 +1400,9 @@ never runs in the test JVM: the join is offline on class, method name and
 descriptor, the key both already carry. The two agree more than they appear
 to, since ADR 0003 takes its per-class count array from JaCoCo, ADR 0015 uses
 JaCoCo's own `SyntheticFilter` allow-list with one refinement, and
-`BranchSiteAnalyzer` already tolerates JaCoCo-instrumented bytecode as input,
-confirmed against 0.8.13's offline `Instrumenter`. Branch level will not
+`BranchSiteAnalyzer` tolerates JaCoCo-instrumented bytecode for the `$default`
+and coroutine shapes, confirmed against 0.8.13's offline `Instrumenter`, though
+not for the exact-body rules (see "Deep review of 2026-10-03"). Branch level will not
 join, because JaCoCo's branch identity is merge-point based while Otherlode's
 slots are allocated in encounter order, so a first cut is method level only.
 Inline probes stay excluded, as ADR 0025 and the server's rules exclude them
@@ -1383,7 +1484,8 @@ keeps out of the agent, so composing one is an adopter's own call.
 
 ### Deliberate v1 boundaries
 
-Not gaps, and not on anyone's list: static attach only (ADR 0013), the
+Not gaps, and not on anyone's list: static attach only (ADR 0013), no
+redefinition of a woven class (ADR 0005), the
 static scan not opening `BOOT-INF/lib` nested dependency jars, the
 classpath blind spot for app-server, OSGi and plugin-loaded deployments, and
 include rules being required, with no `includePackages=*` to ask for every

@@ -34,7 +34,7 @@ sealed interface DependencyOrigin {
 
 /**
  * Tracks the dependencies this instance has seen, one record per identity key, and delivers each
- * record to the collector once. See ADR 0030.
+ * record to the collector once.
  *
  * A dependency's identity key is the sorted list of its `group:artifact` pairs ([identityKey]),
  * never its version, so two jars carrying the same libraries at different versions are one
@@ -58,11 +58,11 @@ sealed interface DependencyOrigin {
  * same reason the baseline releases it ([releaseClassIndex]) once it has been read.
  *
  * A record is held back from the manifest until its loaded-class count has reached the collector,
- * so a collector never reads a used jar as unloaded (ADR 0036). Each counting sweep ends with
- * [markCounted], which opens a counting generation. A record takes the first generation that finds
- * it registered. Once every delta send computed after that sweep is confirmed, the export thread
- * calls [markCountsDelivered] with it. [computeManifestEntries] offers only records whose
- * generation has been delivered this way ([isSendable]).
+ * so a collector never reads a used jar as unloaded. Each counting sweep ends with [markCounted],
+ * which opens a counting generation. A record takes the first generation that finds it
+ * registered. Once every delta send computed after that sweep is confirmed, the export thread calls
+ * [markCountsDelivered] with it. [computeManifestEntries] offers only records whose generation has
+ * been delivered this way ([isSendable]).
  *
  * A record's location is for display, and a jar under the user's home folder, such as one in
  * `~/.m2`, would put the user's name on the wire. So [register] stores it with the home folder

@@ -4,6 +4,7 @@ plugins {
 rootProject.name = "otherlode-agent"
 
 include("bootstrap")
+include("wire")
 include("fixtures-scala3")
 include("fixtures-scala2")
 include("fixtures-kotlin-jvm-default-disable")

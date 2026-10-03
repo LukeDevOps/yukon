@@ -8,7 +8,7 @@ import java.util.jar.Manifest
 /**
  * A value for `includePackages` the refusal can offer an adopter who set none: [prefix] is the
  * package of [mainClass], the application's main class. It is only ever suggested, never applied,
- * since the main class is not always the adopter's own code. See ADR 0033.
+ * since the main class is not always the adopter's own code.
  */
 internal data class MainClassSuggestion(
     val mainClass: String,
@@ -120,7 +120,7 @@ internal data class MainClassSuggestion(
     }
 }
 
-/** The ERROR [dev.otherlode.Agent] logs when it refuses to start for want of include rules. See ADR 0033. */
+/** The ERROR [dev.otherlode.Agent] logs when it refuses to start for want of include rules. */
 internal object IncludeRulesRefusal {
     /** The refusal, ending with [suggestion] stated as a fact about the main class when there is one. */
     fun message(suggestion: MainClassSuggestion?): String {

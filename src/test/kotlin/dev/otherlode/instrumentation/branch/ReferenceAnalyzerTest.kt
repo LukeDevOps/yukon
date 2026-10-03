@@ -9,9 +9,9 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Proves [BranchSiteAnalyzer]'s reference recording (ADR 0030): which constructs name an
+ * Proves [BranchSiteAnalyzer]'s reference recording: which constructs name an
  * out-of-scope class, where each reference lands (a probed method or the class), and that
- * attribution follows ADR 0024's call-edge rules for pass-throughs, lambda bodies and body classes.
+ * attribution follows the call-edge rules for pass-throughs, lambda bodies and body classes.
  *
  * `com.example.library` is out of scope throughout, as are the JDK and the Kotlin standard
  * library: the analyser records every out-of-scope name, and dropping the JDK's happens later, at

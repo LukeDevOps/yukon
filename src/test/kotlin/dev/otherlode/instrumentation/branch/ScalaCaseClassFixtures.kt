@@ -4,7 +4,7 @@ import dev.otherlode.export.GeneratedBy
 
 /**
  * The case classes and companions of the `:fixtures-scala2` and `:fixtures-scala3` modules, and
- * the members of each that the adopter wrote, for the ADR 0048 tests of the transform and of the
+ * the members of each that the adopter wrote, for the generated-method tests of the transform and of the
  * static baseline. Every plumbing member not listed here as hand-written is scalac's.
  */
 object ScalaCaseClassFixtures {

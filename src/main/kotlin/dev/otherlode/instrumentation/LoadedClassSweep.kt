@@ -8,7 +8,7 @@ import java.lang.instrument.Instrumentation
 
 /**
  * Walks [Instrumentation.getAllLoadedClasses] to answer two questions no transformer can, one in
- * each direction. See ADR 0027 and ADR 0028.
+ * each direction.
  *
  * The forward direction ([reportUnreported]) asks which classes the agent would have instrumented,
  * had it been offered them, that the registry never heard about at all. `java.lang.instrument`
@@ -27,7 +27,7 @@ import java.lang.instrument.Instrumentation
  * walks of the same array.
  *
  * The same array feeds [dependencyCounter], when one is given, which counts the distinct classes
- * loaded from each dependency. See ADR 0030.
+ * loaded from each dependency.
  */
 open class LoadedClassSweep(
     private val instrumentation: Instrumentation,
@@ -42,8 +42,8 @@ open class LoadedClassSweep(
      * Runs the confirmation pass over every loaded class, unfiltered, and the unreported-class
      * pass over the same array, filtered through [isCandidate], only when [runForwardPass] is
      * true. Every call hands the array to [dependencyCounter] as well, even when either pass throws,
-     * so a failing pass never stops the dependency count (ADR 0036). [final] additionally logs a
-     * one-line summary of how many classes were withheld for good, when that count is above zero.
+     * so a failing pass never stops the dependency count. [final] additionally logs a one-line
+     * summary of how many classes were withheld for good, when that count is above zero.
      *
      * The confirmation pass must see every loaded name, not the forward direction's filtered
      * candidate list. The two ask opposite questions: the forward direction asks which classes
@@ -51,7 +51,7 @@ open class LoadedClassSweep(
      * filter; the confirmation pass asks which classes the registry *did* hear about that the JVM
      * never defined, which needs the raw set. A registered class the filter happens to drop would
      * otherwise be counted as missing and, after two calls, withheld for good: a live class
-     * silently removed from the manifest by the very fix meant to prevent that outcome. So both
+     * silently removed from the manifest. So both
      * passes are derived from the one array taken here, rather than the forward direction's own
      * filtered list.
      */
@@ -136,9 +136,9 @@ open class LoadedClassSweep(
      * it ignores reaches no transform callback and no registry bucket. An include prefix can reach
      * into the JDK's own packages (`includePackages=com` covers `com.sun.*`), and a sweep that only
      * replicated the type matcher would then call every such JDK class a blind spot, since the gate
-     * turned it away before the type matcher ever saw it. The first three checks here are that
-     * gate: a class on the bootstrap or platform loader, and one named under ByteBuddy's own
-     * package or the reflection internals, is ignored rather than instrumented.
+     * turned it away before the type matcher ever saw it. The loader checks and the name-prefix
+     * check here are that gate: a class on the bootstrap or platform loader, and one named under
+     * ByteBuddy's own package or the reflection internals, is ignored rather than instrumented.
      *
      * The rest mirror `TypeMatchPolicy`: the synthetic flag, the name rules, the
      * runtime-generated proxy names, and the coroutine-continuation check, which needs only the
@@ -152,8 +152,8 @@ open class LoadedClassSweep(
      * annotation's own type and can load classes, and a sweep must not load anything in order to
      * look. A class turned away for that reason is recorded as skipped, so it never reaches here.
      * The same limit applies to a multi-file part. The type matcher takes that one kind of
-     * synthetic class (ADR 0041), but only its `kotlin.Metadata` tells it apart, so the sweep drops
-     * every synthetic class. A part that reached no transformer is not reported.
+     * synthetic class, but only its `kotlin.Metadata` tells it apart, so the sweep drops every
+     * synthetic class. A part that reached no transformer is not reported.
      */
     private fun isCandidate(loaded: Class<*>): Boolean {
         if (loaded.isArray || loaded.isPrimitive || loaded.isHidden) return false

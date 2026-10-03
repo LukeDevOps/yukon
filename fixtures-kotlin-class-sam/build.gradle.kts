@@ -1,5 +1,5 @@
 // Kotlin fixture classes compiled with class-based SAM conversion and lambdas
-// (-Xsam-conversions=class -Xlambdas=class), for the forwarder table (ADR 0035). In this mode a
+// (-Xsam-conversions=class -Xlambdas=class), for the handler forwarder table. In this mode a
 // reference passed as a Java functional interface compiles to a synthetic class whose method only
 // calls the real function, a shape the root build's own indy-based mode never produces. The root
 // build reads the compiled classes through a system property, as it does the other fixture

@@ -21,9 +21,9 @@ import java.util.logging.Level as JulLevel
 import java.util.logging.Logger as JulLogger
 
 /**
- * Pins the reverse direction ADR 0028 adds to the sweep: reconciling a registered class's name
- * against the JVM's own loaded set, as opposed to the forward, unreported-class direction ADR 0027
- * already covers in [DeflectedClassLoadTest].
+ * Pins the sweep's reverse direction: reconciling a registered class's name against the JVM's own
+ * loaded set, as opposed to the forward, unreported-class direction [DeflectedClassLoadTest]
+ * already covers.
  */
 class LoadedClassSweepTest {
     private val instrumentation: Instrumentation = ByteBuddyAgent.install()
@@ -151,7 +151,7 @@ class LoadedClassSweepTest {
     /**
      * The forward direction has to turn away a runtime-generated class for the same reason the
      * type matcher does, or every Spring CGLIB proxy would be reported as a class no transformer
-     * saw. See ADR 0029.
+     * saw.
      */
     @Test
     fun `a runtime-generated proxy class the JVM has loaded is not reported as a blind spot`() {

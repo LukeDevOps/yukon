@@ -3,7 +3,7 @@ package dev.otherlode.instrumentation.branch
 /**
  * One resolved Scala default getter: a compiler-generated, public, non-synthetic method named
  * `f$default$N` that returns the default value for one optional parameter of `f`, called by every
- * omitting call before `f` itself. See ADR 0023.
+ * omitting call before `f` itself.
  *
  * [parameterIndex] is `N - 1`, the target's own zero-based JVM parameter index; unlike Kotlin's
  * omission probes, this counts a Scala extension receiver, since it is an ordinary first JVM
@@ -13,7 +13,7 @@ package dev.otherlode.instrumentation.branch
  * variable slot, or the empty string when the target carries no debug info. [line] is the getter's
  * own first line, since the getter's body is the default expression. It is -1 when the getter has
  * no line-number table, as a constructor getter's static forwarder does. It is never the target's
- * line. See ADR 0044.
+ * line.
  *
  * [targetClassName] is the dotted binary name of the class the target lives in, set only for a
  * constructor default getter declared on a companion module class, whose target `<init>` lives on

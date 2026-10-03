@@ -4,6 +4,7 @@ import dev.otherlode.config.AgentConfig
 import dev.otherlode.instrumentation.LoadedClassSweep
 import dev.otherlode.instrumentation.branch.BranchDropCounts
 import dev.otherlode.instrumentation.branch.BranchDropReason
+import dev.otherlode.instrumentation.staticscan.StaticBaselineSender
 import dev.otherlode.registry.DependencyRegistry
 import dev.otherlode.registry.EndpointRegistry
 import dev.otherlode.registry.ExternalClassRegistry
@@ -31,32 +32,36 @@ class ExportScheduler(
     /**
      * Stamped on every delta batch and manifest this scheduler sends. The agent passes the same
      * value to the static baseline, so all three payloads carry one run id. Required, with no
-     * default: a scheduler that made its own would name a different run from the baseline. See
-     * ADR 0032.
+     * default: a scheduler that made its own would name a different run from the baseline.
      */
     private val resource: ResourceAttributes,
     private val registry: ProbeRegistry,
-    /** Endpoint hit and manifest state; see [EndpointRegistry] and ADR 0017. */
+    /** Endpoint hit and manifest state; see [EndpointRegistry]. */
     private val endpointRegistry: EndpointRegistry,
     private val exporter: Exporter,
     /** Source of the first-flush jitter. Injectable so a test can pin the initial delay to zero. */
     private val random: Random = Random.Default,
     /** Upper bound on changed probes per delta POST; see [ProbeRegistry.computeDeltaBatches]. */
     private val maxDeltasPerBatch: Int = DEFAULT_MAX_DELTAS_PER_BATCH,
-    /** Upper bound on probe locations plus skipped classes per manifest POST; see [ProbeRegistry.computeManifestDeltas]. */
+    /** Upper bound on manifest entries per POST, each weighed as [ProbeRegistry.computeManifestDeltas] weighs it. */
     private val maxManifestEntriesPerChunk: Int = DEFAULT_MAX_MANIFEST_ENTRIES_PER_CHUNK,
-    /** Dropped branch site totals; see [maybeLogBranchDrops] and ADR 0025. */
+    /** Dropped branch site totals; see [maybeLogBranchDrops]. */
     private val branchDropCounts: BranchDropCounts = BranchDropCounts(),
     /**
      * Confirms classes the registry withholds and finds classes that loaded but reached no
-     * transformer; see [maybeSweep] and ADRs 0027 and 0028. Null when nothing supplied one, which
-     * is every test that does not exercise the sweep.
+     * transformer; see [maybeSweep]. Null when nothing supplied one, which is every test that does
+     * not exercise the sweep.
      */
     private val loadedClassSweep: LoadedClassSweep? = null,
-    /** Dependencies found on the startup classpath, delivered on the manifest; see ADR 0030. */
+    /** Dependencies found on the startup classpath, delivered on the manifest. */
     private val dependencyRegistry: DependencyRegistry = DependencyRegistry(),
-    /** Referenced out-of-scope classes, resolved to dependencies and delivered on the manifest; see ADR 0030. */
+    /** Referenced out-of-scope classes, resolved to dependencies and delivered on the manifest. */
     private val externalClassRegistry: ExternalClassRegistry = ExternalClassRegistry(),
+    /**
+     * Static baseline chunks the collector has not confirmed yet, sent again, one per flush, after
+     * a flush whose own sends it confirmed. Null when the static baseline is off.
+     */
+    private val staticBaselineSender: StaticBaselineSender? = null,
 ) {
     private val log = System.getLogger(ExportScheduler::class.java.name)
     private var executor: ScheduledExecutorService? = null
@@ -151,9 +156,9 @@ class ExportScheduler(
      * them side by side keeps one flush's worst case close to a single
      * send's worst case instead of the sum of both.
      *
-     * Up to two more manifest sends follow on this thread, once both main sends have ended
-     * (ADR 0036). A second manifest send runs only when this flush's confirmed delta sends released
-     * a dependency that no manifest has carried yet. It carries that dependency and the mappings
+     * Up to two more manifest sends follow on this thread, once both main sends have ended. A
+     * second manifest send runs only when this flush's confirmed delta sends released a dependency
+     * that no manifest has carried yet. It carries that dependency and the mappings
      * held on it, so they go out in the same flush as their counts. Then an empty manifest carries
      * `dependenciesListed`, when the flag is due, no confirmed manifest has carried it, and every
      * send of this flush was confirmed. Neither extra send runs during an outage, so a flush's worst
@@ -172,7 +177,7 @@ class ExportScheduler(
      * [final] is true only for the flush [flushOnShutdown] runs. It is carried onto every delta
      * batch this flush sends, the empty heartbeat and a standalone batch of endpoint or dependency
      * deltas included, so a collector can tell an instance that ended cleanly from one that went
-     * silent. The manifest send is unaffected. See ADR 0010.
+     * silent. The manifest send is unaffected.
      */
     fun flush(final: Boolean = false) {
         try {
@@ -189,7 +194,12 @@ class ExportScheduler(
             val released =
                 dependencyRegistry.deliveredGeneration > deliveredBefore && dependencyRegistry.hasSendableUndelivered()
             if (released) allConfirmed = sendManifestDelta() && allConfirmed
-            if (allConfirmed) sendDependenciesListedIfDue()
+            if (allConfirmed) {
+                sendDependenciesListedIfDue()
+                // One chunk per flush, and none from the shutdown flush, so a slow baseline send
+                // never holds up a heartbeat or spends the shutdown budget.
+                if (!final) staticBaselineSender?.retryPending()
+            }
         } catch (t: Throwable) {
             log.log(Level.ERROR, "otherlode: flush failed outside its own send guards, will retry next flush", t)
         }
@@ -200,20 +210,18 @@ class ExportScheduler(
      * rather than waiting a whole cycle.
      *
      * The two directions the sweep serves keep different cadences. Confirmation
-     * ([ProbeRegistry.confirmFrom], ADR 0028) runs on every flush a class awaits it, since a class
-     * held back stays held back until it is confirmed, and waiting ten flushes would delay every
-     * class's first manifest by that much. The forward, unreported-class direction (ADR 0027) is
-     * the expensive part, an `isCandidate` filter over every class the JVM holds, and keeps its
-     * existing every-tenth-flush cadence; the shutdown flush always runs it, so an instance that
-     * ends cleanly always gives a final answer.
+     * ([ProbeRegistry.confirmFrom]) runs on every flush a class awaits it, since a class held back
+     * stays held back until it is confirmed, and waiting ten flushes would delay every class's
+     * first manifest by that much. The forward, unreported-class direction is the expensive part,
+     * an `isCandidate` filter over every class the JVM holds, and runs every tenth flush; the
+     * shutdown flush always runs it, so an instance that ends cleanly always gives a final answer.
      *
      * Before the dependency listing completes, the walk is skipped entirely, with no call into the
      * sweep at all, when there is nothing for either direction to do: no class awaiting
      * confirmation and the forward direction not due. `getAllLoadedClasses` allocates an array of
      * every class the JVM holds, and on a settled process there is usually nothing to confirm.
      * Once the listing completes the walk runs on every flush, since the sweep counts the classes
-     * loaded from each dependency from the same array (ADR 0030); the two directions keep the
-     * cadences above.
+     * loaded from each dependency from the same array; the two directions keep the cadences above.
      *
      * Guarded like the sends are: this runs under `scheduleAtFixedRate`, which stops calling a
      * task forever the first time one lets a throwable escape.
@@ -234,7 +242,7 @@ class ExportScheduler(
     /**
      * Logs one INFO line naming the branch sites dropped so far, the first time a flush finds the
      * total above zero. Nothing is logged on a flush that finds no drops yet, and nothing is
-     * logged again once it has. See [BranchDropCounts] and ADR 0025.
+     * logged again once it has. See [BranchDropCounts].
      */
     private fun maybeLogBranchDrops() {
         if (branchDropsLogged.get()) return
@@ -280,7 +288,7 @@ class ExportScheduler(
      * rest are recomputed and resent on the next flush.
      *
      * When every send in the loop is confirmed, the heartbeat alone included, the counts of
-     * counting [generation] have reached the collector, and this records it
+     * counting generation [generation] have reached the collector, and this records it
      * ([DependencyRegistry.markCountsDelivered]). A failure records nothing.
      *
      * Returns whether every send in the loop was confirmed.
@@ -473,16 +481,16 @@ class ExportScheduler(
 
     /**
      * Whether this instance records references, stamped on every manifest it sends: true exactly
-     * when include rules are set. The agent refuses to start without them (ADR 0033), so a running
-     * agent always sends true; with an empty list nothing is instrumented and nothing is recorded,
-     * and false says so. See ADR 0030.
+     * when include rules are set. The agent refuses to start without them, so a running agent
+     * always sends true; with an empty list nothing is instrumented and nothing is recorded, and
+     * false says so.
      */
     private val referencesRecorded: Boolean
         get() = config.instrumentedPackagePrefixes.isNotEmpty()
 
     /**
      * Whether a manifest built at this point may say `dependenciesListed`: every startup dependency and every
-     * mapping recorded before the listing ended has gone out on a confirmed manifest. See ADR 0036.
+     * mapping recorded before the listing ended has gone out on a confirmed manifest.
      */
     private val dependenciesListed: Boolean
         get() = dependencyRegistry.isStartupListingDelivered && externalClassRegistry.isBacklogDelivered
@@ -539,7 +547,7 @@ class ExportScheduler(
         const val DEFAULT_MAX_MANIFEST_ENTRIES_PER_CHUNK: Int = 5_000
 
         /**
-         * How many flushes pass between sweeps, roughly five minutes at the default interval. Not
+         * How many flushes pass between sweeps, about ten minutes at the default interval. Not
          * an option: nobody can pick a better number without knowing what the walk costs on their
          * own application, and the finding it produces does not go stale.
          */

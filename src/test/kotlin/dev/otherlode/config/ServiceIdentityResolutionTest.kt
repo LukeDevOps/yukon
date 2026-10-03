@@ -5,7 +5,7 @@ import kotlin.test.assertEquals
 import kotlin.test.fail
 
 /**
- * The resolution order ADR 0045 gives the service name, the namespace and the environment: Otherlode's
+ * The resolution order for the service name, the namespace and the environment: Otherlode's
  * own three sources, then OpenTelemetry's own settings as its Java agent resolves them, then, for
  * the name only, detection and the default.
  */
@@ -207,10 +207,16 @@ class ServiceIdentityResolutionTest {
         assertEquals("new", AgentConfig.parse(null, env = both::get, systemProperties = { null }, detectServiceName = { null }).environment)
 
         val olderOnly = mapOf("OTEL_RESOURCE_ATTRIBUTES" to "deployment.environment=old")
-        assertEquals("old", AgentConfig.parse(null, env = olderOnly::get, systemProperties = { null }, detectServiceName = { null }).environment)
+        assertEquals(
+            "old",
+            AgentConfig.parse(null, env = olderOnly::get, systemProperties = { null }, detectServiceName = { null }).environment,
+        )
 
         val blankNewer = mapOf("OTEL_RESOURCE_ATTRIBUTES" to "deployment.environment.name=,deployment.environment=old")
-        assertEquals("old", AgentConfig.parse(null, env = blankNewer::get, systemProperties = { null }, detectServiceName = { null }).environment)
+        assertEquals(
+            "old",
+            AgentConfig.parse(null, env = blankNewer::get, systemProperties = { null }, detectServiceName = { null }).environment,
+        )
     }
 
     @Test
@@ -310,13 +316,18 @@ class ServiceIdentityResolutionTest {
     @Test
     fun `detection that throws falls through to the default`() {
         val config =
-            AgentConfig.parse(null, env = { null }, systemProperties = { null }, detectServiceName = { throw IllegalStateException("boom") })
+            AgentConfig.parse(
+                null,
+                env = { null },
+                systemProperties = { null },
+                detectServiceName = { throw IllegalStateException("boom") },
+            )
 
         assertEquals("unknown_service:java", config.serviceName)
     }
 
     @Test
-    fun `serviceNamespace derives its property and environment variable names by ADR 0016's rule`() {
+    fun `serviceNamespace derives its property and environment variable names from the option name, like every other option`() {
         assertEquals("otherlode.service.namespace", OptionNames.systemProperty("serviceNamespace"))
         assertEquals("OTHERLODE_SERVICE_NAMESPACE", OptionNames.environmentVariable("serviceNamespace"))
     }

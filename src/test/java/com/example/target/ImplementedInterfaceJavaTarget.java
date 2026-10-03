@@ -4,10 +4,10 @@ import java.util.function.IntSupplier;
 import java.util.function.Supplier;
 
 /**
- * The javac side of ADR 0042. {@link #lambda} converts a lambda to {@link Runnable}, so its
- * creation edge names that interface. {@link #anonymous} creates an anonymous class with
- * {@code new}, so its edge names none. {@link #twoInterfaces} hands one method to two interfaces,
- * which gives two creation edges.
+ * The interface each javac creation edge names. {@link #lambda} converts a lambda to
+ * {@link Runnable}, so its creation edge names that interface. {@link #anonymous} creates an
+ * anonymous class with {@code new}, so its edge names none. {@link #twoInterfaces} hands one
+ * method to two interfaces, which gives two creation edges.
  */
 public class ImplementedInterfaceJavaTarget {
     public Runnable lambda() {

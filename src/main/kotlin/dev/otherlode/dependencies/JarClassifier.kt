@@ -7,8 +7,8 @@ import java.util.jar.Attributes
 import java.util.jar.Manifest
 
 /**
- * The ADR 0030 rules for whether a jar is a dependency, shared by the startup listing and by the
- * sweep when it meets a jar the listing never saw.
+ * The rules for whether a jar is a dependency, shared by the startup listing and by the sweep
+ * when it meets a jar the listing never saw.
  *
  * A jar on its own (on the classpath, or opened through a `file:` URL) is never a dependency when
  * its manifest names an agent or marks it as a Spring Boot fat jar or executable war

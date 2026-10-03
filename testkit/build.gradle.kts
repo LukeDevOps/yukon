@@ -12,10 +12,9 @@ repositories {
 }
 
 dependencies {
-    // Reuses the root project's wire models and codec (Payloads.kt, ProtoPayloadCodec) directly,
-    // rather than duplicating the wire-mapping code in a separately published module.
-    implementation(project(":"))
-    implementation("com.google.protobuf:protobuf-java:3.25.5")
+    // The wire models and codec, and nothing else of the agent's: the agent itself reaches a test
+    // JVM only as its shaded -javaagent jar, never as classes on the test classpath.
+    implementation(project(":wire"))
 
     // compileOnly: an adopter who does not use JUnit pays nothing for OtherlodeExtension, the same
     // shape OpenTelemetry uses for opentelemetry-sdk-testing. JUnit's own launcher supplies the
@@ -25,6 +24,9 @@ dependencies {
     compileOnly("org.junit.jupiter:junit-jupiter-api:5.10.1")
 
     testImplementation(kotlin("test"))
+
+    // The end-to-end tests drive the agent's instrumentation and exporter in-process.
+    testImplementation(project(":"))
 
     // byte-buddy-agent gives the end-to-end test ByteBuddyAgent.install() to self-attach.
     // Plain byte-buddy is needed too: OtherlodeInstrumentation.install()/uninstall() are typed in
@@ -57,8 +59,8 @@ tasks.jar {
 
 // The Scala fixture modules, wired in the way the root build wires them: a task dependency and two
 // system properties each, never a test dependency, so no fixture class loads before a test installs
-// instrumentation. The never-hit test for Scala's generated methods (ADR 0048) loads them through a
-// child-first loader.
+// instrumentation. The never-hit test for Scala's generated methods loads them through a child-first
+// loader.
 evaluationDependsOn(":fixtures-scala3")
 evaluationDependsOn(":fixtures-scala2")
 val scalaFixtureModules = listOf("scala3", "scala2")

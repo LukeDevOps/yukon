@@ -5,7 +5,7 @@ import com.example.other.OtherTarget;
 import java.util.List;
 
 /**
- * One method per kind of reference ADR 0030 counts, each naming its own {@link Lib} type, so a test
+ * One method per kind of reference the analyser records, each naming its own {@link Lib} type, so a test
  * can pin which construct produced which reference. The class itself carries the class-level
  * kinds: a superclass, an interface, a class annotation with enum, class and nested-annotation
  * values, and fields with a type, a generic signature, an annotation and a type-use annotation.

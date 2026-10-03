@@ -143,3 +143,4 @@ fire. `demo-spring`'s `PricingConfiguration` is fully hit with the rule in place
   `...Bridge`) followed by a lower-case hex digit.
 - An adopter who genuinely wants a generated class instrumented has no way to ask for it. Nobody has
   wanted one.
+- The endpoint pipeline ignores the same classes. A proxy of a JAX-RS resource inherits its annotations' meaning and calls the real method through `super`, so weaving both counted every call twice. Added 2026-10-03 in a review.

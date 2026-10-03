@@ -58,14 +58,14 @@ data class StaticScanResult(
 /**
  * Builds a load-independent inventory of what exists on the classpath under
  * [instrumentedPackagePrefixes], by reading bytecode directly instead of waiting for the JVM to
- * load it. See "Static baseline" in this project's `CLAUDE.md` for the full design.
+ * load it.
  *
  * Applies the exact same [TypeMatchPolicy] a loaded class would be matched against, so a class
  * this scanner declares as dead-code-eligible is one the reactive tier would also have
  * instrumented, had it loaded. A class the reactive tier would match but never register, because
  * it has no concrete method to probe, lands in [StaticScanResult.unprobedClasses] rather than
  * being declared: declaring it would invite a collector to report it "never loaded" when the
- * agent simply had nothing to say about it.
+ * agent had nothing to say about it.
  *
  * [excludedPackagePrefixes] is threaded through to [TypeMatchPolicy] the same way
  * [instrumentedPackagePrefixes] is, so a class excluded from the reactive tier never lands in any

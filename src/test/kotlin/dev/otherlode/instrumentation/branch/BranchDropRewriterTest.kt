@@ -16,8 +16,7 @@ import kotlin.test.assertEquals
  * Drives [BranchProbeAsmVisitorWrapper] directly with a dropped ordinal, on
  * `BranchTargetWithExtraBranches`'s `classify`, which has two conditionals in one method. Proves
  * the rewriter emits a dropped site's original instruction unchanged, allocating no slot for it,
- * so [BranchSiteAnalyzer]'s kept-slot count and what the wrapper actually wrote agree. See ADR
- * 0025.
+ * so [BranchSiteAnalyzer]'s kept-slot count and what the wrapper actually wrote agree.
  */
 class BranchDropRewriterTest {
     private fun loadWithDrop(

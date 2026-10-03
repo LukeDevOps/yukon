@@ -9,7 +9,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Proves that a static baseline scan of each Scala fixture module declares the same ADR 0048 marks
+ * Proves that a static baseline scan of each Scala fixture module declares the same generated-method marks
  * the transform-time path gives, the companion rule's partner read through the scan's own locator
  * included, and a default getter the mark of the method it fills a default for.
  */

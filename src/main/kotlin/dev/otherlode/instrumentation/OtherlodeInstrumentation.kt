@@ -66,6 +66,7 @@ import java.io.IOException
 import java.lang.System.Logger.Level
 import java.lang.instrument.Instrumentation
 import java.util.WeakHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 
 /** A woven `$default` method's per-method constants for [OptionalArgumentAdvice]. */
 private class DefaultSiteBinding(
@@ -84,9 +85,10 @@ private fun bindingFor(
         )
 
 /**
- * Wires method-entry probes into every type matched by [AgentConfig.instrumentedPackagePrefixes],
- * less the bootstrap and platform loaders' classes that ByteBuddy's `AgentBuilder` ignores by
- * default. An empty list matches nothing; the agent refuses to start with one (ADR 0033).
+ * Wires method-entry, branch, optional-argument and `<clinit>` probes into every type matched by
+ * [AgentConfig.instrumentedPackagePrefixes], less the bootstrap and platform loaders' classes that
+ * ByteBuddy's `AgentBuilder` ignores by default. An empty list matches nothing; the agent refuses
+ * to start with one.
  *
  * Each matched type is registered with [ProbeRegistry] once, after its rewrite succeeds; see
  * [TransformResultListener]. It gets its own
@@ -115,17 +117,18 @@ class OtherlodeInstrumentation(
      * [analyzeBytecode], the path taken when the capture has nothing for a class.
      */
     captureClassBytes: Boolean = true,
-    /** Where dropped branch sites are tallied; see [BranchDropCounts] and ADR 0025. */
+    /** Where dropped branch sites are tallied; see [BranchDropCounts]. */
     private val branchDropCounts: BranchDropCounts = BranchDropCounts(),
-    /** Where each out-of-scope class a transformed class references was found; see ADR 0030. */
+    /** Where each out-of-scope class a transformed class references was found. */
     private val externalClassRegistry: ExternalClassRegistry = ExternalClassRegistry(),
     /**
-     * The forwarder table, and the handler interfaces the analysis looks for (ADR 0035). A class's
-     * entries are written when its probes are, in [TransformResultListener].
+     * The forwarder table, and the handler interfaces the analysis looks for. A class's entries are
+     * written when its probes are, in [TransformResultListener].
      */
     private val handlerForwarders: HandlerForwarders = HandlerForwarders(),
 ) {
     private val log = System.getLogger(OtherlodeInstrumentation::class.java.name)
+    private val redefinitionLogged = AtomicBoolean(false)
     private val referencedClassLocator = ReferencedClassLocator()
     private val classBytesCapture: ClassBytesCapture? = if (captureClassBytes) ClassBytesCapture(::isCandidateInternalName) else null
 
@@ -174,6 +177,12 @@ class OtherlodeInstrumentation(
             .Default(ByteBuddy().ignore(none()))
             .ignore(any<TypeDescription>(), isBootstrapClassLoader<ClassLoader>().or(isExtensionClassLoader()))
             .or(ignoredNames())
+            // A class already loaded is being redefined (HotSwap, another agent's redefineClasses),
+            // which this agent does not support. Its woven field is missing from the new bytes, so
+            // the JVM refuses the redefinition either way; re-weaving would fail on the field the
+            // loaded class already has, and report as skipped a class whose probes were already
+            // sent.
+            .or(AgentBuilder.RawMatcher { type, _, _, classBeingRedefined, _ -> isRedefinition(type, classBeingRedefined) })
             // No LoadedTypeInitializer is ever used, so ByteBuddy has nothing to run after load
             // and no reason to inject its Nexus class into the bootstrap loader via Unsafe.
             .with(AgentBuilder.InitializationStrategy.NoOp.INSTANCE)
@@ -188,14 +197,34 @@ class OtherlodeInstrumentation(
      * it renames types into) and the reflection internals. With the bootstrap and platform loader
      * clause beside it in [install], this is `AgentBuilder.Default`'s ignore matcher in byte-buddy
      * 1.18.12 without its synthetic-type clause. That clause would keep a multi-file part from
-     * [typeMatcher], which takes that one kind of synthetic class and turns away every other (ADR
-     * 0041).
+     * [typeMatcher], which takes that one kind of synthetic class and turns away every other.
      */
     private fun ignoredNames(): ElementMatcher.Junction<TypeDescription> =
         nameStartsWith<TypeDescription>("net.bytebuddy.")
             .and(not(nameStartsWith("${NamingStrategy.BYTE_BUDDY_RENAME_PACKAGE}.")))
             .or(nameStartsWith("sun.reflect."))
             .or(nameStartsWith("jdk.internal.reflect."))
+
+    /**
+     * Whether [classBeingRedefined] is set, which makes this a redefinition the agent leaves alone.
+     * The first one of a class in scope logs an INFO line: the JVM's own refusal ("attempted to
+     * change the schema") names no agent, which leaves an adopter's failed HotSwap a mystery.
+     */
+    private fun isRedefinition(
+        type: TypeDescription,
+        classBeingRedefined: Class<*>?,
+    ): Boolean {
+        if (classBeingRedefined == null) return false
+        if (isCandidateInternalName(type.internalName) && redefinitionLogged.compareAndSet(false, true)) {
+            log.log(
+                Level.INFO,
+                "otherlode: ${type.name} is being redefined; if this agent instrumented it, it carries a probe field " +
+                    "the new bytes lack, and the JVM refuses the change (redefining an instrumented class, as a " +
+                    "debugger's HotSwap does, is not supported)",
+            )
+        }
+        return true
+    }
 
     /** Removes both transformers [install] registered. */
     fun uninstall(
@@ -254,21 +283,20 @@ class OtherlodeInstrumentation(
      * callback would publish them before the outcome is known: a flush landing in that window
      * sends the class's probes to a collector, and the rollback afterwards cannot take them back.
      * Those probes then sit in the manifest at zero forever, which reads exactly like dead code.
-     * ADR 0007 puts it directly: "not instrumented" is an honest state to report, "in the
-     * manifest, permanently zero" is not.
+     * "Not instrumented" is an honest state to report; "in the manifest, permanently zero" is not.
      *
      * So no probe reaches [ProbeRegistry] until `onTransformation`, which ByteBuddy calls only
      * after `make()` has produced the bytes. The class is defined after this returns and its
      * `<clinit>` prelude runs later still, so the array is always registered before anything
-     * looks it up. This covers the range ByteBuddy can see; a failure past `getBytes()`, such as
-     * the verifier rejecting the woven class, still leaves probes nothing will increment.
+     * looks it up. This covers the range ByteBuddy can see; a class that fails past `getBytes()`,
+     * such as one the verifier rejects, stays out of the manifest until it is confirmed defined.
      * Endpoints are declared on their own path and do not go through this listener.
      *
-     * The class's forwarder table entries (ADR 0035) are written here too, so a transform that
-     * failed writes none. They do not wait for the class to be confirmed defined (ADR 0028). That
-     * confirmation comes at a later flush, and by then the handler the entry names has been
-     * registered. An entry for a class that was never defined does no harm: the table is never
-     * sent, and no handler of that class can exist to be looked up.
+     * The class's forwarder table entries are written here too, so a transform that failed writes
+     * none. They do not wait for the class to be confirmed defined. That confirmation comes at a
+     * later flush, and by then the handler the entry names has been registered. An entry for a
+     * class that was never defined does no harm: the table is never sent, and no handler of that
+     * class can exist to be looked up.
      */
     private inner class TransformResultListener : AgentBuilder.Listener.Adapter() {
         override fun onTransformation(
@@ -339,7 +367,7 @@ class OtherlodeInstrumentation(
      * on the already-rebased type regardless.
      *
      * ByteBuddy refuses to redefine any type that carries a declared annotation whose own
-     * `@Target` does not legally support [ElementType.TYPE]. It throws `IllegalStateException`
+     * `@Target` does not legally support `ElementType.TYPE`. It throws `IllegalStateException`
      * deep inside its own validation. Kotlin's compiler attaches `@kotlin.jvm.JvmName` directly
      * onto the class file for any `@file:JvmName`-annotated source file, even though that
      * annotation's own `@Target` only covers functions, properties, and files, not classes. This
@@ -401,7 +429,7 @@ class OtherlodeInstrumentation(
             // Nothing here to probe: a marker interface, a constants holder, a class whose every
             // method the matcher excludes. Recorded so the sweep can tell it apart from a class
             // that went unreported for a reason the agent cannot see. Local only; see
-            // ProbeRegistry.recordNothingToProbe and ADR 0027.
+            // ProbeRegistry.recordNothingToProbe.
             //
             // Only when the bytes were readable. Without them the analysis is empty whatever the
             // class holds, and a Scala class whose lambda bodies are its only probe-worthy methods
@@ -421,9 +449,9 @@ class OtherlodeInstrumentation(
         val branchSites = analysis.sites
         val references = ReferencesKept(classLoader)
 
-        // A resolved Scala default getter (ADR 0023) keeps its ordinary method-tier slot and
-        // advice; only its manifest row changes, from a METHOD probe under the getter's own name
-        // to an OPTIONAL_ARGUMENT probe naming the target it fills a default for.
+        // A resolved Scala default getter keeps its ordinary method-tier slot and advice; only its
+        // manifest row changes, from a METHOD probe under the getter's own name to an
+        // OPTIONAL_ARGUMENT probe naming the target it fills a default for.
         val scalaGetterSitesByKey = analysis.scalaGetterSites.associateBy { it.getterName to it.getterDescriptor }
         val methodProbes =
             methods.map {
@@ -465,7 +493,7 @@ class OtherlodeInstrumentation(
         // per kept site, in the same siteIndex order, and branchSlotCapacity below is sized to
         // match. A branch inside an inline method's body is just as invisible to a Kotlin caller
         // as the method probe itself, so it inherits the same flag, and a branch inside a
-        // generated method carries that method's mark (ADR 0026).
+        // generated method carries that method's mark.
         val branchProbes =
             analysis.keptSites.flatMap { kept ->
                 val site = kept.site
@@ -588,8 +616,8 @@ class OtherlodeInstrumentation(
             log.log(
                 Level.WARNING,
                 "otherlode: ${typeDescription.name} registered dynamically but was not in the static baseline computed " +
-                    "at startup for this process - the static scan may have a blind spot for this deployment " +
-                    "(see \"Static baseline\" in this project's CLAUDE.md)",
+                    "at startup for this process; the static scan cannot see classes a server or plugin loader finds " +
+                    "at run time, such as a deployed WAR, so this deployment may have such a blind spot",
             )
         }
 
@@ -606,8 +634,8 @@ class OtherlodeInstrumentation(
 
         // One Advice visitor for the whole class, with each method's slot resolved from its
         // signature at weave time. One visitor per method would stack N method visitors, each
-        // checking every method against its own matcher, so transform cost grew with the square of
-        // the method count.
+        // checking every method against its own matcher, so transform cost would grow with the square
+        // of the method count.
         val slotBySignature = methods.withIndex().associate { (index, method) -> (method.internalName to method.descriptor) to index }
         instrumented =
             instrumented.visit(
@@ -628,6 +656,7 @@ class OtherlodeInstrumentation(
                         branchSlotCapacity = branchProbes.size,
                         droppedOrdinalsByMethod = analysis::droppedOrdinalsOf,
                         throwingDefaultOrdinalsByMethod = analysis::throwingDefaultOrdinalsOf,
+                        unprobedOutcomesByMethod = analysis::unprobedOutcomesOf,
                     ),
                 )
         }
@@ -663,7 +692,7 @@ class OtherlodeInstrumentation(
      * Filters one class's references down to the ones worth sending, asking
      * [referencedClassLocator] once per distinct name through [classLoader], the loader defining the
      * class: a JDK class or a class read from a classpath directory is dropped from every list, and
-     * every other name is kept with where it was found. See ADR 0030.
+     * every other name is kept with where it was found.
      */
     private inner class ReferencesKept(
         private val classLoader: ClassLoader?,
@@ -683,7 +712,7 @@ class OtherlodeInstrumentation(
     /**
      * Tallies [branchDropCounts] with [typeName]'s dropped sites, grouped by reason, and logs one
      * DEBUG line naming the total and each reason's own count when anything was dropped. A no-op
-     * when nothing was. See ADR 0025.
+     * when nothing was.
      */
     private fun recordBranchDrops(
         typeName: String,
@@ -705,12 +734,13 @@ class OtherlodeInstrumentation(
     }
 
     /**
-     * Finds the class's conditional jumps, and each method's first line number, in [classBytes]:
-     * the bytes the JVM is actually about to define, as captured by [ClassBytesCapture] just
-     * before ByteBuddy's transform, or read from the class's own classloader resource when
-     * nothing was captured (a class defined outside the ordinary transformer chain, or loaded by
-     * a test harness that bypasses [install]). ByteBuddy's own callback only hands over type
-     * metadata, not the class bytes, hence the separate capture.
+     * Runs [BranchSiteAnalyzer] over [classBytes]: branch sites, first lines, call edges,
+     * references and the marks the manifest carries. [classBytes] are the bytes the JVM is about
+     * to define, as captured by [ClassBytesCapture] just before ByteBuddy's transform, or read
+     * from the class's own classloader resource when nothing was captured (a class defined outside
+     * the ordinary transformer chain, or loaded by a test harness that bypasses [install]).
+     * ByteBuddy's own callback only hands over type metadata, not the class bytes, hence the
+     * separate capture.
      *
      * If [classBytes] is null, this class gets no branch probes and no method line numbers.
      * Method-entry tracking is unaffected.
@@ -722,7 +752,7 @@ class OtherlodeInstrumentation(
     ): BranchSiteAnalyzer.Analysis {
         val eligible = methods.map { it.internalName to it.descriptor }.toSet()
         val bytes = classBytes ?: return BranchSiteAnalyzer.Analysis.EMPTY
-        val lookup = scalaGetterTargetLookup(classLoader)
+        val lookup = crossClassLookup(classLoader)
         return BranchSiteAnalyzer.analyze(
             bytes,
             lookup,
@@ -734,14 +764,15 @@ class OtherlodeInstrumentation(
     }
 
     /**
-     * Reads another class's bytes as a resource on [classLoader], so [BranchSiteAnalyzer] can
-     * resolve a Scala constructor default getter against its target's own class. This only reads
+     * Reads another class's bytes as a resource on [classLoader], for every cross-class read
+     * [BranchSiteAnalyzer] makes: a Scala constructor default getter's target, a pass-through's
+     * callees, a body class's methods, an enum switch's map, a supertype. This only reads
      * bytecode; it never loads the class, the same way [locateClassBytes] resolves the
      * instrumented class's own bytes from the same kind of locator. Any failure, including a class
-     * the locator cannot find, is swallowed and reported as an unresolved getter rather than as an
+     * the locator cannot find, is read as a class with no bytes rather than as an
      * instrumentation failure.
      */
-    private fun scalaGetterTargetLookup(classLoader: ClassLoader?): (String) -> ByteArray? {
+    private fun crossClassLookup(classLoader: ClassLoader?): (String) -> ByteArray? {
         val locator = classFileLocatorFor(classLoader)
         return { internalName ->
             try {

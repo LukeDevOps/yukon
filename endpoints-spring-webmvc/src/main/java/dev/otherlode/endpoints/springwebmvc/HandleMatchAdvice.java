@@ -5,13 +5,15 @@ import java.util.Iterator;
 import java.util.List;
 import net.bytebuddy.asm.Advice;
 import org.springframework.web.bind.annotation.RequestMethod;
+import org.springframework.web.servlet.mvc.condition.PathPatternsRequestCondition;
+import org.springframework.web.servlet.mvc.condition.PatternsRequestCondition;
 import org.springframework.web.servlet.mvc.method.RequestMappingInfo;
 
 /**
  * Woven onto {@code RequestMappingInfoHandlerMapping.handleMatch(RequestMappingInfo, String,
  * HttpServletRequest)}, Spring MVC's dispatch point. It runs once per matched request, with the
- * winning {@link RequestMappingInfo} already narrowed to the matched pattern and verb, before the
- * handler runs. Binding only {@link Advice.Argument} 0 keeps this class free of any {@code
+ * winning {@link RequestMappingInfo} narrowed to the patterns that matched, best match first, and
+ * the matched verb, before the handler runs. Binding only {@link Advice.Argument} 0 keeps this class free of any {@code
  * javax}/{@code jakarta} servlet type, so one module covers every Spring Framework major version
  * this agent supports.
  *
@@ -32,9 +34,19 @@ public class HandleMatchAdvice {
     @Advice.OnMethodEnter(suppress = Throwable.class)
     public static void onEnter(@Advice.Argument(0) RequestMappingInfo info) {
         try {
-            Iterator<String> patterns = info.getPatternValues().iterator();
-            if (!patterns.hasNext()) return;
-            String pattern = patterns.next();
+            // The best match comes first in the condition's own sorted set. getPatternValues()
+            // copies the parsed patterns into a HashSet, which loses that order.
+            String pattern;
+            PathPatternsRequestCondition parsed = info.getPathPatternsCondition();
+            if (parsed != null) {
+                pattern = parsed.getFirstPattern().getPatternString();
+            } else {
+                PatternsRequestCondition legacy = info.getPatternsCondition();
+                if (legacy == null) return;
+                Iterator<String> patterns = legacy.getPatterns().iterator();
+                if (!patterns.hasNext()) return;
+                pattern = patterns.next();
+            }
 
             String verb = "*";
             Iterator<RequestMethod> methods = info.getMethodsCondition().getMethods().iterator();

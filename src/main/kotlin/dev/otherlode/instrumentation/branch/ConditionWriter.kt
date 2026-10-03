@@ -14,7 +14,6 @@ enum class SourceLanguage {
     SCALA,
 }
 
-/** One `LocalVariableTable` entry's name and descriptor. */
 internal class LocalVariable(
     val name: String,
     val descriptor: String,
@@ -60,8 +59,7 @@ internal class MethodInstructionsView(
 }
 
 /**
- * Writes a branch site's condition in the class's source language, as a list of parts. See ADR
- * 0037.
+ * Writes a branch site's condition in the class's source language, as a list of parts.
  *
  * The writer walks the site's fingerprint window with a stack of expression trees and reads the
  * site's jump the way its fall-through side sees it: the jump's own test, negated. A switch's
@@ -103,7 +101,7 @@ internal object ConditionWriter {
     /**
      * The value on top of the operand stack just before instruction [end], walked from
      * [windowStart], as parts. It is empty when the walk fails or the value is only a
-     * placeholder. [SwitchLowering] writes a lowered switch's subject with it. See ADR 0038.
+     * placeholder. [ConditionFingerprinter] writes a lowered switch's subject with it.
      */
     fun writeValue(
         method: MethodInstructionsView,
@@ -120,8 +118,8 @@ internal object ConditionWriter {
     /**
      * `subject == "literal"` when [equal] is true, and `subject != "literal"` when it is false.
      * The subject is the value [writeValue] reads, or a placeholder when it cannot be read.
-     * [SwitchLowering] writes each string case check it keeps as a plain site with this. See ADR
-     * 0038.
+     * [ConditionFingerprinter] writes each string case check a lowering keeps as a plain site with
+     * this.
      */
     fun writeLiteralEquality(
         method: MethodInstructionsView,
@@ -333,7 +331,7 @@ internal object ConditionWriter {
         val isRelation: Boolean get() = this in LT..REF_NE
     }
 
-    /** How the relation each jump tests against zero reads when it does not jump. */
+    /** How the relation each jump tests, against zero or between two ints, reads when it does not jump. */
     private fun fallThroughRelation(opcode: Int): Op =
         when (opcode) {
             Opcodes.IFEQ, Opcodes.IF_ICMPEQ -> Op.NE
@@ -1082,7 +1080,8 @@ internal object ConditionWriter {
                 }
 
                 Opcodes.DUP -> {
-                    s += s.last()
+                    val v1 = s.pop()
+                    s += listOf(v1, v1)
                 }
 
                 Opcodes.DUP_X1 -> {

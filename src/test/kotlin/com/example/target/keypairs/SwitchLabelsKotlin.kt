@@ -2,7 +2,7 @@ package com.example.target.keypairs
 
 import com.example.target.Tint
 
-/** A `when` over an enum, before a case is added to it. See ADR 0038. */
+/** A `when` over an enum, before a case is added to it. */
 class SwitchLabelsKotlinV1 {
     fun enumWhen(tint: Tint): Int =
         when (tint) {

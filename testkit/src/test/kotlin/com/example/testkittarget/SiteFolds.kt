@@ -1,9 +1,9 @@
 package com.example.testkittarget
 
 /**
- * Branch sites of each shape server ADR 0031's fold rule tells apart, for
- * [dev.otherlode.testkit.OtherlodeTestCollectorEndToEndTest]. The test creates one
- * instance and calls every method but [neverCalled].
+ * Branch sites of each shape [dev.otherlode.testkit.OtherlodeTestCollector.neverHit] folds into
+ * the row for code that never ran, for [dev.otherlode.testkit.OtherlodeTestCollectorEndToEndTest].
+ * The test creates one instance and calls every method but [neverCalled].
  */
 class SiteFolds {
     /** Never called, so both its sites fold into its own row, the routine null side of `?:` included. */

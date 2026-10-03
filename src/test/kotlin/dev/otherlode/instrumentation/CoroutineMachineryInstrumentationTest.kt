@@ -16,7 +16,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Proves the branch tier's coroutine-machinery drop rule (ADR 0025) through the real transform
+ * Proves the branch tier's coroutine-machinery drop rule through the real transform
  * pipeline, on the `CoroutineTarget` fixture, rather than only through
  * [dev.otherlode.instrumentation.branch.CoroutineMachineryAnalysisTest]'s direct
  * bytecode checks.

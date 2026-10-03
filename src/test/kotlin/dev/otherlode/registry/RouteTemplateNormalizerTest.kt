@@ -95,6 +95,36 @@ class RouteTemplateNormalizerTest {
     }
 
     @Test
+    fun `every parameter in a segment keeps its name and the text around it`() {
+        assertEquals("/files/{id}.{ext}", RouteTemplateNormalizer.normalize("/files/{id:\\d+}.{ext}"))
+        assertEquals(
+            "/lib/{name}-{version}{ext}",
+            RouteTemplateNormalizer.normalize("/lib/{name:[a-z-]+}-{version:\\d\\.\\d}{ext:\\.[a-z]+}"),
+        )
+    }
+
+    @Test
+    fun `a regex holding a slash stays inside its parameter`() {
+        assertEquals("/files/{path}", RouteTemplateNormalizer.normalize("/files/{path: [^/]+}"))
+        assertEquals("/a/{p}/b", RouteTemplateNormalizer.normalize("/a/{p:.+/x}/b"))
+    }
+
+    @Test
+    fun `a regex holding braces stays inside its parameter`() {
+        assertEquals("/zip/{code}", RouteTemplateNormalizer.normalize("/zip/{code:\\d{5}}"))
+    }
+
+    @Test
+    fun `a parameter with literal text before it keeps both`() {
+        assertEquals("/v{version}/items", RouteTemplateNormalizer.normalize("/v{version:\\d+}/items"))
+    }
+
+    @Test
+    fun `an unclosed brace is kept as written`() {
+        assertEquals("/a/{oops/b", RouteTemplateNormalizer.normalize("/a/{oops/b"))
+    }
+
+    @Test
     fun `a context path is prefixed with its own leading slash guaranteed`() {
         assertEquals("/app/orders", RouteTemplateNormalizer.normalize("/orders/", "/app/"))
     }

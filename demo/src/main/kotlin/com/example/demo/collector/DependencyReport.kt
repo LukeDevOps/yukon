@@ -20,7 +20,7 @@ internal data class DependencyView(
     val classCount: Int?,
     val location: String,
 ) {
-    /** The sorted `group:artifact` pairs, which name the dependency across instances. See ADR 0030. */
+    /** The sorted `group:artifact` pairs, which name the dependency across instances. */
     val identityKey: String get() =
         identities
             .map { it.key }
@@ -67,7 +67,7 @@ internal data class HeldReferences(
  * instance sent at least one static scan and every chunk of it arrived. [loadedClassNames] is every
  * class the instance's manifest named, probed or skipped, so every class that loaded.
  * [dependenciesListed] is true once any manifest from the instance carried `dependencies_listed`.
- * See ADR 0036.
+ * Until then the instance's listing may still be missing entries.
  */
 internal data class InstanceDependencyView(
     val instanceId: String,
@@ -81,7 +81,7 @@ internal data class InstanceDependencyView(
     val loadedClassNames: Set<String> = emptySet(),
 )
 
-/** The statuses the report prints, in the order it prints them. See ADR 0030. */
+/** The statuses [computeDependencyReport] assigns, in the order the report prints them. */
 internal enum class DependencyStatus(
     val label: String,
 ) {
@@ -93,6 +93,9 @@ internal enum class DependencyStatus(
 
     /** Loaded, and no instance that lists it records references, so nothing further can be said. */
     LOADED("LOADED"),
+
+    /** Every listing counted no class in it, so loading says nothing about whether it is used. */
+    RESOURCES_ONLY("RESOURCES ONLY"),
 }
 
 /** One referencing site, as printed: `Class#method` or `Class (class level)`, with whether its class ever loaded. */
@@ -137,7 +140,7 @@ internal data class DependencyReport(
 )
 
 /**
- * Applies ADR 0030's rules across [instances]. A dependency is unloaded when some instance listed
+ * Judges every dependency across [instances]. A dependency is unloaded when some instance listed
  * it from the startup classpath and no instance loaded a class from it. Past that, only the
  * instances that list it and record references are consulted, and with none it reads as loaded: a
  * reference is a referenced class whose `ExternalClass` mapping on that instance names the
@@ -189,7 +192,7 @@ internal fun computeDependencyReport(instances: List<InstanceDependencyView>): D
                     continue
                 }
                 // A mapping to no known dependency is a jar of the adopter's own or an agent jar,
-                // which ADR 0030 tells a collector to ignore.
+                // and neither is a dependency.
                 val identityKey = mapping.dependencyId?.let(identityKeys::get) ?: continue
                 referencesByDependency.getOrPut(identityKey) { mutableSetOf() } += site to live
             }
@@ -208,6 +211,10 @@ internal fun computeDependencyReport(instances: List<InstanceDependencyView>): D
                 val judging = listings.map { (instance, _) -> instance }.filter { it.referencesRecorded }
                 val status =
                     when {
+                        loaded == 0L && listings.all { (_, dependency) -> dependency.classCount == 0 } -> {
+                            DependencyStatus.RESOURCES_ONLY
+                        }
+
                         loaded == 0L &&
                             listings.any { (_, dependency) ->
                                 dependency.discoverySource == DependencyDiscoverySource.STARTUP_CLASSPATH
@@ -277,10 +284,13 @@ internal fun formatDependencyReport(report: DependencyReport): List<String> {
     lines += ""
     lines += "=== otherlode demo: dependency report ==="
     val counts = report.findings.groupingBy { it.status }.eachCount()
-    val judged = DependencyStatus.entries.filter { it != DependencyStatus.LOADED }
+    val judged = DependencyStatus.entries.filter { it != DependencyStatus.LOADED && it != DependencyStatus.RESOURCES_ONLY }
     var countsLine = judged.joinToString(", ") { "${it.label.lowercase()}: ${counts[it] ?: 0}" }
     if (report.referencesUnavailable || DependencyStatus.LOADED in counts) {
         countsLine += ", loaded: ${counts[DependencyStatus.LOADED] ?: 0}"
+    }
+    if (DependencyStatus.RESOURCES_ONLY in counts) {
+        countsLine += ", resources only: ${counts.getValue(DependencyStatus.RESOURCES_ONLY)}"
     }
     lines += countsLine
     if (report.unlistedInstances.isNotEmpty()) {

@@ -7,7 +7,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * Proves [BranchSiteAnalyzer]'s Scala default-getter resolution (ADR 0023) directly against real
+ * Proves [BranchSiteAnalyzer]'s Scala default-getter resolution directly against real
  * `scalac` output, for both Scala 3 and Scala 2.13 fixtures compiled by the sibling
  * `:fixtures-scala3` and `:fixtures-scala2` modules. A getter is found regardless of the method
  * filter, the same way a Kotlin `$default` method is: see [analyzeFixture].
@@ -367,7 +367,7 @@ class ScalaGetterResolutionTest {
     }
 
     // --- Constructor default getters cross the class boundary from the companion module to the
-    // class the module compiles for; see ADR 0023's "cross-class target" shape.
+    // class the module compiles for.
 
     private fun `constructor getters on the companion resolve across the class boundary to Cc's own init`(module: String) {
         val analysis = analyzeFixtureWithLookup(module, "Cc\$")

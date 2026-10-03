@@ -29,7 +29,7 @@ private const val ADVICE_PACKAGE = "dev.otherlode.endpoints.ktor2"
  * exactly what both `handle` and `executeResult` hand over. A route selector that contributes
  * nothing to a path (headers, content type, query parameters, host, `AndRouteSelector`/
  * `OrRouteSelector`) means such a route merges with any sibling sharing the same path, an accepted
- * v1 simplification stated in `CLAUDE.md`'s "Endpoints" section.
+ * v1 simplification.
  */
 class Ktor2Module : EndpointModule {
     override val name: String = "ktor-2"

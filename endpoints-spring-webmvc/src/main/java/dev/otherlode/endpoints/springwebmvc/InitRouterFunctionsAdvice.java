@@ -13,9 +13,9 @@ import net.bytebuddy.asm.Advice;
  * this class carries no symbolic reference to that type at all. The object is handed unopened to
  * {@link OtherlodeEndpoints#declare}, which routes it to {@code SpringWebMvcModule.declare}, the one
  * piece of this module's own code that knows how to walk it. A {@code RouterFunction} only
- * reveals its routes to a visitor it accepts, something advice itself cannot implement; see ADR
- * 0017 for why this needs a second seam call instead of reading registration arguments the way
- * {@link RegisterHandlerMethodAdvice} and {@link RegisterUrlHandlerAdvice} do.
+ * reveals its routes to a visitor it accepts, something advice itself cannot implement, so this
+ * takes a second seam call instead of reading registration arguments the way {@link
+ * RegisterHandlerMethodAdvice} and {@link RegisterUrlHandlerAdvice} do.
  *
  * <p>This method is deliberately one flat body with no private helper method of its own; see
  * {@link RegisterHandlerMethodAdvice}'s Javadoc for why.

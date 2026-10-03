@@ -160,6 +160,39 @@ class DependencyQueryTest {
     }
 
     @Test
+    fun `a plain jar is matched before a shaded jar that also carries its identity`() {
+        manifest(
+            dependencies =
+                listOf(
+                    dependency(0, "com.google.guava", "guava", "33.0"),
+                    dependency(1, "com.acme", "fat", extraIdentities = listOf(DependencyIdentity("com.google.guava", "guava", "33.0"))),
+                ),
+        )
+        deltas(listOf(DependencyDelta(0, 1L, 5L)))
+
+        val guava = collector.dependency("com.google.guava", "guava")
+
+        assertEquals("com.google.guava:guava", guava.identityKey)
+        assertEquals(DependencyUsage.NO_LIVE_REFERENCE, guava.status)
+    }
+
+    @Test
+    fun `an identity two shaded jars carry and no plain jar has is ambiguous, and says which jars`() {
+        val guava = DependencyIdentity("com.google.guava", "guava", "33.0")
+        manifest(
+            dependencies =
+                listOf(
+                    dependency(0, "com.acme", "fat-one", extraIdentities = listOf(guava)),
+                    dependency(1, "com.acme", "fat-two", extraIdentities = listOf(guava)),
+                ),
+        )
+
+        val failure = assertFailsWith<IllegalStateException> { collector.dependency("com.google.guava", "guava") }
+        assertTrue(failure.message!!.contains("com.acme:fat-one,com.google.guava:guava"), failure.message)
+        assertTrue(failure.message!!.contains("com.acme:fat-two,com.google.guava:guava"), failure.message)
+    }
+
+    @Test
     fun `an unknown dependency throws, naming what the collector knows`() {
         val nothingYet = assertFailsWith<UnknownDependencyException> { collector.dependency("com.acme", "missing") }
         assertTrue(nothingYet.message!!.contains("no manifest has listed any dependency"), nothingYet.message)

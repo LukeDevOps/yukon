@@ -63,8 +63,11 @@ public class RegisterHandlerMethodAdvice {
                 handlerType = handler.getClass();
             }
             // An endpoint whose handler cannot be named is still an endpoint: it is registered
-            // with no join rather than dropped, so it can never read as absent.
-            String beanTypeName = handlerType == null ? null : ClassUtils.getUserClass(handlerType).getName();
+            // with no join rather than dropped, so it can never read as absent. The join names the
+            // class that declares the method, where its probe lives: a mapping inherited from a
+            // base controller or an interface default method is not declared on the bean's class.
+            String beanTypeName =
+                    handlerType == null ? null : ClassUtils.getUserClass(method.getDeclaringClass()).getName();
             String methodName = beanTypeName == null ? null : method.getName();
 
             String descriptor =

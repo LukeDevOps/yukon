@@ -1,8 +1,8 @@
 package com.example.target
 
 /**
- * A data class with one hand-written method, holding a conditional, beside its generated members.
- * See ADR 0026.
+ * A data class with one hand-written method, holding a conditional, beside its generated
+ * members, whose line-number table tells it apart from them.
  */
 data class GeneratedPoint(
     val x: Int,
@@ -12,7 +12,7 @@ data class GeneratedPoint(
 }
 
 /**
- * A data class whose `toString` is hand-written. kotlinc gives it a line-number table, so ADR 0026
+ * A data class whose `toString` is hand-written. kotlinc gives it a line-number table, so the agent
  * leaves it unmarked while the generated `equals` and `hashCode` beside it are marked.
  */
 data class GeneratedPointCustomToString(
@@ -24,7 +24,7 @@ data class GeneratedPointCustomToString(
 
 /**
  * A data class with a hand-written `equals`, holding a real conditional, and a hand-written
- * `hashCode`, while `toString`, `componentN` and `copy` are left to the compiler. ADR 0026 leaves
+ * `hashCode`, while `toString`, `componentN` and `copy` are left to the compiler. The agent leaves
  * the two hand-written methods unmarked, since they carry line-number tables, and marks the rest.
  */
 data class GeneratedPointCustomEquals(
@@ -81,7 +81,7 @@ class NotDefaultImpls {
 /**
  * `@JvmOverloads` on a constructor and a member function. kotlinc adds `<init>(I)V`,
  * `<init>(ILjava/lang/String;)V` and `format(I)` beside the source's own full constructor and
- * function, each only forwarding to its `$default` twin. ADR 0040 marks those three
+ * function, each only forwarding to its `$default` twin. The agent marks those three
  * [dev.otherlode.export.GeneratedBy.JVM_OVERLOADS] and leaves the full pair
  * [dev.otherlode.export.GeneratedBy.NONE].
  */

@@ -12,10 +12,10 @@ internal data class JarIdentity(
 )
 
 /**
- * Reads a jar's identity by the ADR 0030 rule: every `pom.properties` that names an artifact, else
- * the filename with its version suffix split off. The manifest's `Implementation-Title` is never
- * an identity, since it is a display name that several jars can share (three Tomcat jars all say
- * `Apache Tomcat`); its `Implementation-Version` only fills in a version the filename lacks.
+ * Reads a jar's identity: every `pom.properties` that names an artifact, else the filename with
+ * its version suffix split off. The manifest's `Implementation-Title` is never an identity, since
+ * it is a display name that several jars can share (three Tomcat jars all say `Apache Tomcat`);
+ * its `Implementation-Version` only fills in a version the filename lacks.
  */
 internal object DependencyIdentityReader {
     private val VERSIONED_STEM = Regex("^(.+?)-((?:\\d+\\.\\d+|\\d+-SNAPSHOT)(?:[.-][A-Za-z0-9_+]+)*)$")

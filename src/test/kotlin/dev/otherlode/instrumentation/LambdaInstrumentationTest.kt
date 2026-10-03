@@ -18,9 +18,9 @@ import kotlin.test.assertTrue
 /**
  * Proves through the real pipeline that a lambda body gets probed like any other method, method
  * tier and branch tier alike: javac's `lambda$...` and scalac's `$anonfun$...` inside a class
- * scalac itself compiled (ADR 0015). Scala 2's `$adapted` boxing forwarder gets no probe of its
+ * scalac itself compiled. Scala 2's `$adapted` boxing forwarder gets no probe of its
  * own, matching Scala 3, whose adapter is a bridge. Each scalac body is also flagged as a lambda
- * body and reached by a creation edge through that forwarder (ADR 0034).
+ * body and reached by a creation edge through that forwarder.
  */
 class LambdaInstrumentationTest {
     private var installedTransformer: ResettableClassFileTransformer? = null
@@ -235,7 +235,7 @@ class LambdaInstrumentationTest {
                 for ((creator, body) in listOf("bump", "show").zip(bodies)) {
                     // Scala 3's show reaches its body through the lifted boxing bridge on the
                     // top-level class, a cross-class pass-through, and calling one is a use of its
-                    // owner, so that owner's <clinit> joins as well (ADR 0024).
+                    // owner, so that owner's <clinit> joins as well.
                     val throughBridge = module == "scala3" && creator == "show"
                     assertEquals(
                         listOf(bodyClass to body) + if (throughBridge) listOf(bodyClass to "<clinit>") else emptyList(),

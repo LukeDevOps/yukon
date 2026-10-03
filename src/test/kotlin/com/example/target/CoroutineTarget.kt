@@ -80,6 +80,44 @@ class Holder {
     }
 }
 
+/** Holds a field named `label`, the name of a continuation's state field, and switches on it inside a suspend function. */
+class SuspendLabelHolder {
+    private var label = 0
+
+    suspend fun pick(): Int {
+        pauseNow()
+        return when (label) { // marker: label-when
+            0 -> 10
+
+            1 -> 20
+
+            2 -> 30
+
+            else -> 40
+        }
+    }
+}
+
+/** A suspend function switching on the `label` field of a class nested in its own owner. */
+class NestedLabelOwner {
+    class Config(
+        @JvmField var label: Int,
+    )
+
+    suspend fun pick(config: Config): Int {
+        pauseNow()
+        return when (config.label) { // marker: nested-label-when
+            0 -> 10
+
+            1 -> 20
+
+            2 -> 30
+
+            else -> 40
+        }
+    }
+}
+
 /** Starts [block] with [startCoroutine], ignoring its result: this fixture only needs the state machine to run. */
 private fun <T> runSuspend(block: suspend () -> T) {
     block.startCoroutine(

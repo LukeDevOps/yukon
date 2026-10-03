@@ -13,10 +13,10 @@ import dev.otherlode.export.UnreadableClass
  *
  * Size is measured in entries: a declared class counts as its number of methods, plus the total
  * number of call edges across those methods, plus its methods' branch sites by
- * [dev.otherlode.export.BranchSite.chunkWeight], plus one for its own class record,
- * plus one per referenced class on its methods and on the class itself, mirroring the weighting
- * [dev.otherlode.registry.ProbeRegistry] gives a manifest class for the same reason
- * (see ADR 0024 and ADR 0030); every unsafe, unreadable, or unprobed class counts as one.
+ * [dev.otherlode.export.BranchSite.chunkWeight], plus one for its own class record, plus one per
+ * referenced class on its methods and on the class itself, mirroring the weighting
+ * [dev.otherlode.registry.ProbeRegistry] gives a manifest class for the same reason; every
+ * unsafe, unreadable, or unprobed class counts as one.
  * Classes are never split across chunks, so a declared class heavier than [maxEntriesPerChunk]
  * gets a chunk of its own. Every chunk carries the same resource and [scannedAt], and its own
  * `chunkIndex` out of `chunkCount`, so a collector can tell when it holds the whole scan.
@@ -47,11 +47,6 @@ object StaticBaselineChunker {
         }
 
         result.declaredClasses.forEach { c ->
-            // A class's weight is its method count, plus its methods' total call-edge count and
-            // branch-site weight, plus one for its own class record, plus every reference on its
-            // methods and on the class: all are staged together, so a class with many edges,
-            // references or sites seals a chunk earlier than one without. See ADRs 0024, 0030
-            // and 0037.
             val references = c.methods.sumOf { it.referencedClasses.size } + c.referencedClasses.size
             val sites = c.methods.sumOf { method -> method.branchSites.sumOf { it.chunkWeight } }
             val weight = (c.methods.size + c.methods.sumOf { it.calls.size } + sites + 1 + references).coerceAtLeast(1)

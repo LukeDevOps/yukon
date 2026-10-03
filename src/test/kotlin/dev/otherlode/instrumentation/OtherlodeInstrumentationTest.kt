@@ -59,6 +59,25 @@ class OtherlodeInstrumentationTest {
         installedOtherlode = null
     }
 
+    /**
+     * HotSwap and another agent's `redefineClasses` run every transformer again on the new bytes.
+     * The agent does not support that: the woven class carries a field the new bytes
+     * lack, so the JVM refuses the redefinition. What it must not do is report the class it has
+     * already delivered probes for as a skipped class too.
+     */
+    @Test
+    fun `redefining a woven class records no skip for it`() {
+        val registry = ProbeRegistry()
+        val target = install(registry, AgentConfig.parse("includePackages=com.example.target"))
+        val original = File("build/classes/java/test/com/example/target/SampleTarget.class").readBytes()
+
+        runCatching { ByteBuddyAgent.install().redefineClasses(java.lang.instrument.ClassDefinition(target.javaClass, original)) }
+
+        val manifest = registry.manifest(ResourceAttributes("test", null, "instance-1", null, "run-1"))
+        assertTrue(manifest.probes.any { it.className == "com.example.target.SampleTarget" })
+        assertTrue(manifest.skippedClasses.none { it.className == "com.example.target.SampleTarget" }, "${manifest.skippedClasses}")
+    }
+
     @Test
     fun `only the methods that were actually called show up in the next delta batch`() {
         val registry = ProbeRegistry()

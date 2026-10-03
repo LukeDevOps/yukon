@@ -13,7 +13,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /**
- * Proves generated-method marking (ADR 0026) through the real transform pipeline, on the
+ * Proves generated-method marking through the real transform pipeline, on the
  * `GeneratedTarget.kt` and `RecordTarget.java` fixtures and the `-jvm-default=disable` fixture
  * module, rather than only through
  * [dev.otherlode.instrumentation.branch.BranchSiteAnalyzerTest]'s direct bytecode

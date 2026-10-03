@@ -6,7 +6,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-/** Pins the export-time resolution and send-once delivery of [ExternalClassRegistry]. See ADR 0030. */
+/** Pins the export-time resolution and send-once delivery of [ExternalClassRegistry]. */
 class ExternalClassRegistryTest {
     private var listingComplete = true
     private val resolved = mutableListOf<String>()

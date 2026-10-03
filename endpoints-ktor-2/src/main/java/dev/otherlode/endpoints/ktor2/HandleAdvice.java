@@ -40,8 +40,8 @@ import net.bytebuddy.asm.Advice;
  * <p>The handler join names the coroutine machinery Ktor actually calls: a suspend lambda given to
  * {@code handle} compiles to a class of its own that declares {@code invokeSuspend}, so a body
  * whose class carries that method reports {@code invokeSuspend} and its class; a named class that
- * implements the function type by hand, with no such method, reports the class alone, as it always
- * has. A hidden class, generated for a lambda through {@code invokedynamic}, has no stable name
+ * implements the function type by hand, with no such method, reports the class alone. A hidden
+ * class, generated for a lambda through {@code invokedynamic}, has no stable name
  * across runs, so its class, method, and descriptor are all reported as null instead.
  *
  * <p>This method is deliberately one flat body with no private helper method of its own; see the

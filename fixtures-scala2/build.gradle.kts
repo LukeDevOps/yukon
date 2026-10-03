@@ -1,5 +1,5 @@
 // Scala 2.13 fixture classes for the analyser's default-getter resolution
-// (BranchSiteAnalyzer, ADR 0023). Never on the test classpath directly: see the
+// (BranchSiteAnalyzer). Never on the test classpath directly: see the
 // comment in fixtures-scala3/build.gradle.kts for why.
 plugins {
     scala

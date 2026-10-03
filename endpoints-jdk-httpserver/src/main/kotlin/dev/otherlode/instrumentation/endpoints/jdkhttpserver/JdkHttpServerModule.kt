@@ -20,7 +20,7 @@ private const val ADVICE_PACKAGE = "dev.otherlode.endpoints.jdkhttpserver"
  *
  * `HttpServer.create` returns a `sun.net.httpserver.HttpServerImpl` (or `HttpsServerImpl`), both
  * of which delegate registration and dispatch to one `sun.net.httpserver.ServerImpl`. This module
- * hooks three package-private types that `ServerImpl` delegates to, never `HttpServer` itself:
+ * hooks `ServerImpl` and two package-private types it works through, never `HttpServer` itself:
  *
  * - `ServerImpl.createContext` (both overloads, matched by name) is the registration hook. It
  *   constructs and returns the `HttpContextImpl` for a path, with or without a handler.

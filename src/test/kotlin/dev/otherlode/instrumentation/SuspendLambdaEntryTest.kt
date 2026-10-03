@@ -18,7 +18,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * Proves ADR 0025's suspend-lambda amendment through the real pipeline and the static scanner:
+ * Proves the suspend-lambda entry rule through the real pipeline and the static scanner:
  * kotlinc's `create` and `invoke` on a suspend lambda's class get no probe and are not declared,
  * while `invokeSuspend`, which holds the body, is probed, declared and reached from the creator.
  */

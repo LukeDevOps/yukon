@@ -10,9 +10,9 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /**
- * Proves ADR 0041's pass-through: a call into a `JVM_OVERLOADS`, `MULTIFILE_FACADE` or
+ * Proves the generated-forwarder pass-through: a call into a `JVM_OVERLOADS`, `MULTIFILE_FACADE` or
  * `DEFAULT_IMPLS` forwarder records edges to what the forwarder calls, and a cross-class one also
- * names its owner's `<clinit>`, as any cross-class pass-through does (ADR 0024). The forwarder's
+ * names its owner's `<clinit>`, as any cross-class pass-through does. The forwarder's
  * own edges stay as its bytecode names them.
  */
 class GeneratedForwarderPassThroughTest {
@@ -100,7 +100,10 @@ class GeneratedForwarderPassThroughTest {
     @Test
     fun `a call to a multi-file facade's default twin reaches the part's function through the facade's forwarder`() {
         assertEquals(
-            listOf(CallEdge(FAREWELL_PART, "multifileFarewell", "(Ljava/lang/String;I)Ljava/lang/String;", virtual = false), clinit(FACADE)),
+            listOf(
+                CallEdge(FAREWELL_PART, "multifileFarewell", "(Ljava/lang/String;I)Ljava/lang/String;", virtual = false),
+                clinit(FACADE),
+            ),
             kotlinCaller.callsOf("callsMultifileFarewellWithDefault", "()Ljava/lang/String;"),
         )
     }
@@ -162,7 +165,14 @@ class GeneratedForwarderPassThroughTest {
 
         assertEquals(
             listOf(CallEdge(owner.replace('/', '.'), "f", "(ILjava/lang/String;)Ljava/lang/String;", virtual = false)),
-            BranchSiteAnalyzer.analyze(bytes, lookup, listOf(TARGET), emptyList(), methodFilter = probedByMethodTier).callsOf("g", "()Ljava/lang/String;"),
+            BranchSiteAnalyzer
+                .analyze(
+                    bytes,
+                    lookup,
+                    listOf(TARGET),
+                    emptyList(),
+                    methodFilter = probedByMethodTier,
+                ).callsOf("g", "()Ljava/lang/String;"),
         )
     }
 
@@ -184,24 +194,31 @@ class GeneratedForwarderPassThroughTest {
             visitMaxs(0, 0)
             visitEnd()
         }
-        writer.visitMethod(Opcodes.ACC_PUBLIC or Opcodes.ACC_STATIC or Opcodes.ACC_SYNTHETIC, "f\$default", twinDescriptor, null, null).apply {
-            visitCode()
-            val skip = Label()
-            visitVarInsn(Opcodes.ILOAD, 3)
-            visitInsn(Opcodes.ICONST_2)
-            visitInsn(Opcodes.IAND)
-            visitJumpInsn(Opcodes.IFEQ, skip)
-            visitLdcInsn("x")
-            visitVarInsn(Opcodes.ASTORE, 2)
-            visitLabel(skip)
-            visitVarInsn(Opcodes.ALOAD, 0)
-            visitVarInsn(Opcodes.ILOAD, 1)
-            visitVarInsn(Opcodes.ALOAD, 2)
-            visitMethodInsn(Opcodes.INVOKEVIRTUAL, owner, "f", full, false)
-            visitInsn(Opcodes.ARETURN)
-            visitMaxs(0, 0)
-            visitEnd()
-        }
+        writer
+            .visitMethod(
+                Opcodes.ACC_PUBLIC or Opcodes.ACC_STATIC or Opcodes.ACC_SYNTHETIC,
+                "f\$default",
+                twinDescriptor,
+                null,
+                null,
+            ).apply {
+                visitCode()
+                val skip = Label()
+                visitVarInsn(Opcodes.ILOAD, 3)
+                visitInsn(Opcodes.ICONST_2)
+                visitInsn(Opcodes.IAND)
+                visitJumpInsn(Opcodes.IFEQ, skip)
+                visitLdcInsn("x")
+                visitVarInsn(Opcodes.ASTORE, 2)
+                visitLabel(skip)
+                visitVarInsn(Opcodes.ALOAD, 0)
+                visitVarInsn(Opcodes.ILOAD, 1)
+                visitVarInsn(Opcodes.ALOAD, 2)
+                visitMethodInsn(Opcodes.INVOKEVIRTUAL, owner, "f", full, false)
+                visitInsn(Opcodes.ARETURN)
+                visitMaxs(0, 0)
+                visitEnd()
+            }
         writer.visitMethod(Opcodes.ACC_PUBLIC or Opcodes.ACC_FINAL, "f", "(I)Ljava/lang/String;", null, null).apply {
             visitCode()
             visitVarInsn(Opcodes.ALOAD, 0)

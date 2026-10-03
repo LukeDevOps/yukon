@@ -1,5 +1,7 @@
 package dev.otherlode.instrumentation.endpoints.jdkhttpserver
 
+import com.sun.net.httpserver.HttpExchange
+import com.sun.net.httpserver.HttpHandler
 import com.sun.net.httpserver.HttpServer
 import dev.otherlode.instrumentation.endpoints.EndpointInstrumentation
 import dev.otherlode.instrumentation.endpoints.LambdaFactoryHook
@@ -17,6 +19,7 @@ import java.util.logging.Handler
 import java.util.logging.LogRecord
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 import java.util.logging.Level as JulLevel
 import java.util.logging.Logger as JulLogger
@@ -55,7 +58,14 @@ class HiddenHandlerNamingSwitchedOffTest {
 
         val server = HttpServer.create(InetSocketAddress("localhost", 0), 0)
         try {
-            server.createContext("/kotlin-lambda", kotlinLambda())
+            val kotlinLambdaContext = server.createContext("/kotlin-lambda", kotlinLambda())
+            val namedHandler =
+                object : HttpHandler {
+                    override fun handle(exchange: HttpExchange) = exchange.close()
+                }
+            assertFailsWith<IllegalArgumentException>("the JDK refuses a second handler") {
+                kotlinLambdaContext.setHandler(namedHandler)
+            }
             server.createContext("/java-static-reference", JavaHandlers.staticReference())
             server.start()
             val client = HttpClient.newHttpClient()
@@ -64,7 +74,10 @@ class HiddenHandlerNamingSwitchedOffTest {
 
             val byRoute = registry.endpoints().associateBy { it.routeTemplate }
             assertEquals(setOf("/kotlin-lambda", "/java-static-reference"), byRoute.keys)
-            assertNoJoin(byRoute.getValue("/kotlin-lambda"), "the hook is off, so a hidden handler gets no join")
+            assertNoJoin(
+                byRoute.getValue("/kotlin-lambda"),
+                "the hook is off, so a hidden handler gets no join, and a handler the JDK refused gives none either",
+            )
             assertNoJoin(byRoute.getValue("/java-static-reference"), "the hook is off, so a hidden handler gets no join")
             val deltas = registry.computeDeltas(maxPerBatch = 10).flatMap { it.deltas }
             assertEquals(1L, deltas.single { it.endpointId == byRoute.getValue("/kotlin-lambda").endpointId }.hitsTotal)

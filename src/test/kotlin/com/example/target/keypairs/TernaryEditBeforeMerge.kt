@@ -13,7 +13,7 @@ class TernaryEditBeforeMergeV1 {
  * The inner `if`'s true arm is edited from `x` to `x + 1`. That arm runs before the operand
  * stack is next empty, since the jump over the false arm leaves the depth unknown and the false
  * arm's label restarts it at zero. So the outer condition's window starts at the false arm and
- * leaves this edit out. See ADR 0031's Consequences.
+ * leaves this edit out.
  */
 class TernaryEditBeforeMergeV2 {
     fun check(

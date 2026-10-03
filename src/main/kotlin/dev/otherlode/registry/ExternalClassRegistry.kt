@@ -6,7 +6,7 @@ import java.util.concurrent.atomic.AtomicLong
 
 /**
  * The out-of-scope classes the adopter's code references, each with where the transform found it,
- * resolved to a dependency and delivered once per name. See ADR 0030.
+ * resolved to a dependency and delivered once per name.
  *
  * [record] runs on transforming threads and only remembers a location string. Resolution waits for
  * the export thread, since it can read a jar, and for [isListingComplete], since before the startup
@@ -32,7 +32,7 @@ class ExternalClassRegistry(
     private val resolveLocation: (String) -> Int? = { null },
     /**
      * Whether a mapping to this dependency id may go out. A mapping waits until its dependency's
-     * own entry may go out; see [DependencyRegistry.isSendable] and ADR 0036.
+     * own entry may go out; see [DependencyRegistry.isSendable].
      */
     private val isDependencySendable: (Int) -> Boolean = { true },
 ) {
@@ -76,7 +76,7 @@ class ExternalClassRegistry(
      * True once every name recorded before the first compute after the listing completed has
      * gone out on a confirmed send, or resolved to no dependency. A name recorded later never holds
      * it back. False before that first compute, so false for good when the listing never
-     * completes. Once true, it stays true. See ADR 0036.
+     * completes. Once true, it stays true.
      */
     val isBacklogDelivered: Boolean
         get() {

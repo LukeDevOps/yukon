@@ -5,7 +5,7 @@ import java.util.concurrent.ConcurrentHashMap
 /**
  * Whether the platform loader, and through it the bootstrap loader, provides a class: the JDK's
  * own classes, which are never a dependency. Asks for the class file as a resource, which reads
- * and never loads, and caches each answer. See ADR 0030.
+ * and never loads, and caches each answer.
  *
  * Shared by the transform path ([ReferencedClassLocator]) and the static baseline, which has no
  * defining loader to ask but can ask this one.

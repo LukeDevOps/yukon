@@ -16,7 +16,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Proves ADR 0048's marks through the real transform pipeline, on the `:fixtures-scala3` and
+ * Proves the Scala generated-method marks through the real transform pipeline, on the `:fixtures-scala3` and
  * `:fixtures-scala2` fixtures: static forwarders, case-class and companion plumbing, and an
  * object's `writeReplace`, with the adopter's own members left unmarked.
  */
@@ -25,7 +25,7 @@ class ScalaGeneratedMethodMarkingTest {
         const val PACKAGE = "com.example.scalatarget"
         const val TYPES = "com/example/scalatarget"
 
-        /** The case-class plumbing ADR 0048 marks, apart from Scala 3's `_1`, `_2` and on. */
+        /** The case-class plumbing the agent marks, apart from Scala 3's `_1`, `_2` and on. */
         val CASE_CLASS_METHODS =
             setOf(
                 "canEqual",

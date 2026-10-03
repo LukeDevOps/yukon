@@ -2,7 +2,7 @@ package com.example.target
 
 import java.io.File
 
-/** Fixtures for the condition writer's Kotlin idioms. Each method holds one site. See ADR 0037. */
+/** Fixtures for the condition writer's Kotlin idioms. Each method holds one site. */
 class ConditionTarget(
     val limit: Int,
 ) {

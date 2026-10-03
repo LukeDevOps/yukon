@@ -3,7 +3,7 @@ package com.example.target
 import kotlin.jvm.JvmSerializableLambda
 
 /**
- * The Kotlin body-class shapes ADR 0034 names that [FunctionReferenceTarget],
+ * The Kotlin body-class shapes `body_kind` names that [FunctionReferenceTarget],
  * [SuspendLambdaTarget] and [ObjectExpressionTarget] do not already cover. Each method builds one
  * body class. kotlinc names each class after the method and the order the bodies appear in it.
  * kotlinc marks every reference class here synthetic, so each is a pass-through to the function

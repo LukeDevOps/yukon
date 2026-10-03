@@ -53,6 +53,27 @@ class DependencyRulesTest {
     }
 
     @Test
+    fun `a jar with no classes, such as native libraries or web assets, is resources only and never unloaded`() {
+        val natives =
+            jackson.copy(
+                identities = listOf(DependencyIdentityView("io.netty", "netty-transport-native-epoll", "4.1")),
+                classCount = 0,
+            )
+
+        assertEquals(DependencyUsage.RESOURCES_ONLY, statusOf(instance(loaded = 0, dependency = natives)))
+    }
+
+    @Test
+    fun `a jar counted with no classes that still loaded one, such as a multi-release jar, is judged as usual`() {
+        assertEquals(DependencyUsage.UNREFERENCED, statusOf(instance(loaded = 3, dependency = jackson.copy(classCount = 0))))
+    }
+
+    @Test
+    fun `a jar whose class count no listing knew is judged as usual`() {
+        assertEquals(DependencyUsage.UNLOADED, statusOf(instance(loaded = 0, dependency = jackson.copy(classCount = null))))
+    }
+
+    @Test
     fun `a startup dependency is not unloaded once any instance loaded a class from it`() {
         val status = statusOf(instance(loaded = 0), instance(loaded = 4, instanceId = "instance-2"))
 

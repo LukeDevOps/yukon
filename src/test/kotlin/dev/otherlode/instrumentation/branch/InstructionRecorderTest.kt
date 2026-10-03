@@ -12,7 +12,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Pins the join between the analyser's streaming visitor and the control-flow graph (ADR 0037):
+ * Pins the join between the analyser's streaming visitor and the control-flow graph:
  * the ordinal a downstream visitor reads from [InstructionRecorder.lastOrdinal] while it visits an
  * instruction is that instruction's index in the recorded [MethodInstructions], and a method's
  * tracked instructions are its analysed sites one for one, in order.

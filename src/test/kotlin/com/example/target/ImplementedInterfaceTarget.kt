@@ -11,7 +11,7 @@ fun interface IntStep {
 }
 
 /**
- * Each interface a kotlinc creation edge can name (ADR 0042). [register] passes a lambda to a Java
+ * Each interface a kotlinc creation edge can name. [register] passes a lambda to a Java
  * interface parameter, as the demo's `createContext` does. [startsThread] passes one to
  * `Thread(Runnable)`. [funInterface] converts one to [IntStep]. [functionType] makes a plain
  * function-typed value, which implements `Function1`. [objectExpression] creates a body class

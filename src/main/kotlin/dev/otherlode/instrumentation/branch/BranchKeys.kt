@@ -4,14 +4,14 @@ import java.security.MessageDigest
 
 /**
  * Derives the branch key of each kept branch outcome, and the site key of each kept site, from the
- * site's condition fingerprint. See ADRs 0031 and 0037.
+ * site's condition fingerprint.
  *
  * [compute] returns a key for every kept outcome it can name safely, keyed by
  * `(siteIndex, outcome offset)`. An outcome missing from the result has no key: the agent could
  * not name it safely, and a collector treats it as an outcome it has never seen.
  *
  * [computeSiteKeys] returns a key for every kept site, keyed by `siteIndex`. It uses the same rules,
- * so a site has a key exactly when its outcomes have keys. A site key digests the same input as a
+ * so a site has a key exactly when at least one of its outcomes has one. A site key digests the same input as a
  * branch key without the outcome token, under its own derivation tag, so it never equals a branch
  * key.
  *
@@ -74,7 +74,6 @@ object BranchKeys {
             nameable.site.siteIndex to digest(SITE_DERIVATION_TAG, className, nameable.site, nameable.fingerprint, null)
         }
 
-    /** A kept site that [compute] and [computeSiteKeys] can name, with its fingerprint and outcome tokens. */
     private class NameableSite(
         val site: BranchSite,
         val fingerprint: String,
@@ -109,12 +108,13 @@ object BranchKeys {
      * The outcome token of each of [site]'s outcomes, in offset order, or null when the site
      * cannot be named safely. A conditional's two outcomes are `taken` and `fallthrough`,
      * matching the taken and fall-through edges [BranchProbeMethodVisitor] emits. A switch's
-     * `caseKeys` must carry exactly one entry per case outcome, with the default last; a switch
-     * whose `caseKeys` is null or the wrong size gets no token for any of its outcomes.
+     * `caseKeys` must carry exactly one entry per case outcome, and the default's token follows
+     * them; a switch whose `caseKeys` is null or the wrong size gets no token for any of its
+     * outcomes.
      *
      * A rebuilt switch's case is named by its label, as `label:<kind>:<text>`, so adding, removing
      * or reordering a case leaves every other case's token alone. Two cases with one label, such
-     * as two class patterns of one type, get no token. See ADR 0038.
+     * as two class patterns of one type, get no token.
      */
     private fun outcomeTokensOf(site: BranchSite): List<String?>? {
         val labels = site.caseLabels
@@ -138,7 +138,8 @@ object BranchKeys {
     /**
      * Hex of the first 16 bytes of the SHA-256 digest of [className], [site]'s method name,
      * method descriptor, origin class, [fingerprint] and [outcomeToken], joined with a
-     * `\u0000` separator none of them can contain. [tag] leads the text, so a later change to a
+     * `\u0000` separator, which no name and no token the agent builds contains; only a string
+     * constant inside [fingerprint] could. [tag] leads the text, so a later change to a
      * derivation changes the digest input, not only its output. A site key passes a null
      * [outcomeToken] and adds nothing after [fingerprint].
      */

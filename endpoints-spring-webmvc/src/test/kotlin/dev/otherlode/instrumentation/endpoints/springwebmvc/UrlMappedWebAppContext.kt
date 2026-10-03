@@ -10,7 +10,9 @@ import java.util.function.Supplier
 /**
  * Builds and refreshes a [WebApplicationContext] wiring [TestController]'s annotation-mapped
  * endpoints alongside a `SimpleUrlHandlerMapping` bean that maps a `/static` wildcard prefix to
- * [staticHandler] and the exact path `/legacy/old` to [legacyHandler].
+ * [staticHandler], the exact path `/legacy/old` to [legacyHandler], and the catch-all path (a
+ * slash and one star) to [fallbackHandler], which Spring keeps aside as the handler for any path
+ * nothing else matched.
  *
  * `SimpleUrlHandlerMapping` and its supertype `AbstractUrlHandlerMapping` must not load before
  * [dev.otherlode.instrumentation.endpoints.EndpointInstrumentation.install] has run:
@@ -35,6 +37,7 @@ import java.util.function.Supplier
 fun buildUrlMappedWebApplicationContext(
     staticHandler: Any,
     legacyHandler: Any,
+    fallbackHandler: Any,
 ): WebApplicationContext {
     val context = GenericWebApplicationContext()
     context.servletContext = MockServletContext()
@@ -53,7 +56,7 @@ fun buildUrlMappedWebApplicationContext(
         mappingClass,
         Supplier {
             val mapping = constructor.newInstance()
-            setUrlMap.invoke(mapping, mapOf("/static/**" to staticHandler, "/legacy/old" to legacyHandler))
+            setUrlMap.invoke(mapping, mapOf("/static/**" to staticHandler, "/legacy/old" to legacyHandler, "/*" to fallbackHandler))
             mapping
         },
     )

@@ -26,7 +26,7 @@ import kotlin.test.assertTrue
 
 /**
  * Proves through the real transform that each kept outcome lists the lines it guards, and that
- * each site and call edge names its guard. See ADR 0037.
+ * each site and call edge names its guard.
  */
 class GuardedCodeInstrumentationTest {
     private var installedTransformer: ResettableClassFileTransformer? = null

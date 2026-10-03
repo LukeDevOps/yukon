@@ -22,7 +22,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Proves ADR 0047 through the real pipeline and the static scanner: a Hibernate enhancement method
+ * Proves through the real pipeline and the static scanner that a Hibernate enhancement method
  * gets no METHOD or BRANCH probe and is not declared, and a call to one, from its own class or
  * from another, passes through to what it calls.
  */

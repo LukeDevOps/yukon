@@ -17,7 +17,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * Pins the seam half of hidden-handler naming (ADR 0035): what `OtherlodeEndpoints.recordLambdaClass`
+ * Pins the seam half of hidden-handler naming: what `OtherlodeEndpoints.recordLambdaClass`
  * keeps and what `OtherlodeEndpoints.lambdaImplementation` gives back. The lambda factory hook that
  * feeds it is proven end to end against the real JDK in the `endpoints-jdk-httpserver` module.
  * Here every input is built by hand. Another test in this JVM may have installed the real hook,

@@ -3,7 +3,7 @@ package com.example.target
 import java.util.function.IntUnaryOperator
 
 /**
- * Each shape of creation edge kotlinc emits (ADR 0034). kotlinc compiles each lambda here to a
+ * Each shape of creation edge kotlinc emits. kotlinc compiles each lambda here to a
  * private static `<method>$lambda$N` body, reached through an `invokedynamic` whose bootstrap is
  * `LambdaMetafactory`. The one in [nested] creates a second lambda inside its own body. The one in
  * [capturing] takes `offset` as a leading parameter, and the one in [capturingThis] takes the

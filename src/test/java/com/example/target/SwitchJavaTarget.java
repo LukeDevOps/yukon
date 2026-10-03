@@ -1,6 +1,6 @@
 package com.example.target;
 
-/** Each javac lowering of a switch over an enum, a string and a pattern, for ADR 0038. */
+/** Each javac lowering of a switch over an enum, a string and a pattern. */
 public class SwitchJavaTarget {
 
     public int enumStatement(SwitchColor color) {

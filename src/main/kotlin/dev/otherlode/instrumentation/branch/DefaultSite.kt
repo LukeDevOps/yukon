@@ -20,7 +20,7 @@ package dev.otherlode.instrumentation.branch
  * the first instruction of that bit's fill block, the code after its `mask & bit` test. That is
  * the last line-number entry at or before the instruction. kotlinc writes no new entry when two
  * defaults share a line, and this rule still gives both that line. A bit maps to -1 when
- * [defaultName] has no line-number table. See ADR 0044.
+ * [defaultName] has no line-number table.
  *
  * [higherMaskTested] is true when [defaultName]'s body tests a mask `int` beyond the first, which
  * happens only past the 32nd value parameter. Only the first mask `int` is ever bound, so a caller

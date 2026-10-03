@@ -10,9 +10,9 @@ import java.lang.System.Logger.Level
  * transform callback, which ByteBuddy runs before it rewrites and validates the bytes. Declaring
  * straight into the registry there publishes endpoints for a class that may still fail to weave:
  * the class then serves requests with no advice on it, the endpoint's hit count stays at zero,
- * and a collector reads "never called" for a route the framework is serving. This is the endpoint
- * form of what ADR 0007 rules out for probes, so it gets the same answer: hold the declarations,
- * and commit them only once the rewrite has produced bytes.
+ * and a collector reads "never called" for a route the framework is serving. Probes face the same
+ * hazard and get the same answer: hold the declarations, and commit them only once the rewrite has
+ * produced bytes.
  *
  * One slot per thread, with no key. ByteBuddy runs the transform callback, the rewrite and the
  * result callbacks back to back on the loading thread, and its `CircularityLock` holds a
@@ -20,7 +20,7 @@ import java.lang.System.Logger.Level
  *
  * A module that declares its routes at runtime instead, by walking a framework object once the
  * application has built it, is not staging: no transform is in flight on that thread, [stage]
- * declines the work, and the caller registers as it always did.
+ * declines the work, and the caller registers directly.
  */
 class PendingDeclarations internal constructor() {
     private val log = System.getLogger(PendingDeclarations::class.java.name)
@@ -47,8 +47,9 @@ class PendingDeclarations internal constructor() {
      *
      * ByteBuddy's default fallback strategy can run a whole transform twice, retrying with a
      * different type description after a `LinkageError` and with no listener call in between to
-     * close the list. It only retries a class being retransformed, which this agent never does,
-     * so the second pass cannot happen here. It would be harmless anyway: declaring one endpoint
+     * close the list. It only retries a class being retransformed, and the endpoint pipeline
+     * retransforms nothing it declares from (only the lambda factory hook retransforms, and it
+     * declares nothing), so the second pass cannot happen here. It would be harmless anyway: declaring one endpoint
      * key twice is the same endpoint.
      */
     fun begin(): Int {

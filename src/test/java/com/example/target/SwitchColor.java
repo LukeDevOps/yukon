@@ -1,6 +1,6 @@
 package com.example.target;
 
-/** The enum the switch fixtures switch over. See ADR 0038. */
+/** The enum the switch fixtures switch over. */
 public enum SwitchColor {
     RED,
     GREEN,

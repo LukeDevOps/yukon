@@ -14,7 +14,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * Proves omission probes (ADR 0021) through the real transform pipeline, on the
+ * Proves omission probes through the real transform pipeline, on the
  * `DefaultArgumentTarget` fixture, rather than only through
  * [dev.otherlode.instrumentation.branch.BranchSiteAnalyzerTest]'s direct bytecode
  * checks.

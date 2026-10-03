@@ -60,7 +60,7 @@ private val ELIGIBLE_METHOD: ElementMatcher.Junction<MethodDescription> =
  * overrides or implements. Class-level `@Path` is not inherited per the specification, but Jersey
  * honours one declared on a superclass or interface, so this module does too, only when Jersey is
  * present on the resource class's own loader. See [resolveAnnotationSource] and
- * [resolveClassPath], and ADR 0020 for the full reasoning.
+ * [resolveClassPath].
  *
  * [jerseyPresent] answers whether Jersey is on a resource class's own loader; the default reads a
  * marker resource off that loader without loading any class. A test supplies its own function to
@@ -128,7 +128,10 @@ class JaxRsModule
             advice: AdviceBinder,
             classLoader: ClassLoader?,
         ): DynamicType.Builder<*> {
-            val classPath = resolveClassPath(typeDescription, classLoader)
+            // With no class-level @Path the class is no root resource: a sub-resource reached
+            // through a locator, which counts on the locator, or a class only Jersey would serve.
+            // Declaring it at a prefix-less template would name an endpoint that does not exist.
+            val classPath = resolveClassPath(typeDescription, classLoader) ?: return builder
             val matched =
                 typeDescription.declaredMethods.filter(ELIGIBLE_METHOD).mapNotNull { method ->
                     val source = resolveAnnotationSource(method, typeDescription)
@@ -236,7 +239,7 @@ class JaxRsModule
          * A supertype `@Path` found while Jersey is absent is not used, since neither RESTEasy nor
          * the specification inherits a class-level annotation; this logs an INFO line once for the
          * life of this module the first time that happens, naming the class, so an adopter running
-         * a non-Jersey runtime can see why a template it expected has no class prefix.
+         * a non-Jersey runtime can see why it declares no endpoints. Null when nothing applies.
          */
         private fun resolveClassPath(
             type: TypeDescription,
@@ -248,8 +251,8 @@ class JaxRsModule
             if (classPathIgnoredWarned.compareAndSet(false, true)) {
                 log.log(
                     Level.INFO,
-                    "otherlode: jaxrs: class-level @Path on a supertype of ${type.name} is ignored: " +
-                        "RESTEasy and the JAX-RS specification do not inherit it",
+                    "otherlode: jaxrs: class-level @Path on a supertype of ${type.name} is ignored, so it declares no " +
+                        "endpoints: RESTEasy and the JAX-RS specification do not inherit it",
                 )
             }
             return null
@@ -272,7 +275,7 @@ class JaxRsModule
             return foundInterfacePath
         }
 
-        /** The verb for [method], or null if it carries neither a standard verb annotation nor a custom one. */
+        /** The verb for [source], or null if it carries neither a standard verb annotation nor a custom one. */
         private fun resolveVerb(source: AnnotationSource): String? {
             for (annotation in source.declaredAnnotations) {
                 val annotationType = annotation.annotationType
@@ -310,7 +313,7 @@ class JaxRsModule
  * other framework's raw route spelling.
  */
 private fun combineTemplate(
-    classPath: String?,
+    classPath: String,
     methodPath: String?,
 ): String {
     val segments = listOfNotNull(classPath, methodPath).map { it.trim('/') }.filter { it.isNotEmpty() }

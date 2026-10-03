@@ -89,7 +89,7 @@ data class LambdaFactoryShape(
 
 /**
  * Watches the JDK's lambda factory so a handler written as a lambda or a method reference can be
- * named (ADR 0035).
+ * named.
  *
  * The factory class is loaded before `premain` runs, so the hook retransforms it. It adds advice
  * to one method and changes nothing else in the class. It installs only when [shape] matches the

@@ -21,9 +21,9 @@ private const val ADVICE_CLASS = "dev.otherlode.endpoints.otelbridge.OnEndAdvice
 
 /**
  * Route bridge endpoint module. Counts the route OpenTelemetry's own HTTP server instrumentation
- * resolved for a request, for a framework this project has no dedicated endpoint module for. See
- * ADR 0019 for the full design, its rejected alternatives, and why it only ever discovers
- * endpoints by dispatch and never declares one.
+ * resolved for a request, for a framework this project has no dedicated endpoint module for. It
+ * only ever discovers endpoints by dispatch and never declares one, since OpenTelemetry learns a
+ * route only when a request ends on it.
  *
  * Matches both the unshaded `opentelemetry-instrumentation-api` artifact's own
  * `HttpServerAttributesExtractor` and the OpenTelemetry Java agent's relocated copy of the same
@@ -32,8 +32,8 @@ private const val ADVICE_CLASS = "dev.otherlode.endpoints.otelbridge.OnEndAdvice
  * reference in its bytecode to the agent's `io/opentelemetry/javaagent/shaded/...` prefix before
  * binding, so one advice class serves both deployments.
  *
- * Off by default. See [dev.otherlode.config.AgentConfig.otelBridgeEnabled], which
- * [dev.otherlode.Agent] reads to decide whether this module is even discovered.
+ * Off by default. It is always discovered, and [dev.otherlode.Agent] drops it unless
+ * [dev.otherlode.config.AgentConfig.otelBridgeEnabled] is set.
  */
 class OtelBridgeModule : EndpointModule {
     override val name: String = "otel"
@@ -56,9 +56,8 @@ class OtelBridgeModule : EndpointModule {
  * [typeName], keyed only on whether [typeName] is the shaded or the unshaded extractor name.
  * Empty for the unshaded name, since [OnEndAdvice] is already written against it directly.
  *
- * Prefix order matters only in that the longest must be tried first: `io/opentelemetry/api/`
- * must never swallow `io/opentelemetry/instrumentation/api/`. [AdviceBinder.bind] already sorts by
- * length itself, so the order these are written in here is for readability only.
+ * [AdviceBinder.bind] tries prefixes longest first, so the order these are written in here is for
+ * readability only.
  *
  * `internal` rather than `private` so [OtelBridgeModuleTest] can pin the exact rewrite this
  * module asks for, directly, without needing the real relocated OpenTelemetry javaagent jar on

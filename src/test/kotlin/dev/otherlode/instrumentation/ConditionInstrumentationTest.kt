@@ -17,9 +17,8 @@ import kotlin.test.assertEquals
 
 /**
  * Proves through the real transform that the demo's checkout handler sends each site's condition,
- * code parts around literal parts (ADR 0037), and that the demo's outcomes carry their routine
- * kinds (ADR 0046). The demo's compiled classes come from the benchmark corpus the root build
- * already passes to tests.
+ * code parts around literal parts, and that the demo's outcomes carry their routine kinds. The
+ * demo's compiled classes come from the benchmark corpus the root build already passes to tests.
  */
 class ConditionInstrumentationTest {
     private fun code(text: String) = ConditionPart(ConditionPartKind.CODE, text)

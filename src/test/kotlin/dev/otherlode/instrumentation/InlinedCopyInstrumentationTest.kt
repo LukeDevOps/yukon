@@ -15,7 +15,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * Proves the branch tier's inlined-copy drop and keep rule (ADR 0025) through the real transform
+ * Proves the branch tier's inlined-copy drop and keep rule through the real transform
  * pipeline, on the `InlinedCopyTarget`/`InlineLibraryTarget` fixtures, rather than only through
  * [dev.otherlode.instrumentation.branch.InlinedCopyAnalysisTest]'s direct bytecode
  * checks.

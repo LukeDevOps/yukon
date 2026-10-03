@@ -454,9 +454,9 @@ class OtherlodeTestCollectorEndToEndTest {
     }
 
     /**
-     * Server ADR 0031 folds a site into any never-hit method, not only into one that is a row: a
-     * constructor that is not an unused overload, in a class with no finding, is not listed, and
-     * neither is the code inside it.
+     * A site folds into any never-hit method, not only into one that is a row: a constructor that
+     * is not an unused overload, in a class with no finding, is not listed, and neither is the code
+     * inside it.
      */
     @Test
     fun `a site in a never-run constructor that is not a row folds with it, observed only through the wire protocol`() {

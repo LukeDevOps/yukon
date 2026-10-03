@@ -6,6 +6,7 @@ import java.util.logging.LogRecord
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
 import java.util.logging.Level as JulLevel
 import java.util.logging.Logger as JulLogger
 
@@ -196,6 +197,14 @@ class AgentConfigTest {
         val config = AgentConfig.parse("flushIntervalSeconds=0")
 
         assertEquals(Duration.ofSeconds(60), config.flushInterval)
+    }
+
+    @Test
+    fun `a flushIntervalSeconds longer than a day falls back to the default, so the schedule can be built`() {
+        val config = AgentConfig.parse("flushIntervalSeconds=9223372036854775807")
+
+        assertEquals(Duration.ofSeconds(60), config.flushInterval)
+        assertEquals(Duration.ofDays(1), AgentConfig.parse("flushIntervalSeconds=86400").flushInterval)
     }
 
     @Test
@@ -396,6 +405,23 @@ class AgentConfigTest {
 
         assertEquals(1, warnings.count { it.contains("unknown agent option") }, "log capture saw nothing")
         assertEquals(0, warnings.count { it.contains("plain http") })
+    }
+
+    @Test
+    fun `a package prefix written as a glob or a path is warned about, since it matches nothing`() {
+        val warnings = warningsFrom { parseQuietly("includePackages=com.acme.*;com/other,excludePackages=com.acme.gen.**") }
+
+        assertEquals(3, warnings.count { it.contains("dotted package prefix") }, "$warnings")
+        assertTrue(warnings.any { it.contains("'com.acme.*'") && it.contains("'com.acme'") }, "$warnings")
+        assertTrue(warnings.any { it.contains("'com/other'") && it.contains("'com.other'") }, "$warnings")
+    }
+
+    @Test
+    fun `a glob or path prefix is dropped, so it can never be the only include rule`() {
+        val config = parseQuietly("includePackages=com.acme.*;com.other;org/third,excludePackages=com.other.gen.*;com.other.internal")
+
+        assertEquals(listOf("com.other"), config.instrumentedPackagePrefixes)
+        assertEquals(listOf("com.other.internal"), config.excludedPackagePrefixes)
     }
 
     /** Parses [agentArgs] with no environment or system properties unless given, so the JVM running the tests cannot change the result. */

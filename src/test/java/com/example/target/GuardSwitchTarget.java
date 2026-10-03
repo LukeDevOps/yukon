@@ -1,6 +1,6 @@
 package com.example.target;
 
-/** A switch whose case bodies and default body each call their own method, for ADR 0037's guarded code. */
+/** A switch whose case bodies and default body each call their own method, so each outcome guards a call. */
 public class GuardSwitchTarget {
 
     public int select(int code) {

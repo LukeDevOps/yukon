@@ -17,13 +17,13 @@ import java.util.UUID
 data class AgentConfig(
     /**
      * The service name. When no Otherlode source sets it, it comes from OpenTelemetry's own settings,
-     * then from detection by [ServiceNameDetector], then [DEFAULT_SERVICE_NAME]. See ADR 0045.
+     * then from detection by [ServiceNameDetector], then [DEFAULT_SERVICE_NAME].
      */
     val serviceName: String,
     /**
      * The group the service belongs to, as OpenTelemetry's `service.namespace`. When no Otherlode source
      * sets it, it comes from OpenTelemetry's own settings. It has no default: null is the
-     * unspecified namespace. The agent never works one out for itself. See ADR 0045.
+     * unspecified namespace. The agent never works one out for itself.
      */
     val serviceNamespace: String?,
     val serviceVersion: String?,
@@ -47,7 +47,7 @@ data class AgentConfig(
     /**
      * Only types under one of these prefixes are instrumented. Required: when empty,
      * [dev.otherlode.Agent] refuses to start, logs one ERROR and instruments and exports
-     * nothing. See ADR 0033.
+     * nothing.
      */
     val instrumentedPackagePrefixes: List<String>,
     /**
@@ -56,9 +56,9 @@ data class AgentConfig(
      */
     val excludedPackagePrefixes: List<String>,
     /**
-     * Off unless explicitly enabled. Unlike every other capability here, a full classpath scan
-     * has a cost that genuinely scales with an adopter's classpath size, so it does not inherit
-     * this agent's usual "on unless configured otherwise" default.
+     * Off unless explicitly enabled. A full classpath scan reads every class under the include
+     * rules, a cost that scales with the adopter's classpath, so it does not inherit this agent's
+     * usual "on unless configured otherwise" default.
      */
     val staticBaselineEnabled: Boolean,
     /**
@@ -70,21 +70,22 @@ data class AgentConfig(
     val enabled: Boolean,
     /**
      * On by default. One switch for every endpoint module (Spring, Ktor, `jdk.httpserver`,
-     * JAX-RS); there are no per-framework flags, by design. See ADR 0017.
+     * JAX-RS), with no per-framework flags. A module matches only when its framework is present,
+     * and one whose advice or transform throws, a `LinkageError` against an unsupported version
+     * included, switches itself off and is reported in `disabled_endpoint_modules`.
      */
     val endpointsEnabled: Boolean,
     /**
-     * Off by default, unlike [endpointsEnabled]: the route bridge module hooks OpenTelemetry
-     * instrumentation internals rather than a framework's own public registration hooks, so its
-     * correctness is tied to the OpenTelemetry version present, a coupling ADR 0017 declined for
-     * every other module. An adopter opts in knowingly, for a framework no other module covers.
-     * See ADR 0019.
+     * Off by default, unlike [endpointsEnabled]: the route bridge module hooks OpenTelemetry's own
+     * internal classes rather than the framework that serves the request, so its correctness
+     * depends on the OpenTelemetry agent's version, not on any framework's. An adopter opts in
+     * knowingly, for a framework no other module covers.
      */
     val otelBridgeEnabled: Boolean,
     /**
      * Off by default. Marks every payload of this run as a test run, for an agent in a JVM that
      * runs the adopter's tests. A collector then uses the run's call edges only to name the tests
-     * that call production code. See ADR 0050.
+     * that call production code.
      */
     val testRun: Boolean,
 ) {
@@ -94,12 +95,13 @@ data class AgentConfig(
 
         /**
          * The environment a test run reports to when no source names one. A collector that drops
-         * the test-run flag still keeps the run apart from production. See ADR 0050.
+         * the test-run flag still keeps the run apart from production.
          */
         const val TEST_RUN_ENVIRONMENT = "test"
 
         private const val DEFAULT_ENDPOINT = "http://localhost:4319"
         private val DEFAULT_FLUSH_INTERVAL: Duration = Duration.ofSeconds(60)
+        private val MAX_FLUSH_INTERVAL: Duration = Duration.ofDays(1)
         private val log = System.getLogger(AgentConfig::class.java.name)
 
         private val KNOWN_KEYS =
@@ -127,11 +129,11 @@ data class AgentConfig(
          * default. [OptionNames] derives the property and environment variable names from the
          * option name itself, so the three sources can never drift apart from each other.
          *
-         * A blank value at any source counts as unset and falls through to the next one, the
-         * same way a blank `authToken` option already fell through to `OTHERLODE_AUTH_TOKEN`.
+         * A blank value at any source counts as unset and falls through to the next one, so a
+         * blank `authToken` option leaves `OTHERLODE_AUTH_TOKEN` in force.
          *
          * The service name, the namespace and the environment go on past Otherlode's three sources, in
-         * this order, and the first value that is not blank wins (ADR 0045):
+         * this order, and the first value that is not blank wins:
          *
          * 1. OpenTelemetry's own settings, resolved as its Java agent resolves them by
          *    [OtelResourceSettings.resolve]: each of `otel.service.name` and
@@ -140,7 +142,7 @@ data class AgentConfig(
          * 2. For the name only, [detectServiceName], which runs only when every source above is
          *    empty.
          * 3. For the name only, [DEFAULT_SERVICE_NAME].
-         * 4. For the environment only, [TEST_RUN_ENVIRONMENT] when [testRun] is on (ADR 0050).
+         * 4. For the environment only, [TEST_RUN_ENVIRONMENT] when [testRun] is on.
          *
          * [OtelResourceSettings] lists the resource-attribute keys each value reads.
          */
@@ -258,13 +260,31 @@ data class AgentConfig(
          * [dev.otherlode.instrumentation.TypeMatchPolicy] matches on package boundaries
          * either way, so `com.acme` never also matches `com.acmeinternal`. Shared by
          * `includePackages` and `excludePackages`, which use the same `;`-separated syntax.
+         *
+         * A prefix written as a glob (`com.acme.*`) or a path (`com/acme`) matches no class name, so
+         * it is dropped with a warning naming the spelling that would match. That spelling is never
+         * applied: the rewrite can be broader than the adopter meant (`com.*.shop` would become
+         * `com`, taking in every library under it). An include list left empty this way makes the
+         * agent refuse to start, as any empty include list does.
          */
-        private fun parsePackagePrefixes(raw: String?): List<String> =
-            raw
-                ?.split(";")
-                ?.map { it.trim().trimEnd('.') }
-                ?.filter { it.isNotEmpty() }
-                ?: emptyList()
+        private fun parsePackagePrefixes(raw: String?): List<String> {
+            val prefixes =
+                raw
+                    ?.split(";")
+                    ?.map { it.trim().trimEnd('.') }
+                    ?.filter { it.isNotEmpty() }
+                    ?: return emptyList()
+            val (unusable, usable) = prefixes.partition { '*' in it || '/' in it }
+            for (prefix in unusable) {
+                val dotted = prefix.replace('/', '.').substringBefore('*').trimEnd('.')
+                log.log(
+                    Level.WARNING,
+                    "otherlode: '$prefix' matches no class and is ignored: write a dotted package prefix with no " +
+                        "wildcard" + if (dotted.isEmpty()) "" else ", such as '$dotted'",
+                )
+            }
+            return usable
+        }
 
         /**
          * The exporter appends `/v1/otherlode/...` to this, so a trailing slash is dropped rather than
@@ -290,21 +310,20 @@ data class AgentConfig(
         }
 
         /**
-         * Falls back to the default for any non-positive or non-numeric value. This guards
-         * [dev.otherlode.export.ExportScheduler]: `scheduleAtFixedRate` throws for a
-         * non-positive period. That call happens inside `Agent.premain`, and the
-         * `java.lang.instrument` contract says an uncaught exception there aborts the whole
-         * target JVM. Without this fallback, one bad flag value could take down the entire app
-         * at startup.
+         * Falls back to the default for a value that is not a whole number of seconds from 1 to
+         * one day. [dev.otherlode.export.ExportScheduler] builds its schedule after both
+         * transformers are installed: `scheduleAtFixedRate` throws for a non-positive period,
+         * and the interval in milliseconds overflows a `long` for a huge one. Either failure
+         * would leave classes woven with nothing ever exported.
          */
         private fun parseFlushInterval(raw: String?): Duration {
             if (raw == null) return DEFAULT_FLUSH_INTERVAL
-            val seconds = raw.toLongOrNull()?.takeIf { it > 0 }
+            val seconds = raw.toLongOrNull()?.takeIf { it in 1..MAX_FLUSH_INTERVAL.seconds }
             if (seconds == null) {
                 log.log(
                     Level.WARNING,
-                    "otherlode: flushIntervalSeconds must be a positive integer, ignoring '$raw' " +
-                        "and using the default of ${DEFAULT_FLUSH_INTERVAL.seconds}s",
+                    "otherlode: flushIntervalSeconds must be a whole number from 1 to ${MAX_FLUSH_INTERVAL.seconds}, " +
+                        "ignoring '$raw' and using the default of ${DEFAULT_FLUSH_INTERVAL.seconds}s",
                 )
                 return DEFAULT_FLUSH_INTERVAL
             }

@@ -8,6 +8,7 @@ import dev.otherlode.dependencies.TestJars
 import dev.otherlode.instrumentation.LoadedClassSweep
 import dev.otherlode.instrumentation.branch.BranchDropCounts
 import dev.otherlode.instrumentation.branch.BranchDropReason
+import dev.otherlode.instrumentation.staticscan.StaticBaselineSender
 import dev.otherlode.registry.DependencyRegistry
 import dev.otherlode.registry.EndpointRegistry
 import dev.otherlode.registry.ExternalClassRegistry
@@ -98,7 +99,7 @@ private class FailingExporter : Exporter {
 
 /**
  * Records every call [ExportScheduler.maybeSweep] makes into the sweep, instead of doing any real
- * work, so a test can pin the cadence the two directions ADR 0027 and ADR 0028 keep without
+ * work, so a test can pin the cadence of the sweep's two directions without
  * driving ten real flush intervals or a real classpath walk.
  */
 private class RecordingSweep(
@@ -292,8 +293,47 @@ class ExportSchedulerTest {
         // the first time it lets an exception escape, with nothing logged. So flush() must never
         // let one out. This registry throws from computeDeltaBatch itself, to prove the guard
         // covers that call too, not only the exporter call.
+        registry.register("com.example.First", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "a", "()V", 1)))
         scheduler.flush()
+        registry.register("com.example.Second", 1L, listOf(ProbeMeta(ProbeKind.METHOD, "b", "()V", 1)))
         scheduler.flush()
+
+        assertEquals(
+            listOf(listOf("com.example.First"), listOf("com.example.Second")),
+            exporter.manifests.map { manifest -> manifest.probes.map { it.className } },
+            "the manifest send should still happen on every flush even if the delta side failed",
+        )
+    }
+
+    @Test
+    fun `pending static baseline chunks go out after a flush the collector confirmed, and not after one it refused`() {
+        val exporter = RecordingExporter()
+        val sender = StaticBaselineSender(exporter)
+        sender.offer(listOf(StaticBaseline(resource, emptyList(), scannedAt = 1L)))
+        val scheduler = ExportScheduler(config, resource, ProbeRegistry(), EndpointRegistry(), exporter, staticBaselineSender = sender)
+
+        exporter.failDeltaBatches = true
+        scheduler.flush()
+        assertEquals(0, exporter.staticBaselines.size, "the collector refused this flush, so no retry")
+
+        exporter.failDeltaBatches = false
+        scheduler.flush(final = true)
+        assertEquals(0, exporter.staticBaselines.size, "the shutdown flush never spends its budget on the baseline")
+
+        scheduler.flush()
+        assertEquals(1, exporter.staticBaselines.size)
+    }
+
+    @Test
+    fun `a flush sends at most one pending static baseline chunk`() {
+        val exporter = RecordingExporter()
+        val sender = StaticBaselineSender(exporter)
+        sender.offer(List(3) { StaticBaseline(resource, emptyList(), scannedAt = 1L, chunkIndex = it, chunkCount = 3) })
+        val scheduler = ExportScheduler(config, resource, ProbeRegistry(), EndpointRegistry(), exporter, staticBaselineSender = sender)
+
+        scheduler.flush()
+
+        assertEquals(listOf(0), exporter.staticBaselines.map { it.chunkIndex })
     }
 
     @Test
@@ -358,7 +398,7 @@ class ExportSchedulerTest {
         }
         val exporter = RecordingExporter()
         // Each class weighs 2 in the manifest cap (1 probe + 0 edges + 1 for its own
-        // ClassLocation record, ADR 0024), so the cap is 4, not 2, to keep two classes per
+        // ClassLocation record), so the cap is 4, not 2, to keep two classes per
         // chunk: 2 + 2 = 4 fits, and a third class's own 2 would push it past the cap.
         val scheduler =
             ExportScheduler(config, resource, registry, EndpointRegistry(), exporter, maxDeltasPerBatch = 2, maxManifestEntriesPerChunk = 4)
@@ -413,7 +453,12 @@ class ExportSchedulerTest {
 
     @Test
     fun `a new run carries the test-run flag and the test environment from its config`() {
-        val testRun = ResourceAttributes.forNewRun(AgentConfig.parse("testRun=true", env = { null }, systemProperties = { null }, detectServiceName = { null }))
+        val testRun =
+            ResourceAttributes.forNewRun(
+                AgentConfig.parse("testRun=true", env = {
+                    null
+                }, systemProperties = { null }, detectServiceName = { null }),
+            )
 
         assertTrue(testRun.testRun)
         assertEquals("test", testRun.environment)

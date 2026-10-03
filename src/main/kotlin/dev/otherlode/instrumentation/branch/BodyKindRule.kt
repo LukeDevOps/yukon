@@ -3,8 +3,9 @@ package dev.otherlode.instrumentation.branch
 import dev.otherlode.export.BodyKind
 
 /**
- * ADR 0034's `body_kind` rule. It reads only facts a class file states, so [classify] is pure and
- * [BranchSiteAnalyzer] calls it once per class, after it reads the class header.
+ * Says what kind of source body a body class was compiled from, the `body_kind` its class location
+ * carries. It reads only facts a class file states, so [classify] is pure and [BranchSiteAnalyzer]
+ * calls it once per class, after it reads the class header.
  *
  * The Kotlin runtime base classes are matched by shape: one top-level package segment, then the
  * base class's path inside it. The segment itself is not compared. `shadowJar` rewrites any string
@@ -43,9 +44,12 @@ internal object BodyKindRule {
         )
 
     /**
-     * The class's [BodyKind], checked in ADR 0034's order. A class with no `EnclosingMethod`
-     * attribute is [BodyKind.NONE] whatever else it states. Only the direct superclass is
-     * compared, since kotlinc always extends a runtime base class directly.
+     * The class's [BodyKind]. Checks run in this order and the first match wins: no
+     * `EnclosingMethod` attribute ([BodyKind.NONE], whatever else the class states), a lambda base
+     * class, a named `InnerClasses` entry, an anonymous entry with Kotlin metadata, else an
+     * anonymous class. A Kotlin lambda class also carries an anonymous entry and metadata, so the
+     * base-class check must come first. Only the direct superclass is compared, since kotlinc
+     * always extends a runtime base class directly.
      *
      * [superInternalName] is the class header's superclass, slashed. [ownInnerClassEntry] is the
      * `InnerClasses` entry whose inner class is this class, or null when it has none.

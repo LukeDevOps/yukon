@@ -1,9 +1,9 @@
 package com.example.target
 
-/** The enum the Kotlin switch fixtures switch over. See ADR 0038. */
+/** The enum the Kotlin switch fixtures switch over. */
 enum class Tint { RED, GREEN, BLUE }
 
-/** Each kotlinc lowering of a `when` over an enum and a string, for ADR 0038. */
+/** Each kotlinc lowering of a `when` over an enum and a string. */
 class SwitchTarget {
     fun enumWithElse(tint: Tint): Int =
         when (tint) {

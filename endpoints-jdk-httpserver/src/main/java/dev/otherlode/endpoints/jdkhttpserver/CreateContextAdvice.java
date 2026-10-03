@@ -20,7 +20,7 @@ import net.bytebuddy.asm.Advice;
  * subclass that inherits {@code handle}. A hidden class, spun for a Java or Kotlin lambda or
  * method reference through {@code invokedynamic}, has no stable name across runs. For one of
  * those, the join names the method the lambda calls, as {@link
- * OtherlodeEndpoints#lambdaImplementation} recorded it when the JDK spun the class (ADR 0035). Its
+ * OtherlodeEndpoints#lambdaImplementation} recorded it when the JDK spun the class. Its
  * descriptor is that method's own, so it includes any captured values. When nothing was recorded,
  * the class, method, and descriptor are all null. That happens for a class spun before the hook
  * was installed, on a JVM where the hook is off, or for a class another spinner made.

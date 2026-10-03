@@ -4,7 +4,7 @@ import dev.otherlode.export.CallEdge
 import dev.otherlode.export.CallEdgeKind
 
 /**
- * The creation edges the ADR 0042 fixtures give each creating method, keyed by class and then by
+ * The creation edges the `ImplementedInterfaceTarget` fixtures give each creating method, keyed by class and then by
  * method name. The manifest and the baseline tests both check against these.
  */
 object ImplementedInterfaceFixtures {
@@ -59,5 +59,13 @@ object ImplementedInterfaceFixtures {
         implementedInterface: String,
         capturedCount: Int = 0,
         virtual: Boolean = false,
-    ) = CallEdge(className, methodName, descriptor, virtual, CallEdgeKind.CREATES, capturedCount, implementedInterface = implementedInterface)
+    ) = CallEdge(
+        className,
+        methodName,
+        descriptor,
+        virtual,
+        CallEdgeKind.CREATES,
+        capturedCount,
+        implementedInterface = implementedInterface,
+    )
 }

@@ -10,52 +10,51 @@ import dev.otherlode.export.ProbeKind
  *
  * [inline] marks a probe belonging to a Kotlin inline function, or a branch inside one: a Kotlin
  * caller copies the body into the call site instead of invoking this method, so a zero hit total
- * is not evidence the code never ran. See ADR 0022.
+ * is not evidence the code never ran.
  *
  * [parameterIndex], [parameterName], and [overridable] apply only to an [ProbeKind.OPTIONAL_ARGUMENT]
  * probe. [methodName] and [methodDescriptor] on such a probe name the target function the
- * parameter belongs to, not the synthetic `$default` method the probe actually sits in, and
- * [inline] is the target's own inline flag. See ADR 0021. [line] on such a probe is the line of the
- * parameter's default value, not the target's line. See ADR 0044.
+ * parameter belongs to, not the synthetic `$default` method or the Scala default getter the probe
+ * actually sits in, and [inline] is the target's own inline flag. [line] on such a probe is the
+ * line of the parameter's default value, not the target's line.
  *
  * [targetClassName] is set only for an [ProbeKind.OPTIONAL_ARGUMENT] probe whose target lives in a
  * different class from the probe's own, the cross-class shape a Scala constructor default getter
- * takes. Null whenever the target is in the probe's own class. See ADR 0023.
+ * takes. Null whenever the target is in the probe's own class.
  *
  * [calls] is populated only for a [ProbeKind.METHOD] probe: the in-scope call edges read from
- * that method's own bytecode at transform time. See ADR 0024.
+ * that method's own bytecode at transform time.
  *
  * [inlinedFromClassName] is set only for a [ProbeKind.BRANCH] probe that is a kept inlined copy:
  * a site inside code kotlinc copied from an inline function's body into this probe's own method,
- * whose origin class is in scope. Dotted, or null when the probe is the class's own code. See
- * ADR 0025.
+ * whose origin class is in scope. Dotted, or null when the probe is the class's own code.
  *
  * [generatedBy] is set for a [ProbeKind.METHOD] probe, for a [ProbeKind.BRANCH] probe as the
  * mark of the method it sits in, and for a [ProbeKind.OPTIONAL_ARGUMENT] probe as its target's
- * mark. See [GeneratedBy] and ADR 0026.
+ * mark. See [GeneratedBy].
  *
  * [referencedClasses] is populated only for a [ProbeKind.METHOD] probe: the out-of-scope classes
  * that method's bytecode references, dotted, with JDK classes and classes read from a classpath
- * directory already dropped. See ADR 0030.
+ * directory already dropped.
  *
  * [branchKey] is set only for a [ProbeKind.BRANCH] probe: an opaque lowercase hex token naming
  * this outcome across builds and instances, compared only for equality. Null when the agent
- * cannot name the outcome safely. See ADR 0031.
+ * cannot name the outcome safely.
  *
  * [lambdaBody] is set only for a [ProbeKind.METHOD] probe whose method is a lambda body. See
- * [dev.otherlode.export.ProbeLocation.lambdaBody] and ADR 0034.
+ * [dev.otherlode.export.ProbeLocation.lambdaBody].
  *
  * [branchSites] is set only for a [ProbeKind.METHOD] probe: the method's kept branch sites, in
  * site index order. [siteIndex] is set only for a [ProbeKind.BRANCH] probe and names its site. See
- * [dev.otherlode.export.ProbeLocation.branchSites] and ADR 0037.
+ * [dev.otherlode.export.ProbeLocation.branchSites].
  *
  * [static] is set only for a [ProbeKind.METHOD] probe whose method has `ACC_STATIC`. It is false
  * for a constructor and for the type initializer's probe. See
- * [dev.otherlode.export.ProbeLocation.static] and ADR 0040.
+ * [dev.otherlode.export.ProbeLocation.static].
  *
  * [parameterNames], [genericSignature] and [extensionReceiver] are set only for a
  * [ProbeKind.METHOD] probe, and are empty or false for the type initializer's probe. See
- * [dev.otherlode.export.ProbeLocation.parameterNames] and ADR 0043.
+ * [dev.otherlode.export.ProbeLocation.parameterNames].
  */
 data class ProbeMeta(
     val kind: ProbeKind,

@@ -55,6 +55,11 @@ class DependencyReportTest {
     }
 
     @Test
+    fun `a jar with no classes is resources only and never unloaded`() {
+        assertEquals(DependencyStatus.RESOURCES_ONLY, statusOf(instance(loaded = 0, dependency = jackson.copy(classCount = 0))))
+    }
+
+    @Test
     fun `a startup dependency is not unloaded once any instance loaded a class from it`() {
         val status = statusOf(instance(loaded = 0), instance(loaded = 4, instanceId = "instance-2"))
 

@@ -5,7 +5,7 @@ import java.lang.System.Logger.Level
 
 /**
  * The resource values OpenTelemetry's own settings give, resolved as its Java agent resolves them.
- * [AgentConfig] falls back to these when Otherlode's own sources name no value. See ADR 0045.
+ * [AgentConfig] falls back to these when Otherlode's own sources name no value.
  *
  * [serviceNameSetting] is the `otel.service.name` setting. [attributes] is the parsed
  * `otel.resource.attributes` setting. Every value in both is trimmed and not blank.
@@ -26,7 +26,6 @@ internal class OtelResourceSettings(
     val serviceNamespace: String? =
         ServiceIdentityValues.usable(attributes["service.namespace"], "service.namespace in the resource attributes")
 
-    /** The `deployment.environment.name` attribute, else the older `deployment.environment`. */
     val environment: String? get() = attributes["deployment.environment.name"] ?: attributes["deployment.environment"]
 
     companion object {

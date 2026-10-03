@@ -58,22 +58,20 @@ object BranchSiteAnalyzer {
          */
         val hasTypeInitializer: Boolean = false,
         private val callEdgesByMethod: Map<Pair<String, String>, List<CallEdge>> = emptyMap(),
-        /** Dotted, as the class file's own super_class entry names it. Null only for `java.lang.Object`. See ADR 0024. */
+        /** Dotted, as the class file's own super_class entry names it. Null only for `java.lang.Object`. */
         val superClassName: String? = null,
-        /** Dotted, as the class file's own interfaces entries name them. See ADR 0024. */
+        /** Dotted, as the class file's own interfaces entries name them. */
         val interfaceNames: List<String> = emptyList(),
         /**
          * Per method, the ordinals of its dropped sites: the site's encounter index among every
          * tracked conditional and switch in that method, dropped or kept, counted from zero.
          * [BranchProbeAsmVisitorWrapper] uses this to skip a dropped site without allocating a
          * slot for it, in step with the same encounter order [BranchProbeMethodVisitor] walks.
-         * See ADR 0025.
          */
         private val droppedOrdinalsByMethod: Map<Pair<String, String>, Set<Int>> = emptyMap(),
         /**
          * What compiled each method into existence, keyed by (name, descriptor), computed once
-         * per class from its own method table, superclass and method bodies. See [generatedBy]
-         * and ADR 0026.
+         * per class from its own method table, superclass and method bodies. See [generatedBy].
          */
         private val generatedByMethod: Map<Pair<String, String>, GeneratedBy> = emptyMap(),
         /**
@@ -92,48 +90,52 @@ object BranchSiteAnalyzer {
         /**
          * The out-of-scope classes the class references outside any probed method, dotted: its
          * header, fields and record components, methods with no body, re-kinded Scala default
-         * getters, and pass-throughs nothing in the class reaches. See [placeReferences] and ADR 0030.
+         * getters, and pass-throughs nothing in the class reaches. See [placeReferences].
          */
         val classReferences: List<String> = emptyList(),
         private val lambdaBodies: Set<Pair<String, String>> = emptySet(),
         /**
          * The class file's `SourceFile` attribute exactly as it appears, or null when it has none
-         * or the bytes were never read. See ADR 0034.
+         * or the bytes were never read.
          */
         val sourceFile: String? = null,
-        /** What kind of body class this is, from [BodyKindRule]. [BodyKind.NONE] on [EMPTY]. See ADR 0034. */
+        /** What kind of body class this is, from [BodyKindRule]. [BodyKind.NONE] on [EMPTY]. */
         val bodyKind: BodyKind = BodyKind.NONE,
-        /** The source name of a [BodyKind.LOCAL_CLASS], and null for every other kind. See ADR 0034. */
+        /** The source name of a [BodyKind.LOCAL_CLASS], and null for every other kind. */
         val sourceName: String? = null,
         /**
-         * The forwarder table's entries this class yields (ADR 0035): each pass-through that a
-         * framework can report as a handler for one of [analyze]'s handler interfaces, with the
-         * one probed method it forwards to. Empty when no handler interface was given.
+         * The forwarder table's entries this class yields: each pass-through that a framework can
+         * report as a handler for one of [analyze]'s handler interfaces, with the one probed method
+         * it forwards to. Empty when no handler interface was given.
          */
         val handlerForwarders: List<HandlerForwarder> = emptyList(),
         /** The class's own name, dotted, as its header names it. Empty on [EMPTY]. Every branch key and site key digests it. */
         val className: String = "",
-        /** What [GuardAnalysis] found for each kept site, by site index. See ADR 0037. */
+        /** What [GuardAnalysis] found for each kept site, by site index. */
         private val siteGuards: Map<Int, SiteGuards> = emptyMap(),
         /**
          * Per method, the per-method ordinals of its kept switches whose default only throws, in
          * the same numbering as [droppedOrdinalsByMethod]. [BranchProbeAsmVisitorWrapper] sends
-         * such a default straight to its target with no probe. See ADR 0038.
+         * such a default straight to its target with no probe.
          */
         private val throwingDefaultOrdinalsByMethod: Map<Pair<String, String>, Set<Int>> = emptyMap(),
         /**
          * What kind of class kotlinc says this is, from the `k` element of its `kotlin.Metadata`
-         * by [KotlinKind.ofMetadataKind]. [KotlinKind.NONE] when it has none, and on [EMPTY]. See
-         * ADR 0041.
+         * by [KotlinKind.ofMetadataKind]. [KotlinKind.NONE] when it has none, and on [EMPTY].
          */
         val kotlinKind: KotlinKind = KotlinKind.NONE,
         private val sourceSignatures: Map<Pair<String, String>, SourceSignature> = emptyMap(),
+        /**
+         * Per method, by per-method ordinal in the same numbering as [droppedOrdinalsByMethod],
+         * each kept conditional's outcome offset that gets no probe; see [BranchSite.unprobedOutcome].
+         */
+        private val unprobedOutcomesByMethod: Map<Pair<String, String>, Map<Int, Int>> = emptyMap(),
     ) {
         /**
          * Each kept site of [sites], in site index order, with its outcomes numbered, given roles
          * and keyed by [KeptBranchSite.of], and with its guard and guarded lines. This is the one
          * numbering both the manifest's BRANCH and METHOD probes and the static baseline's declared
-         * methods use. See ADR 0037.
+         * methods use.
          */
         val keptSites: List<KeptBranchSite> by lazy { KeptBranchSite.of(sites, className, siteGuards) }
 
@@ -141,7 +143,7 @@ object BranchSiteAnalyzer {
 
         /**
          * The method's kept sites as the manifest and the static baseline send them, in site index
-         * order. Empty for any method with no kept site, `<clinit>` included. See ADR 0037.
+         * order. Empty for any method with no kept site, `<clinit>` included.
          */
         fun branchSitesOf(
             name: String,
@@ -153,7 +155,9 @@ object BranchSiteAnalyzer {
          * `invokedynamic` in this class names it as the `LambdaMetafactory` implementation, and
          * its name passes [TypeMatchPolicy.isLambdaBodyName]. The `invokedynamic` may name it
          * through a pass-through, which is how scalac reaches a body through its `$adapted`
-         * boxing forwarder. Always false on [EMPTY]. See ADR 0034.
+         * boxing forwarder. In a Scala class, a method with Scala 3's lifted-lambda name qualifies
+         * without one, since scalac 3 can leave the creating call in a nested class. Always false
+         * on [EMPTY].
          */
         fun isLambdaBody(
             name: String,
@@ -162,25 +166,29 @@ object BranchSiteAnalyzer {
 
         /**
          * The out-of-scope classes this method references, dotted, first seen first: its own
-         * bytecode, signature and annotations, plus those of every pass-through it reaches, by the
-         * call-edge rules of ADR 0024. Empty for any method that does not get a METHOD probe. JDK
-         * classes are still listed here; the transform drops them. See ADR 0030.
+         * bytecode, signature and annotations, plus those of every pass-through it reaches, as
+         * [callsOf] follows them. Empty for any method that does not get a METHOD probe. JDK
+         * classes are still listed here; the transform drops them.
          */
         fun referencesOf(
             name: String,
             descriptor: String,
         ): List<String> = referencesByMethod[name to descriptor] ?: emptyList()
 
-        /** First line-number-table entry of the method, or -1 when the class carries no debug info or the bytes were never read. */
+        /**
+         * First line-number-table entry of the method, or -1 when [analyze]'s method filter left
+         * it out, the class carries no debug info, or the bytes were never read. `<clinit>` gets
+         * its first line although the filter always leaves it out.
+         */
         fun firstLineOf(
             name: String,
             descriptor: String,
         ): Int = firstLineByMethod[name to descriptor] ?: -1
 
         /**
-         * Whether the method is a Kotlin inline function, detected from its own
-         * `$i$f$<name>` marker local. See ADR 0022. Always false on [EMPTY], and false when the
-         * class carries no debug info, since the marker lives only in the LocalVariableTable.
+         * Whether the method is a Kotlin inline function, detected from its own `$i$f$<name>`
+         * marker local. Always false on [EMPTY], and false when the class carries no debug info,
+         * since the marker lives only in the LocalVariableTable.
          */
         fun isInline(
             name: String,
@@ -189,7 +197,7 @@ object BranchSiteAnalyzer {
 
         /**
          * The in-scope call edges read from this method's own bytecode, empty for any method that
-         * does not get a METHOD probe. Each edge carries its guard. See ADRs 0024 and 0037.
+         * does not get a METHOD probe. Each edge carries its guard.
          */
         fun callsOf(
             name: String,
@@ -208,10 +216,16 @@ object BranchSiteAnalyzer {
             descriptor: String,
         ): Set<Int> = throwingDefaultOrdinalsByMethod[name to descriptor] ?: emptySet()
 
+        /** [name]/[descriptor]'s conditionals with an outcome that gets no probe, by ordinal; see [unprobedOutcomesByMethod]. */
+        fun unprobedOutcomesOf(
+            name: String,
+            descriptor: String,
+        ): Map<Int, Int> = unprobedOutcomesByMethod[name to descriptor] ?: emptyMap()
+
         /**
          * The method's parameter names, generic signature and extension-receiver flag, read from
          * its own class file. [SourceSignature.NONE] for `<clinit>`, on [EMPTY], and for a method
-         * the class does not declare. See ADR 0043.
+         * the class does not declare.
          */
         fun sourceSignatureOf(
             name: String,
@@ -219,7 +233,7 @@ object BranchSiteAnalyzer {
         ): SourceSignature = sourceSignatures[name to descriptor] ?: SourceSignature.NONE
 
         /**
-         * What compiled this method into existence, from bytecode shape alone, per ADR 0026.
+         * What compiled this method into existence, from bytecode shape alone.
          * [GeneratedBy.NONE] on [EMPTY], and for any method none of the shape rules matched.
          */
         fun generatedBy(
@@ -284,19 +298,20 @@ object BranchSiteAnalyzer {
      * A callee named exactly as one method's bytecode names it, before any pass-through or
      * cross-class `$default` resolution. [virtualRaw] is true for `invokevirtual`/
      * `invokeinterface`, or for an `invokedynamic` whose `LambdaMetafactory` implementation handle
-     * has an `H_INVOKEVIRTUAL`/`H_INVOKEINTERFACE` tag. See ADR 0024.
+     * has an `H_INVOKEVIRTUAL`/`H_INVOKEINTERFACE` tag.
      *
      * [kind] is [CallEdgeKind.CREATES] only for such an `invokedynamic`, and [capturedCount] is
-     * then its [capturedCount]; every other candidate is a [CallEdgeKind.CALL] with nothing
-     * captured. See ADR 0034.
+     * then how many target parameters its call site captures, as the function `capturedCount`
+     * reads it from the `invokedType`; every other candidate is a [CallEdgeKind.CALL] with nothing
+     * captured.
      *
      * [functionalInterface] is the internal name of the interface such an `invokedynamic` makes a
      * lambda for, the return type of its `invokedType`, and null for every other candidate. The
-     * forwarder table keys on it (ADR 0035), and the creation edge carries it (ADR 0042).
+     * forwarder table keys on it, and the creation edge carries it.
      *
      * [ordinal] is the [InstructionRecorder] ordinal of the instruction that recorded the
      * candidate, and [newOrdinal] that of the `new` an `<init>` call completes. Each is -1 when
-     * the method was not recorded or there is no such instruction. See ADR 0037.
+     * the method was not recorded or there is no such instruction.
      */
     internal data class RawCandidate(
         val owner: String,
@@ -328,12 +343,12 @@ object BranchSiteAnalyzer {
      * pass-through this class owns, must never look like a use of its own `<clinit>` from the
      * outside, which would make it eligible for substitution as a pass-through in its own right.
      * `GETFIELD`/`PUTFIELD` are excluded from every owner, since an instance field access implies
-     * nothing beyond the constructor edge the object's creation already carries. See ADR 0024.
+     * nothing beyond the constructor edge the object's creation already carries.
      *
      * [instructionOrdinal] gives the ordinal of the instruction being visited, from the
      * [InstructionRecorder] in front of this visitor, or -1 when there is none. Each candidate
      * carries it, and an `<init>` call also carries the ordinal of the latest unfinished `new` of
-     * its owner. See ADR 0037.
+     * its owner.
      */
     private open class CallCandidateMethodVisitor(
         private val ownerInternalName: String,
@@ -474,7 +489,7 @@ object BranchSiteAnalyzer {
      * [CallEdgeKind.CREATES] [RawCandidate], or null for any other bootstrap
      * (`StringConcatFactory`, Kotlin's own, records). The implementation method is bootstrap
      * argument index 1, verified against javac 21 and Kotlin 2.2.21 output. [invokedDescriptor] is
-     * the instruction's own descriptor, the call site's `invokedType`. See ADRs 0024 and 0034.
+     * the instruction's own descriptor, the call site's `invokedType`.
      */
     private fun lambdaCandidateOrNull(
         invokedDescriptor: String,
@@ -507,7 +522,7 @@ object BranchSiteAnalyzer {
      * implementation's parameter list, so it is not counted. An unbound reference such as
      * `Foo::name` captures nothing and takes its receiver from the interface's first argument, so
      * the result never goes below zero. A static method and a constructor (`H_NEWINVOKESPECIAL`)
-     * have no receiver to bind, so every captured value fills a parameter. See ADR 0034.
+     * have no receiver to bind, so every captured value fills a parameter.
      */
     internal fun capturedCount(
         invokedDescriptor: String,
@@ -578,10 +593,9 @@ object BranchSiteAnalyzer {
      * [lookup] resolves another class's bytes by internal name, for a constructor default getter
      * whose target lives on a different class from the getter itself (see
      * [resolveScalaGetterSites]), and for the map class an enum switch reads its case labels from
-     * (see [SwitchLowering] and ADR 0038). It defaults to always returning null, which leaves such
-     * a getter unresolved and such a switch as plain sites instead of failing analysis. A caller
-     * must catch and swallow its own lookup failures; this function treats a thrown exception the
-     * same as a null result.
+     * (see [SwitchLowering]). It defaults to always returning null, which leaves such
+     * a getter unresolved and such a switch as plain sites instead of failing analysis. A
+     * [lookup] that throws is read as one that returned null.
      *
      * [handlerInterfaces] names, by `Class.getName()`, the functional interfaces a framework takes
      * a handler as. The analysis yields [Analysis.handlerForwarders] only for those.
@@ -653,7 +667,7 @@ object BranchSiteAnalyzer {
                     debug: String?,
                 ) {
                     sourceFile = source
-                    smap = KotlinSmapParser.parse(debug)
+                    smap = KotlinSmapParser.parse(debug, internalClassName)
                 }
 
                 override fun visitOuterClass(
@@ -823,6 +837,7 @@ object BranchSiteAnalyzer {
                 else -> SourceLanguage.JAVA
             }
         val throwingDefaultOrdinalsByMethod = mutableMapOf<Pair<String, String>, MutableSet<Int>>()
+        val unprobedOutcomesByMethod = mutableMapOf<Pair<String, String>, MutableMap<Int, Int>>()
         attachConditionFingerprints(
             sites,
             classBytes,
@@ -831,6 +846,7 @@ object BranchSiteAnalyzer {
             EnumSwitchMappings(readClass),
             droppedOrdinalsByMethod,
             throwingDefaultOrdinalsByMethod,
+            unprobedOutcomesByMethod,
         )
         val guardsByMethod =
             analyzeGuards(
@@ -939,14 +955,15 @@ object BranchSiteAnalyzer {
             throwingDefaultOrdinalsByMethod,
             kotlinKind,
             sourceSignatures,
+            unprobedOutcomesByMethod,
         )
     }
 
     /**
      * [lookup], asked at most once per internal name. Several passes of one [analyze] call read the
      * same class, such as a Scala companion's partner, which the constructor getter resolution and
-     * the companion plumbing rule both need (ADR 0023, ADR 0048). A thrown exception is kept as a
-     * null result, which is how [analyze] treats it anyway.
+     * the companion plumbing rule both need. A thrown exception is kept as a null result, which is
+     * how [analyze] treats it anyway.
      */
     private fun readOnce(lookup: (internalName: String) -> ByteArray?): (String) -> ByteArray? {
         val read = HashMap<String, ByteArray?>()
@@ -968,7 +985,7 @@ object BranchSiteAnalyzer {
 
     /**
      * Reads the `k` element of a `kotlin.Metadata` annotation and hands it to [onKind]. It passes
-     * every element on to [delegate] unchanged and decodes nothing else. See ADR 0041.
+     * every element on to [delegate] unchanged and decodes nothing else.
      */
     private class MetadataKindReader(
         delegate: AnnotationVisitor?,
@@ -984,10 +1001,10 @@ object BranchSiteAnalyzer {
     }
 
     /**
-     * The generated forwarders a call passes through, per ADR 0041: a call into one records edges
-     * to what the forwarder calls. Each only moves its arguments on to another method. A Scala
-     * static forwarder is one too (ADR 0048). `ENUM`, `DATA_CLASS`, `RECORD`, `CASE_CLASS` and
-     * `SCALA_OBJECT` methods do work of their own, so a call into one stays an edge.
+     * The generated forwarders a call passes through: a call into one records edges to what the
+     * forwarder calls. Each only moves its arguments on to another method. A Scala static forwarder
+     * is one too. `ENUM`, `DATA_CLASS`, `RECORD`, `CASE_CLASS` and `SCALA_OBJECT` methods do work
+     * of their own, so a call into one stays an edge.
      */
     private val PASS_THROUGH_FORWARDERS =
         setOf(GeneratedBy.JVM_OVERLOADS, GeneratedBy.MULTIFILE_FACADE, GeneratedBy.DEFAULT_IMPLS, GeneratedBy.STATIC_FORWARDER)
@@ -1001,10 +1018,10 @@ object BranchSiteAnalyzer {
      * A line of the class's own code is named in [sourceFile], or with an empty file name when the
      * class has none. A line inside an inlined copy whose origin class is in scope is named at its
      * origin line in the origin's own file, through [smap]. A line from an out-of-scope origin is
-     * not named. See ADR 0037.
+     * not named.
      *
      * The same pass gives each kept outcome its routine kind, and [isThrowable] is what it asks
-     * about the classes a throw path creates. See ADR 0046.
+     * about the classes a throw path creates.
      */
     private fun analyzeGuards(
         sites: List<BranchSite>,
@@ -1043,9 +1060,9 @@ object BranchSiteAnalyzer {
     }
 
     /**
-     * The probed methods of this class that are lambda bodies, per ADR 0034: an `invokedynamic` in
-     * this class names the method as the `LambdaMetafactory` implementation, [eligibleMethodKeys]
-     * holds it, and its name passes [TypeMatchPolicy.isLambdaBodyName].
+     * The probed methods of this class that are lambda bodies: an `invokedynamic` in this class
+     * names the method as the `LambdaMetafactory` implementation, [eligibleMethodKeys] holds it,
+     * and its name passes [TypeMatchPolicy.isLambdaBodyName].
      *
      * When the implementation is a same-class pass-through (declared with a body, not probed), the
      * same-class methods it calls are tested in its place, transitively. Scala 2 and Scala 3 both name
@@ -1101,13 +1118,14 @@ object BranchSiteAnalyzer {
      * Each kept site also gets its condition, written in [language] from the same window as its
      * fingerprint. A dropped site gets none, since nothing about it reaches the wire. A condition
      * the writer fails on is left empty. [isEnum] is what the writer asks when it reads an
-     * `if_acmp` in Kotlin. See ADR 0037.
+     * `if_acmp` in Kotlin.
      *
      * Then each switch lowering [SwitchLowering] reads is applied, when none of its sites was
      * already dropped for another reason: its own jumps become [BranchDropReason.SWITCH_LOWERING]
      * and join [droppedOrdinalsByMethod], and the rebuilt site takes its case labels, subject and
      * fingerprint. A rebuilt site whose default only throws joins
-     * [throwingDefaultOrdinalsByMethod]. [enumMappings] reads the enum map arrays. See ADR 0038.
+     * [throwingDefaultOrdinalsByMethod], and a case check's outcome only a hash collision reaches
+     * joins [unprobedOutcomesByMethod]. [enumMappings] reads the enum map arrays.
      */
     private fun attachConditionFingerprints(
         sites: MutableList<BranchSite>,
@@ -1117,6 +1135,7 @@ object BranchSiteAnalyzer {
         enumMappings: EnumSwitchMappings,
         droppedOrdinalsByMethod: MutableMap<Pair<String, String>, MutableSet<Int>>,
         throwingDefaultOrdinalsByMethod: MutableMap<Pair<String, String>, MutableSet<Int>>,
+        unprobedOutcomesByMethod: MutableMap<Pair<String, String>, MutableMap<Int, Int>>,
     ) {
         val fingerprintsByMethod =
             try {
@@ -1151,6 +1170,11 @@ object BranchSiteAnalyzer {
                 for ((ordinal, condition) in lowered.caseConditions) {
                     val position = siteIndices[ordinal]
                     sites[position] = sites[position].copy(condition = condition)
+                }
+                for ((ordinal, offset) in lowered.collisionOutcomes) {
+                    val position = siteIndices[ordinal]
+                    sites[position] = sites[position].copy(unprobedOutcome = offset)
+                    unprobedOutcomesByMethod.getOrPut(methodKey) { mutableMapOf() }[ordinal] = offset
                 }
                 val rebuilt = lowered.rebuiltOrdinal ?: continue
                 val position = siteIndices[rebuilt]
@@ -1204,7 +1228,7 @@ object BranchSiteAnalyzer {
      * A class the lookup cannot read, or throws on, is judged by its name: it counts as a
      * `Throwable` when the name ends in `Exception` or `Error`. The lookup of a static baseline
      * scan often cannot read JDK classes, and this keeps a throw of `IllegalArgumentException` or of
-     * an adopter's class that extends it routine there too. See ADR 0046.
+     * an adopter's class that extends it routine there too.
      */
     private fun throwableTest(
         ownInternalName: String,
@@ -1258,12 +1282,12 @@ object BranchSiteAnalyzer {
     )
 
     /**
-     * Places every reference the class's bytecode holds, per ADR 0030: each entry point (a method
-     * with a METHOD probe, and `<clinit>` when there is one) keeps its own references plus those of
-     * every pass-through it reaches, as [resolveCallEdges] gathered them, and everything else goes
-     * to the class. That is the class header, fields and record components, a method with no body
-     * (abstract, native), a resolved Scala default getter (whose probe is re-kinded onto its target,
-     * ADR 0023, so it carries no METHOD probe to hold them), and a pass-through no entry point in
+     * Places every reference the class's bytecode holds: each entry point (a method with a METHOD
+     * probe, and `<clinit>` when there is one) keeps its own references plus those of every
+     * pass-through it reaches, as [resolveCallEdges] gathered them, and everything else goes to the
+     * class. That is the class header, fields and record components, a method with no body
+     * (abstract, native), a resolved Scala default getter (whose probe is re-kinded onto its
+     * target, so it carries no METHOD probe to hold them), and a pass-through no entry point in
      * this class reaches, such as an `access$` accessor only a nested class calls. Nothing is
      * dropped, so the class is the fallback for a reference no probed method can hold.
      *
@@ -1374,7 +1398,7 @@ object BranchSiteAnalyzer {
 
     /**
      * Resolves every [eligibleMethodKeys] method's raw candidates (collected by [analyze]) into
-     * its final [CallEdge] list. See ADR 0024.
+     * its final [CallEdge] list.
      *
      * A same-class candidate is a pass-through only when this class declares it with a body and
      * it is not in [eligibleMethodKeys]: its own raw candidates are substituted in its place,
@@ -1387,7 +1411,7 @@ object BranchSiteAnalyzer {
      *
      * A cross-class candidate shaped like a Kotlin `$default` method is resolved against the target
      * class's own bytecode fetched through [lookup], the same mechanism [resolveScalaGetterSites]
-     * already uses for a Scala constructor getter's cross-class target; a `$default` whose target
+     * uses for a Scala constructor getter's cross-class target; a `$default` whose target
      * the descriptor cannot name falls through to the general rule below, since its body invokes
      * the target anyway. A default-shaped constructor that is kotlinc's accessor for a private
      * constructor ([isConstructorAccessor]) is never resolved that way: it is synthetic and never
@@ -1400,74 +1424,72 @@ object BranchSiteAnalyzer {
      * substituted transitively. Invoking a cross-class pass-through is itself a use of its owner,
      * so it also adds an edge to that owner's `<clinit>`, the same as a static field read or write
      * on that owner (see [CallCandidateMethodVisitor]); this edge is never gated on the owner
-     * actually declaring a `<clinit>`, since the collector already drops an edge with no matching
-     * node. A cross-class candidate that owner's bytes cannot resolve, or that the owner does not
-     * declare at all (an inherited method), stays a verbatim edge with its original virtual flag;
+     * actually declaring a `<clinit>`, since the collector drops an edge with no matching node. A
+     * cross-class candidate that owner's bytes cannot resolve, or that the owner does not declare
+     * at all (an inherited method), stays a verbatim edge with its original virtual flag;
      * one the owner declares and the method tier would probe keeps its name and descriptor but has
      * its virtual flag corrected the same way a same-class target's is.
      *
      * A candidate named `<init>` or `<clinit>` whose owner's [MethodTable.hasEnclosingMethod] is
      * true names a body class: a suspend lambda, an object expression, or an anonymous or local
      * class. A function or property reference is a body class too, but a synthetic one, handled
-     * below. In addition to the edge already added for that candidate, an edge
-     * is added from the entry point to every method the body class declares with a body, other than
-     * `<init>` and `<clinit>`, that the method tier would probe, with the same non-virtual
-     * correction a same-class target gets. The creator is the only method that can ever reach a
-     * body class's methods, so without this edge every one of them would look uncalled the moment
-     * its only caller is out of scope, which is the common case: a framework invokes an object
-     * expression's `run`, or a coroutine library resumes a suspend lambda. A
-     * named, non-local class carries no `EnclosingMethod` attribute, so `new` on one is never
-     * expanded this way.
+     * below. Besides the edge for that candidate, an edge is added from the entry point to every
+     * method the body class declares with a body, other than `<init>` and `<clinit>`, that the
+     * method tier would probe, with the same non-virtual correction a same-class target gets. The
+     * creator is the only method that can ever reach a body class's methods, so without this edge
+     * every one of them would look uncalled the moment its only caller is out of scope, which is
+     * the common case: a framework invokes an object expression's `run`, or a coroutine library
+     * resumes a suspend lambda. A named, non-local class carries no `EnclosingMethod` attribute,
+     * so `new` on one is never expanded this way.
      *
      * A body class the agent never probes ([MethodTable.isUnprobedBodyClass]) is a pass-through as
      * a whole, since an edge into it would name a method with no probe. kotlinc makes such classes
      * for every function and property reference and each `$sam$` wrapper, which are synthetic, and
      * for every suspend function's own continuation. A candidate for any of its methods adds no
-     * edge to the class itself. Its own raw candidates are substituted in its place instead. When the candidate is
-     * its `<init>` or `<clinit>`, the raw candidates of every other method it declares with a body
-     * are substituted too, as `CREATES` edges, the way the body-class edges above are. So
-     * `val f = ::twice` gives its creator a `CREATES` edge to `twice`, the same edge a Java
-     * `this::twice` gives. A continuation's `invokeSuspend` calls back into the suspend function that
-     * created it, which is a self-edge and is dropped. See ADR 0034.
+     * edge to the class itself. Its own raw candidates are substituted in its place instead. When
+     * the candidate is its `<init>` or `<clinit>`, the raw candidates of every other method it
+     * declares with a body are substituted too, as `CREATES` edges, the way the body-class edges
+     * above are. So `val f = ::twice` gives its creator a `CREATES` edge to `twice`, the same edge
+     * a Java `this::twice` gives. A continuation's `invokeSuspend` calls back into the suspend
+     * function that created it, which is a self-edge and is dropped.
      *
      * Self-edges (the entry-point method calling itself, directly or through a pass-through
      * chain) are dropped, and so is a candidate for this class's own `<clinit>`, which a
      * substituted forwarder on another class can carry back in when it reads a static field of
-     * the class being analysed: a method of this class that runs has already initialised it. Edges are deduplicated per entry point by (owner, name, descriptor,
-     * virtual).
+     * the class being analysed: a method of this class that runs has already initialised it.
      *
-     * Every edge has a kind (ADR 0034). A candidate starts with its own: [CallEdgeKind.CREATES]
-     * for a `LambdaMetafactory` `invokedynamic`, [CallEdgeKind.CALL] for everything else. The
-     * edges that take a pass-through's place keep the kind of the candidate that reached it, and
-     * a `CREATES` candidate found inside the pass-through stays `CREATES`. So once a walk passes a
-     * `CREATES` step, every edge below it is `CREATES`: such an edge only runs once the created
-     * body runs, never when the creator runs. The captured count travels with the kind, capped at
-     * the substituted target's own parameter count. The only pass-through a compiler names as an
-     * implementation is scalac's boxing forwarder, which passes its parameters on in order. The body-class edges are `CREATES` edges with
-     * nothing captured, while the constructor or initializer edge that leads to them keeps the
-     * kind it arrived with. Edges are deduplicated per entry point by every field, kind and
-     * captured count included, so a method that both calls and creates the same target keeps
-     * both edges.
+     * Every edge has a kind. A candidate starts with its own: [CallEdgeKind.CREATES] for a
+     * `LambdaMetafactory` `invokedynamic`, [CallEdgeKind.CALL] for everything else. The edges that
+     * take a pass-through's place keep the kind of the candidate that reached it, and a `CREATES`
+     * candidate found inside the pass-through stays `CREATES`. So once a walk passes a `CREATES`
+     * step, every edge below it is `CREATES`: such an edge only runs once the created body runs,
+     * never when the creator runs. The captured count travels with the kind, capped at the
+     * substituted target's own parameter count. The only pass-through a compiler names as an
+     * implementation is scalac's boxing forwarder, which passes its parameters on in order. The
+     * body-class edges are `CREATES` edges with nothing captured, while the constructor or
+     * initializer edge that leads to them keeps the kind it arrived with. Edges are deduplicated
+     * per entry point by every field, kind and captured count included, so a method that both
+     * calls and creates the same target keeps both edges.
      *
-     * The implemented interface (ADR 0042) travels with the kind the same way the captured count
-     * does. A `LambdaMetafactory` candidate brings its [RawCandidate.functionalInterface], and every
-     * edge that takes its kind from that candidate keeps it. A body-class edge has none. It is part
-     * of the visited key and of the edge, so one body created for two interfaces gives two edges.
+     * The implemented interface travels with the kind the same way the captured count does. A
+     * `LambdaMetafactory` candidate brings its [RawCandidate.functionalInterface], and every edge
+     * that takes its kind from that candidate keeps it. A body-class edge has none. It is part of
+     * the visited key and of the edge, so one body created for two interfaces gives two edges.
      *
-     * References (ADR 0030) ride the same walk, unfiltered: an entry point starts with its own, and
-     * every pass-through substituted into it, same-class or cross-class, adds its own, so a
-     * reference is attributed exactly where the pass-through's callees are. A cross-class `$default`
-     * resolved to its target also adds its own references, since its body evaluates the default
-     * expressions on the caller's behalf. A body-class join adds none: the body class's methods hold
-     * their own references in their own class's analysis. A body class the agent never probes has no
-     * analysis of its own, so each of its methods the walk passes through adds its references like any other
-     * pass-through.
+     * References ride the same walk, unfiltered: an entry point starts with its own, and every
+     * pass-through substituted into it, same-class or cross-class, adds its own, so a reference is
+     * attributed exactly where the pass-through's callees are. A cross-class `$default` resolved to
+     * its target also adds its own references, since its body evaluates the default expressions on
+     * the caller's behalf. A body-class join adds none: the body class's methods hold their own
+     * references in their own class's analysis. A body class the agent never probes has no
+     * analysis of its own, so each of its methods the walk passes through adds its references like
+     * any other pass-through.
      *
      * With [handlerInterfaces] given, the same walk also finds the forwarder table's entries. See
-     * [findHandlerForwarders] and ADR 0035.
+     * [findHandlerForwarders].
      *
      * Each edge carries the guard of the entry point's instruction that recorded its candidate,
-     * from [guardsByMethod] (ADR 0037). For an `<init>` call on a body class, that instruction is
+     * from [guardsByMethod]. For an `<init>` call on a body class, that instruction is
      * the `new` the call completes. [isOwnClassBodyClass] says whether this class is a body class
      * itself. Every edge the walk finds below a candidate keeps that candidate's guard, so an edge
      * that takes a pass-through's place keeps the guard of the call to the pass-through. The guard
@@ -1487,7 +1509,7 @@ object BranchSiteAnalyzer {
      * references, since it has a probe to hold them, so none of them are added to the caller. An
      * entry point that is itself a generated forwarder does not pass through other forwarders:
      * its own edges name its callees as its bytecode does. A `$default` whose target is a
-     * forwarder, as a multi-file facade's may be, passes through the target too. See ADR 0041.
+     * forwarder, as a multi-file facade's may be, passes through the target too.
      */
     private fun resolveCallEdges(
         internalClassName: String,
@@ -1776,7 +1798,7 @@ object BranchSiteAnalyzer {
     }
 
     /**
-     * The forwarder table's entries for one class (ADR 0035). Two kinds of pass-through qualify:
+     * The forwarder table's entries for one class. Two kinds of pass-through qualify:
      * - a method of this class that an `invokedynamic` here names as the implementation of a
      *   lambda for one of [handlerInterfaces], when it is a pass-through. scalac names its
      *   `$adapted` boxing forwarder this way.
@@ -1937,7 +1959,7 @@ object BranchSiteAnalyzer {
         return CrossClassDefaultTarget(targetKey.first, targetKey.second, virtual = !isConstructor && !nonVirtual)
     }
 
-    /** A target with any of these flags can never be overridden, so a call to it is never virtual. See ADR 0024. */
+    /** A target with any of these flags can never be overridden, so a call to it is never virtual. */
     private const val NON_VIRTUAL_FLAGS = Opcodes.ACC_PRIVATE or Opcodes.ACC_STATIC or Opcodes.ACC_FINAL
 
     /** A target with either flag has no body to pass through, so a call to it stays an edge. */
@@ -1946,12 +1968,11 @@ object BranchSiteAnalyzer {
     /**
      * Whether the method tier would not probe a declared method with these [access] flags and
      * [name], owned by a Scala class when [isScalaClass] is true and by a class whose direct
-     * superclass is [superInternalName]: a bridge, always, a Hibernate enhancement method (ADR
-     * 0047), a suspend lambda's `create` or `invoke` (ADR 0025), or a synthetic method that is
-     * not a lambda body the method tier does probe. Mirrors [TypeMatchPolicy.methodMatcher]'s own
-     * handling of those exactly, so
-     * a method resolved as a cross-class pass-through here is never one the method tier also probes
-     * in its own right. See ADR 0024.
+     * superclass is [superInternalName]: a bridge, always, a Hibernate enhancement method, a
+     * suspend lambda's `create` or `invoke`, or a synthetic method that is not a lambda body the
+     * method tier does probe. Mirrors [TypeMatchPolicy.methodMatcher]'s own handling of those
+     * exactly, so a method resolved as a cross-class pass-through here is never one the method tier
+     * also probes in its own right.
      */
     private fun wouldNotBeProbedByMethodTier(
         access: Int,
@@ -1987,35 +2008,29 @@ object BranchSiteAnalyzer {
      * preceding" is unaffected by debug info and stack-map frames.
      */
     private sealed interface RecentInsn {
-        /** No instruction has been seen yet, or the last one was not worth remembering. */
+        /** No instruction has been seen yet. */
         data object None : RecentInsn
 
-        /** `GETFIELD owner.name:descriptor`. */
         data class GetField(
             val owner: String,
             val name: String,
             val descriptor: String,
         ) : RecentInsn
 
-        /** `ALOAD varIndex`. */
         data class ALoad(
             val varIndex: Int,
         ) : RecentInsn
 
-        /** `INSTANCEOF type`. */
         data class InstanceOf(
             val type: String,
         ) : RecentInsn
 
-        /** `LDC value`. */
         data class Ldc(
             val value: Any?,
         ) : RecentInsn
 
-        /** `IAND`. */
         data object Iand : RecentInsn
 
-        /** `DUP`. */
         data object Dup : RecentInsn
 
         /** `INVOKESTATIC IntrinsicsKt.getCOROUTINE_SUSPENDED()`, matched by owner suffix. */
@@ -2027,12 +2042,12 @@ object BranchSiteAnalyzer {
 
     /**
      * Recognises the bytecode shapes kotlinc's coroutine state machine leaves in a suspend-shaped
-     * method, confirmed with `javap` against Kotlin 2.2.21 output: ADR 0025's four, plus the
-     * stack form of the compare against the suspended marker. See ADR 0025.
+     * method, confirmed with `javap` against Kotlin 2.2.21 output: shapes (i) to (iv) below, plus
+     * the stack form of shape (ii), the compare against the suspended marker.
      *
      * Every match is keyed on the instructions immediately preceding a tracked jump or switch, so
      * a coverage agent registered ahead of this one (JaCoCo) is tolerated the same way the
-     * omission tier already tolerates it: JaCoCo inverts a conditional jump around an inserted
+     * omission tier tolerates it: JaCoCo inverts a conditional jump around an inserted
      * probe and leaves the instructions before it untouched, so `IFEQ` and `IFNE` (and `IF_ACMPEQ`
      * and `IF_ACMPNE`) are both accepted.
      */
@@ -2056,9 +2071,47 @@ object BranchSiteAnalyzer {
             return TypeMatchPolicy.SUSPEND_LAMBDA_SUPERCLASS_SUFFIXES.any { dottedSuper.endsWith(it) }
         }
 
-        /** Shape (i): a `TABLESWITCH` whose immediately preceding real instruction reads the continuation's `label` field. */
-        fun isLabelSwitch(mostRecent: RecentInsn): Boolean =
-            mostRecent is RecentInsn.GetField && mostRecent.name == "label" && mostRecent.descriptor == "I"
+        /**
+         * Shape (i): a `TABLESWITCH` whose immediately preceding real instruction reads the
+         * continuation's `label` field. In a suspend lambda's `invokeSuspend` the continuation is
+         * the lambda class itself; in a suspend function it is the class kotlinc nests under the
+         * owner, the same `T` rule as shape (iii). A `label` field of any other class is the
+         * adopter's own.
+         */
+        fun isLabelSwitch(
+            mostRecent: RecentInsn,
+            ownerInternalName: String,
+            methodName: String,
+        ): Boolean {
+            val getField = mostRecent as? RecentInsn.GetField ?: return false
+            if (getField.name != "label" || getField.descriptor != "I") return false
+            return if (methodName == "invokeSuspend") {
+                getField.owner == ownerInternalName
+            } else {
+                isContinuationOf(getField.owner, ownerInternalName)
+            }
+        }
+
+        /**
+         * Whether [className] is a continuation class kotlinc made for a suspend function of
+         * [ownerInternalName]: `<owner>$<function>$<n>`, nested under the owner, or, for a default
+         * method compiled into an interface's `$DefaultImpls`, under the interface, which is where
+         * kotlinc names it. A nested class of the adopter's own (`Owner$Config`), or an anonymous
+         * one (`Owner$1`), has no function name before its number and is not one.
+         */
+        private fun isContinuationOf(
+            className: String,
+            ownerInternalName: String,
+        ): Boolean {
+            val interfaceName = ownerInternalName.removeSuffix(DEFAULT_IMPLS_SUFFIX)
+            val nestedUnder =
+                when {
+                    className.startsWith("$ownerInternalName\$") -> ownerInternalName
+                    interfaceName != ownerInternalName && className.startsWith("$interfaceName\$") -> interfaceName
+                    else -> return false
+                }
+            return CONTINUATION_NAME_TAIL.matches(className.substring(nestedUnder.length + 1))
+        }
 
         /**
          * Shape (ii): `IF_ACMPEQ`/`IF_ACMPNE` where one of the two immediately preceding real
@@ -2096,9 +2149,9 @@ object BranchSiteAnalyzer {
         ): Boolean = insn is RecentInsn.ALoad && insn.varIndex in suspendedMarkerSlots
 
         /**
-         * Shape (iii): `ALOAD <continuation slot>; INSTANCEOF T; IFEQ|IFNE`, where `T`'s internal
-         * name starts with the owning class's own name followed by `$`, kotlinc's own nesting for
-         * the continuation class it generates per suspend function.
+         * Shape (iii): `ALOAD <continuation slot>; INSTANCEOF T; IFEQ|IFNE`, where `T` is a
+         * continuation class of the owner by [isContinuationOf], kotlinc's own nesting for the
+         * continuation class it generates per suspend function.
          */
         fun isContinuationInstanceOfCheck(
             mostRecent: RecentInsn,
@@ -2109,7 +2162,7 @@ object BranchSiteAnalyzer {
             val instanceOf = mostRecent as? RecentInsn.InstanceOf ?: return false
             val load = secondMostRecent as? RecentInsn.ALoad ?: return false
             if (load.varIndex != continuationSlot) return false
-            return instanceOf.type.startsWith("$ownerInternalName\$")
+            return isContinuationOf(instanceOf.type, ownerInternalName)
         }
 
         /**
@@ -2127,8 +2180,13 @@ object BranchSiteAnalyzer {
             if (ldc.value != Int.MIN_VALUE) return false
             val getField = thirdMostRecent as? RecentInsn.GetField ?: return false
             if (getField.name != "label" || getField.descriptor != "I") return false
-            return getField.owner.startsWith("$ownerInternalName\$")
+            return isContinuationOf(getField.owner, ownerInternalName)
         }
+
+        private const val DEFAULT_IMPLS_SUFFIX = "\$DefaultImpls"
+
+        /** What follows the owner in a continuation's name: the function's name, `$` and a number. */
+        private val CONTINUATION_NAME_TAIL = Regex("""[^$]+(\$[^$]+)*\$\d+""")
     }
 
     /**
@@ -2144,7 +2202,7 @@ object BranchSiteAnalyzer {
         private val eligible: Boolean,
         private val defaultShaped: Boolean,
         private val ownerInternalName: String,
-        /** The class's own direct superclass, dotted-to-internal form; null only for `java.lang.Object`. */
+        /** The class's own direct superclass, in internal form; null only for `java.lang.Object`. */
         private val ownerSuperInternalName: String?,
         private val localNamesForMethod: MutableMap<Int, String>,
         private val sites: MutableList<BranchSite>,
@@ -2194,7 +2252,7 @@ object BranchSiteAnalyzer {
         /**
          * Whether this method carries a coroutine state machine of its own: a trailing
          * `Continuation` parameter, or `invokeSuspend` on a class whose direct superclass is a
-         * suspend lambda's. See [CoroutineShapes] and ADR 0025.
+         * suspend lambda's. See [CoroutineShapes].
          */
         private val suspendShaped = CoroutineShapes.isSuspendShaped(name, descriptor, ownerSuperInternalName)
 
@@ -2217,8 +2275,8 @@ object BranchSiteAnalyzer {
          * (`ALOAD`/`BIPUSH`/`ICONST_1`/`BASTORE`) right after the call before the `ASTORE` runs,
          * confirmed with `javap` against JaCoCo 0.8.13's offline `Instrumenter` output. None of
          * that bookkeeping is itself an `ASTORE`, so waiting for the next one rather than requiring
-         * strict adjacency tolerates it the same way the rest of this analyser already tolerates
-         * JaCoCo's inverted jumps.
+         * strict adjacency tolerates it the same way the coroutine shapes tolerate JaCoCo's
+         * inverted jumps.
          *
          * Cleared at the next jump, switch or call instead, none of which that bookkeeping holds:
          * the stack form of the compare never stores the marker, and an `ASTORE` further on would
@@ -2306,7 +2364,7 @@ object BranchSiteAnalyzer {
                     switchOutcomeCount(dflt, labels),
                     isSwitch = true,
                     coroutineMachinery =
-                        suspendShaped && CoroutineShapes.isLabelSwitch(recentInsn1),
+                        suspendShaped && CoroutineShapes.isLabelSwitch(recentInsn1, ownerInternalName, name),
                 )
             }
             pushInsn(RecentInsn.Other)
@@ -2409,6 +2467,7 @@ object BranchSiteAnalyzer {
                             nextSiteIndex(),
                             outcomeCount,
                             dropReason = BranchDropReason.INLINED_OUT_OF_SCOPE,
+                            inlinedFromClassName = origin.originClassName,
                             isSwitch = isSwitch,
                         )
                     }
@@ -2596,7 +2655,7 @@ object BranchSiteAnalyzer {
 
     /**
      * Splits a method descriptor's parameter section into its individual type descriptors, in
-     * declaration order. Handles primitives, arrays, and object types.
+     * declaration order.
      */
     private fun parseParameterDescriptors(descriptor: String): List<String> {
         val params = descriptor.substring(descriptor.indexOf('(') + 1, descriptor.lastIndexOf(')'))
@@ -2618,19 +2677,18 @@ object BranchSiteAnalyzer {
 
     /**
      * What compiled each of [internalClassName]'s own declared methods into existence, from
-     * bytecode shape alone, per ADR 0026. No rule here reads an annotation or `kotlin.Metadata`.
+     * bytecode shape alone. No rule here reads an annotation or `kotlin.Metadata`.
      *
      * A class named with the `$DefaultImpls` suffix marks a method [GeneratedBy.DEFAULT_IMPLS] only
      * when its body only forwards, as [defaultImplsForwarders] checks, and marks nothing else in the
      * class. Under `-jvm-default=enable`, the default from language version 2.2, the interface
      * method holds the real body and `$DefaultImpls` keeps a forwarder for callers compiled against
      * the older layout, which nothing in the application calls and which would otherwise read as
-     * never hit. Under
-     * `-jvm-default=disable`, the default up to language version 2.1, the interface method is
-     * abstract and `$DefaultImpls` holds the real body, conditionals included, so marking every
-     * method in the class would hide code the adopter wrote. The forwarder test reads the body,
-     * never the `Deprecated` attribute kotlinc gives a forwarder, since an adopter's own
-     * `@Deprecated` default method carries that attribute too.
+     * never hit. Under `-jvm-default=disable`, the default up to language version 2.1, the
+     * interface method is abstract and `$DefaultImpls` holds the real body, conditionals included,
+     * so marking every method in the class would hide code the adopter wrote. The forwarder test
+     * reads the body, never the `Deprecated` attribute kotlinc gives a forwarder, since an
+     * adopter's own `@Deprecated` default method carries that attribute too.
      *
      * A class whose direct superclass is `java.lang.Enum` marks `values()` returning an array of
      * the class, `valueOf(Ljava/lang/String;)` returning the class, and `getEntries()` of any
@@ -2654,16 +2712,16 @@ object BranchSiteAnalyzer {
      *
      * A constructor or method that only forwards to its own class's `$default` twin, the way an
      * overload `@JvmOverloads` adds does, is [GeneratedBy.JVM_OVERLOADS]; see
-     * [jvmOverloadsForwarders] and ADR 0040. The body is read only when the class declares a
+     * [jvmOverloadsForwarders]. The body is read only when the class declares a
      * `$default` method or constructor at all, since a forwarder needs one to call.
      *
      * In a class whose [kotlinKind] is [KotlinKind.MULTIFILE_CLASS_FACADE], a function that only
      * forwards to the same function on a part is [GeneratedBy.MULTIFILE_FACADE]; see
-     * [multifileFacadeForwarders] and ADR 0041.
+     * [multifileFacadeForwarders].
      *
      * In a class that [isScalaClass], a static forwarder, a case class's and its companion's
      * plumbing and an object's `writeReplace` are marked as [ScalaGeneratedMethods] reads them,
-     * with [lookup] reading a companion's partner class; see ADR 0048. They go in after every rule
+     * with [lookup] reading a companion's partner class. They go in after every rule
      * above, each only where no earlier rule marked the method, the way the `@JvmOverloads` and
      * multi-file facade marks do. No compiler emits a shape both a Kotlin rule and a Scala rule
      * match, so the order only settles which rule is authoritative if one ever did: the older one.
@@ -2760,7 +2818,7 @@ object BranchSiteAnalyzer {
      * Any other instruction means the body is not a forwarder. The rule is narrow on purpose, for
      * the reason [defaultImplsForwarders] gives. kotlinc 2.2.21 emits this shape for a constructor,
      * an instance method and a top-level function (checked with `javap`). It never reads the
-     * annotation, which sits on the full declaration and not on the overloads. See ADR 0040.
+     * annotation, which sits on the full declaration and not on the overloads.
      *
      * The source can write the same bytecode by hand. A secondary constructor or a same-named
      * overload that calls the full one with named arguments and leaves some out, such as
@@ -3081,7 +3139,7 @@ object BranchSiteAnalyzer {
      * property getter, with no null check (checked with `javap`): the check sits in the part's
      * function. The rule stays narrow for the reason [defaultImplsForwarders] gives. The part is not
      * checked to be a part, since the facade names its parts only in its metadata, which the agent
-     * does not decode. See ADR 0041.
+     * does not decode.
      */
     private fun multifileFacadeForwarders(
         classBytes: ByteArray,
@@ -3289,8 +3347,9 @@ object BranchSiteAnalyzer {
      * `javap`). A method with at least one line number is therefore the adopter's and stays
      * [GeneratedBy.NONE], so a hand-written `equals` reads as ordinary code. Kotlin forbids
      * hand-writing `componentN` or `copy` on a data class, so those two need no such check. A class
-     * compiled without debug info has no line numbers anywhere, so all three are marked; ADR 0026
-     * accepts that, and the class already draws the stripped-debug warning.
+     * compiled without debug info has no line numbers anywhere, so all three are marked, and a
+     * hand-written override there is hidden as generated. That is accepted: such a class has lost
+     * its inline marks too, and when it loads it draws the stripped-debug warning.
      */
     private fun markDataClassMembers(
         internalClassName: String,
@@ -3344,9 +3403,10 @@ object BranchSiteAnalyzer {
     ): Int = (a + b - 1) / b
 
     /**
-     * How many mask `int`s a `$default` method with this many non-marker, non-mask parameters
-     * carries: `ceil(n / 32)` where `n` is the number of original value parameters. Solved by
-     * search rather than a closed form, since `n` and the mask count are mutually dependent.
+     * How many mask `int`s a `$default` method carries, given how many parameters it has besides
+     * its trailing marker, mask ints included: `ceil(n / 32)` where `n` is the number of original
+     * value parameters. Solved by search rather than a closed form, since `n` and the mask count
+     * are mutually dependent.
      */
     private fun resolveMaskIntCount(paramsExcludingTrailing: Int): Int {
         var maskIntCount = 1
@@ -3633,10 +3693,10 @@ object BranchSiteAnalyzer {
      * [TypeMatchPolicy.methodMatcher] applies to a loaded class. [hasEnclosingMethod] is true only
      * for a body class: the JVM attaches an `EnclosingMethod` attribute to an anonymous or local
      * class, and kotlinc attaches the same attribute to a function reference, a suspend lambda, and
-     * an object expression. See ADR 0024's body-class rule. [interfaceInternalNames] says whether a
-     * body class implements a handler interface, which the forwarder table needs (ADR 0035).
-     * [kotlinKind] is the class's own, and [forwarderKeys] its generated forwarders that a call
-     * passes through (ADR 0041).
+     * an object expression. [resolveCallEdges] joins a body class's methods to its creator.
+     * [interfaceInternalNames] says whether a body class implements a handler interface, which the
+     * forwarder table needs. [kotlinKind] is the class's own, and [forwarderKeys] its generated
+     * forwarders that a call passes through.
      */
     internal class MethodTable(
         val classAccess: Int,
@@ -3657,7 +3717,7 @@ object BranchSiteAnalyzer {
          * A body class the type matcher turns away by [TypeMatchPolicy.isTurnedAwayByShape], so
          * none of its methods ever has a probe: a synthetic class, such as each function or
          * property reference and each `$sam$` wrapper kotlinc makes, or a suspend function's own
-         * continuation. See ADR 0034.
+         * continuation.
          */
         val isUnprobedBodyClass: Boolean
             get() =
@@ -3672,11 +3732,11 @@ object BranchSiteAnalyzer {
 
     /**
      * A minimal reader for a class this agent is not instrumenting: what
-     * [resolveScalaGetterSites] needs to resolve a constructor default getter against a companion
-     * module class's own `<init>`, and what [resolveCallEdges] needs to resolve a cross-class
-     * pass-through against its owner's own bytecode. Unlike [analyze], every method's first line
-     * and raw candidates are recorded unconditionally, since no method or branch tier runs against
-     * this class to gate it by eligibility.
+     * [resolveScalaGetterSites] needs to resolve a constructor default getter against the `<init>`
+     * of the class its module class names, the module's name without the trailing `$`, and what
+     * [resolveCallEdges] needs to resolve a cross-class pass-through against its owner's own
+     * bytecode. Every method's first line and raw candidates are recorded, as [analyze] records
+     * them.
      */
     private fun readMethodTable(classBytes: ByteArray): MethodTable {
         var classAccess = 0

@@ -14,7 +14,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * Proves Scala default-getter re-kinding (ADR 0023) through the real transform pipeline, on the
+ * Proves Scala default-getter re-kinding through the real transform pipeline, on the
  * `:fixtures-scala3` and `:fixtures-scala2` fixtures, the same way
  * [OptionalArgumentInstrumentationTest] proves the Kotlin `$default` tier. [ProbeRegistry.manifest]
  * is enough for every assertion here; nothing goes over the wire.
@@ -192,8 +192,8 @@ class ScalaOptionalArgumentInstrumentationTest {
 
         callDriver(loader, "callCaseClassApply", times = 2)
 
-        // Cc$ also carries the constructor default getters $lessinit$greater$default$1/2 (ADR
-        // 0023), which resolve separately, cross-class, against Cc's own <init>; isolating by
+        // Cc$ also carries the constructor default getters $lessinit$greater$default$1/2,
+        // which resolve separately, cross-class, against Cc's own <init>; isolating by
         // methodName keeps this test to apply's own same-class getters.
         val probes =
             registry
@@ -222,7 +222,7 @@ class ScalaOptionalArgumentInstrumentationTest {
 
     /**
      * `Cc$`'s constructor default getters resolve across the class boundary to `Cc`'s own
-     * `<init>`, per ADR 0023. `Cc`'s own `<init>` method probe counts every constructor call
+     * `<init>`. `Cc`'s own `<init>` method probe counts every constructor call
      * regardless of which arguments were omitted, since it is a separate probe on a separate class.
      */
     private fun `constructor default getters resolve across the class boundary, and Cc's own init hit count is unaffected`(
@@ -281,9 +281,9 @@ class ScalaOptionalArgumentInstrumentationTest {
      * `Cc`'s own static forwarder for the constructor default getter resolves in class to
      * `Cc.<init>`, alongside the module getter on `Cc$` that resolves to the same target across
      * the class boundary: one parameter, two omission probes, an intended and known shape. A
-     * consumer that judges each probe on its own instead of summing them, as ADR 0023's
-     * consequences describe, can find the forwarder's own zero reading as "always supplied"
-     * beside the module getter's "never supplied" for the same parameter.
+     * consumer that judges each probe on its own instead of summing them can find the
+     * forwarder's own zero reading as "always supplied" beside the module getter's "never
+     * supplied" for the same parameter.
      */
     private fun `Cc's constructor default getter for parameter 0 has both a module probe and its own forwarder probe`(module: String) {
         val registry = ProbeRegistry()
@@ -357,7 +357,7 @@ class ScalaOptionalArgumentInstrumentationTest {
 
     /**
      * Scala 3 resolves `Cc.apply(...)` through the same constructor default getters as `new
-     * Cc(...)`, per ADR 0023's consequences: unlike Scala 2, `Cc$` has no `apply$default$N` of its
+     * Cc(...)`: unlike Scala 2, `Cc$` has no `apply$default$N` of its
      * own for Scala 3 to fall back to.
      */
     @Test

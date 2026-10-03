@@ -13,7 +13,7 @@ import kotlin.test.assertEquals
 /**
  * Proves [BranchSiteAnalyzer] reads each class's Kotlin kind from the `k` element of its
  * `kotlin.Metadata`, and marks a multi-file facade's forwarders [GeneratedBy.MULTIFILE_FACADE] by
- * their bytecode shape. See ADR 0041.
+ * their bytecode shape.
  */
 class KotlinKindAnalyzerTest {
     private companion object {
@@ -108,7 +108,9 @@ class KotlinKindAnalyzerTest {
     fun `the parts' real functions are NONE`() {
         assertEquals(
             GeneratedBy.NONE,
-            analyzeKotlinTarget("MultifileText__MultifileGreetingKt").generatedBy("multifileGreeting", "(Ljava/lang/String;)Ljava/lang/String;"),
+            analyzeKotlinTarget(
+                "MultifileText__MultifileGreetingKt",
+            ).generatedBy("multifileGreeting", "(Ljava/lang/String;)Ljava/lang/String;"),
         )
         val farewell = analyzeKotlinTarget("MultifileText__MultifileFarewellKt")
         assertEquals(GeneratedBy.NONE, farewell.generatedBy("multifileFarewell", "(Ljava/lang/String;I)Ljava/lang/String;"))

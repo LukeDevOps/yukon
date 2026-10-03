@@ -2,10 +2,7 @@ package dev.otherlode.testkit
 
 import dev.otherlode.export.DependencyDiscoverySource
 
-/**
- * What the collector's rules say about one dependency, checked in this order. See ADR 0030 and
- * CONTEXT.md, "Dependencies".
- */
+/** What the collector's rules say about one dependency. Findings sort in this order. */
 enum class DependencyUsage {
     /** Listed from an instance's startup classpath, and no instance loaded a class from it. */
     UNLOADED,
@@ -27,6 +24,12 @@ enum class DependencyUsage {
 
     /** Loaded, and no instance listing it records references (its include rules are unset), so nothing further is claimed. */
     LOADED,
+
+    /**
+     * Every listing counted no class in it: native libraries, web assets, message bundles. Whether
+     * a class loaded from it says nothing about whether it is used, so nothing is claimed.
+     */
+    RESOURCES_ONLY,
 }
 
 /**
@@ -77,7 +80,10 @@ data class DependencyStatus(
     val sites: List<DependencyReferenceSite>,
 )
 
-/** A referenced class no loader could find, with every site that references it. See CONTEXT.md, "Absent reference". */
+/**
+ * A referenced class no loader could find, with every site that references it: code guarded by a
+ * check for an optional library, for one. It maps to no dependency, so it is listed on its own.
+ */
 data class AbsentReference(
     val className: String,
     val sites: List<DependencyReferenceSite>,

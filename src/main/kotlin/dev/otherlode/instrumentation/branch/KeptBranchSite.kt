@@ -11,13 +11,12 @@ import dev.otherlode.export.BranchSite as BranchSitePayload
  * One outcome of a [KeptBranchSite]: its class-wide [branchIndex], its [role] in the site, the
  * [caseKey] of a [BranchRole.CASE] when the switch's case keys are known, and its [branchKey] when
  * [BranchKeys] can name it. [guardedLines] and [partlyGuardedLines] are its guarded code, from
- * [GuardAnalysis]. See ADR 0037.
+ * [GuardAnalysis].
  *
  * [caseLabel] is the source's label for a [BranchRole.CASE] of a rebuilt switch, and empty
- * otherwise. Such a case has no [caseKey]. See ADR 0038.
+ * otherwise. Such a case has no [caseKey].
  *
- * [routine] is the outcome's routine kind from [RoutineClassifier], or [RoutineKind.NONE]. See ADR
- * 0046.
+ * [routine] is the outcome's routine kind from [RoutineClassifier], or [RoutineKind.NONE].
  */
 data class KeptBranchOutcome(
     val branchIndex: Int,
@@ -33,7 +32,7 @@ data class KeptBranchOutcome(
 /**
  * One kept branch site of a class, with its [outcomes] numbered and keyed. [siteKey] is null
  * exactly when every outcome's [KeptBranchOutcome.branchKey] is null. [guard] is the branch index
- * of the innermost kept outcome that dominates the site, or null. See ADRs 0025, 0031 and 0037.
+ * of the innermost kept outcome that dominates the site, or null.
  */
 data class KeptBranchSite(
     val site: BranchSite,
@@ -71,7 +70,9 @@ data class KeptBranchSite(
          * it has no entry for has no guard, guards no lines, and has no routine outcome.
          *
          * Each site's first branch index comes from [firstBranchIndexes]. A dropped site is not
-         * listed, and neither is a throwing default (ADR 0038), whose branch index stays unused.
+         * listed, and neither is a throwing default or a [BranchSite.unprobedOutcome], whose
+         * branch index stays unused. [guards] lists a site's outcomes in probed order, and
+         * the branch keys by outcome offset.
          */
         internal fun of(
             sites: List<BranchSite>,
@@ -85,17 +86,19 @@ data class KeptBranchSite(
             for ((position, site) in sites.withIndex()) {
                 if (site.dropReason != null) continue
                 val siteGuards = guards[site.siteIndex]
+                val roles = rolesOf(site)
                 val outcomes =
-                    rolesOf(site).mapIndexed { offset, role ->
+                    site.probedPositions.mapIndexed { probed, offset ->
+                        val role = roles[offset]
                         KeptBranchOutcome(
                             firstBranchIndexes[position] + offset,
                             role.role,
                             role.caseKey,
                             branchKeys[site.siteIndex to offset],
-                            siteGuards?.guardedLines?.getOrNull(offset).orEmpty(),
-                            siteGuards?.partlyGuardedLines?.getOrNull(offset).orEmpty(),
+                            siteGuards?.guardedLines?.getOrNull(probed).orEmpty(),
+                            siteGuards?.partlyGuardedLines?.getOrNull(probed).orEmpty(),
                             role.caseLabel,
-                            siteGuards?.routineKinds?.getOrNull(offset) ?: RoutineKind.NONE,
+                            siteGuards?.routineKinds?.getOrNull(probed) ?: RoutineKind.NONE,
                         )
                     }
                 kept += KeptBranchSite(site, siteKeys[site.siteIndex], outcomes, siteGuards?.guard)
@@ -106,8 +109,8 @@ data class KeptBranchSite(
         /**
          * Each site's first branch index, in [sites] order: the sum of [BranchSite.outcomeCount]
          * over every earlier site in the class. Dropped sites count, so a kept site's branch
-         * indexes do not shift when an earlier site is dropped (ADR 0025). [of] and
-         * [GuardAnalysis] both number outcomes from this.
+         * indexes do not shift when an earlier site is dropped. [of] and [GuardAnalysis] both
+         * number outcomes from this.
          */
         internal fun firstBranchIndexes(sites: List<BranchSite>): IntArray {
             val result = IntArray(sites.size)
@@ -119,7 +122,6 @@ data class KeptBranchSite(
             return result
         }
 
-        /** One outcome's role, and for a case its key or its label. */
         private class Role(
             val role: BranchRole,
             val caseKey: Int? = null,
@@ -131,8 +133,8 @@ data class KeptBranchSite(
          * counts a conditional's taken edge at offset 0 and its fall-through at offset 1. It
          * counts a switch's cases in [BranchSite.caseKeys] order and the default last. A switch
          * whose case keys are unknown or do not match its outcome count still lists its cases, with
-         * no case key. A rebuilt switch names each case by its label and no key, and leaves out a
-         * throwing default, which is always the last offset.
+         * no case key. A rebuilt switch names each case by its label and no key. Every offset has
+         * a role, a throwing default included; [of] leaves out the ones that get no probe.
          */
         private fun rolesOf(site: BranchSite): List<Role> {
             val caseKeys = site.caseKeys
@@ -141,7 +143,7 @@ data class KeptBranchSite(
             val labels = site.caseLabels?.takeIf { it.size == caseCount }
             val knownKeys = caseKeys?.takeIf { it.size == caseCount && labels == null }
             val cases = List(caseCount) { Role(BranchRole.CASE, knownKeys?.get(it), listOfNotNull(labels?.get(it))) }
-            return if (site.throwingDefault) cases else cases + Role(BranchRole.DEFAULT)
+            return cases + Role(BranchRole.DEFAULT)
         }
     }
 }

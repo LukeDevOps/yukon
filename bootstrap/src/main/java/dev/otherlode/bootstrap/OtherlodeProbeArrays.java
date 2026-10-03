@@ -35,7 +35,11 @@ public final class OtherlodeProbeArrays {
         resolver = newResolver;
     }
 
-    /** Called from every instrumented class's {@code <clinit>}; every argument is a constant woven at transform time. */
+    /**
+     * Called from every instrumented class's {@code <clinit>}. Every argument but {@code
+     * classLoader}, which the woven code reads from the class itself, is a constant woven at
+     * transform time.
+     */
     public static long[] resolve(String className, long layoutHash, int probeCount, ClassLoader classLoader) {
         Resolver current = resolver;
         if (current != null) {

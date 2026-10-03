@@ -8,7 +8,7 @@ import net.bytebuddy.jar.asm.Type
 
 /**
  * What a method's class file says about its signature beyond the descriptor. A consumer uses it
- * to write the signature as the source did. See ADR 0043.
+ * to write the signature as the source did.
  *
  * [parameterNames] holds one name per descriptor parameter, in order, or is empty. See
  * [ParameterNameReader] for where the names come from.
@@ -28,7 +28,7 @@ data class SourceSignature(
         /** No names, no generic signature and no receiver. A `<clinit>` and an unread class get this. */
         val NONE = SourceSignature(emptyList(), "", false)
 
-        /** Builds the facts from the chosen names and the method's `Signature` attribute, if any. */
+        /** Sets [extensionReceiver] when the first name is one kotlinc gives an extension receiver. */
         fun of(
             parameterNames: List<String>,
             signature: String?,

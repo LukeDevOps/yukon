@@ -17,7 +17,7 @@ import java.util.concurrent.ConcurrentHashMap
  * module that owns a framework is the only code that knows how to walk one of its objects.
  *
  * A handler join that names a method passes through [handlerForwarders] on its way in, from
- * [register] and [attachHandler], so a pass-through becomes the method it forwards to (ADR 0035).
+ * [register] and [attachHandler], so a pass-through becomes the method it forwards to.
  * A dispatch path reports its method through [attachHandler]. A join that names only a class, as
  * [recordDispatch] takes, is left as reported, since the table is keyed by method.
  */

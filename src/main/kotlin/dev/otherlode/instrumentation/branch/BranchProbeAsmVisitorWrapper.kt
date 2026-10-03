@@ -29,14 +29,14 @@ import net.bytebuddy.pool.TypePool
  * increment that would throw `ArrayIndexOutOfBoundsException` inside the application's own
  * method. A site count that differs from the analysis in either direction means the bytes being
  * rewritten differ from the bytes analysed, so [visitEnd] throws `IllegalStateException` and the
- * whole class is skipped and reported through the standard transform-failure path (ADR 0006,
- * ADR 0007), rather than being left instrumented with branch metadata that describes the wrong
- * outcomes.
+ * whole class is skipped and reported through the standard transform-failure path, rather than
+ * being left instrumented with branch metadata that describes the wrong outcomes.
  *
  * [droppedOrdinalsByMethod] names each method's dropped sites by their per-method encounter
- * ordinal (see ADR 0025); a method absent from it, or every method when the default is left in
- * place, has nothing dropped. [throwingDefaultOrdinalsByMethod] names, in the same numbering, each
- * method's switches whose default only throws and gets no probe (see ADR 0038).
+ * ordinal; a method absent from it, or every method when the default is left in place, has nothing
+ * dropped. [throwingDefaultOrdinalsByMethod] names, in the same numbering, each method's switches
+ * whose default only throws and gets no probe, and [unprobedOutcomesByMethod] each method's
+ * conditionals with an outcome that gets no probe, with that outcome's offset.
  */
 class BranchProbeAsmVisitorWrapper(
     private val eligibleMethods: (name: String, descriptor: String) -> Boolean,
@@ -44,6 +44,7 @@ class BranchProbeAsmVisitorWrapper(
     private val branchSlotCapacity: Int = Int.MAX_VALUE,
     private val droppedOrdinalsByMethod: (name: String, descriptor: String) -> Set<Int> = { _, _ -> emptySet() },
     private val throwingDefaultOrdinalsByMethod: (name: String, descriptor: String) -> Set<Int> = { _, _ -> emptySet() },
+    private val unprobedOutcomesByMethod: (name: String, descriptor: String) -> Map<Int, Int> = { _, _ -> emptyMap() },
 ) : AsmVisitorWrapper {
     override fun mergeWriter(flags: Int): Int = flags or ClassWriter.COMPUTE_FRAMES
 
@@ -79,6 +80,7 @@ class BranchProbeAsmVisitorWrapper(
                     probeIndexBase,
                     droppedOrdinalsByMethod(name, descriptor),
                     throwingDefaultOrdinalsByMethod(name, descriptor),
+                    unprobedOutcomesByMethod(name, descriptor),
                 ) { outcomeCount ->
                     slotsWanted += outcomeCount
                     if (nextSlot + outcomeCount > branchSlotCapacity) return@BranchProbeMethodVisitor BranchProbeMethodVisitor.NO_SLOT

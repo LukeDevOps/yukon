@@ -4,10 +4,8 @@ package dev.otherlode.config
  * Derives an agent option's system property and environment variable names from its camelCase
  * key.
  *
- * Both names come from the same word split, so one option name always maps to exactly one
- * property name and one environment variable name. There is no separate list of names to keep in
- * sync by hand, and no way for a property and an environment variable to drift apart for the same
- * option.
+ * Both names come from one word split of the option name, so there is no hand-kept list for
+ * them to drift from.
  */
 object OptionNames {
     private val CAMEL_CASE_BOUNDARY = Regex("(?<=[a-z0-9])(?=[A-Z])")

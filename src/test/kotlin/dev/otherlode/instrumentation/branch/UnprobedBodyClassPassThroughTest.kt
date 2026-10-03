@@ -13,8 +13,8 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Proves on real kotlinc output that a body class the agent never probes is a pass-through (ADR
- * 0034). kotlinc marks every function and property reference class synthetic, so its creator's
+ * Proves on real kotlinc output that a body class the agent never probes is a pass-through.
+ * kotlinc marks every function and property reference class synthetic, so its creator's
  * `CREATES` edge goes to the function or accessor the reference names. A suspend function's own
  * continuation is turned away too. In neither case does any edge name the unprobed class.
  */
@@ -113,7 +113,9 @@ class UnprobedBodyClassPassThroughTest {
             analysis.callsOf("twoPointsSuspending", "(ILkotlin/coroutines/Continuation;)Ljava/lang/Object;"),
         )
         assertEquals(
-            listOf(CallEdge(coroutineOwner, "twoPointsSuspending", "(ILkotlin/coroutines/Continuation;)Ljava/lang/Object;", virtual = false)),
+            listOf(
+                CallEdge(coroutineOwner, "twoPointsSuspending", "(ILkotlin/coroutines/Continuation;)Ljava/lang/Object;", virtual = false),
+            ),
             analyze("CoroutineTargetKt\$twoPointsSuspending\$1").callsOf("invokeSuspend", "(Ljava/lang/Object;)Ljava/lang/Object;"),
             "the continuation's invokeSuspend calls the function back, so its substituted edge is a self-edge",
         )
@@ -127,17 +129,23 @@ class UnprobedBodyClassPassThroughTest {
     @Test
     fun `no edge anywhere in the coroutine fixture names a continuation class`() {
         val continuationEdges =
-            listOf("CoroutineTargetKt", "Holder").flatMap { simpleName ->
-                val analysis = analyze(simpleName)
-                methodsOf(simpleName).flatMap { (name, descriptor) -> analysis.callsOf(name, descriptor) }
-            }.filter { edge -> continuationClasses.any { edge.className == "com.example.target.$it" } }
+            listOf("CoroutineTargetKt", "Holder")
+                .flatMap { simpleName ->
+                    val analysis = analyze(simpleName)
+                    methodsOf(simpleName).flatMap { (name, descriptor) -> analysis.callsOf(name, descriptor) }
+                }.filter { edge -> continuationClasses.any { edge.className == "com.example.target.$it" } }
 
         assertEquals(emptyList(), continuationEdges)
     }
 
     /** kotlinc's continuation classes in the coroutine fixture: the ones extending `ContinuationImpl`. */
     private val continuationClasses =
-        listOf("CoroutineTargetKt\$twoPoints\$1", "CoroutineTargetKt\$twoPointsSuspending\$1", "CoroutineTargetKt\$compareRefs\$1", "Holder\$member\$1")
+        listOf(
+            "CoroutineTargetKt\$twoPoints\$1",
+            "CoroutineTargetKt\$twoPointsSuspending\$1",
+            "CoroutineTargetKt\$compareRefs\$1",
+            "Holder\$member\$1",
+        )
 
     private fun methodsOf(simpleName: String): List<Pair<String, String>> {
         val methods = mutableListOf<Pair<String, String>>()

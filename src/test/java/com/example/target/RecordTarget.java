@@ -1,6 +1,6 @@
 package com.example.target;
 
-/** A Java record with one hand-written method beside its generated members. See ADR 0026. */
+/** A Java record with one hand-written method beside its generated members. */
 public record RecordTarget(int x, String y) {
     public int extra() {
         return x;

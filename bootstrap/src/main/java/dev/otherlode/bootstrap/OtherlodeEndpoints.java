@@ -29,15 +29,15 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p>A framework can register or dispatch to an endpoint before the agent has installed its
  * resolver: a class can initialise during premain, or this seam can be reachable from the
  * bootstrap loader before {@code Agent.start} finishes wiring the registry. {@link #register},
- * {@link #recordDispatch}, and {@link #declare} buffer a small record for that window instead of
- * dropping the call on the floor, and {@link #install} replays the buffer in order once a
- * resolver is in hand. The buffer is bounded, since an adopter who never installs an agent at all
+ * {@link #recordDispatch}, {@link #recordDispatchIfUnowned}, {@link #declare} and {@link
+ * #moduleFailed} buffer a small record for that window instead of dropping the call on the floor,
+ * and {@link #install} replays the buffer in order once a resolver is in hand. The buffer is bounded, since an adopter who never installs an agent at all
  * (a dependency pulled in by mistake, a misconfigured attach) must not leak memory for the life of
  * the process.
  *
- * <p>The seam also remembers which method each handler lambda calls (ADR 0035). A handler written
- * as a lambda or a method reference reaches a framework as a hidden class, whose name is not
- * stable and joins to nothing. Advice on the JDK's lambda factory calls {@link #recordLambdaClass}
+ * <p>The seam also remembers which method each handler lambda calls. A handler written as a
+ * lambda or a method reference reaches a framework as a hidden class, whose name is not stable
+ * and joins to nothing. Advice on the JDK's lambda factory calls {@link #recordLambdaClass}
  * as each such class is spun, and the framework advice calls {@link #lambdaImplementation} to get
  * the method back.
  */
@@ -199,6 +199,15 @@ public final class OtherlodeEndpoints {
 
     private static volatile Resolver resolver;
 
+    /**
+     * The same resolver as {@link #resolver}, published only once {@link #install} has replayed
+     * the buffer. A call that finds it set skips {@link #BUFFER_LOCK}, which every request through
+     * a dispatch hook would otherwise take. A call that finds it null takes the lock and reads
+     * {@link #resolver}, so it waits for a replay in progress, except on the replaying thread
+     * itself, where a replayed declare reaches {@link #register} and must not buffer again.
+     */
+    private static volatile Resolver ready;
+
     private static final Set<String> DISABLED_MODULES = ConcurrentHashMap.newKeySet();
     private static volatile boolean anyDisabled;
     private static final Set<String> FAILURE_LOGGED = ConcurrentHashMap.newKeySet();
@@ -220,7 +229,7 @@ public final class OtherlodeEndpoints {
      * replayed here, or finds the resolver already installed and skips buffering entirely; there
      * is no window where a call is buffered after the replay has already run.
      *
-     * <p>Calling this again, whether with the same resolver or a different one, simply replaces
+     * <p>Calling this again, whether with the same resolver or a different one, replaces
      * it; a second call has nothing left to replay, since the first call already drained the
      * buffer.
      */
@@ -231,6 +240,7 @@ public final class OtherlodeEndpoints {
                 replay(newResolver, record);
             }
             BUFFER.clear();
+            ready = newResolver;
         }
     }
 
@@ -258,14 +268,16 @@ public final class OtherlodeEndpoints {
             String handlerMethod,
             String handlerDescriptor) {
         if (isDisabledFast(module)) return null;
-        Resolver current;
-        synchronized (BUFFER_LOCK) {
-            current = resolver;
-            if (current == null) {
-                buffer(
-                        BufferedRecord.forRegister(
-                                module, key, verb, verbatimTemplate, contextPath, handlerClass, handlerMethod, handlerDescriptor));
-                return null;
+        Resolver current = ready;
+        if (current == null) {
+            synchronized (BUFFER_LOCK) {
+                current = resolver;
+                if (current == null) {
+                    buffer(
+                            BufferedRecord.forRegister(
+                                    module, key, verb, verbatimTemplate, contextPath, handlerClass, handlerMethod, handlerDescriptor));
+                    return null;
+                }
             }
         }
         try {
@@ -280,12 +292,14 @@ public final class OtherlodeEndpoints {
     public static Object recordDispatch(
             String module, Object key, String verb, String verbatimTemplate, String contextPath, String handlerClass) {
         if (isDisabledFast(module)) return null;
-        Resolver current;
-        synchronized (BUFFER_LOCK) {
-            current = resolver;
-            if (current == null) {
-                buffer(BufferedRecord.forDispatch(module, key, verb, verbatimTemplate, contextPath, handlerClass));
-                return null;
+        Resolver current = ready;
+        if (current == null) {
+            synchronized (BUFFER_LOCK) {
+                current = resolver;
+                if (current == null) {
+                    buffer(BufferedRecord.forDispatch(module, key, verb, verbatimTemplate, contextPath, handlerClass));
+                    return null;
+                }
             }
         }
         try {
@@ -306,12 +320,14 @@ public final class OtherlodeEndpoints {
     public static Object recordDispatchIfUnowned(
             String module, Object key, String verb, String verbatimTemplate, String contextPath, String handlerClass) {
         if (isDisabledFast(module)) return null;
-        Resolver current;
-        synchronized (BUFFER_LOCK) {
-            current = resolver;
-            if (current == null) {
-                buffer(BufferedRecord.forDispatchIfUnowned(module, key, verb, verbatimTemplate, contextPath, handlerClass));
-                return null;
+        Resolver current = ready;
+        if (current == null) {
+            synchronized (BUFFER_LOCK) {
+                current = resolver;
+                if (current == null) {
+                    buffer(BufferedRecord.forDispatchIfUnowned(module, key, verb, verbatimTemplate, contextPath, handlerClass));
+                    return null;
+                }
             }
         }
         try {
@@ -336,12 +352,14 @@ public final class OtherlodeEndpoints {
      */
     public static void declare(String module, Object frameworkObject) {
         if (isDisabledFast(module)) return;
-        Resolver current;
-        synchronized (BUFFER_LOCK) {
-            current = resolver;
-            if (current == null) {
-                buffer(BufferedRecord.forDeclare(module, frameworkObject));
-                return;
+        Resolver current = ready;
+        if (current == null) {
+            synchronized (BUFFER_LOCK) {
+                current = resolver;
+                if (current == null) {
+                    buffer(BufferedRecord.forDeclare(module, frameworkObject));
+                    return;
+                }
             }
         }
         try {
@@ -377,8 +395,9 @@ public final class OtherlodeEndpoints {
 
     /**
      * Disables a module, typically after a helper catches a {@link LinkageError} from a framework
-     * version its advice does not match. Every other entry point above short-circuits for a
-     * disabled module without reaching the resolver at all. Only the first failure for a given
+     * version its advice does not match. Every other entry point that names a module
+     * short-circuits for a disabled one without reaching the resolver; {@link #hit} names none, and
+     * a disabled module's advice stops reaching it once {@link #lookup} returns null. Only the first failure for a given
      * module logs or does anything further; a module already known to be broken does not need a
      * second report.
      */
@@ -389,12 +408,14 @@ public final class OtherlodeEndpoints {
         anyDisabled = true;
         String reason = String.valueOf(failure);
         LOG.log(Level.WARNING, "otherlode: endpoint module " + module + " disabled itself: " + reason);
-        Resolver current;
-        synchronized (BUFFER_LOCK) {
-            current = resolver;
-            if (current == null) {
-                buffer(BufferedRecord.forFailure(module, reason));
-                return;
+        Resolver current = ready;
+        if (current == null) {
+            synchronized (BUFFER_LOCK) {
+                current = resolver;
+                if (current == null) {
+                    buffer(BufferedRecord.forFailure(module, reason));
+                    return;
+                }
             }
         }
         try {

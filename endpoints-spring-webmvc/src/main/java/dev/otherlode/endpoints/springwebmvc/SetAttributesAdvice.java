@@ -4,6 +4,7 @@ import dev.otherlode.bootstrap.OtherlodeEndpoints;
 import java.lang.reflect.Method;
 import java.util.List;
 import net.bytebuddy.asm.Advice;
+import org.springframework.http.HttpMethod;
 import org.springframework.web.servlet.function.RouterFunctions;
 import org.springframework.web.servlet.function.ServerRequest;
 import org.springframework.web.util.pattern.PathPattern;
@@ -27,16 +28,17 @@ import org.springframework.web.util.pattern.PathPattern;
  * must override that method publicly to satisfy the interface. A hidden class, spun for a Java or
  * Kotlin lambda or method reference through {@code invokedynamic}, has no stable name across runs.
  * For one of those, the join names the method the lambda calls, as {@link
- * OtherlodeEndpoints#lambdaImplementation} recorded it when the JDK spun the class (ADR 0035). When
- * nothing was recorded, the class, method, and descriptor are all null. A route the
- * declare walk registered already carries this join from registration, so the reflection here
- * runs only for a route discovered at dispatch, never on the per-request path, which stays one
- * attribute read and a lookup.
+ * OtherlodeEndpoints#lambdaImplementation} recorded it when the JDK spun the class. When nothing
+ * was recorded, the class, method, and descriptor are all null. A route the declare walk
+ * registered already carries this join from registration, so the reflection here runs only for a
+ * route discovered at dispatch, never on the per-request path, which stays one attribute read and
+ * a lookup.
  *
- * <p>The dispatch key built here, {@code List.of(handlerFunction, pattern, verb)}, must match
- * {@code SpringWebMvcModule.declare}'s own key exactly, the same value-equality convention the
- * annotation-mapped side of this module already uses for {@link HandleMatchAdvice} and {@link
- * RegisterHandlerMethodAdvice}. A second lookup with verb {@code "*"} covers a route declared as
+ * <p>The dispatch key built here, {@code List.of("fn", pattern, verb)}, must match {@code
+ * SpringWebMvcModule.declare}'s own key exactly, the same value-equality convention the
+ * annotation-mapped side of this module uses for {@link HandleMatchAdvice} and {@link
+ * RegisterHandlerMethodAdvice}. It names no handler, since Spring hands a filtered route a new
+ * handler function on every request. A second lookup with verb {@code "*"} covers a route declared as
  * unconstrained; either miss means a route this module has not seen register, discovered here
  * instead of dropped.
  *
@@ -45,6 +47,7 @@ import org.springframework.web.util.pattern.PathPattern;
  */
 public class SetAttributesAdvice {
     private static final String MODULE = "spring-webmvc";
+    private static final String FUNCTIONAL_KEY = "fn";
     private static final String HANDLE_DESCRIPTOR =
             "(Lorg/springframework/web/servlet/function/ServerRequest;)Lorg/springframework/web/servlet/function/ServerResponse;";
 
@@ -53,6 +56,8 @@ public class SetAttributesAdvice {
             @Advice.Argument(1) ServerRequest request,
             @Advice.Argument(2) Object handlerFunction) {
         try {
+            // Spring passes a null handler when no route matched.
+            if (handlerFunction == null) return;
             Object patternValue = request.attributes().get(RouterFunctions.MATCHING_PATTERN_ATTRIBUTE);
             if (patternValue == null) return;
             String pattern =
@@ -60,12 +65,22 @@ public class SetAttributesAdvice {
                             ? (String) patternValue
                             : ((PathPattern) patternValue).getPatternString();
 
-            String verb = request.method().name();
+            // Spring 5.3 returns null for a verb outside its HttpMethod enum (PROPFIND, say), which
+            // only a route with no method predicate can serve, so it is looked up as "*".
+            HttpMethod httpMethod = request.method();
+            String verb = httpMethod == null ? "*" : httpMethod.name();
+            // A CORS preflight matches the route it asks about, and Spring answers it with its own
+            // preflight handler instead of this one, so it is no call of the endpoint.
+            if ("OPTIONS".equals(verb)
+                    && request.headers().firstHeader("Origin") != null
+                    && request.headers().firstHeader("Access-Control-Request-Method") != null) {
+                return;
+            }
 
-            List<Object> key = List.of(handlerFunction, pattern, verb);
+            List<Object> key = List.of(FUNCTIONAL_KEY, pattern, verb);
             Object entry = OtherlodeEndpoints.lookup(MODULE, key);
             if (entry == null) {
-                entry = OtherlodeEndpoints.lookup(MODULE, List.of(handlerFunction, pattern, "*"));
+                entry = OtherlodeEndpoints.lookup(MODULE, List.of(FUNCTIONAL_KEY, pattern, "*"));
             }
             if (entry == null) {
                 String handlerClass = null;

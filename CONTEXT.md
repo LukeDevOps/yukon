@@ -275,6 +275,10 @@ A dependency with at least one loaded class that nothing in the adopter's code r
 A dependency the adopter's code references only from methods never hit or classes never loaded.
 _Avoid_: dead dependency (a collector's verdict, not an observation)
 
+**Resources-only dependency**:
+A dependency every listing counted no class in: native libraries, web assets, message bundles. Loading says nothing about whether it is used, so no other status is claimed for it, and it is never unloaded.
+_Avoid_: empty jar (it holds files, just no classes)
+
 **Dependencies listed**:
 The state an instance reaches once every dependency its startup listing found, and every reference mapping recorded before the listing ended, has reached the collector. Each dependency's entry arrives only after its first counts, so a collector can judge it as soon as the entry is there. Before this state, an empty list of dependencies or absent references means "not listed yet", not "none".
 _Avoid_: listing complete (the agent's own state, before anything is sent)

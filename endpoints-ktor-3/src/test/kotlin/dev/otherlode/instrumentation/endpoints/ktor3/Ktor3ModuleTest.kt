@@ -9,16 +9,21 @@ import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
+import kotlinx.coroutines.delay
 import java.net.ServerSocket
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.time.Duration
+import java.util.logging.Handler
+import java.util.logging.LogRecord
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import java.util.logging.Level as JulLevel
+import java.util.logging.Logger as JulLogger
 
 /**
  * Proves [Ktor3Module] end to end against a real embedded CIO server, not a fixture.
@@ -42,11 +47,29 @@ class Ktor3ModuleTest {
     fun `registration and dispatch through a real CIO server are tracked end to end`() {
         val registry = Ktor3TestAgent.registry
         val port = ServerSocket(0).use { it.localPort }
+        val seamWarnings = mutableListOf<LogRecord>()
+        val seamLog = JulLogger.getLogger("dev.otherlode.bootstrap.OtherlodeEndpoints")
+        val capture =
+            object : Handler() {
+                override fun publish(record: LogRecord) {
+                    if (record.level.intValue() >= JulLevel.WARNING.intValue()) seamWarnings += record
+                }
+
+                override fun flush() {}
+
+                override fun close() {}
+            }
+        seamLog.addHandler(capture)
 
         val server =
             embeddedServer(CIO, port = port) {
                 routing {
                     get("/checkout/{id}") { call.respondText("ok") }
+                    // Suspends, so the dispatch method resumes, re-entering with null arguments.
+                    get("/slow") {
+                        delay(10)
+                        call.respondText("slow")
+                    }
                     post("/promo") { call.respondText("promo") }
                     route("/api") {
                         get("/orders/{id?}") { call.respondText("orders") }
@@ -66,12 +89,13 @@ class Ktor3ModuleTest {
             sendGet(client, port, "/api/orders")
             sendGet(client, port, "/api/files/a/b/c")
             sendGet(client, port, "/any")
+            sendGet(client, port, "/slow")
             sendGet(client, port, "/nothing")
 
             val endpoints = registry.endpoints()
             val byIdentity = endpoints.associateBy { "${it.verb} ${it.routeTemplate}" }
             assertEquals(
-                setOf("GET /checkout/{id}", "POST /promo", "GET /api/orders/{id?}", "GET /api/files/*", "* /any"),
+                setOf("GET /checkout/{id}", "GET /slow", "POST /promo", "GET /api/orders/{id?}", "GET /api/files/*", "* /any"),
                 byIdentity.keys,
             )
 
@@ -96,8 +120,11 @@ class Ktor3ModuleTest {
             assertEquals(1L, deltasById.getValue(byIdentity.getValue("* /any").endpointId).hitsTotal)
             assertTrue(byIdentity.getValue("POST /promo").endpointId !in deltasById)
 
+            assertEquals(1L, deltasById.getValue(byIdentity.getValue("GET /slow").endpointId).hitsTotal)
             assertTrue(registry.disabledModules().isEmpty())
+            assertTrue(seamWarnings.isEmpty(), "the seam logged: ${seamWarnings.map { it.message }}")
         } finally {
+            seamLog.removeHandler(capture)
             server.stop(gracePeriodMillis = 0, timeoutMillis = 0)
             Ktor3TestAgent.uninstall()
         }

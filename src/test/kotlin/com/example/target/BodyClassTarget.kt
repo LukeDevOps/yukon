@@ -7,7 +7,7 @@ import kotlin.coroutines.startCoroutine
 /**
  * A bound reference to a private method, held in a function-typed value so it is not inlined.
  * kotlinc compiles `::secret` to its own class extending `FunctionReferenceImpl`, a body class
- * under ADR 0024: without the body-class rule, both [secret] and the reference class's own
+ * of its own: without the body-class rule, both [secret] and the reference class's own
  * `invoke` would look uncalled, since [viaReference] never names either directly.
  */
 class FunctionReferenceTarget {

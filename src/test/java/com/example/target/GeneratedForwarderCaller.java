@@ -3,7 +3,7 @@ package com.example.target;
 /**
  * Calls kotlinc's generated forwarders the way Java code does. Kotlin callers never call them: a
  * Kotlin call that omits a default goes to the {@code $default} twin, and one to an interface's
- * default method goes to the interface. See ADR 0041.
+ * default method goes to the interface.
  */
 public class GeneratedForwarderCaller {
 

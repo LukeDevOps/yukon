@@ -20,7 +20,7 @@ class StaticBaselinePublisherTest {
     private val resource = ResourceAttributes("checkout", "1.0.0", "instance-1", "test", "run-1")
 
     private class RecordingExporter(
-        private val failOnChunk: Int? = null,
+        var failOnChunk: Int? = null,
     ) : Exporter {
         val baselines = mutableListOf<StaticBaseline>()
 
@@ -61,6 +61,30 @@ class StaticBaselinePublisherTest {
         publisher.run(resource)
 
         assertEquals(listOf(0), exporter.baselines.map { it.chunkIndex })
+    }
+
+    @Test
+    fun `the chunks a failed send left behind go out, in order, on a later sendPending`() {
+        val exporter = RecordingExporter(failOnChunk = 1)
+        val sender = StaticBaselineSender(exporter)
+        val publisher =
+            StaticBaselinePublisher(
+                { scanOf("A", "B", "C") },
+                exporter,
+                ProbeRegistry(),
+                StaticBaselineMismatchDetector(),
+                1,
+                sender = sender,
+            )
+
+        publisher.run(resource)
+        assertFalse(sender.sendPending(), "the collector still refuses chunk 1")
+        exporter.failOnChunk = null
+
+        assertTrue(sender.sendPending())
+        assertEquals(listOf(0, 1, 2), exporter.baselines.map { it.chunkIndex })
+        assertTrue(sender.sendPending(), "nothing is left to send")
+        assertEquals(3, exporter.baselines.size)
     }
 
     @Test

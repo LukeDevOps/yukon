@@ -55,7 +55,7 @@ class JaxRsModuleAnnotationInheritanceTest {
     }
 
     @Test
-    fun `jerseyPresent false drops the interface's class-level Path from both inherited methods`() {
+    fun `jerseyPresent false leaves a class whose only class-level Path is an interface's undeclared`() {
         withRecordingResolver { calls ->
             val module = JaxRsModule(jerseyPresent = { false })
 
@@ -66,15 +66,14 @@ class JaxRsModuleAnnotationInheritanceTest {
                 ApiOrdersResource::class.java.classLoader,
             )
 
-            val templates = calls.map { it.verb to it.template }.toSet()
-            assertEquals(setOf("GET" to "/{id}", "POST" to "/"), templates)
+            assertEquals(emptyList(), calls, "without Jersey the class has no @Path of its own, so it is no resource")
         }
         // The INFO line resolveClassPath logs when a supertype @Path is ignored is not asserted
         // here: java.lang.System.Logger's default backend only bridges to java.util.logging when
         // something in the process has already initialised the JUL LogManager, which this test
         // does not control and cannot assume, so a java.util.logging.Handler is not a reliable way
-        // to observe it. The behaviour the log line describes, the dropped class prefix above, is
-        // asserted directly instead.
+        // to observe it. The behaviour the log line describes, nothing declared, is asserted
+        // directly instead.
     }
 
     @Test
@@ -99,8 +98,13 @@ class JaxRsModuleAnnotationInheritanceTest {
     }
 
     @Test
-    fun `a superclass's class-level Path is dropped when Jersey is absent`() {
-        assertEquals(setOf("GET" to "/{id}"), declaredBy(LegacyResource::class.java, jerseyPresent = false))
+    fun `a class whose only class-level Path is a superclass's declares nothing when Jersey is absent`() {
+        assertEquals(emptySet(), declaredBy(LegacyResource::class.java, jerseyPresent = false))
+    }
+
+    @Test
+    fun `a class with no class-level Path anywhere, such as a sub-resource, declares nothing`() {
+        assertEquals(emptySet(), declaredBy(LocatedSubResource::class.java, jerseyPresent = true))
     }
 
     @Test
@@ -139,11 +143,11 @@ class JaxRsModuleAnnotationInheritanceTest {
     }
 
     @Test
-    fun `a supertype the type pool cannot resolve leaves the method declared without a class prefix`() {
+    fun `a supertype the type pool cannot resolve declares nothing and does not fail the transform`() {
         // The description ByteBuddy hands a real transform is TypePool-backed and resolves a
         // supertype lazily, so a resource whose superclass is not on its own loader (an optional
-        // dependency, a jar trimmed at packaging) raises on first touch. Degrading to "no class
-        // prefix" keeps the method; letting it escape would disable this module for the process.
+        // dependency, a jar trimmed at packaging) raises on first touch. Letting that escape would
+        // disable this module for the process; with no class-level Path found, nothing is declared.
         val hidden = LegacyBase::class.java.name
         val loader = LegacyResource::class.java.classLoader
         val locator =
@@ -172,19 +176,19 @@ class JaxRsModuleAnnotationInheritanceTest {
             declared = calls.map { it.verb to it.template }.toSet()
         }
 
-        assertEquals(setOf("GET" to "/{id}"), declared)
+        assertEquals(emptySet(), declared)
     }
 
     @Test
     fun `the default module reads Jersey's presence from the loader it is given`() {
         // Jersey is on this test's own classpath, so the real isJerseyPresent finds its marker
         // through the fixture's loader and applies the inherited class prefix; a loader with no
-        // parent and no classpath sees nothing, and the prefix is dropped.
+        // parent and no classpath sees nothing, and the class is no resource.
         val withJersey = declaredByDefaultModule(LegacyResource::class.java.classLoader)
         val withoutJersey = declaredByDefaultModule(URLClassLoader(arrayOf(), null))
 
         assertEquals(setOf("GET" to "/legacy/{id}"), withJersey)
-        assertEquals(setOf("GET" to "/{id}"), withoutJersey)
+        assertEquals(emptySet(), withoutJersey)
     }
 
     /** What a [JaxRsModule] built with no injected Jersey check declares for [LegacyResource] on [classLoader]. */
@@ -377,6 +381,7 @@ private interface PingB {
 }
 
 /** Implements both [PingA] and [PingB], in that declaration order, so both interfaces supply an annotated `ping` with a different path. */
+@Path("/")
 private class PingResource :
     PingA,
     PingB {
@@ -441,6 +446,7 @@ private abstract class AnnotatedMethodBase {
 }
 
 /** Overrides an annotated method without annotating the override, which the specification inherits. */
+@Path("/")
 private class OverridingResource : AnnotatedMethodBase() {
     override fun read(): String = "child"
 }
@@ -454,6 +460,7 @@ private interface GrandparentInterface {
 private interface ParentInterface : GrandparentInterface
 
 /** Reaches its annotations only through [ParentInterface]'s own superinterface. */
+@Path("/")
 private class GrandInterfaceResource : ParentInterface {
     override fun read(): String = "grandchild"
 }
@@ -464,8 +471,16 @@ private class GrandInterfaceResource : ParentInterface {
 private annotation class Purge
 
 /** Declares a verb JAX-RS has no annotation of its own for, the way `@PATCH` was defined before the spec had one. */
+@Path("/")
 private class CustomVerbResource {
     @Purge
     @Path("/cache")
     fun purge(): String = "purged"
+}
+
+/** What a sub-resource locator returns: resource methods, and no class-level `@Path` of its own or inherited. */
+private class LocatedSubResource {
+    @GET
+    @Path("/leaf")
+    fun leaf(): String = "leaf"
 }

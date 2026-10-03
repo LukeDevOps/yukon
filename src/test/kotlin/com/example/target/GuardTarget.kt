@@ -1,6 +1,6 @@
 package com.example.target
 
-/** Methods whose branch outcomes guard known lines and calls, for ADR 0037's guarded code and guards. */
+/** Methods whose branch outcomes guard known lines and calls. */
 class GuardTarget {
     fun sink(value: Int): Int = value + 1
 

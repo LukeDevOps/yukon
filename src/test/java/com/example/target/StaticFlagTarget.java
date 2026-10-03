@@ -2,7 +2,7 @@ package com.example.target;
 
 /**
  * A static method with a conditional, an instance method, a constructor and a static initializer.
- * ADR 0040 marks only the static method's METHOD probe static.
+ * Only the static method's METHOD probe is marked static.
  */
 public class StaticFlagTarget {
 

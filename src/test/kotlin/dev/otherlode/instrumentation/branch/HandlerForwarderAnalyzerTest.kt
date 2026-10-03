@@ -13,7 +13,7 @@ private const val HTTP_HANDLER = "com.sun.net.httpserver.HttpHandler"
 private const val HANDLE = "(Lcom/sun/net/httpserver/HttpExchange;)V"
 
 /**
- * Proves the forwarder table's entries on real scalac and kotlinc output (ADR 0035): a pass-through
+ * Proves the forwarder table's entries on real scalac and kotlinc output: a pass-through
  * a handler can be reported as gets one entry, pointing at the one probed method it forwards to.
  */
 class HandlerForwarderAnalyzerTest {

@@ -3,7 +3,7 @@ package com.example.target
 import kotlin.coroutines.intrinsics.suspendCoroutineUninterceptedOrReturn
 
 /**
- * Shapes whose parameter names, generic signature and extension receiver ADR 0043 reads from the
+ * Shapes whose parameter names, generic signature and extension receiver the analyser reads from the
  * class file. The private function has no nullability annotations, and its names still come through.
  */
 private fun formatTotal(

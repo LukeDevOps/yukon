@@ -6,8 +6,7 @@ import java.util.concurrent.ConcurrentHashMap
  * Detects a class that registers dynamically without having been in the static baseline
  * computed at startup: proof the static scan missed it for this process, most likely because
  * this deployment's classloading is discovered by something other than the JVM's own launch
- * arguments (an app server's own deploy config, a plugin loader scanning a directory). See
- * "Static baseline" in this project's `CLAUDE.md`.
+ * arguments (an app server's own deploy config, a plugin loader scanning a directory).
  *
  * This is a purely local, diagnostic signal. It needs no collector: [knownClassNames] is this
  * same process's own scan result, not anything received back over the wire.

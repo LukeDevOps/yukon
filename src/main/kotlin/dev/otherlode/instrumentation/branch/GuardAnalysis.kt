@@ -15,7 +15,7 @@ import net.bytebuddy.jar.asm.Opcodes
  * Each real instruction gets an ordinal, its position in visit order counted from zero. The
  * recorder takes the ordinal before it forwards the event, so the downstream visitor reads the
  * ordinal of the instruction it is visiting from [lastOrdinal]. That ordinal is the one definition
- * that ties a call candidate to its node in the control-flow graph. See ADR 0037.
+ * that ties a call candidate to its node in the control-flow graph.
  *
  * [onEnd] receives a function that builds the recorded [MethodInstructions], once the method's
  * last event has been forwarded. Most methods have no kept site and never need them built.
@@ -38,6 +38,7 @@ internal class InstructionRecorder(
     /** Per ordinal, the operand [MethodInstructions.operands] describes, or null. */
     private var operands = arrayOfNulls<Any>(INITIAL_CAPACITY)
     private val tryCatchBlocks = mutableListOf<TryCatchLabels>()
+    private val localVariables = mutableListOf<LocalVariableLabels>()
     private var hasSubroutine = false
 
     init {
@@ -82,6 +83,18 @@ internal class InstructionRecorder(
         super.visitTryCatchBlock(start, end, handler, type)
     }
 
+    override fun visitLocalVariable(
+        name: String,
+        descriptor: String,
+        signature: String?,
+        start: Label,
+        end: Label,
+        index: Int,
+    ) {
+        localVariables += LocalVariableLabels(name, start, end, index)
+        super.visitLocalVariable(name, descriptor, signature, start, end, index)
+    }
+
     override fun visitInsn(opcode: Int) {
         record(opcode)
         super.visitInsn(opcode)
@@ -92,6 +105,7 @@ internal class InstructionRecorder(
         operand: Int,
     ) {
         record(opcode)
+        operands[lastOrdinal] = Constant(operand)
         super.visitIntInsn(opcode, operand)
     }
 
@@ -121,6 +135,7 @@ internal class InstructionRecorder(
         descriptor: String,
     ) {
         record(opcode)
+        operands[lastOrdinal] = FieldOperand(owner, name, descriptor)
         super.visitFieldInsn(opcode, owner, name, descriptor)
     }
 
@@ -159,6 +174,7 @@ internal class InstructionRecorder(
 
     override fun visitLdcInsn(value: Any?) {
         record(Opcodes.LDC)
+        operands[lastOrdinal] = Constant(value)
         super.visitLdcInsn(value)
     }
 
@@ -167,6 +183,7 @@ internal class InstructionRecorder(
         increment: Int,
     ) {
         record(Opcodes.IINC)
+        operands[lastOrdinal] = Increment(varIndex, increment)
         super.visitIincInsn(varIndex, increment)
     }
 
@@ -232,6 +249,12 @@ internal class InstructionRecorder(
                 val handler = ordinalOf(block.handler).takeIf { it >= 0 } ?: return@mapNotNull null
                 TryCatch(start, end.coerceAtMost(size), handler, block.type)
             }
+        val locals =
+            localVariables.mapNotNull { local ->
+                val start = visitedOrdinal(local.start) ?: return@mapNotNull null
+                val end = visitedOrdinal(local.end) ?: return@mapNotNull null
+                LocalRange(local.name, start, end, local.index)
+            }
         return MethodInstructions(
             opcodes.copyOf(size),
             lines.copyOf(size),
@@ -240,8 +263,16 @@ internal class InstructionRecorder(
             tryCatches,
             hasSubroutine,
             operands.copyOf(size),
+            locals,
         )
     }
+
+    private class LocalVariableLabels(
+        val name: String,
+        val start: Label,
+        val end: Label,
+        val index: Int,
+    )
 
     private class SwitchLabels(
         val dflt: Label,
@@ -277,10 +308,36 @@ internal class TryCatch(
  * `invokedynamic`, [owner] and [name] are the bootstrap method's, and [descriptor] is the call
  * site's own.
  */
-internal class CalledMethod(
+internal data class CalledMethod(
     val owner: String,
     val name: String,
     val descriptor: String,
+)
+
+/** One local variable table entry, its range as ordinals: [start] inclusive, [end] exclusive. */
+internal data class LocalRange(
+    val name: String,
+    val start: Int,
+    val end: Int,
+    val index: Int,
+)
+
+/** A field instruction's field, as [MethodInstructions.operands] holds it. */
+internal data class FieldOperand(
+    val owner: String,
+    val name: String,
+    val descriptor: String,
+)
+
+/** A `bipush`, `sipush` or `newarray` operand, or an `ldc` constant, as [MethodInstructions.operands] holds it. */
+internal data class Constant(
+    val value: Any?,
+)
+
+/** An `iinc`'s local and amount, as [MethodInstructions.operands] holds it. */
+internal data class Increment(
+    val varIndex: Int,
+    val amount: Int,
 )
 
 /**
@@ -295,8 +352,9 @@ internal class CalledMethod(
  *
  * [operands] holds, per ordinal, what [RoutineClassifier] reads from an instruction: the local
  * variable index of a load, store or `RET` as an [Int], the type of a `NEW`, `CHECKCAST`,
- * `INSTANCEOF` or `ANEWARRAY` as its internal name, and the [CalledMethod] of an invoke. It is null
- * for every other instruction.
+ * `INSTANCEOF` or `ANEWARRAY` as its internal name, the [CalledMethod] of an invoke, the
+ * [FieldOperand] of a field instruction, the [Constant] of a push or `ldc`, and the [Increment] of
+ * an `iinc`. It is null for every other instruction.
  */
 internal class MethodInstructions(
     val opcodes: IntArray,
@@ -306,8 +364,22 @@ internal class MethodInstructions(
     val tryCatches: List<TryCatch>,
     val hasSubroutine: Boolean,
     val operands: Array<Any?> = arrayOfNulls(opcodes.size),
+    private val localRanges: List<LocalRange> = emptyList(),
 ) {
     val size: Int get() = opcodes.size
+
+    /**
+     * The source name of the local in [slot] at the instruction at [ordinal], from the method's
+     * local variable table, or null when the table is absent or does not cover it. A store sits
+     * just before its variable's range opens, so the instruction after it is checked too.
+     */
+    fun localName(
+        ordinal: Int,
+        slot: Int,
+    ): String? =
+        localRanges
+            .firstOrNull { it.index == slot && (ordinal in it.start until it.end || ordinal + 1 in it.start until it.end) }
+            ?.name
 
     /** Whether the instruction at [ordinal] is a site [BranchSiteAnalyzer] tracks: a [ConditionalJump] or a switch. */
     fun isTrackedSite(ordinal: Int): Boolean {
@@ -327,7 +399,7 @@ internal data class SourceLine(
 
 /**
  * What [GuardAnalysis] finds for one kept site: its [guard], and per outcome offset its guarded and
- * partly guarded line ranges (ADR 0037) and its routine kind (ADR 0046).
+ * partly guarded line ranges and its routine kind.
  */
 class SiteGuards internal constructor(
     val guard: Int?,
@@ -349,7 +421,7 @@ internal class MethodGuards(
 }
 
 /**
- * Computes guarded code and guards for one method, per ADR 0037.
+ * Computes guarded code and guards for one method.
  *
  * The control-flow graph has one node per real instruction and one per kept outcome. A kept site's
  * outcome edges each pass through their own outcome node, so an outcome dominates exactly the code
@@ -367,8 +439,9 @@ internal object GuardAnalysis {
      * [isThrowable] tells whether a class, by internal name, is a `Throwable`, for
      * [RoutineClassifier].
      *
-     * Returns null when the method holds a `JSR` or `RET`, or when its tracked instructions do not
-     * match [sites] one for one. The method then has no guarded code and no guards.
+     * Returns null when the method holds no instructions, holds a `JSR` or `RET`, or when its
+     * tracked instruction count does not match [sites]. The method then has no guarded code and no
+     * guards.
      */
     fun analyze(
         instructions: MethodInstructions,
@@ -402,13 +475,19 @@ internal object GuardAnalysis {
             val firstNode = graph.firstOutcomeNode[position]
             val guarded = mutableListOf<List<LineRange>>()
             val partlyGuarded = mutableListOf<List<LineRange>>()
-            for (offset in 0 until site.probedOutcomeCount) {
-                val (whole, part) = lines.guardedBy(firstNode + offset, dominance)
+            for (probed in 0 until site.probedOutcomeCount) {
+                val (whole, part) = lines.guardedBy(firstNode + probed, dominance)
                 guarded += whole
                 partlyGuarded += part
             }
             val guard = instructionGuards[siteOrdinals[position]].takeIf { it >= 0 }
-            val routineKinds = List(site.probedOutcomeCount) { routine.kindOf(siteOrdinals[position], firstNode + it, it) }
+            val routineKinds =
+                site.probedPositions.mapIndexed {
+                    probed,
+                    offset,
+                    ->
+                    routine.kindOf(siteOrdinals[position], firstNode + probed, offset)
+                }
             siteGuards[site.siteIndex] = SiteGuards(guard, guarded, partlyGuarded, routineKinds)
         }
         return MethodGuards(siteGuards, instructionGuards)
@@ -489,8 +568,9 @@ internal object GuardAnalysis {
          * A tracked site's successors. A kept conditional's taken edge and fall-through edge, and
          * a kept switch's case edges and default edge, each go through the outcome node of the
          * same offset [KeptBranchSite] numbers it with. A dropped site's edges go straight to
-         * their targets, and so does a throwing default's edge (ADR 0038), since it has no outcome
-         * to be a guard.
+         * their targets, except a dropped coroutine state-machine switch, which keeps only its
+         * first case; so does the edge of a throwing default or a [BranchSite.unprobedOutcome],
+         * since it has no outcome to be a guard.
          */
         private fun siteSuccessors(
             instructions: MethodInstructions,
@@ -519,15 +599,17 @@ internal object GuardAnalysis {
                     val cases = (1 until targets.size).filterNot { caseDefaults[it - 1] }.map { targets[it] }
                     (cases + targets[0]).toIntArray()
                 }
-            for (offset in 0 until site.probedOutcomeCount) {
-                val node = firstNode + offset
+            val probedPositions = site.probedPositions
+            probedPositions.forEachIndexed { probed, offset ->
+                val node = firstNode + probed
                 outcomeBranchIndexes[node - realCount] = firstBranchIndex + offset
                 val target = outcomeTargets.getOrElse(offset) { -1 }
                 edges[node] = if (target >= 0) intArrayOf(target) else NO_SUCCESSORS
             }
-            val outcomeNodes = IntArray(site.probedOutcomeCount) { firstNode + it }
-            if (!site.throwingDefault) return outcomeNodes
-            return validDistinct(outcomeNodes + targets[0])
+            val outcomeNodes = IntArray(probedPositions.size) { firstNode + it }
+            val unprobedTargets = outcomeTargets.indices.filter { it !in probedPositions }.map { outcomeTargets[it] }
+            if (unprobedTargets.isEmpty()) return outcomeNodes
+            return validDistinct(outcomeNodes + unprobedTargets)
         }
     }
 

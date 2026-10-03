@@ -2,7 +2,7 @@ package com.example.target;
 
 import java.util.function.Supplier;
 
-/** Fixtures for the condition writer's Java idioms and jump families. Each method holds one site. See ADR 0037. */
+/** Fixtures for the condition writer's Java idioms and jump families. Each method holds one site. */
 public class ConditionJavaTarget {
     private int count;
     private static int total;

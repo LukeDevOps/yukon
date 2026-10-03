@@ -16,7 +16,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /**
- * Proves ADR 0048's rules at the analyser, over the Scala fixture modules' own class bytes and over
+ * Proves the Scala generated-method rules at the analyser, over the Scala fixture modules' own class bytes and over
  * classes built here with ASM: a call into a static forwarder passes through to the object's
  * method, and the forwarder shape counts only in a class scalac compiled.
  */

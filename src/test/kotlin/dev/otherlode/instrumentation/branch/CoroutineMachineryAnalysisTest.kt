@@ -9,7 +9,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * Proves the branch tier's coroutine-machinery drop rule (ADR 0025) against the `CoroutineTarget`
+ * Proves the branch tier's coroutine-machinery drop rule against the `CoroutineTarget`
  * fixture. Every tracked site and instruction shape here was checked against real `javap -c -p`
  * output on Kotlin 2.2.21 before this test was written, not assumed from the design doc alone: the
  * suspended-marker compare (shape ii) turned out to compare a `DUP` of the suspension call's own
@@ -89,6 +89,36 @@ class CoroutineMachineryAnalysisTest {
         val analysis = BranchSiteAnalyzer.analyze(facadeBytes) { _, _ -> true }
 
         assertEquals(setOf(0, 1, 2, 3, 5), analysis.droppedOrdinalsOf("twoPoints", twoPointsDescriptor))
+    }
+
+    @Test
+    fun `a suspend default method in DefaultImpls drops its machinery, whose continuation is named after the interface`() {
+        val bytes =
+            dev.otherlode.instrumentation.JvmDefaultDisableFixtures
+                .classBytes("SuspendDefaultInterface\$DefaultImpls")
+
+        val sites = analyze(bytes, "run").sites
+
+        val kept = sites.filter { it.dropReason == null }
+        assertEquals(1, kept.size, "only the adopter's own conditional is kept: $sites")
+        assertTrue(!kept.single().isSwitch)
+    }
+
+    @Test
+    fun `a suspend function's switch on a nested class's label field is kept, not mistaken for the state machine`() {
+        val sites = analyze(classBytes("NestedLabelOwner"), "pick").sites
+
+        val kept = sites.filter { it.dropReason == null }
+        assertEquals(listOf(lineOf("nested-label-when")), kept.map { it.line }, "sites: $sites")
+    }
+
+    @Test
+    fun `a suspend function's switch on its own class's label field is kept, not mistaken for the state machine`() {
+        val sites = analyze(classBytes("SuspendLabelHolder"), "pick").sites
+
+        val kept = sites.filter { it.dropReason == null }
+        assertEquals(listOf(lineOf("label-when")), kept.map { it.line }, "sites: $sites")
+        assertTrue(kept.single().isSwitch)
     }
 
     @Test

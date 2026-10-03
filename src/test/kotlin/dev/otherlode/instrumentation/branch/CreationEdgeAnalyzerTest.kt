@@ -13,9 +13,9 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * Proves [BranchSiteAnalyzer]'s ADR 0034 facts on real kotlinc and javac output: the kind and
+ * Proves [BranchSiteAnalyzer]'s creation-edge facts on real kotlinc and javac output: the kind and
  * captured count of each creation edge, which methods are lambda bodies, and the class's source
- * file. Also proves the interface each creation edge names (ADR 0042).
+ * file. Also proves the interface each creation edge names.
  */
 class CreationEdgeAnalyzerTest {
     private val includePackages = listOf("com.example.target")
@@ -58,7 +58,14 @@ class CreationEdgeAnalyzerTest {
         val analysis = kotlinTarget()
 
         assertTrue(
-            CallEdge(kotlinOwner, "plain\$lambda\$0", "(I)I", virtual = false, kind = CallEdgeKind.CREATES, implementedInterface = function1) in
+            CallEdge(
+                kotlinOwner,
+                "plain\$lambda\$0",
+                "(I)I",
+                virtual = false,
+                kind = CallEdgeKind.CREATES,
+                implementedInterface = function1,
+            ) in
                 analysis.callsOf("plain", "()I"),
         )
         assertTrue(
@@ -106,7 +113,14 @@ class CreationEdgeAnalyzerTest {
 
         val nestedEdges = analysis.callsOf("nested", "()I")
         assertTrue(
-            CallEdge(kotlinOwner, "nested\$lambda\$0", "(I)I", virtual = false, kind = CallEdgeKind.CREATES, implementedInterface = function1) in
+            CallEdge(
+                kotlinOwner,
+                "nested\$lambda\$0",
+                "(I)I",
+                virtual = false,
+                kind = CallEdgeKind.CREATES,
+                implementedInterface = function1,
+            ) in
                 nestedEdges,
         )
         assertTrue(nestedEdges.none { it.methodName == "nested\$lambda\$0\$0" })
@@ -178,7 +192,13 @@ class CreationEdgeAnalyzerTest {
                     "(Lcom/example/target/CreationEdgeTarget;)V",
                     virtual = false,
                 ),
-                CallEdge("com.example.target.CreationEdgeTarget\$makesBodyClass\$1", "run", "()V", virtual = true, kind = CallEdgeKind.CREATES),
+                CallEdge(
+                    "com.example.target.CreationEdgeTarget\$makesBodyClass\$1",
+                    "run",
+                    "()V",
+                    virtual = true,
+                    kind = CallEdgeKind.CREATES,
+                ),
             ),
             analysis.callsOf("makesBodyClass", "()Ljava/lang/Runnable;"),
         )

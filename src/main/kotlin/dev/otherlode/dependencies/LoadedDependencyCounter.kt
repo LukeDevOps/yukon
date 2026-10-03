@@ -5,23 +5,23 @@ import java.security.ProtectionDomain
 
 /**
  * Counts the distinct classes loaded from each dependency, from the loaded-class array the sweep
- * takes on every flush. See ADR 0030.
+ * takes on every flush.
  *
  * Counts nothing until [DependencyRegistry.isListingComplete], so a jar on the startup classpath is
  * never registered as discovered by load; the first count after the listing completes picks up
  * everything already loaded. A name is added to its dependency's set once and stays there when the
  * class unloads, so a total never falls.
  *
- * Arrays, primitives and hidden classes are skipped. A hidden class carries its host's protection
- * domain, so a lambda would otherwise count against its host's jar beyond the classes that jar
- * holds. So is a class with no protection domain or code source, which is a bootstrap or platform
- * class.
+ * Arrays, primitives, hidden classes, and classes with no protection domain or code source (the
+ * bootstrap and platform loaders' classes) are skipped. A hidden class carries its host's
+ * protection domain, so a lambda would otherwise count against its host's jar beyond the classes
+ * that jar holds.
  */
 class LoadedDependencyCounter internal constructor(
     private val registry: DependencyRegistry,
     private val resolve: (ProtectionDomain) -> Int?,
 ) {
-    /** Resolves classes by the ADR 0030 rules, judging a jar the listing never saw under [includes] and [excludes]. */
+    /** Resolves classes by the [JarClassifier] rules, judging a jar the listing never saw under [includes] and [excludes]. */
     constructor(registry: DependencyRegistry, includes: List<String>, excludes: List<String>) :
         this(registry, DependencyResolver(registry, JarClassifier(includes, excludes))::resolve)
 

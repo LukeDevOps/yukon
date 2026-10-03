@@ -12,7 +12,7 @@ import net.bytebuddy.jar.asm.signature.SignatureVisitor
  * Adds every class a piece of bytecode names to [names], as internal names, in the order first
  * seen. Array types reduce to their element type, a method type to its parameter and return types,
  * and primitives are ignored. Nothing here filters by scope: [BranchSiteAnalyzer] does that once it
- * knows which method or class a name belongs to. See ADR 0030.
+ * knows which method or class a name belongs to.
  */
 internal class ReferenceCollector(
     private val names: MutableSet<String>,
@@ -29,7 +29,6 @@ internal class ReferenceCollector(
         type(Type.getType(descriptor))
     }
 
-    /** A type: an object type by its internal name, an array by its element type, a method type by its parameters and return. */
     fun type(type: Type) {
         when (type.sort) {
             Type.ARRAY -> {
@@ -57,7 +56,6 @@ internal class ReferenceCollector(
         try {
             SignatureReader(signature).accept(SignatureNames())
         } catch (_: RuntimeException) {
-            // Keep whatever the reader reached.
         }
     }
 
@@ -80,7 +78,6 @@ internal class ReferenceCollector(
         }
     }
 
-    /** A method or field handle: its owner and the types in its descriptor. */
     fun handle(handle: Handle) {
         internalName(handle.owner)
         descriptor(handle.desc)

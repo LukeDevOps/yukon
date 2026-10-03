@@ -3,11 +3,12 @@ package dev.otherlode.testkit
 import dev.otherlode.export.DependencyDiscoverySource
 
 /*
- * ADR 0030's dependency rules, applied within one test JVM. A copy of the demo stub collector's
- * `DependencyReport.kt`, kept separate because the demo is not a library, the precedent
- * [OtherlodeTestCollector.unreachedClusters] set for the call-graph rule. The two must give the same
- * answer for the same input: `DependencyRulesTest` ports the demo's `DependencyReportTest` case for
- * case, so a change to one rule set without the other shows up as a failing test in one of them.
+ * The collector's dependency rules, applied within one test JVM. A copy of the demo stub
+ * collector's `DependencyReport.kt`, kept separate because the demo is not a library, the precedent
+ * [OtherlodeTestCollector.unreachedClusters] set for the call-graph rule. The two must give the
+ * same answer for the same input: `DependencyRulesTest` ports the demo's `DependencyReportTest`
+ * case for case, so a change to one rule set without the other shows up as a failing test in one of
+ * them.
  */
 
 /** One library a dependency carries, as one instance's listing named it. [groupId] is empty for a filename-derived identity. */
@@ -28,7 +29,7 @@ internal data class DependencyView(
     val classCount: Int?,
     val location: String,
 ) {
-    /** The sorted `group:artifact` pairs, which name the dependency across instances. See ADR 0030. */
+    /** The sorted `group:artifact` pairs, which name the dependency across instances. */
     val identityKey: String get() =
         identities
             .map { it.key }
@@ -109,14 +110,16 @@ internal data class DependencyReport(
 )
 
 /**
- * Applies ADR 0030's rules across [instances]. A dependency is unloaded when some instance listed
+ * Applies the dependency rules across [instances]. A dependency every listing counted no class in is
+ * resources only, and nothing more is claimed. Otherwise it is unloaded when some instance listed
  * it from the startup classpath and no instance loaded a class from it. Past that, only the
  * instances that list it and record references are consulted, and with none it reads as loaded: a
  * reference is a referenced class whose `ExternalClass` mapping on that instance names the
  * dependency, and it is live when held by a non-inline method with hits on any instance or by a
  * class that loaded. Baseline references are never live. With a complete baseline from every one
- * of those instances, no reference is unreferenced and no live one is unreached; otherwise the two
- * merge into no live reference, which is true either way.
+ * of those instances, a dependency with no reference is unreferenced and one with references but
+ * no live one is unreached; otherwise the two merge into no live reference, which is true either
+ * way.
  */
 internal fun computeDependencyReport(instances: List<InstanceDependencyView>): DependencyReport {
     val recording = instances.filter { it.referencesRecorded }
@@ -160,7 +163,7 @@ internal fun computeDependencyReport(instances: List<InstanceDependencyView>): D
                     continue
                 }
                 // A mapping to no known dependency is a jar of the adopter's own or an agent jar,
-                // which ADR 0030 tells a collector to ignore.
+                // and neither is a dependency.
                 val identityKey = mapping.dependencyId?.let(identityKeys::get) ?: continue
                 referencesByDependency.getOrPut(identityKey) { mutableSetOf() } += site to live
             }
@@ -179,6 +182,10 @@ internal fun computeDependencyReport(instances: List<InstanceDependencyView>): D
                 val judging = listings.map { (instance, _) -> instance }.filter { it.referencesRecorded }
                 val status =
                     when {
+                        loaded == 0L && listings.all { (_, dependency) -> dependency.classCount == 0 } -> {
+                            DependencyUsage.RESOURCES_ONLY
+                        }
+
                         loaded == 0L &&
                             listings.any { (_, dependency) ->
                                 dependency.discoverySource == DependencyDiscoverySource.STARTUP_CLASSPATH

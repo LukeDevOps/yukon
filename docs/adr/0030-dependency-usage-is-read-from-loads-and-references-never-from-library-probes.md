@@ -168,3 +168,5 @@ referenced class that no loader can find is an *absent reference* and is reporte
   follows its instance on prune and on a version-change wipe, like endpoints.
 - `otherlode-testkit` gains `dependency(group, artifact)` and `unloadedDependencies()`, applying the
   collector's rules within one JVM.
+- A dependency every listing counted no class in is resources only (native libraries, web assets, message bundles): loading cannot say whether it is used, so it is never unloaded and nothing else is claimed. The testkit and the stub apply it; the server's rule is recorded in `STATUS.md`. Added 2026-10-03 in a review.
+- `dependency(group, artifact)` in the testkit answers for the dependency whose only identity that is when a shaded jar also carries it, and throws when no single one is left.

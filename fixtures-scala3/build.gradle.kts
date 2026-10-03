@@ -1,5 +1,5 @@
 // Scala 3 fixture classes for the analyser's default-getter resolution
-// (BranchSiteAnalyzer, ADR 0023). Never on the test classpath directly: the root
+// (BranchSiteAnalyzer). Never on the test classpath directly: the root
 // build wires its compiled output and runtime classpath in as system properties
 // instead, loaded through a child-first classloader at test time, the same way
 // the existing Kotlin fixtures under com.example.target are loaded. Putting the

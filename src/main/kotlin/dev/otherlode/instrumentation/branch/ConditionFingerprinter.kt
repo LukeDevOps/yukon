@@ -12,7 +12,7 @@ import net.bytebuddy.jar.asm.Type
 
 /**
  * Builds each tracked branch site's condition fingerprint, as a second, independent `ClassReader`
- * pass over a class's original bytecode. See ADR 0031.
+ * pass over a class's original bytecode.
  *
  * The fingerprint is the canonical text of the instructions from the last point in the method
  * where the operand stack was empty up to the site's own jump or switch. [BranchSiteAnalyzer]
@@ -23,11 +23,17 @@ import net.bytebuddy.jar.asm.Type
  * afterwards which methods it kept sites for.
  */
 object ConditionFingerprinter {
+    /** A counter a compiler appends to a synthetic method's name, as in `access$000`. */
+    private val TRAILING_COUNTER = Regex("""\$\d+$""")
+
+    /** A method name a compiler gave a lambda body: javac's `lambda$`, kotlinc's `$lambda$`, scalac's `$anonfun$`. */
+    private fun isLambdaBodyName(name: String): Boolean = name.startsWith("lambda$") || "\$lambda\$" in name || "\$anonfun\$" in name
+
     /**
      * One method's ordered fingerprints and, for a switch site, its case keys. Both lists are
      * indexed by encounter ordinal. [conditionOf] writes the condition of the site at an ordinal
      * from the same window as its fingerprint, and gives an empty list when that site has no
-     * window or [ConditionWriter] cannot write it. See ADR 0037.
+     * window or [ConditionWriter] cannot write it.
      */
     class MethodResult(
         val fingerprints: List<String?>,
@@ -37,14 +43,16 @@ object ConditionFingerprinter {
     )
 
     /**
-     * One switch [SwitchLowering] read back to its source cases, by site ordinal. See ADR 0038.
+     * One switch [SwitchLowering] read back to its source cases, by site ordinal.
      *
      * [loweringOrdinals] are the sites the lowering added, which get no probe. [rebuiltOrdinal] is
      * the site whose cases are the source's cases, or null when the lowering has none. For that
      * site, [caseLabels] holds one label per case outcome in outcome order, [throwingDefault] says
      * whether its default only throws, [fingerprint] covers its subject's window with no map class
      * or temporary in it, and [condition] is its subject. [caseConditions] holds the condition of
-     * each string case check that stays a plain site, by ordinal.
+     * each string case check that stays a plain site, by ordinal. [collisionOutcomes] holds, by
+     * ordinal, the outcome offset of each such check's not-equal side that only a hash collision
+     * can reach: 0 when the check jumps on not-equal, 1 when it falls through on it.
      */
     class LoweredSwitch(
         val loweringOrdinals: List<Int>,
@@ -54,6 +62,7 @@ object ConditionFingerprinter {
         val fingerprint: String?,
         val condition: List<ConditionPart>,
         val caseConditions: Map<Int, List<ConditionPart>>,
+        val collisionOutcomes: Map<Int, Int> = emptyMap(),
     )
 
     /**
@@ -453,7 +462,7 @@ object ConditionFingerprinter {
          * lowering names an instruction that is not a tracked site is left out. A rebuilt site's
          * fingerprint is its [SwitchLowering.Reading.kindToken] followed by the subject's window,
          * with any enum map read replaced by a token naming the enum class. It is null when no
-         * point before the subject is known to leave the stack empty. See ADR 0038.
+         * point before the subject is known to leave the stack empty.
          */
         private fun loweredSwitches(
             view: MethodInstructionsView,
@@ -500,6 +509,11 @@ object ConditionFingerprinter {
                                 ownerInternalName,
                             )
                     }
+                val collisionOutcomes =
+                    reading.caseChecks.filter { it.collisionOnly }.associate { check ->
+                        val ordinal = ordinalOf[check.jump] ?: return@mapNotNull null
+                        ordinal to if (check.fallsThroughWhenEqual) 0 else 1
+                    }
                 LoweredSwitch(
                     loweringOrdinals = reading.lowering.map { ordinalOf[it] ?: return@mapNotNull null },
                     rebuiltOrdinal = reading.rebuilt?.let { ordinalOf[it] ?: return@mapNotNull null },
@@ -508,6 +522,7 @@ object ConditionFingerprinter {
                     fingerprint = fingerprint,
                     condition = condition,
                     caseConditions = caseConditions,
+                    collisionOutcomes = collisionOutcomes,
                 )
             }
         }
@@ -554,7 +569,7 @@ object ConditionFingerprinter {
             return (zeroPoint..siteIndex).joinToString(";") { i -> tokenFor(insns[i], i, localNameAt) }
         }
 
-        /** The forward jump or switch targets an instruction hands the stack depth on to. */
+        /** The jump or switch targets, forward or backward, an instruction hands the stack depth on to. */
         private fun jumpTargets(insn: Insn): List<Label> =
             when (insn) {
                 is Insn.Jump -> listOf(insn.target)
@@ -581,8 +596,9 @@ object ConditionFingerprinter {
 
     /**
      * The stack effect of one instruction, in JVM stack words (a `long` or `double` counts as
-     * two). `ASM`'s `Frame`/`AnalyzerAdapter` are not part of ByteBuddy's shaded copy, so this is
-     * a hand-written table over each opcode family.
+     * two). ByteBuddy's shaded ASM carries the core library only, not asm-analysis's `Analyzer`
+     * and `Frame` or asm-commons' `AnalyzerAdapter`, so this is a hand-written table over each
+     * opcode family.
      */
     internal fun stackEffect(insn: Insn): Int =
         when (insn) {
@@ -761,7 +777,7 @@ object ConditionFingerprinter {
             else -> 1
         }
 
-    /** The canonical text for one instruction in a fingerprint window. See ADR 0031, point 4 of the brief that landed it. */
+    /** The canonical text for one instruction in a fingerprint window. */
     private fun tokenFor(
         insn: Insn,
         instructionIndex: Int,
@@ -825,16 +841,23 @@ object ConditionFingerprinter {
 
     /**
      * `INVOKEDYNAMIC`'s call site name and descriptor, the bootstrap handle's owner and name, and
-     * each bootstrap `Handle` argument's owner and descriptor, never its name: kotlinc and javac
-     * name a lambda body `lambda$foo$0` and similar, and that number shifts when another lambda is
-     * added elsewhere in the class.
+     * every bootstrap argument, so a string concatenation's constant text and a method
+     * reference's target are part of the condition. A `Handle` argument naming a lambda body
+     * leaves its name out: javac, kotlinc and scalac name it after the enclosing method and a
+     * counter (`lambda$foo$0`, `foo$lambda$0`, `$anonfun$foo$1`) that shifts when another lambda
+     * is added elsewhere in the class. Any other handle keeps its name, less a trailing
+     * `$<digits>`.
      */
     private fun invokeDynamicToken(insn: Insn.InvokeDynamic): String {
-        val handleArgs =
-            insn.bootstrapMethodArguments
-                .filterIsInstance<Handle>()
-                .joinToString(",") { "${it.owner}:${it.desc}" }
-        return "INVOKEDYNAMIC ${insn.name} ${insn.descriptor} ${insn.bootstrapMethod.owner}.${insn.bootstrapMethod.name} [$handleArgs]"
+        val args =
+            insn.bootstrapMethodArguments.joinToString(",") { argument ->
+                when {
+                    argument !is Handle -> ldcToken(argument)
+                    isLambdaBodyName(argument.name) -> "${argument.owner}:${argument.desc}"
+                    else -> "${argument.owner}.${argument.name.replace(TRAILING_COUNTER, "")}:${argument.desc}"
+                }
+            }
+        return "INVOKEDYNAMIC ${insn.name} ${insn.descriptor} ${insn.bootstrapMethod.owner}.${insn.bootstrapMethod.name} [$args]"
     }
 
     /** An `LDC` constant's tag and value. A string escapes `;` and `\` so it cannot be mistaken for token structure. */
@@ -853,7 +876,6 @@ object ConditionFingerprinter {
 
     private fun escapeString(value: String): String = value.replace("\\", "\\\\").replace(";", "\\;")
 
-    /** Every JVM opcode this fingerprinter's instructions can carry, by its bytecode mnemonic. */
     private fun opcodeName(opcode: Int): String =
         when (opcode) {
             Opcodes.NOP -> "NOP"

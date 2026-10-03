@@ -9,7 +9,7 @@ import java.util.concurrent.atomic.AtomicLong
  * [dev.otherlode.instrumentation.OtherlodeInstrumentation] calls [record] once per
  * transformed class. [dev.otherlode.export.ExportScheduler] reads [total],
  * [countOf], and [classesWithDrops] to log one summary line the first time a flush finds the
- * total above zero. See ADR 0025.
+ * total above zero.
  */
 class BranchDropCounts {
     private val countsByReason: Map<BranchDropReason, AtomicLong> = BranchDropReason.entries.associateWith { AtomicLong(0) }

@@ -1,8 +1,8 @@
 package dev.otherlode.instrumentation.branch
 
 /**
- * One entry of the forwarder table (ADR 0035): a pass-through that a framework can report as a
- * handler, and the one probed method it forwards to.
+ * One entry of the forwarder table: a pass-through that a framework can report as a handler, and
+ * the one probed method it forwards to.
  *
  * The first three fields name the pass-through. The last three name the target. Class names are
  * dotted, as `Class.getName()` spells them. Names and descriptors are exactly as the class file

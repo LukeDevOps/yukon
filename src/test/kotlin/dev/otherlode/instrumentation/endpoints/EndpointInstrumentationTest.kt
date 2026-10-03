@@ -184,6 +184,42 @@ class EndpointInstrumentationTest {
     }
 
     @Test
+    fun `a class a framework generated at runtime is never offered to a module`() {
+        val seen = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val recordingModule =
+            object : EndpointModule {
+                override val name: String = "recording-${System.nanoTime()}"
+
+                override fun typeMatcher(): ElementMatcher<in TypeDescription> =
+                    ElementMatcher { type ->
+                        type.name == "com.example.framework.FakeRouter" || type.name.startsWith("com.example.framework.FakeRouter\$\$")
+                    }
+
+                override fun transform(
+                    builder: DynamicType.Builder<*>,
+                    typeDescription: TypeDescription,
+                    advice: AdviceBinder,
+                    classLoader: ClassLoader?,
+                ): DynamicType.Builder<*> {
+                    seen += typeDescription.name
+                    return builder
+                }
+            }
+        val router = install(EndpointRegistry(), listOf(recordingModule), "com.example.framework.FakeRouter")
+
+        // A Spring CGLIB proxy of the router: named after it, so a matcher on the name or on an
+        // inherited annotation would take it, and woven twice would count every call twice.
+        net.bytebuddy
+            .ByteBuddy()
+            .subclass(router.javaClass)
+            .name("com.example.framework.FakeRouter\$\$SpringCGLIB\$\$0")
+            .make()
+            .load(router.javaClass.classLoader, net.bytebuddy.dynamic.loading.ClassLoadingStrategy.Default.INJECTION)
+
+        assertEquals(listOf("com.example.framework.FakeRouter"), seen.toList())
+    }
+
+    @Test
     fun `EndpointModules discover finds the fake module registered as a service`() {
         val discovered = EndpointModules.discover(javaClass.classLoader)
 

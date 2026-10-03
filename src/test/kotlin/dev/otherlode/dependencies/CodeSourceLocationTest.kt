@@ -16,6 +16,18 @@ class CodeSourceLocationTest {
     }
 
     @Test
+    fun `a file URL with a raw space, as File toURL writes one, is still a location on disk`() {
+        assertEquals(
+            CodeSourceLocation.OnDisk(Path.of("/libs/my libs/gson-2.10.jar")),
+            CodeSourceLocation.parse("file:/libs/my libs/gson-2.10.jar"),
+        )
+        assertEquals(
+            CodeSourceLocation.InJar(Path.of("/apps/my app.jar"), "BOOT-INF/lib/x.jar"),
+            CodeSourceLocation.parse("jar:file:/apps/my app.jar!/BOOT-INF/lib/x.jar!/"),
+        )
+    }
+
+    @Test
     fun `a Spring Boot 3_2 nested URL splits at the last slash-bang and is percent-decoded`() {
         assertEquals(
             CodeSourceLocation.InJar(Path.of("/srv/my app/demo.jar"), "BOOT-INF/lib/jackson-core-2.17.0.jar"),

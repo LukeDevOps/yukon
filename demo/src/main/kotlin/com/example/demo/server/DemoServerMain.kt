@@ -1,9 +1,9 @@
 package com.example.demo.server
 
+import com.example.demo.DemoPorts
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpHandler
 import com.sun.net.httpserver.HttpServer
-import com.example.demo.DemoPorts
 import java.net.InetSocketAddress
 import java.nio.charset.StandardCharsets
 
@@ -29,8 +29,8 @@ private const val FREE_SHIPPING_THRESHOLD = 100.0
  * both under the branch this demo never takes; the constructor and the field read are two
  * different ways an unloaded class is reached from [handleCheckout]. [handleCheckout] also holds
  * [respond] as a function-typed value and calls it through that value: kotlinc compiles the
- * reference to its own class, a body class under ADR 0024, whose `invoke` only the reference's
- * holder ever calls. Calling it on every request keeps that `invoke` and [respond] itself out of
+ * reference to its own class, a body class, whose `invoke` only the reference's holder ever
+ * calls. Calling it on every request keeps that `invoke` and [respond] itself out of
  * every unreached cluster, which proves the body-class edge rather than manufacturing a finding.
  *
  * The two handlers are registered in deliberately different shapes. `/checkout` takes a function
@@ -40,7 +40,7 @@ private const val FREE_SHIPPING_THRESHOLD = 100.0
  * [PromoHandler], a named class, so its endpoint record names `PromoHandler.handle` and the
  * collector can put the route beside that method's never-hit row and its unreached cluster's root.
  *
- * Four more shapes cover the class findings of otherlode-server's ADR 0034. [main] names [AuditLog]
+ * Four more shapes cover the class findings otherlode-server reports. [main] names [AuditLog]
  * and [ReceiptPrinter] through class literals, which load a class without initialising it:
  * `AuditLog` is loaded and never initialised, and `ReceiptPrinter`, which has no static
  * initialiser, is loaded and never instantiated. [handleCheckout] builds every [Money] from pence,
@@ -62,7 +62,9 @@ fun main() {
     server.start()
     println("otherlode demo server listening on ${DemoPorts.SERVER_PORT}")
     // A class literal loads a class without initialising it. See AuditLog and ReceiptPrinter.
-    println("otherlode demo server can audit with ${AuditLog::class.java.simpleName} and print with ${ReceiptPrinter::class.java.simpleName}")
+    println(
+        "otherlode demo server can audit with ${AuditLog::class.java.simpleName} and print with ${ReceiptPrinter::class.java.simpleName}",
+    )
 }
 
 private fun handleCheckout(exchange: HttpExchange) {
@@ -106,8 +108,8 @@ private fun formatTotal(
  * The `/promo` handler as a named class. The endpoint record names this class and `handle`, so
  * the never-called endpoint and the never-hit method are the same finding seen from two sides.
  * Nothing in the demo's own packages calls `handle`, only the server, so it is an uncalled root:
- * the shape ADR 0024 records as the known gap for a named class implementing a framework
- * interface, except that here the endpoint join carries the route to it.
+ * the known gap for a named class implementing a framework interface, except that here the
+ * endpoint join carries the route to it.
  */
 private class PromoHandler : HttpHandler {
     override fun handle(exchange: HttpExchange) {

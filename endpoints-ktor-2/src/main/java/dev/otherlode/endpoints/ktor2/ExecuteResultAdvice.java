@@ -36,6 +36,9 @@ public class ExecuteResultAdvice {
     @Advice.OnMethodEnter(suppress = Throwable.class)
     public static void onEnter(@Advice.Argument(1) Object route) {
         try {
+            // executeResult is a suspend function: each resumption re-enters it from its
+            // continuation with null arguments, and only the first entry is a dispatch.
+            if (route == null) return;
             Object entry = OtherlodeEndpoints.lookup(MODULE, route);
             if (entry == null) {
                 Deque<String> segments = new ArrayDeque<>();

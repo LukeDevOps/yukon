@@ -21,7 +21,7 @@ import kotlin.test.assertTrue
 /**
  * Proves through the real transform that a switch read back to its source cases reaches the
  * manifest as one site with its labels, that the lowering's own jumps and a throwing default get
- * no probe, and that the woven code still runs every case. See ADR 0038.
+ * no probe, and that the woven code still runs every case.
  */
 class SwitchLoweringInstrumentationTest {
     private var installedTransformer: ResettableClassFileTransformer? = null
@@ -150,5 +150,27 @@ class SwitchLoweringInstrumentationTest {
         )
         val hits = hitsByBranchIndex(registry, branches)
         assertTrue(site.outcomes.all { hits[it.branchIndex] == 1L }, "each literal and the default counted once: $hits")
+    }
+
+    @Test
+    fun `a kotlinc string when probes no outcome only a hash collision can take, and counts every other once`() {
+        val registry = installed()
+        val loader = fixtureLoader()
+        val targetClass = Class.forName("com.example.target.SwitchTarget", true, loader)
+        val target = targetClass.getDeclaredConstructor().newInstance()
+        val stringWhen = targetClass.getMethod("stringWhen", String::class.java)
+        assertEquals(
+            listOf(1, 2, 2, 3, 4, 0),
+            listOf("open", "closed", "done", "Aa", "BB", "other").map { stringWhen.invoke(target, it) },
+        )
+
+        val manifest = registry.manifest(resource)
+        val sites = methodProbe(manifest, targetClass.name, "stringWhen").branchSites
+        val branches = branchProbes(manifest, targetClass.name, "stringWhen")
+        val listed = sites.flatMap { site -> site.outcomes.map { it.branchIndex } }
+        assertEquals(listed.sorted(), branches.map { it.branchIndex!! }.sorted(), "only listed outcomes are probed")
+        assertEquals(6, listed.size)
+        val hits = hitsByBranchIndex(registry, branches)
+        assertTrue(listed.all { hits[it] == 1L }, "each listed outcome counted once: $hits")
     }
 }

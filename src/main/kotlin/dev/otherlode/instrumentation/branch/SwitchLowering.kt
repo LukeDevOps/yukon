@@ -13,7 +13,7 @@ import net.bytebuddy.jar.asm.Type
 
 /**
  * Reads a switch over a string or an enum, and javac's pattern switch, back to the cases the
- * source names. See ADR 0038.
+ * source names.
  *
  * Each shape below was confirmed with `javap -c -l -p` on javac 17 and 21, kotlinc 2.2.21, scalac
  * 2.13.15 and scalac 3.3.4 output. A switch that differs from every shape in any detail is not
@@ -63,11 +63,16 @@ internal object SwitchLowering {
         val enumClass: String? = null,
     )
 
-    /** One `equals` check of a string case, at instruction [jump], that stays a plain site. */
+    /**
+     * One `equals` check of a string case, at instruction [jump], that stays a plain site.
+     * [collisionOnly] is true for the last check in its hash bucket: its not-equal side is reached
+     * only by a different string with the same hash code, so it has no outcome of its own.
+     */
     class CaseCheck(
         val jump: Int,
         val literal: String,
         val fallsThroughWhenEqual: Boolean,
+        val collisionOnly: Boolean = false,
     )
 
     /**
@@ -280,14 +285,43 @@ internal object SwitchLowering {
                 while (true) {
                     val (literal, jump) = check
                     if (literal.hashCode() != entry.key || !literals.add(literal)) return null
-                    checks += CaseCheck(position + 3, literal, fallsThroughWhenEqual = jump.opcode == Opcodes.IFEQ)
                     val next = if (jump.opcode == Opcodes.IFNE) position + 4 else at(jump.target) ?: return null
-                    check = equalsCheckAt(next, temp) ?: break
+                    val following = equalsCheckAt(next, temp)
+                    checks +=
+                        CaseCheck(
+                            position + 3,
+                            literal,
+                            fallsThroughWhenEqual = jump.opcode == Opcodes.IFEQ,
+                            collisionOnly = following == null && throughGotos(next).let { it != null && it == throughGotos(defaultIndex) },
+                        )
+                    check = following ?: break
                     position = next
                 }
             }
             return Reading(lowering, null, emptyList(), false, checks, store, "STRING-MATCH")
         }
+
+        /**
+         * Where control lands from [index] after any chain of `goto`s, or null when one leads
+         * nowhere known. A coverage agent's probe before a `goto` is stepped over: JaCoCo plants
+         * `aload <probes>; <index>; iconst_1; bastore` on the collision path and the default path
+         * alike.
+         */
+        private fun throughGotos(index: Int): Int? {
+            var current = index
+            repeat(MAX_GOTO_CHAIN) {
+                if (isCoverageProbe(current)) current += COVERAGE_PROBE_LENGTH
+                val goto = jumpAt(current, Opcodes.GOTO) ?: return current
+                current = at(goto.target) ?: return null
+            }
+            return null
+        }
+
+        private fun isCoverageProbe(index: Int): Boolean =
+            varAt(index, Opcodes.ALOAD) != null &&
+                intAt(index + 1) != null &&
+                intAt(index + 2) == 1 &&
+                plainAt(index + 3, Opcodes.BASTORE)
 
         /** A switch on javac's or kotlinc's enum map. See [SwitchLowering]. */
         fun enumMapping(
@@ -435,6 +469,11 @@ internal object SwitchLowering {
             }
     }
 
+    /** The longest `goto` chain [throughGotos] follows before giving up. */
+    private const val MAX_GOTO_CHAIN = 8
+
+    /** How many instructions JaCoCo's probe takes: the array load, the index, the `1`, the store. */
+    private const val COVERAGE_PROBE_LENGTH = 4
     private const val STRING_OWNER = "java/lang/String"
     private const val OBJECT_OWNER = "java/lang/Object"
     private const val SWITCH_BOOTSTRAPS = "java/lang/runtime/SwitchBootstraps"
@@ -451,8 +490,7 @@ internal object SwitchLowering {
  * The enum map arrays a class declares, read from its static initialiser: javac's `$SwitchMap$`
  * arrays on a synthetic class, and kotlinc's `$EnumSwitchMapping$` arrays on `$WhenMappings`. A
  * class's bytes come from [lookup], through the class loader's resources, and the class is never
- * loaded. Each class is read once. A class the lookup cannot read, or throws on, has no maps. See
- * ADR 0038.
+ * loaded. Each class is read once. A class the lookup cannot read, or throws on, has no maps.
  */
 class EnumSwitchMappings(
     private val lookup: (internalName: String) -> ByteArray?,

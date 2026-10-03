@@ -6,9 +6,14 @@ import dev.otherlode.instrumentation.endpoints.EndpointInstrumentation
 import dev.otherlode.registry.EndpointRegistry
 import net.bytebuddy.agent.ByteBuddyAgent
 import org.springframework.http.HttpMethod
+import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get
+import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.options
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
+import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.request
 import org.springframework.test.web.servlet.setup.MockMvcBuilders
+import org.springframework.web.bind.annotation.RequestMethod
+import org.springframework.web.servlet.function.HandlerFilterFunction
 import org.springframework.web.servlet.function.HandlerFunction
 import org.springframework.web.servlet.function.RequestPredicate
 import org.springframework.web.servlet.function.RequestPredicates.GET
@@ -19,7 +24,9 @@ import org.springframework.web.servlet.function.RequestPredicates.path
 import org.springframework.web.servlet.function.RouterFunctions.route
 import org.springframework.web.servlet.function.ServerRequest
 import org.springframework.web.servlet.function.ServerResponse
+import org.springframework.web.servlet.mvc.method.RequestMappingInfo
 import java.lang.invoke.MethodType
+import java.net.URI
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -69,22 +76,46 @@ class SpringWebMvcModuleTest {
 
         try {
             val controller = TestController()
-            val mockMvc = MockMvcBuilders.standaloneSetup(controller).build()
+            val mockMvc = MockMvcBuilders.standaloneSetup(controller, InheritingController(), ItemsController()).build()
 
             mockMvc.perform(get("/checkout/42"))
             mockMvc.perform(get("/checkout/42"))
             mockMvc.perform(get("/a"))
             mockMvc.perform(get("/any"))
+            mockMvc.perform(get("/inherited"))
+            mockMvc.perform(get("/items/7"))
 
             val endpoints = registry.endpoints()
             val byIdentity = endpoints.associateBy { "${it.verb} ${it.routeTemplate}" }
             assertEquals(
-                setOf("GET /checkout/{id}", "POST /promo", "GET /a", "POST /a", "GET /b", "POST /b", "* /any"),
+                setOf(
+                    "GET /checkout/{id}",
+                    "POST /promo",
+                    "GET /a",
+                    "POST /a",
+                    "GET /b",
+                    "POST /b",
+                    "* /any",
+                    "GET /inherited",
+                    "GET /items/{id}",
+                    "GET /items/*",
+                ),
                 byIdentity.keys,
             )
 
+            // An inherited mapping joins to the class that declares the method, where its probe lives.
+            assertEquals(BaseController::class.java.name, byIdentity.getValue("GET /inherited").handlerClass)
+
+            // A request both patterns match counts Spring's best match, not whichever a hash set lists first.
+            val deltasByIdentity =
+                registry.computeDeltas(maxPerBatch = 20).flatMap { it.deltas }.associate { delta ->
+                    endpoints.single { it.endpointId == delta.endpointId }.let { "${it.verb} ${it.routeTemplate}" } to delta.hitsTotal
+                }
+            assertEquals(1L, deltasByIdentity["GET /items/{id}"], "deltas: $deltasByIdentity")
+            assertNull(deltasByIdentity["GET /items/*"], "deltas: $deltasByIdentity")
+
             val controllerClassName = controller.javaClass.name
-            for (endpoint in endpoints) {
+            for (endpoint in endpoints.filter { it.routeTemplate != "/inherited" && !it.routeTemplate.startsWith("/items") }) {
                 assertEquals("spring-webmvc", endpoint.framework)
                 assertEquals(EndpointDiscoverySource.REGISTRATION, endpoint.discoverySource)
                 assertEquals(controllerClassName, endpoint.handlerClass)
@@ -133,13 +164,31 @@ class SpringWebMvcModuleTest {
             val staticHandler = urlMappedTestHandler("static content")
             val legacyHandler = urlMappedTestHandler("legacy content")
 
-            val context = buildUrlMappedWebApplicationContext(staticHandler, legacyHandler)
+            val fallbackHandler = urlMappedTestHandler("fallback content")
+
+            val context = buildUrlMappedWebApplicationContext(staticHandler, legacyHandler, fallbackHandler)
+            // Registered in code, as Spring Boot Actuator registers each operation. Reached by name so
+            // this class never names the handler mapping's type.
+            val annotationMapping = context.getBean("requestMappingHandlerMapping")
+            annotationMapping.javaClass
+                .getMethod("registerMapping", RequestMappingInfo::class.java, Any::class.java, java.lang.reflect.Method::class.java)
+                .invoke(
+                    annotationMapping,
+                    RequestMappingInfo.paths("/registered").methods(RequestMethod.GET).build(),
+                    ProgrammaticHandler(),
+                    ProgrammaticHandler::class.java.getMethod("registered"),
+                )
             val mockMvc = MockMvcBuilders.webAppContextSetup(context).build()
 
             mockMvc.perform(get("/checkout/42"))
             mockMvc.perform(get("/static/app.js"))
             mockMvc.perform(get("/static/app.js"))
             mockMvc.perform(get("/legacy/old"))
+            mockMvc.perform(get("/registered"))
+            // Neither path is mapped, so Spring hands both to the "/*" handler with the raw path in
+            // place of a pattern. They count against "/*" and add no endpoint per path.
+            mockMvc.perform(get("/unmapped/a"))
+            mockMvc.perform(get("/unmapped/b"))
 
             val endpoints = registry.endpoints()
             val byIdentity = endpoints.associateBy { "${it.verb} ${it.routeTemplate}" }
@@ -154,6 +203,8 @@ class SpringWebMvcModuleTest {
                     "* /any",
                     "* /static/*",
                     "* /legacy/old",
+                    "* /*",
+                    "GET /registered",
                 ),
                 byIdentity.keys,
             )
@@ -175,6 +226,12 @@ class SpringWebMvcModuleTest {
             val deltasById = registry.computeDeltas(maxPerBatch = 10).flatMap { it.deltas }.associateBy { it.endpointId }
             assertEquals(2L, deltasById.getValue(staticEndpoint.endpointId).hitsTotal)
             assertEquals(1L, deltasById.getValue(legacyEndpoint.endpointId).hitsTotal)
+            assertEquals(2L, deltasById.getValue(byIdentity.getValue("* /*").endpointId).hitsTotal)
+            val registered = byIdentity.getValue("GET /registered")
+            assertEquals(EndpointDiscoverySource.REGISTRATION, registered.discoverySource)
+            assertEquals(ProgrammaticHandler::class.java.name, registered.handlerClass)
+            assertEquals("registered", registered.handlerMethod)
+            assertEquals(1L, deltasById.getValue(registered.endpointId).hitsTotal)
             assertEquals(1L, deltasById.getValue(checkoutEndpoint.endpointId).hitsTotal)
             assertTrue(byIdentity.getValue("POST /promo").endpointId !in deltasById)
 
@@ -202,7 +259,7 @@ class SpringWebMvcModuleTest {
      * Kotlin function-type lambda; confirmed empirically while writing this test. handlerA and
      * handlerC are therefore written as Kotlin object expressions, which always compile to a real
      * named class. The hidden ones join to the method their lambda calls, through the lambda
-     * factory hook (ADR 0035), and one spun before the hook installs gets no join.
+     * factory hook, and one spun before the hook installs gets no join.
      */
     @Test
     fun `functional routes are declared through RouterFunction and counted at dispatch`() {
@@ -230,6 +287,10 @@ class SpringWebMvcModuleTest {
             val handlerE = HandlerFunction<ServerResponse> { ServerResponse.ok().build() }
             val handlerF = HandlerFunction<ServerResponse> { ServerResponse.ok().build() }
             val byReference = HandlerFunction(::referencedHandler)
+            val handlerG =
+                object : HandlerFunction<ServerResponse> {
+                    override fun handle(request: ServerRequest): ServerResponse = ServerResponse.ok().build()
+                }
 
             val routerFunction =
                 route(GET("/fn/{id}"), handlerA)
@@ -237,10 +298,15 @@ class SpringWebMvcModuleTest {
                     .andNest(
                         path("/api"),
                         route(GET("/items"), handlerC)
-                            .andRoute(GET("/items/{id}").or(GET("/things/{id}")), handlerD),
+                            .andRoute(GET("/items/{id}").or(GET("/things/{id}")), handlerD)
+                            // No path of its own: the nest's path is its whole template.
+                            .andRoute(method(HttpMethod.DELETE), handlerG),
                     ).andRoute(method(HttpMethod.GET).and(param("custom", "1")), handlerE)
                     .andRoute(GET("/by-reference"), byReference)
                     .andRoute(GET("/early"), early)
+                    .andRoute(path("/any-verb"), handlerG)
+                    // Spring wraps a filtered route's handler in a new function on every request.
+                    .and(route(GET("/filtered"), handlerG).filter(HandlerFilterFunction { request, next -> next.handle(request) }))
                     // A predicate the walk cannot read keeps this route undeclared, so it is found at dispatch.
                     .andRoute(path("/discovered").and(RequestPredicate { true }), handlerF)
 
@@ -258,6 +324,9 @@ class SpringWebMvcModuleTest {
                     "GET /api/things/{id}",
                     "GET /by-reference",
                     "GET /early",
+                    "* /any-verb",
+                    "DELETE /api",
+                    "GET /filtered",
                 ),
                 declaredByIdentity.keys,
             )
@@ -287,6 +356,18 @@ class SpringWebMvcModuleTest {
             mockMvc.perform(get("/anything").param("custom", "1"))
             mockMvc.perform(get("/discovered"))
             mockMvc.perform(get("/early"))
+            // Spring 5.3 resolves a verb outside HttpMethod's enum to a null method().
+            mockMvc.perform(request("PROPFIND", URI.create("/any-verb")))
+            // A path the nest matches whose inner route refuses the verb: no handler at all.
+            mockMvc.perform(post("/api/items"))
+            mockMvc.perform(delete("/api"))
+            mockMvc.perform(get("/filtered"))
+            val keysAfterFirstFilteredCall = registry.boundKeyCount()
+            mockMvc.perform(get("/filtered"))
+            mockMvc.perform(get("/filtered"))
+            assertEquals(keysAfterFirstFilteredCall, registry.boundKeyCount(), "a filtered route binds no key per request")
+            // A CORS preflight matches GET /fn/{id} but Spring answers it without the handler.
+            mockMvc.perform(options("/fn/1").header("Origin", "http://example.com").header("Access-Control-Request-Method", "GET"))
 
             val afterDispatch = registry.endpoints().associateBy { "${it.verb} ${it.routeTemplate}" }
             val deltasById = registry.computeDeltas(maxPerBatch = 20).flatMap { it.deltas }.associateBy { it.endpointId }
@@ -296,6 +377,9 @@ class SpringWebMvcModuleTest {
             assertEquals(1L, deltasById.getValue(afterDispatch.getValue("GET /api/items").endpointId).hitsTotal)
             assertTrue(afterDispatch.getValue("GET /api/items/{id}").endpointId !in deltasById)
             assertEquals(1L, deltasById.getValue(afterDispatch.getValue("GET /api/things/{id}").endpointId).hitsTotal)
+            assertEquals(1L, deltasById.getValue(afterDispatch.getValue("* /any-verb").endpointId).hitsTotal)
+            assertEquals(1L, deltasById.getValue(afterDispatch.getValue("DELETE /api").endpointId).hitsTotal)
+            assertEquals(3L, deltasById.getValue(afterDispatch.getValue("GET /filtered").endpointId).hitsTotal)
 
             // handlerA and handlerC are object expressions (never hidden) that declare handle on
             // themselves, so the join the declare walk registered names their own class and handle.

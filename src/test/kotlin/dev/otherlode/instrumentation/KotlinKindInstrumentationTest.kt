@@ -15,7 +15,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /**
- * Proves ADR 0041 through the real transform pipeline: each loaded class's `ClassLocation` carries
+ * Proves through the real transform pipeline that each loaded class's `ClassLocation` carries
  * its Kotlin kind, a multi-file part is probed though kotlinc marks it synthetic, the facade's
  * forwarder is marked `MULTIFILE_FACADE`, and a call to the facade names the part.
  */

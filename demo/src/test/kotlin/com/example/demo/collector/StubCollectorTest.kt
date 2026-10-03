@@ -16,6 +16,7 @@ import dev.otherlode.proto.ProbeManifest
 import dev.otherlode.proto.ResourceAttributes
 import dev.otherlode.proto.RoutineKind
 import dev.otherlode.proto.StaticBaseline
+import dev.otherlode.proto.UnreportedClass
 import java.io.ByteArrayOutputStream
 import java.io.PrintStream
 import java.net.URI
@@ -96,15 +97,78 @@ class StubCollectorTest {
         val finalFlushLine = { neverHitReport().single { it.startsWith("runs that sent a final flush:") } }
         val before = finalFlushLine()
 
-        assertEquals(200, post("manifest", ProbeManifest.newBuilder().setResource(testRun).addProbes(probe).build()))
-        assertEquals(200, post("deltas", DeltaBatch.newBuilder().setResource(testRun).setFinalFlush(true).build()))
-        val firstOfTwoChunks = StaticBaseline.newBuilder().setChunkCount(2).setScannedAt(1L).addDeclaredClasses(declared)
+        assertEquals(
+            200,
+            post(
+                "manifest",
+                ProbeManifest
+                    .newBuilder()
+                    .setResource(testRun)
+                    .addProbes(probe)
+                    .build(),
+            ),
+        )
+        assertEquals(
+            200,
+            post(
+                "deltas",
+                DeltaBatch
+                    .newBuilder()
+                    .setResource(testRun)
+                    .setFinalFlush(true)
+                    .build(),
+            ),
+        )
+        val firstOfTwoChunks =
+            StaticBaseline
+                .newBuilder()
+                .setChunkCount(2)
+                .setScannedAt(1L)
+                .addDeclaredClasses(declared)
         assertEquals(200, post("static-baseline", firstOfTwoChunks.setResource(testRun).build()))
 
         assertTrue(neverHitReport().none { it.contains("OnlyInTests") })
         assertEquals(before, finalFlushLine())
         val neverLoaded = report(::printNeverLoadedReport)
         assertTrue(neverLoaded.none { it.contains("NeverLoadedFixture") || it.contains("INCOMPLETE SCAN") }, neverLoaded.joinToString("\n"))
+    }
+
+    @Test
+    fun `a class the sweep found loaded with no transformer is not never loaded`() {
+        val declared =
+            DeclaredClass
+                .newBuilder()
+                .setClassName("com.acme.sweep.LoadedInsideATransform")
+                .addMethods(DeclaredMethod.newBuilder().setMethodName("run").setMethodDescriptor("()V"))
+        val run = resource("run-sweep")
+
+        assertEquals(
+            200,
+            post(
+                "static-baseline",
+                StaticBaseline
+                    .newBuilder()
+                    .setResource(run)
+                    .setChunkCount(1)
+                    .setScannedAt(1L)
+                    .addDeclaredClasses(declared)
+                    .build(),
+            ),
+        )
+        assertEquals(
+            200,
+            post(
+                "manifest",
+                ProbeManifest
+                    .newBuilder()
+                    .setResource(run)
+                    .addUnreportedClasses(UnreportedClass.newBuilder().setClassName("com.acme.sweep.LoadedInsideATransform"))
+                    .build(),
+            ),
+        )
+
+        val neverLoaded = report(::printNeverLoadedReport)
+        assertTrue(neverLoaded.none { it.contains("LoadedInsideATransform") }, neverLoaded.joinToString("\n"))
     }
 
     @Test
@@ -302,8 +366,8 @@ class StubCollectorTest {
     }
 
     /**
-     * Server ADR 0031 folds a site into any never-hit method, not only a row: a lone constructor of
-     * a class with no finding is not listed, and neither is its code.
+     * A site folds into any never-hit method, not only a row: a lone constructor of a class with no
+     * finding is not listed, and neither is its code.
      */
     @Test
     fun `a site in a never-run constructor that is not a row leaves NEVER HIT and is counted apart`() {

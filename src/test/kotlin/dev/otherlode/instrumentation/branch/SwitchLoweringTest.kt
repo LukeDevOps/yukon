@@ -14,7 +14,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Proves each switch lowering ADR 0038 reads back to source cases, against real compiled fixtures:
+ * Proves each switch lowering the analyser reads back to source cases, against real compiled fixtures:
  * `SwitchJavaTarget.java`, `SwitchTarget.kt` and each Scala fixture module's `Switches.scala`.
  * Every shape was confirmed with `javap -c -l -p` on these fixtures first.
  */
@@ -256,6 +256,41 @@ class SwitchLoweringTest {
     }
 
     @Test
+    fun `kotlinc string when - the last check in each hash bucket lists no outcome only a hash collision can take`() {
+        val sites = kept(kotlin, "stringWhen")
+
+        // Aa and BB share a hash: Aa's not-equal side reaches BB's check, which a real "BB" takes.
+        // Every other not-equal side is reached only by a different string with the same hash.
+        assertEquals(
+            listOf(
+                listOf(BranchRole.TAKEN, BranchRole.FALL_THROUGH),
+                listOf(BranchRole.TAKEN),
+                listOf(BranchRole.TAKEN),
+                listOf(BranchRole.TAKEN),
+                listOf(BranchRole.FALL_THROUGH),
+            ),
+            sites.map { site -> site.outcomes.map { it.role } },
+        )
+        val open = sites.last()
+        assertEquals(
+            KeptBranchSite.firstBranchIndexes(kotlin.sites)[kotlin.sites.indexOf(open.site)] + 1,
+            open.outcomes.single().branchIndex,
+        )
+    }
+
+    @Test
+    fun `kotlinc string when under JaCoCo - the outcomes only a hash collision reaches still get no probe`() {
+        val instrumented =
+            org.jacoco.core.instr
+                .Instrumenter(
+                    org.jacoco.core.runtime
+                        .OfflineInstrumentationAccessGenerator(),
+                ).instrument(kotlinBytes(), "SwitchTarget")
+
+        assertEquals(listOf(2, 1, 1, 1, 1), kept(analysis(instrumented), "stringWhen").map { it.outcomes.size })
+    }
+
+    @Test
     fun `kotlinc nullable string when - the null check and the hash switch are dropped`() {
         assertEquals(2, dropped(kotlin, "stringNullable").size)
         assertEquals(
@@ -279,6 +314,8 @@ class SwitchLoweringTest {
             listOf("closed", "Aa", "BB", "done", "open").map { listOf(code("status == "), literal(it)) },
             kept(analysis, "stringMatch").map { it.site.condition },
         )
+        // scalac 2's hash-switch default is a goto of its own; "Aa" and "BB" share a bucket.
+        assertEquals(listOf(1, 2, 1, 1, 1), kept(analysis, "stringMatch").map { it.outcomes.size })
     }
 
     @Test
@@ -296,6 +333,7 @@ class SwitchLoweringTest {
             ),
             kept(analysis, "stringMatch").map { it.site.condition },
         )
+        assertEquals(listOf(1, 2, 1, 1, 1), kept(analysis, "stringMatch").map { it.outcomes.size })
     }
 
     @Test

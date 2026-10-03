@@ -5,8 +5,8 @@ import dev.otherlode.registry.HandlerRef
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * The forwarder table (ADR 0035). It maps a pass-through that a framework can report as a handler
- * to the one probed method it forwards to.
+ * The forwarder table. It maps a pass-through that a framework can report as a handler to the one
+ * probed method it forwards to.
  *
  * The method tier's analysis writes entries, and only for the functional interfaces in
  * [handlerInterfaces]. [RegistryResolver] reads them, so every endpoint module gets the collapse

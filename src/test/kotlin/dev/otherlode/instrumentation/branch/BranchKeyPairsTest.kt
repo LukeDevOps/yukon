@@ -19,7 +19,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 
 /**
- * Proves ADR 0031's "keeps or changes" rules against real v1/v2 fixture pairs under
+ * Proves the branch key's "keeps or changes" rules against real v1/v2 fixture pairs under
  * `com.example.target.keypairs`, one edit per pair. Each pair's two classes are renamed to one
  * common name before analysis, since the key includes the class name and a service's own class
  * never renames itself between releases.
@@ -40,6 +40,32 @@ class BranchKeyPairsTest {
             v2.branchIndexOf("second", outcome = 0),
             "first gained a conditional of its own, so second's slots shift down by its outcome count",
         )
+    }
+
+    // -- invokedynamic arguments ----------------------------------------------------------------
+
+    @Test
+    fun `a different constant in a string concatenation changes the key`() {
+        val (v1, v2) = keyedBuildsOf("StringConcatConstantEditV1", "StringConcatConstantEditV2")
+
+        assertNotNull(v1.keyOf("check", outcome = 0))
+        assertNotEquals(v1.keyOf("check", outcome = 0), v2.keyOf("check", outcome = 0))
+    }
+
+    @Test
+    fun `a method reference to a different method changes the key`() {
+        val (v1, v2) = keyedBuildsOf("MethodRefTargetEditJavaV1", "MethodRefTargetEditJavaV2", bytesOf = ::javaFixtureBytes)
+
+        assertNotNull(v1.keyOf("check", outcome = 0))
+        assertNotEquals(v1.keyOf("check", outcome = 0), v2.keyOf("check", outcome = 0))
+    }
+
+    @Test
+    fun `a lambda added to an earlier method keeps the key of a condition holding a lambda`() {
+        val (v1, v2) = keyedBuildsOf("LambdaAddedEarlierJavaV1", "LambdaAddedEarlierJavaV2", bytesOf = ::javaFixtureBytes)
+
+        assertNotNull(v1.keyOf("check", outcome = 0))
+        assertEquals(v1.keyOf("check", outcome = 0), v2.keyOf("check", outcome = 0))
     }
 
     // -- Statements with no conditionals added before the condition ------------------------------
@@ -173,7 +199,7 @@ class BranchKeyPairsTest {
         assertNotNull(v2.keyOf("classify", outcome = 3), "the new case 4 gets a key of its own")
     }
 
-    // -- A case added to a string or enum switch read back to its source cases (ADR 0038) ---------
+    // -- A case added to a string or enum switch read back to its source cases ---------------------
 
     @Test
     fun `a case added to a javac enum switch keeps every other case's key, though the map class moved from $1 to $2`() {

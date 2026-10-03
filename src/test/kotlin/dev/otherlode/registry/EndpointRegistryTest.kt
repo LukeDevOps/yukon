@@ -516,4 +516,80 @@ class EndpointRegistryTest {
         assertEquals(EndpointDiscoverySource.DISPATCH, result?.discoverySource)
         assertSame(result, registry.lookup(key))
     }
+
+    @Test
+    fun `recordDispatchIfUnowned treats a framework's any-verb endpoint on that template as owning every verb`() {
+        val registry = EndpointRegistry()
+        registry.register(key = Any(), framework = "spring-webmvc", verb = "*", verbatimTemplate = "/any")
+
+        assertNull(registry.recordDispatchIfUnowned(key = Any(), framework = "otel", verb = "GET", verbatimTemplate = "/any"))
+        assertEquals(1, registry.endpoints().size)
+    }
+
+    @Test
+    fun `recordDispatchIfUnowned treats a HEAD request as the GET endpoint a framework serves it from`() {
+        val registry = EndpointRegistry()
+        registry.register(key = Any(), framework = "spring-webmvc", verb = "GET", verbatimTemplate = "/users/{id}")
+
+        assertNull(registry.recordDispatchIfUnowned(key = Any(), framework = "otel", verb = "HEAD", verbatimTemplate = "/users/{id}"))
+        assertEquals(1, registry.endpoints().size)
+    }
+
+    /** A framework's route object: equal only to itself, like a Ktor node or a JDK `HttpContext`. */
+    private class RouteObject
+
+    @Test
+    fun `a framework route object is not kept alive by its binding, and its endpoint stays`() {
+        val registry = EndpointRegistry()
+        val collected = bindAndForget(registry)
+
+        awaitCollected(collected)
+        registry.register(key = "a-later-registration", framework = "test", verb = "GET", verbatimTemplate = "/later")
+
+        assertEquals(1, registry.boundKeyCount(), "only the later string key is still bound")
+        assertTrue(registry.endpoints().any { it.routeTemplate == "/gone" }, "the endpoint itself is kept")
+    }
+
+    @Test
+    fun `a key list anchored on a framework object resolves by value while it lives, and does not keep it alive`() {
+        val registry = EndpointRegistry()
+        val handler = RouteObject()
+        registry.register(key = listOf(handler, "/fn", "GET"), framework = "test", verb = "GET", verbatimTemplate = "/fn")
+
+        assertTrue(registry.lookup(java.util.List.of(handler, "/fn", "GET")) != null, "an equal list resolves")
+        assertNull(registry.lookup(listOf(RouteObject(), "/fn", "GET")), "a list naming another object does not")
+
+        val collected = bindListAndForget(registry)
+        awaitCollected(collected)
+        registry.register(key = "a-later-registration", framework = "test", verb = "GET", verbatimTemplate = "/later")
+        assertEquals(2, registry.boundKeyCount(), "the live list key and the later string key")
+    }
+
+    /** Binds a key list anchored on an object nothing else references and returns a weak reference to it. */
+    private fun bindListAndForget(registry: EndpointRegistry): java.lang.ref.WeakReference<Any> {
+        val handler = RouteObject()
+        registry.register(key = listOf(handler, "/other", "GET"), framework = "test", verb = "GET", verbatimTemplate = "/other")
+        return java.lang.ref.WeakReference(handler)
+    }
+
+    /** Binds a route object nothing else references and returns a weak reference to it. */
+    private fun bindAndForget(registry: EndpointRegistry): java.lang.ref.WeakReference<Any> {
+        val route = RouteObject()
+        registry.register(key = route, framework = "test", verb = "GET", verbatimTemplate = "/gone")
+        assertSame(registry.lookup(route), registry.lookup(route))
+        return java.lang.ref.WeakReference(route)
+    }
+
+    private fun awaitCollected(reference: java.lang.ref.WeakReference<*>) {
+        val deadline =
+            System.nanoTime() +
+                java.time.Duration
+                    .ofSeconds(10)
+                    .toNanos()
+        while (reference.get() != null) {
+            check(System.nanoTime() < deadline) { "the route object was never collected" }
+            System.gc()
+            Thread.sleep(10)
+        }
+    }
 }

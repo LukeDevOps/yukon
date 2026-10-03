@@ -33,18 +33,27 @@ private const val ADVICE_PACKAGE = "dev.otherlode.endpoints.springwebmvc"
 private const val MODULE_NAME = "spring-webmvc"
 
 /**
+ * Leads a functional route's dispatch key, `[FUNCTIONAL_KEY, template, verb]`, so it never equals
+ * an annotation-mapped route's two-element key. The key holds no handler: Spring wraps a filtered
+ * route's handler in a new function on every request, which no key holding it would ever match.
+ */
+private const val FUNCTIONAL_KEY = "fn"
+
+/**
  * Endpoint module for Spring MVC (`spring-webmvc`), covering Spring Framework 5.3, 6.x and 7.x
  * with one module. Every advice class binds only framework types Spring itself already passes
  * between its own methods, never a `javax`/`jakarta` servlet type, so nothing here needs a
  * per-major-version variant.
  *
  * `AbstractHandlerMethodMapping.registerHandlerMethod` is the registration hook: it runs once per
- * handler method as Spring builds its route table. `RequestMappingInfoHandlerMapping.handleMatch`
+ * handler method as Spring builds its route table. `registerMapping` is the second one, for a
+ * handler method registered in code. `RequestMappingInfoHandlerMapping.handleMatch`
  * is the dispatch point: it runs once per matched request, before the handler runs, with the
  * winning `RequestMappingInfo` already narrowed to the matched pattern and verb.
  *
- * A Spring Boot Actuator endpoint registers through a `RequestMappingInfoHandlerMapping` subclass,
- * so it is covered automatically. `AbstractUrlHandlerMapping` covers the URL-mapped side instead:
+ * A Spring Boot Actuator endpoint registers through `registerMapping` on a
+ * `RequestMappingInfoHandlerMapping` subclass, so it is declared there and counted by
+ * `handleMatch`. `AbstractUrlHandlerMapping` covers the URL-mapped side instead:
  * `SimpleUrlHandlerMapping`, `BeanNameUrlHandlerMapping`, and Spring Boot's static-resource and
  * webjars mappings all extend it, and its `registerHandler`/`buildPathExposingHandler` pair is
  * that hierarchy's own registration hook and dispatch point.
@@ -81,11 +90,16 @@ class SpringWebMvcModule : EndpointModule {
     ): DynamicType.Builder<*> =
         when (typeDescription.name) {
             HANDLER_METHOD_MAPPING -> {
-                builder.visit(
-                    advice
-                        .bind("$ADVICE_PACKAGE.RegisterHandlerMethodAdvice")
-                        .on(named<MethodDescription>("registerHandlerMethod").and(takesArguments(3))),
-                )
+                builder
+                    .visit(
+                        advice
+                            .bind("$ADVICE_PACKAGE.RegisterHandlerMethodAdvice")
+                            .on(named<MethodDescription>("registerHandlerMethod").and(takesArguments(3))),
+                    ).visit(
+                        advice
+                            .bind("$ADVICE_PACKAGE.RegisterMappingAdvice")
+                            .on(named<MethodDescription>("registerMapping").and(takesArguments(3))),
+                    )
             }
 
             REQUEST_MAPPING_HANDLER_MAPPING -> {
@@ -203,31 +217,36 @@ class SpringWebMvcModule : EndpointModule {
 
     /**
      * Registers one `route(predicate, handlerFunction)` call for every (prefix, alternative)
-     * combination, or logs once at INFO and registers nothing when [predicateResult] carries no
-     * path at all, or contained a predicate this walk could not interpret.
+     * combination. Inside a nest, an alternative with no path of its own takes the nest's path,
+     * which is the pattern Spring matches it under. Logs once at INFO and registers nothing when
+     * [predicateResult] contained a predicate this walk could not interpret, or carries no path
+     * and has no enclosing nest. Such a route is found at dispatch only if a path predicate
+     * matched on the way to it; one with no path anywhere is not tracked at all, since Spring
+     * records no pattern for it.
      */
     private fun registerRoute(
         predicateResult: PredicateResult,
         prefixes: Set<String>,
         handlerFunction: Any,
     ) {
-        if (predicateResult.unknown || predicateResult.alternatives.none { it.path != null }) {
+        val nested = prefixes != setOf("")
+        if (predicateResult.unknown || (!nested && predicateResult.alternatives.none { it.path != null })) {
             if (noPathPredicateLogged.compareAndSet(false, true)) {
                 log.log(
                     Level.INFO,
                     "otherlode: a $MODULE_NAME functional route had no path predicate this walk could resolve; " +
-                        "it will be discovered at dispatch instead",
+                        "it is counted only if a path predicate matched on the way to it",
                 )
             }
             return
         }
         val handler = handlerJoin(handlerFunction)
         for (alternative in predicateResult.alternatives) {
-            val path = alternative.path ?: continue
+            val path = alternative.path ?: if (nested) "" else continue
             val verb = alternative.verb ?: "*"
             for (prefix in prefixes) {
                 val template = joinPaths(prefix, path)
-                val key = listOf(handlerFunction, template, verb)
+                val key = listOf(FUNCTIONAL_KEY, template, verb)
                 OtherlodeEndpoints.register(
                     MODULE_NAME,
                     key,
@@ -253,8 +272,8 @@ class SpringWebMvcModule : EndpointModule {
      * The handler join for a functional route's `HandlerFunction`: the `handle` method Spring
      * invokes and the class that declares it, so a handler inheriting `handle` from a base class
      * joins to the probe on that base. A hidden class, spun for a lambda or a method reference,
-     * joins to the method the lambda calls, as [OtherlodeEndpoints.lambdaImplementation] recorded it
-     * (ADR 0035). When nothing was recorded it gets no join. A class the reflection cannot see
+     * joins to the method the lambda calls, as [OtherlodeEndpoints.lambdaImplementation] recorded it.
+     * When nothing was recorded it gets no join. A class the reflection cannot see
      * `handle` on is reported by name alone. `ServerRequest` is resolved through the handler's own
      * loader rather than named here, so this module never links against Spring.
      */
@@ -295,11 +314,11 @@ private val NEUTRAL = PredicateResult(setOf(Alternative(null, null)), unknown = 
  * A leaf predicate (`method`, `path`) pushes one [PredicateResult] onto a small operand stack;
  * `and`/`or` combine the two most recently pushed results into one, `endAnd` taking the Cartesian
  * product of their alternatives and `endOr` their union; `endNegate` discards its one operand and
- * pushes [NEUTRAL], treating a negated subtree as contributing nothing, per this module's own
- * design notes. Every other leaf (`pathExtension`, `header`, `param`, a 7.0-only `version`) is
- * neutral too: none of them narrow a route's identity. `unknown` pushes a result marked
- * unrecognisable, which propagates through any `and`/`or` it takes part in. One `accept` call
- * therefore always leaves exactly one result on the stack, which this function pops and returns.
+ * pushes [NEUTRAL], treating a negated subtree as contributing nothing, since it says what a route
+ * is not. Every other leaf (`pathExtension`, `header`, `param`, a 7.0-only `version`) is neutral
+ * too: none of them narrow a route's identity. `unknown` pushes a result marked unrecognisable, which propagates
+ * through any `and`/`or` it takes part in. One `accept` call leaves at most one result on the
+ * stack, which this function pops and returns; an empty stack reads as [NEUTRAL].
  */
 private fun walkPredicate(
     predicate: Any,
@@ -404,7 +423,7 @@ private fun combineAnd(
 private fun joinPaths(
     prefix: String,
     suffix: String,
-): String = "$prefix/$suffix".replace(Regex("/+"), "/")
+): String = if (suffix.isEmpty()) prefix else "$prefix/$suffix".replace(Regex("/+"), "/")
 
 private fun crossJoinPaths(
     outer: Set<String>,

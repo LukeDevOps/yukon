@@ -44,7 +44,7 @@ class KeyedBuild(
 
     /**
      * The branch key of each case of [methodName]'s one kept rebuilt switch, by the text of its
-     * label, and its default's key under `default`. See ADR 0038.
+     * label, and its default's key under `default`.
      */
     fun keysByLabel(methodName: String): Map<String, String?> {
         val site = sites.single { it.methodName == methodName && it.dropReason == null && it.caseLabels != null }

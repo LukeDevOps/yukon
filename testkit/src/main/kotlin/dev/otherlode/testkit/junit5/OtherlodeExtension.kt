@@ -11,7 +11,7 @@ import java.util.concurrent.TimeoutException
 
 /**
  * A JUnit 5 extension that starts one [OtherlodeTestCollector] for the life of the test JVM and
- * hands it to any test that asks for it. See ADR 0018 for the full design.
+ * hands it to any test that asks for it.
  *
  * This extension never self-attaches the agent: JUnit's own discovery can load test classes,
  * and the classes under test, before any extension runs, so the agent has to be attached with
@@ -39,9 +39,9 @@ import java.util.concurrent.TimeoutException
  *
  * The collector binds to the port named by the `otherlode.testkit.port` system property, defaulting
  * to 4319, the agent's own default `endpoint` port, so a `-javaagent` flag with no explicit
- * `endpoint` option works without further wiring. The agent always needs `includePackages`:
- * without it the agent refuses to start and no heartbeat ever arrives (ADR 0033). [beforeAll]
- * waits for the agent's first liveness heartbeat once per test JVM, with a timeout named by the
+ * `endpoint` option works without further wiring. The agent always needs `includePackages`: without
+ * it the agent refuses to start and no heartbeat ever arrives. [beforeAll] waits for the agent's
+ * first liveness heartbeat once per test JVM, with a timeout named by the
  * `otherlode.testkit.startupTimeoutSeconds` system property, defaulting to 15 seconds.
  */
 class OtherlodeExtension :
@@ -49,14 +49,7 @@ class OtherlodeExtension :
     ParameterResolver {
     override fun beforeAll(context: ExtensionContext) {
         val store = context.root.getStore(NAMESPACE)
-        val collector =
-            store
-                .getOrComputeIfAbsent(
-                    COLLECTOR_KEY,
-                    { CollectorHolder(startCollector()) },
-                    CollectorHolder::class.java,
-                ).collector
-        sharedCollector = collector
+        val collector = collectorIn(context)
 
         val heartbeatSeen = store.get(HEARTBEAT_SEEN_KEY, Boolean::class.javaObjectType) ?: false
         if (heartbeatSeen) return
@@ -74,10 +67,29 @@ class OtherlodeExtension :
         extensionContext: ExtensionContext,
     ): Boolean = parameterContext.parameter.type == OtherlodeTestCollector::class.java
 
+    /**
+     * Starts the collector in the root store if [beforeAll] has not yet: under
+     * `@TestInstance(PER_CLASS)` JUnit resolves a constructor parameter before it calls
+     * [beforeAll].
+     */
     override fun resolveParameter(
         parameterContext: ParameterContext,
         extensionContext: ExtensionContext,
-    ): Any = collector()
+    ): Any = collectorIn(extensionContext)
+
+    /** The test JVM's one collector, kept in the root store of [context] and started on first use. */
+    private fun collectorIn(context: ExtensionContext): OtherlodeTestCollector {
+        val collector =
+            context.root
+                .getStore(NAMESPACE)
+                .getOrComputeIfAbsent(
+                    COLLECTOR_KEY,
+                    { CollectorHolder(startCollector()) },
+                    CollectorHolder::class.java,
+                ).collector
+        sharedCollector = collector
+        return collector
+    }
 
     /**
      * What the root store holds instead of the collector itself. [OtherlodeTestCollector] is
@@ -125,7 +137,7 @@ class OtherlodeExtension :
         private fun startCollector(): OtherlodeTestCollector {
             val port = resolvePort()
             return try {
-                OtherlodeTestCollector.start(port)
+                OtherlodeTestCollector.startForOneJvm(port)
             } catch (e: IOException) {
                 throw IllegalStateException(
                     "otherlode-testkit: could not bind the collector to port $port. Another process may already be " +

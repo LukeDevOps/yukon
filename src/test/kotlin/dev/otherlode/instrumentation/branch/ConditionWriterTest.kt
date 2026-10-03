@@ -9,7 +9,7 @@ import kotlin.test.assertEquals
 /**
  * Proves each condition the writer produces against real compiled fixtures: `ConditionTarget.kt`,
  * `ConditionJavaTarget.java` and each Scala fixture module's `Conditions.scala`. Every shape read
- * back to source here was confirmed with `javap -c -l -p` on these fixtures first. See ADR 0037.
+ * back to source here was confirmed with `javap -c -l -p` on these fixtures first.
  */
 class ConditionWriterTest {
     private fun code(text: String) = ConditionPart(ConditionPartKind.CODE, text)
@@ -347,7 +347,7 @@ class ConditionWriterTest {
         val result = ConditionFingerprinter.analyze(javaBytes("ConditionJavaTarget")).getValue("patternSwitch" to "(Ljava/lang/Object;)I")
 
         assertEquals(emptyList(), result.conditionOf(0), "the typeSwitch index alone is unknown")
-        assertEquals(listOf(code("o")), java("patternSwitch"), "the analyser reads the subject past the lowering, per ADR 0038")
+        assertEquals(listOf(code("o")), java("patternSwitch"), "the analyser reads the subject past the lowering")
     }
 
     @Test

@@ -12,7 +12,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * Proves [BranchSiteAnalyzer]'s call-edge and supertype recording (ADR 0024): raw candidates from
+ * Proves [BranchSiteAnalyzer]'s call-edge and supertype recording: raw candidates from
  * `invokestatic`/`invokevirtual`/`invokespecial`/`invokeinterface` and `invokedynamic`, the
  * same-class virtual override, the in-scope filter, self-edge dropping, deduplication, and both
  * same-class and cross-class `$default` pass-through resolution.
@@ -230,7 +230,7 @@ class CallEdgeAnalyzerTest {
         // branch sites and default sites, read straight off the bytecode -- stays identical, since
         // neither depends on includePackages/excludePackages. Method signatures are unaffected the
         // same way, since they come from ByteBuddy's own declaredMethods filter, not from this
-        // analysis at all. See ADR 0024.
+        // analysis at all.
         assertEquals(wideScope.sites, narrowScope.sites)
         assertEquals(wideScope.defaultSites, narrowScope.defaultSites)
     }

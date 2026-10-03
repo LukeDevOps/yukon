@@ -86,8 +86,7 @@ class AdviceBinder(
 /**
  * Rewrites every internal-name reference in [originalBytes] whose prefix is a key in
  * [remapPrefixes], replacing that prefix with its value. Prefixes are tried longest first, so a
- * shorter prefix can never shadow a longer one it is itself a prefix of, even though none of the
- * prefixes this project configures actually overlaps that way today.
+ * shorter prefix can never shadow a longer one it is itself a prefix of.
  *
  * `internal` so [AdviceBinderTest] can drive it directly with a small fixture class's bytes and
  * check the rewritten constant pool, without needing the real relocated library on the test

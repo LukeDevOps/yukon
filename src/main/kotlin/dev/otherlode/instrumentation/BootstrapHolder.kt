@@ -12,7 +12,8 @@ class BootstrapInstallException(
 ) : RuntimeException(message, cause)
 
 /**
- * Puts the `:bootstrap` module's one class onto the target JVM's bootstrap classloader.
+ * Puts the `:bootstrap` module's classes, the probe-array holder and the endpoint seam, onto the
+ * target JVM's bootstrap classloader.
  *
  * The holder jar ships embedded in the agent jar as a resource, under a name that does not end
  * in `.jar` because the shadow plugin would otherwise explode it into loose classes at build

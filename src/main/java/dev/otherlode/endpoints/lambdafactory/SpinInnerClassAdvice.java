@@ -8,7 +8,8 @@ import net.bytebuddy.asm.Advice;
  * Woven onto the exit of {@code java.lang.invoke.InnerClassLambdaMetafactory.spinInnerClass()},
  * which returns the hidden class the JDK spins for one lambda or method reference. It hands that
  * class, the functional interface it implements, and the method it calls to {@link
- * OtherlodeEndpoints#recordLambdaClass}. See ADR 0035.
+ * OtherlodeEndpoints#recordLambdaClass}, so an endpoint whose handler is a lambda can be joined to
+ * the method that holds its code.
  *
  * <p>{@code interfaceClass} and {@code implInfo} are fields the factory inherits from {@code
  * AbstractValidatingLambdaMetafactory} in the same package. {@code LambdaFactoryShape.JDK} names

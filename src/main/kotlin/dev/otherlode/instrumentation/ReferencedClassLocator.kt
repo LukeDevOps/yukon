@@ -5,7 +5,7 @@ import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Says where a class the adopter's code references lives, from the referencing class's own loader,
- * at transform time. See ADR 0030.
+ * at transform time.
  *
  * It asks the loader for the class file as a resource, which reads and never loads, and sorts the
  * answer by [classify]. A null loader, the bootstrap loader, is asked through the platform loader,
@@ -32,7 +32,8 @@ internal class ReferencedClassLocator(
 
     /**
      * Where [className] (dotted) lives as [classLoader] sees it, or null when the reference is to be
-     * dropped: a JDK class, or a class read from a directory, which is the adopter's own.
+     * dropped: a JDK class, any name in a `java` package, or a class read from a directory, which is
+     * the adopter's own.
      */
     fun locate(
         className: String,
@@ -58,7 +59,9 @@ internal class ReferencedClassLocator(
             } catch (_: Exception) {
                 null
             }
-        if (url == null) return Found(null)
+        // Only the JDK may define a class in a java package, so a java name nothing provides is
+        // one an agent injected at runtime, such as JaCoCo's java.lang.$JaCoCo, and no dependency.
+        if (url == null) return if (className.startsWith("java.")) null else Found(null)
         if (url.startsWith("jrt:", ignoreCase = true)) return null
         return classify(url, platformClasses.provides(className))
     }

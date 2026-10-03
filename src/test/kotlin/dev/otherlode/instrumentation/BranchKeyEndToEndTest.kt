@@ -15,7 +15,7 @@ import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 
 /**
- * Proves ADR 0031's key end to end: loads `EarlierMethodEditV1` and `EarlierMethodEditV2` through
+ * Proves the branch key end to end: loads `EarlierMethodEditV1` and `EarlierMethodEditV2` through
  * the real transform, both under one common class name, and shows that `second`'s branch key
  * survives the edit while its `branchIndex` does not.
  *

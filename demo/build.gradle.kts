@@ -198,7 +198,7 @@ class StackService(
     val version: String,
     namespace: String?,
 ) {
-    // The server's path for the service: under its namespace when one is named (server ADR 0038).
+    // The server's path for the service: under its namespace when one is named.
     val path: String =
         namespace?.let {
             "/api/v1/namespaces/${URLEncoder.encode(it, Charsets.UTF_8).replace("+", "%20")}/services/$name"
@@ -509,8 +509,8 @@ fun awaitShutdownFlush(
     )
 }
 
-// Server ADR 0030's condition parts as one line: code as sent, a string
-// literal quoted, a placeholder as an ellipsis.
+// A site row's condition parts as one line: code as sent, a string literal
+// quoted, a placeholder as an ellipsis.
 fun conditionText(parts: List<*>): String =
     parts.joinToString("") { part ->
         val p = part as Map<*, *>
@@ -522,7 +522,7 @@ fun conditionText(parts: List<*>): String =
     }
 
 // The result a never-hit outcome did not reach. The agent writes a condition
-// as its fall-through side reads it (ADR 0037).
+// as its fall-through side reads it.
 fun neverHappened(outcome: Map<*, *>): String =
     when (outcome["role"]) {
         "fall_through" -> "was never true"
@@ -560,9 +560,9 @@ fun siteFindings(row: Map<*, *>): List<String> {
         .map { "`$condition` ${neverHappened(it)}, ${guardedText(it)}" }
 }
 
-// A constructor's name as source reads it (server ADR 0034): `constructor(...)`
-// with its parameters' simple type names, read from the JVM descriptor. The stub
-// collector prints constructors the same way.
+// A constructor's name as source reads it: `constructor(...)` with its
+// parameters' simple type names, read from the JVM descriptor. The stub collector
+// prints constructors the same way.
 fun constructorText(descriptor: String): String {
     val primitives =
         mapOf('Z' to "boolean", 'B' to "byte", 'C' to "char", 'S' to "short", 'I' to "int", 'J' to "long", 'F' to "float", 'D' to "double")
@@ -587,8 +587,8 @@ fun constructorText(descriptor: String): String {
     return "constructor(${types.joinToString(", ")})"
 }
 
-// The source file a row's class reads as (server ADR 0035): set for a file facade or a
-// multi-file part that has one, null for every other kind. A server that sends no kotlin_kind
+// The source file a row's class reads as: set for a file facade or a multi-file
+// part that has one, null for every other kind. A server that sends no kotlin_kind
 // gives null, so the row reads by its JVM name.
 fun sourceFileNaming(row: Map<*, *>): String? {
     val sourceFile = (row["source_file"] as? String).orEmpty()
@@ -625,7 +625,7 @@ fun methodText(
 // "never initialised".
 fun findingText(finding: Any?): String = (finding as String).replace('_', ' ')
 
-// A cluster's root as one line (server ADRs 0032 and 0034). An untaken outcome
+// A cluster's root as one line. An untaken outcome
 // reads as its site row does, then the method that holds it. A root reached
 // from hit, and a class root that a method with hits calls, name those callers.
 fun clusterRootText(root: Map<*, *>): String {

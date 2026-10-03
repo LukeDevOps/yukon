@@ -14,7 +14,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * Proves inline marking (ADR 0022) through the real transform pipeline, on the Kotlin
+ * Proves inline marking through the real transform pipeline, on the Kotlin
  * `InlineTarget` fixture, rather than only through [dev.otherlode.instrumentation.branch.BranchSiteAnalyzerTest]'s
  * direct bytecode checks.
  */

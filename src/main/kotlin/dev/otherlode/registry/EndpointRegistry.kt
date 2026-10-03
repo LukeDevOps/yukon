@@ -5,6 +5,8 @@ import dev.otherlode.export.EndpointDelta
 import dev.otherlode.export.EndpointDiscoverySource
 import dev.otherlode.export.EndpointLocation
 import java.lang.System.Logger.Level
+import java.lang.ref.ReferenceQueue
+import java.lang.ref.WeakReference
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -20,20 +22,28 @@ data class HandlerRef(
     val descriptor: String? = null,
 )
 
+/** Stands in for the route object an [EndpointRegistry] key list holds, once that object is held apart. */
+private val ANCHOR = Any()
+
 /**
  * Tracks one probe per HTTP endpoint, counted at the point a framework matches a request to it,
- * before the handler runs. See ADR 0017 for why endpoints need their own probe: a method probe
- * alone cannot say "GET /promo was never served", since a handler can back two endpoints, be a
- * lambda the framework invokes through a hidden class, or live outside `includePackages`.
+ * before the handler runs. Endpoints need their own probe because a method probe alone cannot say
+ * "GET /promo was never served", since a handler can back two endpoints, be a lambda the framework
+ * invokes through a hidden class, or live outside `includePackages`.
  *
  * Identity is `(verb, normalised route template)`, computed by [RouteTemplateNormalizer]. Two
  * registrations that normalise to the same identity, even from different framework objects, are
  * one endpoint with one [EndpointEntry.endpointId] and one count.
  *
- * A framework module also supplies one or more dispatch keys: arbitrary objects, compared by
- * `equals`/`hashCode`, that identify the framework's own route object (a Spring `HandlerMethod`,
- * a Ktor route node, a JDK `HttpContext`). [lookup] resolves a key to its entry on the request
- * path, so normalisation runs once per endpoint rather than once per request.
+ * A framework module also supplies one or more dispatch keys that identify the framework's own
+ * route (a Ktor route node, a JDK `HttpContext`, a list of a Spring pattern and verb). [lookup]
+ * resolves a key to its entry on the request path, so normalisation runs once per endpoint rather
+ * than once per request. A key made of values (a string, or a list of strings) is compared by
+ * `equals`. Any other key object is a framework's own route object: it is compared by identity
+ * and held weakly, so a routing tree a test or a devtools restart throws away is not kept alive
+ * by its bindings. A list holding one such object beside values (Spring's functional key) is
+ * held weakly on that object and compared by value otherwise. A key whose object was collected
+ * is unbound; its endpoint stays.
  *
  * Follows the same snapshot pattern as [ProbeRegistry]: [computeDeltas]/[advanceDeltas] and
  * [computeManifestEntries]/[advanceManifest] stage state onto the returned snapshot rather than
@@ -111,7 +121,6 @@ class EndpointRegistry {
 
         internal var firstSeenAt: Long = 0
 
-        /** Tracks whether the one-time decrease warning has already been logged for this entry. */
         internal var decreaseWarned: Boolean = false
 
         /** Sequence number of the newest [DeltaSnapshot] applied to [lastSent]; see [advanceDeltas]. */
@@ -150,16 +159,105 @@ class EndpointRegistry {
 
     private val entriesByIdentity = ConcurrentHashMap<Identity, EndpointEntry>()
     private val keyToEntry = ConcurrentHashMap<Any, EndpointEntry>()
+
+    /** Where a route object's [WeakRouteKey] is queued once the object is collected. */
+    private val collectedKeys = ReferenceQueue<Any>()
     private val disabledModulesByName = ConcurrentHashMap<String, DisabledModuleEntry>()
     private val nextEndpointId = AtomicInteger(0)
     private val nextDeltaSequence = AtomicLong(0)
 
     /**
      * Resolves a dispatch key to its entry. This is the hot-path lookup a dispatch hook calls on
-     * every request: one [ConcurrentHashMap.get], no allocation, null when [key] is not bound to
-     * any entry yet.
+     * every request: one [ConcurrentHashMap.get], null when [key] is not bound to any entry yet.
+     * A value key is looked up as it is; a route object key costs one small wrapper allocation.
      */
-    fun lookup(key: Any): EndpointEntry? = keyToEntry[key]
+    fun lookup(key: Any): EndpointEntry? = keyToEntry[lookupKeyOf(key)]
+
+    /**
+     * Binds [key] to [entry], first unbinding every key whose route object was collected. Runs on
+     * registration and dispatch discovery, never on the per-request path.
+     */
+    private fun bind(
+        key: Any,
+        entry: EndpointEntry,
+    ) {
+        while (true) {
+            val collected = collectedKeys.poll() as? WeakRouteKey ?: break
+            collected.mapKey?.let { keyToEntry.remove(it) }
+        }
+        keyToEntry[storedKeyOf(key)] = entry
+    }
+
+    /** [key] as [keyToEntry] stores it: values as they are, a route object held weakly. */
+    private fun storedKeyOf(key: Any): Any {
+        if (isValue(key)) return key
+        if (key is List<*>) {
+            val anchor = key.singleOrNull { !isValue(it) } ?: return key
+            val weak = WeakRouteKey(anchor, collectedKeys)
+            return AnchoredKey(weak, key.map { if (it === anchor) ANCHOR else it }).also { weak.mapKey = it }
+        }
+        return WeakRouteKey(key, collectedKeys).also { it.mapKey = it }
+    }
+
+    /** [key] as a lookup in [keyToEntry] matches it, without a weak reference. */
+    private fun lookupKeyOf(key: Any): Any {
+        if (isValue(key)) return key
+        if (key is List<*>) {
+            val anchor = key.singleOrNull { !isValue(it) } ?: return key
+            return AnchoredKey(StrongRouteKey(anchor), key.map { if (it === anchor) ANCHOR else it })
+        }
+        return StrongRouteKey(key)
+    }
+
+    private fun isValue(key: Any?): Boolean =
+        key == null || key is String || key is Number || key is Boolean || key is Char || key is Enum<*> ||
+            (key is List<*> && key.all(::isValue))
+
+    /** A route object, compared by identity. [WeakRouteKey] stores one and [StrongRouteKey] looks one up; they compare equal. */
+    private interface RouteKey {
+        val route: Any?
+        val hash: Int
+    }
+
+    private class WeakRouteKey(
+        route: Any,
+        queue: ReferenceQueue<Any>,
+    ) : WeakReference<Any>(route, queue),
+        RouteKey {
+        override val hash: Int = System.identityHashCode(route)
+        override val route: Any? get() = get()
+
+        /** The [keyToEntry] key this reference is part of, removed once the route is collected. */
+        @Volatile
+        var mapKey: Any? = null
+
+        override fun hashCode(): Int = hash
+
+        override fun equals(other: Any?): Boolean = other === this || (other is RouteKey && route != null && route === other.route)
+    }
+
+    private class StrongRouteKey(
+        override val route: Any,
+    ) : RouteKey {
+        override val hash: Int = System.identityHashCode(route)
+
+        override fun hashCode(): Int = hash
+
+        override fun equals(other: Any?): Boolean = other is RouteKey && route === other.route
+    }
+
+    /** A key list with its one route object taken out as [anchor] and replaced by [ANCHOR] in [values]. */
+    private class AnchoredKey(
+        val anchor: RouteKey,
+        val values: List<Any?>,
+    ) {
+        override fun hashCode(): Int = 31 * anchor.hashCode() + values.hashCode()
+
+        override fun equals(other: Any?): Boolean = other is AnchoredKey && anchor == other.anchor && values == other.values
+    }
+
+    /** How many dispatch keys are bound to an entry, which a test reads to check keys do not pile up per request. */
+    fun boundKeyCount(): Int = keyToEntry.size
 
     /**
      * Records an endpoint from a framework's own registration hook (Spring's handler-method
@@ -182,7 +280,7 @@ class EndpointRegistry {
         handler: HandlerRef? = null,
     ): EndpointEntry {
         val entry = findOrCreate(framework, verb, verbatimTemplate, contextPath, EndpointDiscoverySource.REGISTRATION)
-        keyToEntry[key] = entry
+        bind(key, entry)
         upgradeDiscoverySource(entry, EndpointDiscoverySource.REGISTRATION)
         if (handler != null) attachHandler(entry, handler)
         return entry
@@ -193,9 +291,8 @@ class EndpointRegistry {
      * resolve. Finds or creates the entry for the normalised identity, marking a newly created
      * one as discovered by dispatch, and binds [key] to it.
      *
-     * [handlerClass] is attached only when the entry has no handler join yet, since a dispatch
-     * only ever hands over a class, never a method; a fuller join a registration hook already
-     * recorded is never replaced by this weaker one.
+     * [handlerClass] is attached the way [attachHandler] attaches any join: it never replaces a
+     * join that names a method, so a registration hook's fuller join survives this class-only one.
      *
      * The caller calls [EndpointEntry.hit] itself once this returns; this method only resolves
      * the entry.
@@ -209,7 +306,7 @@ class EndpointRegistry {
         handlerClass: String? = null,
     ): EndpointEntry {
         val entry = findOrCreate(framework, verb, verbatimTemplate, contextPath, EndpointDiscoverySource.DISPATCH)
-        keyToEntry[key] = entry
+        bind(key, entry)
         if (handlerClass != null) attachHandler(entry, HandlerRef(handlerClass))
         return entry
     }
@@ -217,11 +314,16 @@ class EndpointRegistry {
     /**
      * Like [recordDispatch], but for a route bridge module that reads an identity another
      * instrumentation layer already resolved, rather than one it matched itself: the identity
-     * might belong to an endpoint a framework module already owns. When an entry for the
-     * normalised identity already exists under a different [framework], this binds nothing and
-     * returns null, so the caller counts nothing and the other module's entry is left untouched.
-     * When the entry exists under the same [framework], or does not exist yet, this behaves
-     * exactly like [recordDispatch].
+     * might belong to an endpoint a framework module already owns. When a different
+     * [framework] owns the normalised identity, this binds nothing and returns null, so the
+     * caller counts nothing and the other module's entry is left untouched. A framework also owns
+     * every verb on a template it serves with verb `*`, and a `HEAD` request on a template whose
+     * `GET` endpoint it owns, since frameworks answer `HEAD` from the `GET` handler. Otherwise
+     * this behaves exactly like [recordDispatch].
+     *
+     * A servlet context path still slips past this check: OpenTelemetry's route includes it and a
+     * framework module's identity does not, so the bridge records a second endpoint for such a
+     * route.
      *
      * The ownership check and the eventual creation are not one atomic step: a second thread
      * racing to create the same identity under a different framework between the two could still
@@ -238,8 +340,9 @@ class EndpointRegistry {
         handlerClass: String? = null,
     ): EndpointEntry? {
         val identity = identityOf(verb, verbatimTemplate, contextPath)
-        val existing = entriesByIdentity[identity]
-        if (existing != null && existing.framework != framework) return null
+        val owners = mutableListOf(identity, identity.copy(verb = "*"))
+        if (identity.verb == "HEAD") owners += identity.copy(verb = "GET")
+        if (owners.any { entriesByIdentity[it]?.framework.let { owner -> owner != null && owner != framework } }) return null
         return recordDispatch(key, framework, verb, verbatimTemplate, contextPath, handlerClass)
     }
 

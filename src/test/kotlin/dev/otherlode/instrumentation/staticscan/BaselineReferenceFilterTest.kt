@@ -28,7 +28,7 @@ import kotlin.test.assertTrue
 
 /**
  * Pins how the static baseline's references are filtered and mapped without a defining loader,
- * and how the publisher waits for the dependency listing first. See ADR 0030.
+ * and how the publisher waits for the dependency listing first.
  */
 class BaselineReferenceFilterTest {
     @TempDir

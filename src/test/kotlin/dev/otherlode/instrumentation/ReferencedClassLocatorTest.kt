@@ -14,7 +14,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/** Pins how [ReferencedClassLocator] reads where a referenced class lives, without loading it. See ADR 0030. */
+/** Pins how [ReferencedClassLocator] reads where a referenced class lives, without loading it. */
 class ReferencedClassLocatorTest {
     private val tempDir: Path = createTempDirectory("otherlode-locator")
 
@@ -64,6 +64,14 @@ class ReferencedClassLocatorTest {
         val loader = URLClassLoader(emptyArray(), ClassLoader.getPlatformClassLoader())
 
         assertEquals(Found(null), ReferencedClassLocator().locate("org.acme.Missing", loader))
+    }
+
+    @Test
+    fun `a java name no loader can find is dropped, as one an agent defined in the JDK's packages`() {
+        val loader = URLClassLoader(emptyArray(), ClassLoader.getPlatformClassLoader())
+
+        // JaCoCo defines its runtime as java.lang.$JaCoCo, with no class file anywhere.
+        assertNull(ReferencedClassLocator().locate("java.lang.\$JaCoCo", loader))
     }
 
     @Test

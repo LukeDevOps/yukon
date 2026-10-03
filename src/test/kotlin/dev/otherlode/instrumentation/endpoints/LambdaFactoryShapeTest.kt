@@ -9,7 +9,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * Pins the check that decides whether the lambda factory hook (ADR 0035) installs.
+ * Pins the check that decides whether the lambda factory hook installs.
  *
  * The first test is the one that fails when a JDK renames a member the hook reads, since CI runs
  * this suite on every JDK in its matrix. The rest prove that each kind of mismatch is caught and

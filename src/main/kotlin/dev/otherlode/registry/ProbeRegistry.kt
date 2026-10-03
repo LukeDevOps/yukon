@@ -74,16 +74,14 @@ import java.util.concurrent.atomic.AtomicLong
  * [dev.otherlode.Agent.premain] runs, so restarting the process
  * always starts every count at zero regardless of this key. Long-running,
  * cross-restart visibility is the collector's job: it aggregates deltas
- * from every `service.instance.id` a service has ever reported, over time,
- * as described in the design notes for the export payloads.
+ * from every `service.instance.id` a service has ever reported, over time.
  *
  * @property confirmsDefinitions Switches the whole confirmation mechanism on: [computeManifestDeltas]
  * and [manifest] withhold a class's probe locations and its [ClassLocation] and [ClassReferences] records until the
  * class is confirmed defined, by a probe count above zero or a name [confirmFrom] is told the JVM
  * has loaded, and [confirmFrom] itself does the tracking. False leaves all of it inert, so a
  * caller that wires a sweep to a registry that does not withhold cannot be told a class's probes
- * were withheld when they were published. Internal wiring, not an adopter-facing option. See
- * ADR 0028.
+ * were withheld when they were published. Internal wiring, not an adopter-facing option.
  */
 open class ProbeRegistry(
     private val confirmsDefinitions: Boolean = false,
@@ -117,7 +115,6 @@ open class ProbeRegistry(
         var lastAppliedSequence: Long = 0
         val firstSeenAt: LongArray = LongArray(counts.size)
 
-        /** Tracks which probes have already logged the one-time decrease warning. */
         val decreaseWarned: BooleanArray = BooleanArray(counts.size)
         var manifestIncluded: Boolean = false
 
@@ -188,21 +185,20 @@ open class ProbeRegistry(
      *
      * [superClassName] and [interfaceNames] are the class's supertypes, dotted, read from its
      * class header. They travel with the class on the manifest in its [ClassLocation] record so a
-     * collector can widen a virtual [dev.otherlode.export.CallEdge] to every override
-     * it knows about. See ADR 0024. They play no part in the registry key or the probe-layout
-     * hash: a class's supertypes changing what a call resolves to at the collector never changes
-     * which array slot a probe hit increments.
+     * collector can widen a virtual [dev.otherlode.export.CallEdge] to every override it knows
+     * about. They play no part in the registry key or the probe-layout hash: a class's supertypes
+     * changing what a call resolves to at the collector never changes which array slot a probe hit
+     * increments.
      *
      * [sourceFile] is the class file's `SourceFile` attribute as it appears, or null when it has
      * none. [bodyKind] and [sourceName] say what kind of body class it is and, for a local class,
      * the name the source gave it. All three travel in the same [ClassLocation] record and, like
-     * the supertypes, play no part in the key or the hash. See ADR 0034. [kotlinKind] is the kind
-     * kotlinc gives the class in its `kotlin.Metadata`, and travels the same way (ADR 0041).
+     * the supertypes, play no part in the key or the hash. [kotlinKind] is the kind kotlinc gives
+     * the class in its `kotlin.Metadata`, and travels the same way.
      *
      * [classReferences] are the class's own out-of-scope references outside any probed method,
-     * dotted (ADR 0030). They travel as one [ClassReferences] record, staged, withheld and committed
-     * with the class exactly as its supertypes are, and like them play no part in the key or the
-     * hash.
+     * dotted. They travel as one [ClassReferences] record, staged, withheld and committed with the
+     * class exactly as its supertypes are, and like them play no part in the key or the hash.
      *
      * `open` only so a test can observe what gets committed, which is how the
      * transform-failure path is pinned.
@@ -268,7 +264,7 @@ open class ProbeRegistry(
     /**
      * Of [candidates], the names this registry has never heard of: not registered, not recorded
      * as skipped, and not recorded as having nothing to probe. That remainder is the definition
-     * of an unreported class. See ADR 0027.
+     * of an unreported class.
      *
      * Takes the whole candidate set rather than answering one name at a time, so the registered
      * names are collected once per sweep instead of once per loaded class. A membership test per
@@ -370,8 +366,6 @@ open class ProbeRegistry(
      * A class already confirmed, or already withheld for good, is left alone. A registry that
      * does not withhold tracks nothing and returns nothing: the names this returns are logged as
      * having had their probes withheld, which would not be true.
-     *
-     * See ADR 0028.
      */
     open fun confirmFrom(loadedClassNames: Set<String>): List<String> {
         if (!confirmsDefinitions) return emptyList()
@@ -560,7 +554,8 @@ open class ProbeRegistry(
     }
 
     /**
-     * Sent once per (service, version) so the collector can resolve probe IDs to source.
+     * A full manifest of every registered class, ignoring what was already delivered. The agent
+     * sends [computeManifestDeltas] instead; this is for a test.
      *
      * [resource] names the instance and run the manifest's `class_id` values belong to: this
      * registry assigns them in its own load order, so a collector must key on both to avoid
@@ -568,7 +563,7 @@ open class ProbeRegistry(
      * on [dev.otherlode.export.ProbeManifest].
      */
     fun manifest(resource: ResourceAttributes): ProbeManifest {
-        // One filtered list feeds both the locations and the supertype records, so a withheld
+        // One filtered list feeds both the locations and the class location records, so a withheld
         // class cannot appear in one and not the other.
         val published = entriesByKey.values.filter { !confirmsDefinitions || isConfirmed(it) }
         val locations =
@@ -623,7 +618,6 @@ open class ProbeRegistry(
         )
     }
 
-    /** [entry]'s [ClassLocation] record. */
     private fun classLocationOf(entry: ClassEntry): ClassLocation =
         ClassLocation(
             entry.classId,
@@ -662,10 +656,10 @@ open class ProbeRegistry(
 
     /**
      * Like [computeManifestDelta], but splits the not-yet-sent classes into chunks of at most
-     * [maxEntriesPerChunk] entries each. A skipped class counts as one entry. A registered class
-     * counts as its probe locations, plus its probes' total call-edge and referenced-class count,
-     * plus one for its own [ClassLocation] record, plus the names in its [ClassReferences]
-     * record, since all of it is staged and committed together. The first
+     * [maxEntriesPerChunk] entries each. A skipped or unreported class counts as one entry. A
+     * registered class counts as its probe locations, plus its probes' call edges, referenced
+     * classes and branch-site weight, plus one for its own [ClassLocation] record, plus the names in
+     * its [ClassReferences] record, since all of it is staged and committed together. The first
      * manifest after a busy startup can otherwise carry every probe in the app in one POST.
      *
      * Classes are never split across chunks, so [advanceManifestBaseline] on one chunk marks
@@ -721,10 +715,6 @@ open class ProbeRegistry(
         for (entry in entriesByKey.values) {
             if (entry.manifestIncluded) continue
             if (confirmsDefinitions && !isConfirmed(entry)) continue
-            // A class's weight is its probe count, plus its total call-edge, referenced-class and
-            // branch-site weight, plus one for its own ClassLocation record, plus its class-level
-            // references: all of it is staged and committed together, so a class with many edges,
-            // references or sites seals a chunk earlier than one without.
             val weight =
                 entry.probes.size +
                     entry.probes.sumOf { meta ->

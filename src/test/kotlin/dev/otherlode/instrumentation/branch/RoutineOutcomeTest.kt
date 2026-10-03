@@ -5,6 +5,8 @@ import dev.otherlode.export.RoutineKind.FINALLY_COPY
 import dev.otherlode.export.RoutineKind.NONE
 import dev.otherlode.export.RoutineKind.NULL_DEFAULT
 import dev.otherlode.export.RoutineKind.THROW_ONLY
+import net.bytebuddy.jar.asm.ClassReader
+import net.bytebuddy.jar.asm.ClassVisitor
 import net.bytebuddy.jar.asm.ClassWriter
 import net.bytebuddy.jar.asm.Label
 import net.bytebuddy.jar.asm.MethodVisitor
@@ -12,9 +14,10 @@ import net.bytebuddy.jar.asm.Opcodes
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 /**
- * Proves each routine kind ADR 0046 names, and each shape it leaves as a finding, against real
+ * Proves each routine kind, and each shape that stays a finding, against real
  * compiled fixtures: `RoutineTarget.kt` and `RoutineJavaTarget.java`. Every shape was confirmed
  * with `javap -c -p` on these fixtures first.
  *
@@ -57,6 +60,11 @@ class RoutineOutcomeTest {
         // kotlinc tests `ifnonnull`, so the fall-through is the null side.
         assertEquals(listOf(listOf(NONE, NULL_DEFAULT)), kinds(kotlin, "elvisConstant"))
         assertEquals(listOf(listOf(NONE, NULL_DEFAULT)), kinds(kotlin, "elvisReturn"))
+    }
+
+    @Test
+    fun `a null side that increments a counter is not a null default`() {
+        assertEquals(listOf(listOf(NONE, NONE), listOf(NONE, NONE)), kinds(kotlin, "countMissing"))
     }
 
     @Test
@@ -107,6 +115,91 @@ class RoutineOutcomeTest {
     fun `a finally body's exception-path copy is a finally copy and its normal copy is not`() {
         assertEquals(listOf(listOf(NONE, NONE), listOf(FINALLY_COPY, FINALLY_COPY)), kinds(kotlin, "tryFinally"))
         assertEquals(listOf(listOf(NONE, NONE), listOf(FINALLY_COPY, FINALLY_COPY)), kinds(java, "tryFinally"))
+    }
+
+    @Test
+    fun `a guard whose throw the method catches itself is not throw only`() {
+        assertEquals(listOf(listOf(NONE, NONE)), kinds(java, "caughtGuard"))
+    }
+
+    @Test
+    fun `a guard whose throw a catch that may recover takes is not throw only`() {
+        assertEquals(listOf(NONE, NONE), kinds(java, "caughtGuardThatMayRecover").first())
+    }
+
+    @Test
+    fun `a finally body's exception-path copy is a finally copy even where it uses locals of its own`() {
+        val local = kinds(kotlin, "finallyWithLocal")
+        assertEquals(2, local.size, "$local")
+        assertTrue(FINALLY_COPY !in local[0], "$local")
+        assertEquals(listOf(FINALLY_COPY, FINALLY_COPY), local[1])
+        for ((language, analysis) in listOf("kotlin" to kotlin, "java" to java)) {
+            val loop = kinds(analysis, "finallyWithLoop")
+            assertEquals(4, loop.size, "$language: $loop")
+            assertTrue(loop.take(2).none { FINALLY_COPY in it }, "$language: $loop")
+            assertEquals(List(2) { listOf(FINALLY_COPY, FINALLY_COPY) }, loop.drop(2), "$language: $loop")
+        }
+    }
+
+    @Test
+    fun `without a local variable table, a slot both copies share never pairs with another, so no false twin`() {
+        val withoutLocals = ClassWriter(0)
+        ClassReader(File("build/classes/java/test/com/example/target/RoutineJavaTarget.class").readBytes()).accept(
+            object : ClassVisitor(Opcodes.ASM9, withoutLocals) {
+                override fun visitMethod(
+                    access: Int,
+                    name: String,
+                    descriptor: String,
+                    signature: String?,
+                    exceptions: Array<out String>?,
+                ): MethodVisitor =
+                    object : MethodVisitor(Opcodes.ASM9, super.visitMethod(access, name, descriptor, signature, exceptions)) {
+                        override fun visitLocalVariable(
+                            name: String,
+                            descriptor: String,
+                            signature: String?,
+                            start: Label,
+                            end: Label,
+                            index: Int,
+                        ) {}
+                    }
+            },
+            0,
+        )
+        val stripped = analysis(withoutLocals.toByteArray())
+
+        assertEquals(listOf(listOf(NONE, NONE), listOf(NONE, NONE)), kinds(stripped, "oneLineFinally"))
+        assertEquals(listOf(listOf(NONE, NONE), listOf(NONE, NONE)), kinds(stripped, "oneLineFinallyLocals"))
+        assertEquals(listOf(FINALLY_COPY, FINALLY_COPY), kinds(stripped, "finallyWithLoop")[2], "an unnamed body local still pairs")
+    }
+
+    @Test
+    fun `a guard whose throw a nested handler inside the catch recovers from is not throw only`() {
+        assertEquals(listOf(NONE, NONE), kinds(java, "caughtGuardNestedRecovery").single())
+    }
+
+    @Test
+    fun `a guard whose throw a catch recovers from without a return is not throw only`() {
+        assertEquals(listOf(NONE, NONE), kinds(java, "caughtGuardFallsThrough").first())
+        assertEquals(listOf(NONE, NONE), kinds(java, "caughtGuardContinues")[1])
+        assertEquals(listOf(NONE, NONE), kinds(kotlin, "caughtGuardExpression").first())
+    }
+
+    @Test
+    fun `a guard whose throw a catch only wraps and throws again is throw only`() {
+        assertEquals(listOf(NONE, THROW_ONLY), kinds(java, "caughtGuardWrapped").single())
+    }
+
+    @Test
+    fun `a finally body with no normal-path copy is the adopter's only copy and is not routine`() {
+        assertEquals(listOf(listOf(NONE, NONE)), kinds(java, "loopForeverFinally"))
+        assertEquals(listOf(listOf(NONE, NONE)), kinds(kotlin, "loopForeverFinally"))
+    }
+
+    @Test
+    fun `another condition on the same line is no normal-path twin of a finally body's condition`() {
+        assertEquals(listOf(listOf(NONE, NONE), listOf(NONE, NONE)), kinds(java, "oneLineFinally"))
+        assertEquals(listOf(listOf(NONE, NONE), listOf(NONE, NONE)), kinds(java, "oneLineFinallyFields"))
     }
 
     @Test
@@ -172,7 +265,14 @@ class RoutineOutcomeTest {
         val writer = ClassWriter(ClassWriter.COMPUTE_FRAMES or ClassWriter.COMPUTE_MAXS)
         writer.visit(Opcodes.V17, Opcodes.ACC_PUBLIC, "com/example/target/RoutineCompareTarget", null, "java/lang/Object", null)
         for (compareMethod in methods) {
-            val method = writer.visitMethod(Opcodes.ACC_PUBLIC or Opcodes.ACC_STATIC, compareMethod.name, "(Ljava/lang/Object;)I", null, null)
+            val method =
+                writer.visitMethod(
+                    Opcodes.ACC_PUBLIC or Opcodes.ACC_STATIC,
+                    compareMethod.name,
+                    "(Ljava/lang/Object;)I",
+                    null,
+                    null,
+                )
             method.visitCode()
             compareMethod.operands(method)
             val taken = Label()

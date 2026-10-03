@@ -29,6 +29,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
@@ -57,7 +58,11 @@ class AgentTest {
     @Test
     fun `a test run's shutdown gives up on a scan that does not end, and a production run never waits`() {
         val stuck = CompletableFuture<Unit>()
-        val blocked = Thread { stuck.join() }.apply { isDaemon = true; start() }
+        val blocked =
+            Thread { stuck.join() }.apply {
+                isDaemon = true
+                start()
+            }
         var flushes = 0
         try {
             val started = System.nanoTime()
@@ -115,7 +120,9 @@ class AgentTest {
 
     @Test
     fun `no include rules refuses to start, installs nothing and starts no otherlode threads`() {
-        for (args in listOf(null, "", "includePackages=", "includePackages=;", "includePackages= ; ", "excludePackages=com.acme")) {
+        val noUsableRule = listOf("includePackages=com.acme.*", "includePackages=com/acme;org.example.**")
+        for (args in listOf(null, "", "includePackages=", "includePackages=;", "includePackages= ; ", "excludePackages=com.acme") +
+            noUsableRule) {
             val calls = mutableListOf<String>()
             val before = currentThreadNames()
 
@@ -126,6 +133,25 @@ class AgentTest {
             val newThreadNames = currentThreadNames() - before
             assertTrue(newThreadNames.none { it.startsWith("otherlode-") }, "args '$args' started otherlode- threads: $newThreadNames")
         }
+    }
+
+    @Test
+    fun `a startup step that fails after install removes every transformer it added and starts no otherlode threads`() {
+        val calls = mutableListOf<String>()
+        val before = currentThreadNames()
+
+        assertFailsWith<IllegalStateException> {
+            Agent.start(
+                "includePackages=com.example.nothing,staticBaselineEnabled=true,endpoint=http://localhost:1",
+                recordingInstrumentation(calls),
+                addShutdownHook = { throw IllegalStateException("Shutdown in progress") },
+            )
+        }
+
+        assertTrue(calls.count { it == "addTransformer" } > 0, "$calls")
+        assertEquals(calls.count { it == "addTransformer" }, calls.count { it == "removeTransformer" }, "$calls")
+        val started = (currentThreadNames() - before).filter { it.startsWith("otherlode-") && it != "otherlode-export" }
+        assertEquals(emptyList(), started, "no listing or scan thread starts once a step has failed")
     }
 
     @Test

@@ -9,7 +9,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * Proves the branch tier's drop-and-keep rule for an inlined copy (ADR 0025) against the
+ * Proves the branch tier's drop-and-keep rule for an inlined copy against the
  * `InlinedCopyTarget`/`InlineLibraryTarget` fixtures. Every expected line and descriptor here was
  * checked against real `javap -v` output before this test was written, not guessed.
  */
@@ -43,13 +43,43 @@ class InlinedCopyAnalysisTest {
     }
 
     @Test
+    fun `a class kotlinc regenerated from a library's inlined object has its library conditionals dropped`() {
+        val bytes =
+            File(
+                "build/classes/kotlin/test/com/example/target/InlinedCopyTargetKt\$sortByBoth\$\$inlined\$thenBy\$1.class",
+            ).readBytes()
+
+        val sites = BranchSiteAnalyzer.analyze(bytes, includePackages = listOf("com.example")) { _, _ -> true }.sites
+
+        assertTrue(sites.isNotEmpty(), "thenBy's comparator has its own conditional")
+        assertTrue(sites.all { it.dropReason == BranchDropReason.INLINED_OUT_OF_SCOPE }, "sites: $sites")
+    }
+
+    @Test
+    fun `an own loop keeps its key beside a dropped copy of a library loop with the same condition`() {
+        val sites = analyze().sites.filter { it.methodName == "ownLoopBesideFilter" }
+        val own = sites.single { it.dropReason == null && it.line == lineOf(fixtureFile, "ownLoopBesideFilter-for") }
+        val sameConditionCopies = sites.filter { it.dropReason != null && it.conditionFingerprint == own.conditionFingerprint }
+        assertTrue(sameConditionCopies.isNotEmpty(), "the fixture must hold a dropped copy with the own loop's condition: $sites")
+
+        val keys = BranchKeys.compute(sites, ownClassName)
+
+        assertTrue((own.siteIndex to 0) in keys, "the own loop's key must not depend on whether the copy's origin is in scope")
+    }
+
+    @Test
     fun `map and firstOrNull's own internal conditionals are dropped as out-of-scope copies`() {
         val sites = analyze().sites.filter { it.methodName == "useCollections" }
 
         val dropped = sites.filter { it.dropReason != null }
         assertEquals(3, dropped.size, "map's hasNext loop, firstOrNull's hasNext loop, and firstOrNull's own predicate check")
         assertTrue(dropped.all { it.dropReason == BranchDropReason.INLINED_OUT_OF_SCOPE })
-        assertTrue(dropped.all { it.inlinedFromClassName == null }, "a dropped site carries no origin")
+        assertTrue(
+            dropped.all {
+                it.inlinedFromClassName == "kotlin.collections.CollectionsKt___CollectionsKt"
+            },
+            "a dropped copy carries its origin",
+        )
     }
 
     @Test
@@ -107,7 +137,7 @@ class InlinedCopyAnalysisTest {
         val site = analyze(includePackages = listOf("com.example.target")).sites.single { it.methodName == "useLibraryInline" }
 
         assertEquals(BranchDropReason.INLINED_OUT_OF_SCOPE, site.dropReason)
-        assertNull(site.inlinedFromClassName)
+        assertEquals(libraryClassName, site.inlinedFromClassName)
     }
 
     @Test

@@ -2,7 +2,7 @@ package com.example.target;
 
 /**
  * javac attaches an {@code EnclosingMethod} attribute to both an anonymous class and a named local
- * class declared inside a method, so both are body classes under ADR 0024. Used to prove the
+ * class declared inside a method, so both are body classes. Used to prove the
  * body-class rule fires for javac output the same way it does for kotlinc's.
  */
 public class AnonymousClassTarget {

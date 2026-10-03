@@ -6,7 +6,7 @@ import java.util.function.IntUnaryOperator;
 import java.util.function.Supplier;
 
 /**
- * Each shape of creation edge javac emits (ADR 0034): a lambda capturing a local, a lambda
+ * Each shape of creation edge javac emits: a lambda capturing a local, a lambda
  * capturing the receiver, a bound and an unbound reference to an instance method, a reference to
  * a static method, and two constructor references. javac hands a static nested class's
  * constructor straight to the metafactory, but turns a reference to an inner class's constructor

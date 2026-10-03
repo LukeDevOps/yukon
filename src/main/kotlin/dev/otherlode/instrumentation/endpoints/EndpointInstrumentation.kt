@@ -9,6 +9,7 @@ import dev.otherlode.registry.EndpointRegistry
 import net.bytebuddy.agent.builder.AgentBuilder
 import net.bytebuddy.agent.builder.ResettableClassFileTransformer
 import net.bytebuddy.description.type.TypeDescription
+import net.bytebuddy.matcher.ElementMatcher
 import net.bytebuddy.matcher.ElementMatchers.nameStartsWith
 import net.bytebuddy.utility.JavaModule
 import java.lang.System.Logger.Level
@@ -27,7 +28,7 @@ import java.util.WeakHashMap
  * class for `@file:JvmName`-style classes.
  *
  * When any module names a handler interface, [install] also installs a [LambdaFactoryHook], so a
- * handler written as a lambda or a method reference can be named (ADR 0035). [lambdaFactoryShape]
+ * handler written as a lambda or a method reference can be named. [lambdaFactoryShape]
  * is what that hook checks the JDK against. [handlerForwarders] is the forwarder table the method
  * tier fills, which turns a reported pass-through into the method it forwards to.
  */
@@ -44,7 +45,7 @@ class EndpointInstrumentation(
     /** Endpoints a module declared during a transform, held until that transform produces bytes. */
     private val pendingDeclarations = PendingDeclarations()
 
-    /** Whether this thread is holding declarations from a transform; for tests. */
+    /** How many declarations from a transform this thread is holding; for tests. */
     internal fun pendingDeclarationCount(): Int = pendingDeclarations.pendingCount()
 
     /**
@@ -92,16 +93,20 @@ class EndpointInstrumentation(
                 // DECORATE only weaves advice into existing method bodies; it never adds a field
                 // or a type initializer, and it skips the annotation-legality validation that
                 // REBASE/REDEFINE runs, which is what trips on a class carrying an
-                // illegally-targeted annotation such as @kotlin.jvm.JvmName. See "Classes
-                // ByteBuddy can't safely redefine" in this project's CLAUDE.md.
+                // illegally-targeted annotation such as @kotlin.jvm.JvmName. See ADR 0007.
                 .with(AgentBuilder.TypeStrategy.Default.DECORATE)
                 .with(AgentBuilder.InitializationStrategy.NoOp.INSTANCE)
                 .disableClassFormatChanges()
                 // Replaces AgentBuilder's own default ignore matcher, which skips bootstrap-loader
                 // classes among others. The JDK's own HttpServer classes load on the bootstrap
-                // loader, and an endpoint module needs to match them.
-                .ignore(nameStartsWith<TypeDescription>(TypeMatchPolicy.AGENT_PACKAGE_PREFIX))
-                .with(EndpointTransformListener())
+                // loader, and an endpoint module needs to match them. A class a framework generated
+                // at runtime is ignored too: a proxy of a resource class inherits its annotations'
+                // meaning and calls the real method through super, so weaving both would count
+                // every call twice.
+                .ignore(
+                    nameStartsWith<TypeDescription>(TypeMatchPolicy.AGENT_PACKAGE_PREFIX)
+                        .or(ElementMatcher { type -> TypeMatchPolicy.isRuntimeGenerated(type.name) }),
+                ).with(EndpointTransformListener())
 
         for (module in modules) {
             builder =
@@ -159,8 +164,8 @@ class EndpointInstrumentation(
      * descriptor still gates what it is allowed to read, so `jdk.httpserver`'s own classes cannot
      * call into the seam without this edge.
      *
-     * A boot module name no module needs, or that this JDK does not have, is logged at INFO and
-     * skipped: that framework's advice simply never matches anything on this JVM.
+     * A boot module name this JDK does not have is logged at INFO and skipped: that framework's
+     * advice never matches anything on this JVM.
      */
     private fun addSeamReadEdges(instrumentation: Instrumentation) {
         val bootModuleNames = modules.flatMapTo(sortedSetOf()) { it.bootModulesNeedingSeamRead }
@@ -169,7 +174,10 @@ class EndpointInstrumentation(
         for (name in bootModuleNames) {
             val bootModule = ModuleLayer.boot().findModule(name).orElse(null)
             if (bootModule == null) {
-                log.log(Level.INFO, "otherlode: boot module '$name' is not present in this JDK, its endpoint module will not match anything")
+                log.log(
+                    Level.INFO,
+                    "otherlode: boot module '$name' is not present in this JDK, its endpoint module will not match anything",
+                )
                 continue
             }
             instrumentation.redefineModule(bootModule, setOf(seamModule), emptyMap(), emptyMap(), emptySet(), emptyMap())

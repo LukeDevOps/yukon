@@ -33,7 +33,7 @@ private const val HANDLE_DESCRIPTOR = "(Lcom/sun/net/httpserver/HttpExchange;)V"
 private const val HANDLERS = "com.example.classsam.HandlersKt"
 
 /**
- * Proves the forwarder table of ADR 0035 against the real JDK `HttpServer`, with the method tier
+ * Proves the handler forwarder table against the real JDK `HttpServer`, with the method tier
  * installed: a handler that is a kotlinc reference class, compiled with class-based SAM conversion,
  * joins to the function it calls, not to the reference class's own `handle`.
  *
@@ -57,7 +57,8 @@ class PassThroughHandlerNamingTest {
         val module = JdkHttpServerModule()
         val forwarders = HandlerForwarders(module.handlerInterfaces)
         probes = ProbeRegistry()
-        otherlode = OtherlodeInstrumentation(AgentConfig.parse("includePackages=com.example.classsam"), probes, handlerForwarders = forwarders)
+        otherlode =
+            OtherlodeInstrumentation(AgentConfig.parse("includePackages=com.example.classsam"), probes, handlerForwarders = forwarders)
         otherlodeTransformer = otherlode.install(instrumentation)
         endpoints = EndpointRegistry()
         endpointInstrumentation = EndpointInstrumentation(endpoints, listOf(module), handlerForwarders = forwarders)

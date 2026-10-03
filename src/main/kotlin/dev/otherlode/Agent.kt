@@ -13,6 +13,7 @@ import dev.otherlode.export.ExportScheduler
 import dev.otherlode.export.Exporter
 import dev.otherlode.export.HttpOtlpStyleExporter
 import dev.otherlode.export.ResourceAttributes
+import dev.otherlode.export.forNewRun
 import dev.otherlode.instrumentation.BootstrapInstallException
 import dev.otherlode.instrumentation.LoadedClassSweep
 import dev.otherlode.instrumentation.OtherlodeInstrumentation
@@ -25,6 +26,7 @@ import dev.otherlode.instrumentation.staticscan.BaselineReferenceFilter
 import dev.otherlode.instrumentation.staticscan.StaticBaselineMismatchDetector
 import dev.otherlode.instrumentation.staticscan.StaticBaselinePublisher
 import dev.otherlode.instrumentation.staticscan.StaticBaselineScanner
+import dev.otherlode.instrumentation.staticscan.StaticBaselineSender
 import dev.otherlode.registry.DependencyOrigin
 import dev.otherlode.registry.DependencyRegistry
 import dev.otherlode.registry.EndpointRegistry
@@ -107,15 +109,16 @@ object Agent {
 
     /**
      * Returns what was started, or null if the agent did not start: [AgentConfig.enabled] is
-     * false, [AgentConfig.instrumentedPackagePrefixes] is empty (ADR 0033), or the bootstrap holder
-     * could not be installed. Both configuration checks run before anything is constructed, so a
-     * refused start leaves no thread, transformer or registry behind. `internal` rather than `private`
-     * so a test can drive this directly with a real [Instrumentation] and stop what it started,
+     * false, [AgentConfig.instrumentedPackagePrefixes] is empty, or the bootstrap holder could not
+     * be installed. Both configuration checks run before anything is constructed, so a refused
+     * start leaves no thread, transformer or registry behind. `internal` rather than `private` so a
+     * test can drive this directly with a real [Instrumentation] and stop what it started,
      * without going through [premain]'s `void` contract.
      */
     internal fun start(
         agentArgs: String?,
         instrumentation: Instrumentation,
+        addShutdownHook: (Thread) -> Unit = { Runtime.getRuntime().addShutdownHook(it) },
     ): Running? {
         val config = AgentConfig.parse(agentArgs)
         if (!config.enabled) {
@@ -184,55 +187,93 @@ object Agent {
             log.log(Level.INFO, "otherlode: endpointsEnabled=false, no framework's endpoints will be instrumented")
         }
 
-        // Made once here and shared, so every payload this process sends names the same run.
-        val resource = ResourceAttributes.forNewRun(config)
-        val exporter = HttpOtlpStyleExporter(config.collectorEndpoint, config.authToken)
-        val scheduler =
-            ExportScheduler(
-                config,
-                resource,
-                registry,
-                endpointRegistry,
-                exporter,
-                branchDropCounts = branchDropCounts,
-                loadedClassSweep =
-                    LoadedClassSweep(
-                        instrumentation,
-                        registry,
+        // Both transformers are installed. A failure from here on would leave classes woven while
+        // nothing is ever exported, so it takes down everything set up so far before premain logs
+        // it. The threads start last, once nothing after them can fail.
+        var scheduler: ExportScheduler? = null
+        var shutdownHook: Thread? = null
+        try {
+            // Made once here and shared, so every payload this process sends names the same run.
+            val resource = ResourceAttributes.forNewRun(config)
+            val exporter = HttpOtlpStyleExporter(config.collectorEndpoint, config.authToken)
+            // Shared by the scan, which sends first with the exporter's full retries, and the
+            // scheduler, which resends what failed with one attempt per chunk.
+            val staticBaselineSender =
+                if (config.staticBaselineEnabled) {
+                    StaticBaselineSender(
+                        exporter,
+                        retryExporter = HttpOtlpStyleExporter(config.collectorEndpoint, config.authToken, maxAttempts = 1),
+                    )
+                } else {
+                    null
+                }
+            val started =
+                ExportScheduler(
+                    config,
+                    resource,
+                    registry,
+                    endpointRegistry,
+                    exporter,
+                    branchDropCounts = branchDropCounts,
+                    loadedClassSweep =
+                        LoadedClassSweep(
+                            instrumentation,
+                            registry,
+                            config,
+                            LoadedDependencyCounter(dependencyRegistry, dependencyResolver::resolve),
+                        ),
+                    dependencyRegistry = dependencyRegistry,
+                    externalClassRegistry = externalClassRegistry,
+                    staticBaselineSender = staticBaselineSender,
+                )
+            scheduler = started
+            started.start()
+            val scanWorker =
+                if (staticBaselineSender != null) {
+                    val referenceFilter = BaselineReferenceFilter(dependencyRegistry, externalClassRegistry)
+                    staticBaselineScanThread(
                         config,
-                        LoadedDependencyCounter(dependencyRegistry, dependencyResolver::resolve),
-                    ),
-                dependencyRegistry = dependencyRegistry,
-                externalClassRegistry = externalClassRegistry,
+                        resource,
+                        exporter,
+                        staticBaselineSender,
+                        registry,
+                        staticBaselineMismatchDetector,
+                        referenceFilter,
+                    )
+                } else {
+                    null
+                }
+            val hook =
+                Thread({
+                    shutdown(config.testRun, scanWorker, TEST_RUN_SCAN_WAIT) { started.flushOnShutdown(SHUTDOWN_FLUSH_TIMEOUT) }
+                }, "otherlode-shutdown-hook")
+            addShutdownHook(hook)
+            shutdownHook = hook
+            startDependencyListing(config, dependencyRegistry)
+            scanWorker?.start()
+            return Running(
+                started,
+                instrumentation,
+                otherlodeInstrumentation,
+                transformer,
+                hook,
+                endpointInstrumentation,
+                endpointTransformer,
+                dependencyRegistry,
+                resource,
             )
-        scheduler.start()
-
-        startDependencyListing(config, dependencyRegistry)
-
-        val scanWorker =
-            if (config.staticBaselineEnabled) {
-                val referenceFilter = BaselineReferenceFilter(dependencyRegistry, externalClassRegistry)
-                startStaticBaselineScan(config, resource, exporter, registry, staticBaselineMismatchDetector, referenceFilter)
-            } else {
-                null
+        } catch (e: Throwable) {
+            // Each step is tried on its own, so one that fails neither stops the rest nor hides
+            // the failure that started the rollback.
+            fun undo(step: () -> Unit) = runCatching(step).exceptionOrNull()?.let(e::addSuppressed)
+            shutdownHook?.let { undo { Runtime.getRuntime().removeShutdownHook(it) } }
+            scheduler?.let { undo(it::stop) }
+            undo { otherlodeInstrumentation.uninstall(instrumentation, transformer) }
+            if (endpointInstrumentation != null && endpointTransformer != null) {
+                undo { endpointInstrumentation.uninstall(instrumentation, endpointTransformer) }
             }
-
-        val shutdownHook =
-            Thread({
-                shutdown(config.testRun, scanWorker, TEST_RUN_SCAN_WAIT) { scheduler.flushOnShutdown(SHUTDOWN_FLUSH_TIMEOUT) }
-            }, "otherlode-shutdown-hook")
-        Runtime.getRuntime().addShutdownHook(shutdownHook)
-        return Running(
-            scheduler,
-            instrumentation,
-            otherlodeInstrumentation,
-            transformer,
-            shutdownHook,
-            endpointInstrumentation,
-            endpointTransformer,
-            dependencyRegistry,
-            resource,
-        )
+            throw e
+        }
     }
 
     /**
@@ -261,24 +302,31 @@ object Agent {
     ): List<EndpointModule> = if (otelBridgeEnabled) modules else modules.filterNot { it.name == OTEL_BRIDGE_MODULE_NAME }
 
     /**
-     * Runs on its own background thread, off `premain`, so a full classpath walk never adds
+     * The thread the scan runs on, unstarted: off `premain`, so a full classpath walk never adds
      * latency to the target app's startup. Fires once per process: no periodic re-scan, matching
      * "static" in the name. See [StaticBaselinePublisher] for what happens once the scan is done.
      */
-    private fun startStaticBaselineScan(
+    private fun staticBaselineScanThread(
         config: AgentConfig,
         resource: ResourceAttributes,
         exporter: Exporter,
+        sender: StaticBaselineSender,
         registry: ProbeRegistry,
         mismatchDetector: StaticBaselineMismatchDetector,
         referenceFilter: BaselineReferenceFilter,
     ): Thread {
         val scanner = StaticBaselineScanner(config.instrumentedPackagePrefixes, config.excludedPackagePrefixes)
         val publisher =
-            StaticBaselinePublisher(scanner::scan, exporter, registry, mismatchDetector, filterReferences = referenceFilter::filter)
+            StaticBaselinePublisher(
+                scanner::scan,
+                exporter,
+                registry,
+                mismatchDetector,
+                filterReferences = referenceFilter::filter,
+                sender = sender,
+            )
         val worker = Thread({ publisher.run(resource) }, "otherlode-static-baseline-scan")
         worker.isDaemon = true
-        worker.start()
         return worker
     }
 
@@ -287,8 +335,7 @@ object Agent {
      * static baseline scan on [scanWorker] to end. A test JVM often exits before the scan ends, and
      * the scan is where a collector reads the edges of test classes that never loaded. The flush
      * goes first, so a JVM halted during the wait still sends the final manifest. The scan sends
-     * through the exporter, not the scheduler's pool, so it still works after the flush. See
-     * ADR 0050.
+     * through the exporter, not the scheduler's pool, so it still works after the flush.
      */
     internal fun shutdown(
         testRun: Boolean,
@@ -300,7 +347,10 @@ object Agent {
         if (!testRun || scanWorker == null) return
         scanWorker.join(scanWait.toMillis())
         if (scanWorker.isAlive) {
-            log.log(Level.WARNING, "otherlode: the static baseline scan did not end within ${scanWait.seconds}s of shutdown, so this test run may send no complete scan")
+            log.log(
+                Level.WARNING,
+                "otherlode: the static baseline scan did not end within ${scanWait.seconds}s of shutdown, so this test run may send no complete scan",
+            )
         }
     }
 
@@ -308,7 +358,7 @@ object Agent {
      * Lists the startup classpath's dependencies on its own daemon thread, off `premain`: judging
      * whether a jar is the adopter's own reads every entry name, and in a fat jar that means
      * streaming each nested jar. Runs once per process, always. With the static baseline enabled
-     * it also keeps every dependency's class names for the registry's class index. See ADR 0030.
+     * it also keeps every dependency's class names for the registry's class index.
      */
     private fun startDependencyListing(
         config: AgentConfig,

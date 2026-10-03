@@ -26,6 +26,36 @@ class KotlinSmapParserTest {
     }
 
     @Test
+    fun `the identity range is not a copy when file 1 names the class itself`() {
+        val smap = KotlinSmapParser.parse(demoServerMainSmap, "com/example/demo/server/DemoServerMainKt")
+
+        assertNull(smap.originOf(50))
+    }
+
+    /**
+     * Read with `javap -v` from `OtherlodeInstrumentation$recordBranchDrops$$inlined$groupingBy$1`, a
+     * class kotlinc regenerated from the standard library's `groupingBy` object while inlining it.
+     * File 1 is the library class, so even the identity range is a copy of library code.
+     */
+    @Test
+    fun `the identity range of a class kotlinc regenerated from an inlined object is a copy of file 1`() {
+        val regenerated =
+            "SMAP\n_Collections.kt\nKotlin\n*S Kotlin\n*F\n+ 1 _Collections.kt\n" +
+                "kotlin/collections/CollectionsKt___CollectionsKt\$groupingBy\$1\n+ 2 OtherlodeInstrumentation.kt\n" +
+                "dev/otherlode/instrumentation/OtherlodeInstrumentation\n*L\n1#1,3794:1\n692#2:3795\n*E\n"
+        val smap =
+            KotlinSmapParser.parse(
+                regenerated,
+                "dev/otherlode/instrumentation/OtherlodeInstrumentation\$recordBranchDrops\$\$inlined\$groupingBy\$1",
+            )
+
+        assertEquals(
+            SmapOrigin(1601, "kotlin.collections.CollectionsKt___CollectionsKt\$groupingBy\$1", "_Collections.kt"),
+            smap.originOf(1601),
+        )
+    }
+
+    @Test
     fun `two call sites of a same-file inline function both map to its declaration line`() {
         val smap = KotlinSmapParser.parse(demoServerMainSmap)
 
@@ -106,6 +136,16 @@ class KotlinSmapParserTest {
         val smap = KotlinSmapParser.parse(demoServerMainSmap)
 
         assertNull(smap.originOf(9000))
+    }
+
+    @Test
+    fun `a line number too large for an int skips its entry instead of failing the parse`() {
+        val debug = "SMAP\nFoo.kt\nKotlin\n*S Kotlin\n*F\n+ 1 Foo.kt\nFoo\n+ 2 Bar.kt\nBar\n*L\n99999999999#2:20\n7#2:21\n*E\n"
+
+        val smap = KotlinSmapParser.parse(debug)
+
+        assertNull(smap.originOf(20))
+        assertEquals(SmapOrigin(7, "Bar", "Bar.kt"), smap.originOf(21))
     }
 
     @Test

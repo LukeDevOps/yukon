@@ -16,10 +16,10 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Proves that [OtherlodeTestCollector.neverHit] leaves Scala's generated methods out (ADR 0048), over
- * the wire from a real agent: the static forwarders on `Driver` and `Cc` and the case-class and
- * companion plumbing are no rows, a field accessor nobody called is one, and each uncalled method
- * of the object `Driver$` is a row once.
+ * Proves that [OtherlodeTestCollector.neverHit] leaves Scala's generated methods out, over the wire
+ * from a real agent: the static forwarders on `Driver` and `Cc` and the case-class and companion
+ * plumbing are no rows, a field accessor nobody called is one, and each uncalled method of the
+ * object `Driver$` is a row once.
  */
 class ScalaNeverHitEndToEndTest {
     private companion object {

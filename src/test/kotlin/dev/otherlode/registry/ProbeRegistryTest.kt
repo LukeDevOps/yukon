@@ -867,7 +867,7 @@ class ProbeRegistryTest {
         // Supertypes play no part in the registry key, the same as the probe list itself: a
         // repeat call for an unchanged (className, layoutHash, classLoader) is a no-op, so the
         // layout hash a caller computes from methods and branches alone stays meaningful whether
-        // or not calls or supertypes are attached. See ADR 0024.
+        // or not calls or supertypes are attached.
         assertEquals(
             "com.example.First",
             registry

@@ -1,19 +1,10 @@
 package dev.otherlode.export
 
-import dev.otherlode.config.AgentConfig
-import java.util.UUID
-
 /**
- * The two payload shapes the agent pushes to the collector.
- *
- * A delta batch is small and frequent, and carries hit counts. A probe
- * manifest is sent once per (service, version). It lets the collector
- * resolve probe IDs to source locations, without the agent repeating that
- * metadata on every flush.
- *
- * [OPTIONAL_ARGUMENT] counts one omission of a Kotlin optional parameter,
- * incremented in the compiler's `$default` method rather than the target
- * function itself. See ADR 0021.
+ * What one probe counts. [METHOD] counts entries to a method, [BRANCH] one outcome of a
+ * conditional or a switch, and [OPTIONAL_ARGUMENT] calls that leave out one optional parameter's
+ * argument: counted in Kotlin's `$default` method rather than the target function itself, or in a
+ * Scala default getter's own slot, which reports under the target it fills a default for.
  */
 enum class ProbeKind { METHOD, BRANCH, OPTIONAL_ARGUMENT }
 
@@ -24,16 +15,15 @@ enum class ProbeKind { METHOD, BRANCH, OPTIONAL_ARGUMENT }
  * have no line-number table), a `$DefaultImpls` method that only forwards to the interface's own
  * default method, a Java record's `equals`/`hashCode`/`toString`, or an overload `@JvmOverloads`
  * adds, whose body only forwards to its own class's `$default` twin, or a function of a multi-file
- * facade, whose body only forwards to the same function on a part class (ADR 0041). Scala adds a
- * case class's and its companion's plumbing ([CASE_CLASS]), a static forwarder to an object's method
- * ([STATIC_FORWARDER]) and an object's `writeReplace` ([SCALA_OBJECT]) (ADR 0048). Set on a [ProbeKind.METHOD]
+ * facade, whose body only forwards to the same function on a part class. Scala adds a case class's
+ * and its companion's plumbing ([CASE_CLASS]), a static forwarder to an object's method
+ * ([STATIC_FORWARDER]) and an object's `writeReplace` ([SCALA_OBJECT]). Set on a [ProbeKind.METHOD]
  * probe and a [DeclaredMethod], on a [ProbeKind.BRANCH] probe as the mark of the method it sits in,
  * and on a [ProbeKind.OPTIONAL_ARGUMENT] probe as its target's own mark. A collector leaves a
  * generated probe out of never-hit, stale-hit, the call graph and the two optional-parameter
- * findings by default: the compiler will emit the method again regardless of what the adopter
- * does, so a zero hit count is not a finding the adopter can act on. The hit count itself is still
- * kept and counted, since a call to a generated method, such as `copy`, is still evidence of use.
- * See ADR 0026.
+ * findings by default: the compiler will emit the method again regardless of what the adopter does,
+ * so a zero hit count is not a finding the adopter can act on. The hit count itself is still kept
+ * and counted, since a call to a generated method, such as `copy`, is still evidence of use.
  */
 enum class GeneratedBy {
     NONE,
@@ -49,10 +39,10 @@ enum class GeneratedBy {
 }
 
 /**
- * What kind of class kotlinc says a class is: the `k` element of its `kotlin.Metadata`, the one
- * int the agent reads from that annotation. The entries are in `k` order, so an entry's ordinal is
- * its `k`. A consumer names a [FILE_FACADE] or a [MULTIFILE_CLASS_PART] by its source file, not its
- * JVM name. See ADR 0041.
+ * What kind of class kotlinc says a class is: the `k` element of its `kotlin.Metadata`, the one int
+ * the agent reads from that annotation. The entries are in `k` order, so an entry's ordinal is its
+ * `k`. A consumer names a [FILE_FACADE] or a [MULTIFILE_CLASS_PART] by its source file, not its JVM
+ * name.
  */
 enum class KotlinKind {
     /** The class has no `kotlin.Metadata`, such as a Java or Scala class, or its `k` is outside 1 to 5. */
@@ -97,14 +87,13 @@ enum class KotlinKind {
  * [runId] is a random id the agent makes once per process at startup, in [forNewRun]. It names one
  * run of one instance. A new process always gets a new one, even when [serviceInstanceId] is pinned
  * to a name that survives a restart, so a consumer can keep each run's class ids and totals apart.
- * See ADR 0032.
  *
  * [serviceNamespace] is the group the service belongs to, as OpenTelemetry's `service.namespace`.
  * Null means the unspecified namespace. It comes last, with a default, so that a caller that
- * passes the other values by position cannot shift them. See ADR 0045.
+ * passes the other values by position cannot shift them.
  *
  * [testRun] marks a run in a JVM that runs the adopter's tests. It also comes last, with a
- * default, for the same reason. See ADR 0050.
+ * default, for the same reason.
  */
 data class ResourceAttributes(
     val serviceName: String,
@@ -115,19 +104,8 @@ data class ResourceAttributes(
     val serviceNamespace: String? = null,
     val testRun: Boolean = false,
 ) {
-    companion object {
-        /** [config]'s identity with a new random [runId]. The agent calls this once per process. */
-        fun forNewRun(config: AgentConfig): ResourceAttributes =
-            ResourceAttributes(
-                serviceName = config.serviceName,
-                serviceVersion = config.serviceVersion,
-                serviceInstanceId = config.serviceInstanceId,
-                environment = config.environment,
-                runId = UUID.randomUUID().toString(),
-                serviceNamespace = config.serviceNamespace,
-                testRun = config.testRun,
-            )
-    }
+    /** Holds the agent's `forNewRun`, which builds one from its configuration. */
+    companion object
 }
 
 /**
@@ -151,7 +129,7 @@ data class ProbeDelta(
  * [finalFlush] is set on every delta batch the agent's shutdown hook sends, never on a scheduled
  * flush. A collector uses it to tell an instance that ended cleanly from one that went silent,
  * and may report how many instances stopped without one, since up to one flush interval of their
- * hits may be missing. See ADR 0010.
+ * hits may be missing.
  *
  * [dependencyDeltas] carries one entry per dependency whose loaded-class total changed since the
  * last successfully delivered batch. See [DependencyDelta].
@@ -167,67 +145,62 @@ data class DeltaBatch(
 /**
  * [inline] marks a probe belonging to a Kotlin inline function, or a branch inside one: a Kotlin
  * caller copies the body into the call site instead of invoking this method, so a zero hit total
- * is not evidence the code never ran. See ADR 0022.
+ * is not evidence the code never ran.
  *
  * [parameterIndex], [parameterName], and [overridable] are set only for an
  * [ProbeKind.OPTIONAL_ARGUMENT] probe. A collector claims "never supplied" (every caller took the
  * default) only when [overridable] is false, since an overridable target's omissions are spread
  * across whichever override actually ran, which this location cannot relate; it claims "always
- * supplied" (the default is dead) for any target. Neither claim is made when [inline] is true. See
- * ADR 0021.
+ * supplied" (the default is dead) for any target. Neither claim is made when [inline] is true.
  *
  * [targetClassName] is set only for an [ProbeKind.OPTIONAL_ARGUMENT] probe whose target lives in
  * another class: a Scala constructor getter declared on a companion module class, whose target
  * constructor lives on the class the module compiles for. It is null when the target is in the
  * probe's own class, and always null for Kotlin. A collector joins an omission probe to its
- * target's METHOD probe by [targetClassName] when set, otherwise by [className]. See ADR 0023.
+ * target's METHOD probe by [targetClassName] when set, otherwise by [className].
  *
  * [calls] is set only for a [ProbeKind.METHOD] probe: the in-scope call edges read from that
  * method's own bytecode at transform time. A pass-through's callees are attributed to whatever
- * probed method referenced it, so they never appear under the pass-through's own name. See ADR
- * 0024.
+ * probed method referenced it, so they never appear under the pass-through's own name.
  *
  * [inlinedFromClassName] is set only for a [ProbeKind.BRANCH] probe that is a kept inlined copy:
  * a site inside code kotlinc copied from an inline function's body into this probe's own method,
- * whose origin class is in scope. Dotted, or null when the probe is the class's own code. See
- * ADR 0025.
+ * whose origin class is in scope. Dotted, or null when the probe is the class's own code.
  *
  * [generatedBy] is set for a [ProbeKind.METHOD] probe, for a [ProbeKind.BRANCH] probe as the
  * mark of the method it sits in, and for a [ProbeKind.OPTIONAL_ARGUMENT] probe as its target's
- * mark. See [GeneratedBy] and ADR 0026.
+ * mark. See [GeneratedBy].
  *
  * [referencedClasses] is set only for a [ProbeKind.METHOD] probe: the out-of-scope classes this
  * method's own bytecode references, dotted. A reference is wider than a call edge, since
  * runtime-visible annotations, casts and type tests, types in a descriptor or generic signature,
- * catch types and class literals all count. Classes the
- * bootstrap or platform loader provides, and classes read from a directory on the classpath, are
- * never listed. A name's [ExternalClass] entry may arrive on a later manifest than the name itself,
- * since it is resolved only once the startup listing has finished; a name that never gets one
- * belongs to no dependency (a jar of the adopter's own, an agent jar) and a collector ignores it.
- * See ADR 0030.
+ * catch types and class literals all count. Classes the bootstrap or platform loader provides, and
+ * classes read from a directory on the classpath, are never listed. A name's [ExternalClass] entry
+ * may arrive on a later manifest than the name itself, since it is resolved only once the startup
+ * listing has finished; a name that never gets one belongs to no dependency (a jar of the adopter's
+ * own, an agent jar) and a collector ignores it.
  *
  * [branchKey] is set only for a [ProbeKind.BRANCH] probe: an opaque lowercase hex token naming
  * this outcome across builds and instances, compared only for equality. Null when the agent
- * cannot name the outcome safely. See ADR 0031.
+ * cannot name the outcome safely.
  *
  * [lambdaBody] is set only for a [ProbeKind.METHOD] probe. It is true when an `invokedynamic` in
  * the method's own class names it as the `LambdaMetafactory` implementation, directly or through
  * the boxing forwarder scalac puts in between, and its name is one a compiler gives a body the
  * source never named. A body Scala 3 lifted out of a nested class, whose creator stays in that
  * class, is marked by its expanded name alone. A named method passed by reference is not a lambda
- * body. See [dev.otherlode.instrumentation.TypeMatchPolicy.isLambdaBodyName] and
- * ADR 0034.
+ * body. See [dev.otherlode.instrumentation.TypeMatchPolicy.isLambdaBodyName].
  *
  * [branchSites] is set only for a [ProbeKind.METHOD] probe: the method's kept branch sites, in
  * [BranchSite.siteIndex] order. A dropped site is not listed, and the type initializer's probe
- * lists none. See ADR 0037.
+ * lists none.
  *
  * [siteIndex] is set only for a [ProbeKind.BRANCH] probe. It names the site this outcome belongs
- * to, which the METHOD probe of the same method lists in [branchSites]. See ADR 0037.
+ * to, which the METHOD probe of the same method lists in [branchSites].
  *
  * [static] is set only for a [ProbeKind.METHOD] probe. It is true when the method has
  * `ACC_STATIC`, and false for a constructor and for the type initializer's probe, whose meaning a
- * consumer takes from its name. See ADR 0040.
+ * consumer takes from its name.
  *
  * [parameterNames], [genericSignature] and [extensionReceiver] are set only for a
  * [ProbeKind.METHOD] probe, and are empty or false for the type initializer's probe.
@@ -235,7 +208,7 @@ data class DeltaBatch(
  * attribute when it names every parameter, and otherwise from the LocalVariableTable. It is empty
  * when the class file names none or only some of them. [genericSignature] is the method's
  * `Signature` attribute as written, or empty. [extensionReceiver] is true when the first name
- * starts with `$this$` or is `$receiver`. See ADR 0043.
+ * starts with `$this$` or is `$receiver`.
  */
 data class ProbeLocation(
     val classId: Int,
@@ -265,7 +238,7 @@ data class ProbeLocation(
     val extensionReceiver: Boolean = false,
 )
 
-/** What one outcome of a [BranchSite] is within its site. See ADR 0037. */
+/** What one outcome of a [BranchSite] is within its site. */
 enum class BranchRole {
     /** A conditional's taken jump. */
     TAKEN,
@@ -283,7 +256,7 @@ enum class BranchRole {
 /**
  * Why a kept branch outcome is real but not worth a person's time when it never runs, read from
  * the bytecode of the outcome's path. A collector keeps the probe and its count, but leaves a
- * routine outcome out of every never-hit finding and counts it apart. See ADR 0046.
+ * routine outcome out of every never-hit finding and counts it apart.
  */
 enum class RoutineKind {
     /** Not routine: the outcome is judged like any other. */
@@ -308,7 +281,7 @@ enum class RoutineKind {
 /**
  * A run of consecutive source lines in one file, both ends inclusive. [sourceFile] is a file name
  * as the class's `SourceFile` attribute or its SMAP names it, never a path, and empty when the
- * class has no `SourceFile`. See ADR 0037.
+ * class has no `SourceFile`.
  */
 data class LineRange(
     val sourceFile: String,
@@ -325,14 +298,14 @@ data class LineRange(
  * every instruction the method places on them. [partlyGuardedLines] are the lines where it
  * dominates some of those instructions and not all. A line inside an in-scope inlined copy is
  * named at its origin line in the origin's own file, and a line copied from out-of-scope code is
- * left out. Both lists are empty when the outcome guards nothing. See ADR 0037.
+ * left out. Both lists are empty when the outcome guards nothing.
  *
  * [caseLabel] is set only for a [BranchRole.CASE] of a switch the agent read back from a string or
  * enum lowering: the label the source names, as one part. An enum constant, a class pattern, an
  * integer or `null` is one [ConditionPartKind.CODE] part, and a string is one
- * [ConditionPartKind.STRING_LITERAL] part. Such a case has no [caseKey]. See ADR 0038.
+ * [ConditionPartKind.STRING_LITERAL] part. Such a case has no [caseKey].
  *
- * [routine] says why the outcome is routine, or is [RoutineKind.NONE] when it is not. See ADR 0046.
+ * [routine] says why the outcome is routine, or is [RoutineKind.NONE] when it is not.
  */
 data class BranchOutcome(
     val branchIndex: Int,
@@ -345,14 +318,14 @@ data class BranchOutcome(
 )
 
 /**
- * One kept conditional jump or switch in a method, with its outcomes listed inside it. See ADR 0037.
+ * One kept conditional jump or switch in a method, with its outcomes listed inside it.
  *
  * [siteIndex] is the site's ordinal within its class, in bytecode order across every method,
  * dropped sites counted. It names the site within one build only.
  *
  * [siteKey] is an opaque lowercase hex token naming this site across builds and instances, compared
  * only for equality. It is made the way a branch key is, without the outcome, and it is null in
- * exactly the cases the site's branch keys are null. See ADR 0031.
+ * exactly the cases the site's branch keys are null.
  *
  * [line] is the same line the site's BRANCH probes carry, including the origin line for a kept
  * inlined copy.
@@ -360,7 +333,7 @@ data class BranchOutcome(
  * [outcomes] lists a conditional's [BranchRole.TAKEN] then [BranchRole.FALL_THROUGH] outcome, or a
  * switch's [BranchRole.CASE] outcomes in the order its instruction names them, then
  * [BranchRole.DEFAULT] last. A switch read back from a lowering lists no default when its default
- * only throws an exception the compiler added (ADR 0038).
+ * only throws an exception the compiler added.
  *
  * [guard] is the [BranchOutcome.branchIndex] of the innermost kept outcome that dominates this
  * site's jump or switch, or null when nothing in the method stands between its entry and the site.
@@ -388,7 +361,7 @@ data class BranchSite(
         get() = 1 + condition.size + outcomes.sumOf { 1 + it.guardedLines.size + it.partlyGuardedLines.size + it.caseLabel.size }
 }
 
-/** What one [ConditionPart] holds. See ADR 0037. */
+/** What one [ConditionPart] holds. */
 enum class ConditionPartKind {
     /** Source text, such as `discounted > ` or `System.getenv(`. */
     CODE,
@@ -403,7 +376,7 @@ enum class ConditionPartKind {
     PLACEHOLDER,
 }
 
-/** One part of a [BranchSite.condition]. Parts render one after the other with nothing between them. See ADR 0037. */
+/** One part of a [BranchSite.condition]. Parts render one after the other with nothing between them. */
 data class ConditionPart(
     val kind: ConditionPartKind,
     val text: String = "",
@@ -412,7 +385,7 @@ data class ConditionPart(
 /**
  * A class the JVM has loaded that reached no manifest, neither as a probed class nor as a skipped
  * one. Found by the sweep rather than by a transform, so the agent has no reason to give and this
- * carries none. See ADR 0027.
+ * carries none.
  *
  * [firstSeenUnreportedAt] is when a sweep first found it, which tells a blind spot that existed
  * from startup apart from one that appeared later.
@@ -431,7 +404,7 @@ data class SkippedClass(
 
 /**
  * What a [CallEdge] records. A collector reaches the target of either kind the same way; the kind
- * only changes how the edge is named and drawn. See ADR 0034.
+ * only changes how the edge is named and drawn.
  */
 enum class CallEdgeKind {
     /** The caller runs the callee: an invoke instruction, a `new`, or a static field use that runs the owner's initializer. */
@@ -450,7 +423,7 @@ enum class CallEdgeKind {
 
 /**
  * One caller method's static reference to one callee method, read from the caller's bytecode at
- * transform time. See ADR 0024.
+ * transform time.
  *
  * [className], [methodName], and [methodDescriptor] name the callee verbatim, as the caller's own
  * bytecode names it: the agent never resolves a virtual call, since one class's transform has no
@@ -461,29 +434,29 @@ enum class CallEdgeKind {
  * it knows about; a non-virtual one names its one real target exactly.
  *
  * [kind] says whether the caller runs the callee or hands it off; see [CallEdgeKind]. An edge that
- * takes the place of a pass-through keeps the kind of the edge it replaces, and an edge from inside
- * a [CallEdgeKind.CREATES] target is a [CallEdgeKind.CREATES] edge too, since it can only run once
- * the created body runs.
+ * takes the place of a pass-through is [CallEdgeKind.CREATES] when either the edge to the
+ * pass-through or the pass-through's own edge is, since what a created body reaches runs only once
+ * that body runs. An edge a lambda body's own bytecode records is judged like any other method's.
  *
  * [capturedCount] is set only on a [CallEdgeKind.CREATES] edge from an `invokedynamic`: how many
  * of the target descriptor's leading parameters take values captured at the call site rather than
  * the functional interface's own arguments. It is read from the call site's `invokedType`. A
  * receiver bound by a reference to an instance method is not counted, since it is not in the
- * target's parameter list. 0 on every other edge. See ADR 0034.
+ * target's parameter list. 0 on every other edge.
  *
  * [guard] is the [BranchOutcome.branchIndex] of the innermost kept outcome that dominates the
  * instruction recording this edge, or null when nothing in the method stands between its entry and
  * that instruction. That instruction is the invoke, the `invokedynamic`, the `new` of a body class,
  * or the `getstatic` or `putstatic` that stands for an initializer. An edge that takes the place of
  * a pass-through keeps the guard of the call to the pass-through. Edges are distinct by every
- * field, so one callee reached under two guards gives two edges. See ADR 0037.
+ * field, so one callee reached under two guards gives two edges.
  *
  * [implementedInterface] is set only on a [CallEdgeKind.CREATES] edge from an `invokedynamic`: the
  * dotted name of the interface the call site returns, the return type of its `invokedType`, such as
  * `java.lang.Runnable`. Kotlin's function types are sent too. It travels with the kind, so an edge
  * that takes the place of a pass-through keeps the interface of the edge it takes its kind from.
  * Null on a [CallEdgeKind.CALL] edge and on a creation edge from a body class's `new` or
- * `getstatic INSTANCE`. One body created for two interfaces gives two edges. See ADR 0042.
+ * `getstatic INSTANCE`. One body created for two interfaces gives two edges.
  */
 data class CallEdge(
     val className: String,
@@ -503,18 +476,18 @@ data class CallEdge(
  * type that overrides or inherits its callee. [superClassName] is null only for `java.lang.Object`
  * itself, which this agent never instruments; an interface's own [superClassName] is
  * `java.lang.Object`, the same as any other type, since that is what the class file's own
- * super_class entry names. See ADR 0024.
+ * super_class entry names.
  *
  * [sourceFile] is the class file's `SourceFile` attribute exactly as it appears, such as
  * `DemoServerMain.kt`: a file name, never a path. Null when the class has none. The agent does not
- * clean it, so a value such as `<generated>` is sent as it is. See ADR 0034.
+ * clean it, so a value such as `<generated>` is sent as it is.
  *
  * [bodyKind] says what kind of body class this is, or [BodyKind.NONE] when it is not one.
  * [sourceName] is the name the source gave a [BodyKind.LOCAL_CLASS], such as `Local` for
- * `Foo$1Local`, and null for every other kind. See [BodyKind] and ADR 0034.
+ * `Foo$1Local`, and null for every other kind. See [BodyKind].
  *
  * [kotlinKind] is what kind of class kotlinc says this is, or [KotlinKind.NONE] when it carries no
- * `kotlin.Metadata`. See ADR 0041.
+ * `kotlin.Metadata`.
  */
 data class ClassLocation(
     val classId: Int,
@@ -532,7 +505,7 @@ data class ClassLocation(
  * `EnclosingMethod` attribute. The rule checks [LAMBDA_CLASS] first, then the class's own
  * `InnerClasses` entry. A Kotlin function or property reference class has no kind here: kotlinc
  * marks it synthetic, so it never reaches the wire, and its creator's edges pass through it to
- * the function it names. See ADR 0034.
+ * the function it names.
  */
 enum class BodyKind {
     /** The class has no `EnclosingMethod` attribute, so it is not a body class. */
@@ -559,19 +532,19 @@ enum class BodyKind {
  * `class_id` is assigned by each process's own registry, in whatever order that process's classes
  * happen to load, so the same `class_id` can mean a different class in two instances of the same
  * (service, version), or in two runs of one pinned instance. A collector keys every `class_id` on
- * the resource's instance and run, the same way it keys a delta batch's. See ADRs 0011 and 0032.
+ * the resource's instance and run, the same way it keys a delta batch's.
  *
  * [dependencies], [classReferences] and [externalClasses] are delivered incrementally like the
- * rest of this payload, each entry sent once per instance. See ADR 0030.
+ * rest of this payload, each entry sent once per instance.
  *
  * [referencesRecorded] is true when the instance records references at all, which it does only
  * when its include rules are set. The agent sets it on every manifest it sends, so a collector can
  * tell an instance whose code references nothing from one that records nothing, and claims
- * unreferenced or unreached only for an instance that sent it true. See ADR 0030.
+ * unreferenced or unreached only for an instance that sent it true.
  *
  * [dependenciesListed] is true once every dependency from the startup listing, and every reference
  * mapping recorded before the listing ended, has gone out on a confirmed manifest. Until then, an
- * empty dependency list or no absent references means "not listed yet", not "none". See ADR 0036.
+ * empty dependency list or no absent references means "not listed yet", not "none".
  */
 data class ProbeManifest(
     val resource: ResourceAttributes,
@@ -591,29 +564,29 @@ data class ProbeManifest(
 /**
  * No line field, unlike [ProbeLocation]: the static scan reads a class's bytecode only for the
  * inline marker and records no line. [inline] is read from the LocalVariableTable by the same
- * rule [ProbeLocation.inline] uses; see ADR 0022.
+ * rule [ProbeLocation.inline] uses.
  *
  * [calls] is the same in-scope call-edge list [ProbeLocation.calls] carries for a loaded method,
  * read from the same analysis pass. A collector treats a baseline edge and a manifest edge as one
- * graph. See ADR 0024.
+ * graph.
  *
  * [generatedBy] is read from the same bytecode shape [ProbeLocation.generatedBy] uses; see
- * [GeneratedBy] and ADR 0026. Always [GeneratedBy.NONE] for the class's own `<clinit>` entry.
+ * [GeneratedBy]. Always [GeneratedBy.NONE] for the class's own `<clinit>` entry.
  *
- * [referencedClasses] follows the same rule as [ProbeLocation.referencedClasses]. See ADR 0030.
+ * [referencedClasses] follows the same rule as [ProbeLocation.referencedClasses].
  *
  * [lambdaBody] follows the same rule as [ProbeLocation.lambdaBody]. Always false for the class's
- * own `<clinit>` entry. See ADR 0034.
+ * own `<clinit>` entry.
  *
  * [branchSites] follows the same rule as [ProbeLocation.branchSites], read from the same class.
- * Always empty for the class's own `<clinit>` entry. See ADR 0037.
+ * Always empty for the class's own `<clinit>` entry.
  *
  * [static] follows the same rule as [ProbeLocation.static]. Always false for a constructor and for
- * the class's own `<clinit>` entry. See ADR 0040.
+ * the class's own `<clinit>` entry.
  *
  * [parameterNames], [genericSignature] and [extensionReceiver] follow the same rules as the
  * [ProbeLocation] fields of the same names, read from the same class. Empty or false for the
- * class's own `<clinit>` entry. See ADR 0043.
+ * class's own `<clinit>` entry.
  */
 data class DeclaredMethod(
     val methodName: String,
@@ -634,20 +607,20 @@ data class DeclaredMethod(
  * [superClassName] and [interfaceNames] are the same fields [ClassLocation] carries for a
  * loaded class. Both are null and empty, respectively, only when the class's bytes could not be
  * read to analyse them; a class read successfully always has a superclass, since
- * `java.lang.Object` itself is never instrumented. See ADR 0024.
+ * `java.lang.Object` itself is never instrumented.
  *
  * [referencedClasses] holds the class's references outside any probed method: annotations on the
  * class, its supertypes, its field types, the signatures of methods without a probe, and anything
  * else not held by a probed method. Method-level references travel on
  * [DeclaredMethod.referencedClasses]. The same listing rule as [ProbeLocation.referencedClasses]
- * applies. See ADR 0030.
+ * applies.
  *
  * [sourceFile], [bodyKind] and [sourceName] are the same fields [ClassLocation] carries for a
  * loaded class, read the same way. They are null, [BodyKind.NONE] and null when the class's bytes
- * could not be read. See ADR 0034.
+ * could not be read.
  *
  * [kotlinKind] is the same field [ClassLocation] carries, read the same way. It is
- * [KotlinKind.NONE] when the class's bytes could not be read. See ADR 0041.
+ * [KotlinKind.NONE] when the class's bytes could not be read.
  */
 data class DeclaredClass(
     val className: String,
@@ -699,9 +672,9 @@ data class UnprobedClass(
  * [resource] and [scannedAt]; [chunkIndex] (0-based) and [chunkCount] say which part this is and
  * how many to expect. A collector should only diff a scan once it holds every chunk.
  *
- * [externalClasses] maps referenced class names to their dependency, or to absent. Each name is
- * sent once per instance, in this payload or the manifest, so a chunk need not carry an entry for
- * every name it references. See [ExternalClass].
+ * [externalClasses] maps referenced class names to their dependency, or to absent. This agent
+ * never sets it: the baseline's mappings go out on the manifest, so each name is sent once per
+ * instance. See [ExternalClass].
  */
 data class StaticBaseline(
     val resource: ResourceAttributes,
@@ -715,7 +688,10 @@ data class StaticBaseline(
     val externalClasses: List<ExternalClass> = emptyList(),
 )
 
-/** How the agent learned of an endpoint. See CONTEXT.md, "Discovery source". */
+/**
+ * How the agent learned of an endpoint: the framework declared it at registration, or a request
+ * matched it at dispatch before any registration had.
+ */
 enum class EndpointDiscoverySource { REGISTRATION, DISPATCH }
 
 /**
@@ -762,7 +738,7 @@ data class DisabledEndpointModule(
 
 /** How the agent learned of a dependency. */
 enum class DependencyDiscoverySource {
-    /** Listed from the startup classpath in `premain`: `java.class.path`, or a fat jar's classpath index. */
+    /** Listed from the startup classpath: `java.class.path`, or every jar under a fat jar's `BOOT-INF/lib`, `WEB-INF/lib` or `lib-provided`. */
     STARTUP_CLASSPATH,
 
     /**
@@ -780,7 +756,7 @@ enum class DependencyIdentitySource {
 
     /**
      * Never produced: a manifest's `Implementation-Title` is a display name, not an artifact ID,
-     * and several jars can share one. Kept so the wire number is not reused. See ADR 0030.
+     * and several jars can share one. Kept so the wire number is not reused.
      */
     JAR_MANIFEST,
 
@@ -807,7 +783,7 @@ data class DependencyIdentity(
  * [dependencyId] is per instance, like `classId` and `endpointId`. Cross-instance identity is the
  * sorted set of `groupId:artifactId` pairs in [identities] (for an ordinary jar, the one pair),
  * never [dependencyId]; version is an attribute, not identity. A shaded jar that bundles several
- * libraries carries one identity per library, since it cannot be half-removed. See ADR 0030.
+ * libraries carries one identity per library, since it cannot be half-removed.
  *
  * Sent once, delivered incrementally like classes: a dependency discovered by load arrives on the
  * flush after it was first seen. [location] is for display only. [classCount] is the jar's total

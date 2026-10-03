@@ -9,8 +9,10 @@ probes never fired.
 
 ## How it works, briefly
 
-- Method-level probes (ByteBuddy `Advice`) catch unused methods, endpoints,
-  and classes.
+- Method-level probes (ByteBuddy `Advice`) catch unused methods and classes.
+- Endpoint modules for Spring MVC, Ktor, JAX-RS and the JDK's `HttpServer`
+  count each endpoint where the framework matches a request to it, and list
+  the endpoints it registered, so one never called shows up.
 - Branch-level probes (raw ASM, woven into the same transform pass) catch
   conditionals and switches that only ever take one path.
 - The agent batches hit counts and pushes them to a collector on a fixed
@@ -25,8 +27,9 @@ probes never fired.
 ```
 
 Produces a shaded agent jar at `build/libs/otherlode-agent-<version>.jar` with
-ByteBuddy and protobuf relocated, so it won't collide with copies already on
-the target application's classpath.
+ByteBuddy, protobuf, the Kotlin standard library and the agent's own wire
+classes relocated, so it won't collide with copies already on the target
+application's classpath.
 
 ### Benchmark the transform-time analysis
 
@@ -65,13 +68,13 @@ described below):
 | `environment` | *(none)*, `test` for a test run | Reported to the collector. Falls back to OpenTelemetry's `deployment.environment.name`, then `deployment.environment`, then `test` when `testRun` is on. |
 | `endpoint` | `http://localhost:4319` | Collector base URL. |
 | `authToken` | *(none)* | Bearer token sent to the collector as `Authorization: Bearer <token>`. Prefer setting it through `OTHERLODE_AUTH_TOKEN` rather than this option: agent arguments are visible to every user on the host via `ps`, and an environment variable is not. |
-| `flushIntervalSeconds` | `60` | How often deltas/manifest updates are sent. |
-| `includePackages` | *(required)* | Only instrument types whose name starts with one of these prefixes, `;`-separated. Without it the agent logs an ERROR and stays disabled for the life of the JVM: nothing is instrumented and nothing is exported. The ERROR suggests the main class's package when it can find one. |
+| `flushIntervalSeconds` | `60` | How often deltas/manifest updates are sent, in whole seconds from 1 to 86400. Any other value falls back to the default with a warning. |
+| `includePackages` | *(required)* | Only instrument types whose name starts with one of these prefixes, `;`-separated, written as dotted packages (`com.acme`, not `com.acme.*` or `com/acme`, which match nothing and are dropped with a warning). Without a usable prefix the agent logs an ERROR and stays disabled for the life of the JVM: nothing is instrumented and nothing is exported. The ERROR suggests the main class's package when it can find one. |
 | `excludePackages` | *(none)* | Never instrument types whose name starts with one of these prefixes, `;`-separated, even if `includePackages` also matches them. Exclusion always wins. |
-| `staticBaselineEnabled` | `false` | Scan the classpath once at startup (async, off the critical path) for classes under `includePackages` that never load at all. Off by default: unlike every other option here, a full classpath walk has a cost that scales with the classpath's size. |
+| `staticBaselineEnabled` | `false` | Scan the classpath once at startup (async, off the critical path) for classes under `includePackages` that never load at all. Off by default: a full classpath walk has a cost that scales with the classpath's size. |
 | `enabled` | `true` | Set to `false` to turn the agent off entirely: nothing is instrumented and nothing is exported. Meant to be set from `OTHERLODE_ENABLED` so a deployment can disable the agent without rebuilding the image that bakes in `-javaagent`. |
 | `endpointsEnabled` | `true` | Set to `false` to switch off every framework endpoint module (Spring MVC, Ktor, JAX-RS, the JDK's `HttpServer`) at once. There are no per-framework flags. |
-| `otelBridgeEnabled` | `false` | Also count the route OpenTelemetry's own HTTP server instrumentation resolved, for a framework no endpoint module covers. Off by default because it hooks OpenTelemetry internals rather than a framework's public registration API. |
+| `otelBridgeEnabled` | `false` | Also count the route OpenTelemetry's own HTTP server instrumentation resolved, for a framework no endpoint module covers. Off by default because it hooks OpenTelemetry internals rather than a framework's public registration API. Needs `endpointsEnabled`, which switches it off too. |
 | `testRun` | `false` | Mark this run as a test run, for an agent in the JVM that runs your tests. A collector then leaves the run out of every finding about production and uses its call edges to name the tests that call production code. With no environment set, a test run reports to `test`. See "Name the tests that call your code" below. |
 
 ## Where an option's value comes from
@@ -138,12 +141,14 @@ minimal stub, or point it at a real collector.
 
 ```
 ./gradlew :demo:runDemo
+./gradlew :demo:runSpringDemo
 ```
 
 Runs a stub collector, an instrumented demo server (`/checkout`, always hit
 one way; `/promo`, never called), and a client that drives the server, all as
 separate JVM processes. On shutdown, the stub collector prints a report of
-probes that were never hit and any classes it had to skip.
+probes that were never hit and any classes it had to skip. `runSpringDemo`
+does the same for the Spring Boot fat-jar demo.
 
 A never-hit branch prints as its condition, the result that never happened,
 and the lines that run only through that result. Its branch index stays in
@@ -351,22 +356,40 @@ its part class, such as `com.acme.Orders__OrderTotalsKt`, not in the facade
 Kotlin callers name.
 
 Queries cover methods (`wasHit`, `hitCount`, `neverHit`, `skippedClasses`,
-`unreportedClasses`), classes (`neverInitialised`, `neverInstantiated`,
-`kotlinKind`), endpoints (`wasCalled`, `callCount`, `neverCalled`,
-`endpoints`, `disabledEndpointModules`), optional parameters
-(`omissionCount`, `neverSupplied`, `alwaysSupplied`), the call graph
-(`callEdges`, `unreachedClusters`), a clean shutdown (`endedCleanly`,
-`instancesEndedCleanly`) and, when the agent runs with
-`staticBaselineEnabled=true`, `neverLoaded`. Asking
-about a probe the collector has never seen throws `UnknownProbeException`
-rather than answering `false`; the message says whether the class was
-skipped, declared by the static baseline but never loaded, instrumented but
-without that method, or never mentioned at all. That keeps "genuinely dead"
-and "no idea" from ever looking the same.
+`unreportedClasses`), branch outcomes (`neverHitRoutineOutcomes`), classes
+(`neverInitialised`, `neverInstantiated`, `kotlinKind`), endpoints
+(`wasCalled`, `callCount`, `neverCalled`, `endpoints`,
+`disabledEndpointModules`), optional parameters (`omissionCount`,
+`neverSupplied`, `alwaysSupplied`), the call graph (`callEdges`,
+`unreachedClusters`), dependencies (`dependency`, `unloadedDependencies`,
+`unreferencedDependencies`, `unreachedDependencies`, `absentReferences`), a
+clean shutdown (`endedCleanly`, `instancesEndedCleanly`) and, when the agent
+runs with `staticBaselineEnabled=true`, `neverLoaded`. Waits cover the next
+flush, a settled state, a probe, an endpoint and a dependency
+(`awaitNextFlush`, `awaitSettled`, `awaitProbe`, `awaitEndpoint`,
+`awaitDependency`, `awaitDependenciesListed`). Asking about a probe the
+collector has never seen throws `UnknownProbeException` rather than
+answering `false`; the message says whether the class was skipped, loaded
+where no transformer saw it, declared by the static baseline but never
+loaded, instrumented but without that method, or never mentioned at all.
+That keeps "genuinely dead" and "no idea" from ever looking the same. A
+payload the collector cannot accept is listed by `rejectedPayloads`, and
+every other query throws while there is one.
+
+With JUnit 5, `@ExtendWith(OtherlodeExtension::class)` starts one collector
+for the test JVM on port 4319 (`otherlode.testkit.port` overrides it) and
+injects it into any test that asks for an `OtherlodeTestCollector`. Run the
+test task with `-javaagent` pointing at that port. The collector accepts one
+agent: with `maxParallelForks` above 1, every fork's agent would post to the
+same port, so give each fork its own port and endpoint or run one fork. A test
+that launches a child JVM with the agent needs a collector of its own, started
+with `OtherlodeTestCollector.start()`, for the same reason. Anything else that
+posts to the port is rejected, and fails every query for the rest of the run.
 
 The module isn't published yet. Use it from a multi-project build as
 `testImplementation(project(":testkit"))`, or build the jar with
-`./gradlew :testkit:jar`.
+`./gradlew :testkit:jar`. It brings only the wire classes onto your test
+classpath, never the agent itself, which runs from its `-javaagent` jar.
 
 ## Name the tests that call your code
 

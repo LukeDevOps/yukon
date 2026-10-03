@@ -22,7 +22,6 @@ import kotlin.test.assertTrue
 /**
  * Proves through the real transform that each kept branch site reaches the manifest on its
  * METHOD probe, with its outcomes listed inside it, and that each BRANCH probe names its site.
- * See ADR 0037.
  */
 class BranchSiteInstrumentationTest {
     private var installedTransformer: ResettableClassFileTransformer? = null

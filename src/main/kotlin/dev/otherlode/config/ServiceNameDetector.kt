@@ -11,7 +11,7 @@ import java.util.jar.JarFile
 /**
  * Finds a service name for a JVM that names none, from the same sources and in the same order as
  * OpenTelemetry's Java agent. [AgentConfig] asks for it only when no Otherlode or OpenTelemetry setting
- * names the service. See ADR 0045.
+ * names the service.
  *
  * The agent detectors this mirrors run in this order, and the first one that finds a name wins:
  *
@@ -284,7 +284,11 @@ internal object SpringYamlName {
             while (path.isNotEmpty() && path.last().first >= indent) path.removeAt(path.lastIndex)
             if (content == "-" || content.startsWith("- ")) continue
             val match = KEY_LINE.matchEntire(content) ?: continue
-            val key = match.groupValues[1].ifEmpty { match.groupValues[2] }.ifEmpty { match.groupValues[3] }.trim()
+            val key =
+                match.groupValues[1]
+                    .ifEmpty { match.groupValues[2] }
+                    .ifEmpty { match.groupValues[3] }
+                    .trim()
             path.add(indent to key)
             if (path.map { it.second } == TARGET) {
                 scalar(match.groupValues[4])?.let { return it }

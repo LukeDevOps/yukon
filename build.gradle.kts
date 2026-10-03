@@ -4,7 +4,6 @@ import java.util.zip.ZipFile
 plugins {
     kotlin("jvm") version "2.2.21"
     id("com.gradleup.shadow") version "8.3.11"
-    id("com.google.protobuf") version "0.9.4"
     id("me.champeau.jmh") version "0.7.3"
 }
 
@@ -17,7 +16,8 @@ repositories {
 
 // `-Potherlode.testJdk=25` runs every project's tests on that JDK. Compilation keeps the JDK 21
 // toolchain; only the JVM that runs the tests changes. CI sets it so a JDK that renames an
-// internal the agent reads, such as the lambda factory members in ADR 0035, fails a test.
+// internal the agent reads, such as the lambda factory's `interfaceClass` and `implInfo` fields,
+// fails a test.
 val testJdk = providers.gradleProperty("otherlode.testJdk")
 allprojects {
     plugins.withType<JavaBasePlugin> {
@@ -78,14 +78,14 @@ dependencies {
 
     // Route bridge endpoint module: counts the route OpenTelemetry's own HTTP server
     // instrumentation resolved, for a framework none of the modules above cover. Off by default
-    // (AgentConfig.otelBridgeEnabled); see ADR 0019.
+    // (AgentConfig.otelBridgeEnabled).
     implementation(project(":endpoints-otel-bridge"))
 
-    // Wire schema for the delta batch and probe manifest payloads
-    // (see src/main/proto/otherlode/v1/otherlode.proto). Generated classes are shaded under
-    // dev.otherlode.shaded.protobuf below, same rationale as
-    // the ByteBuddy relocation.
-    implementation("com.google.protobuf:protobuf-java:3.25.5")
+    // The payload models, the codec and the wire schema they encode
+    // (src/main/proto/otherlode/v1/otherlode.proto), shared with the testkit. Every type the agent
+    // takes from it is part of this project's own API, and protobuf-java comes with it; both are
+    // relocated in the shaded jar below.
+    api(project(":wire"))
 
     testImplementation(kotlin("test"))
     testImplementation("net.bytebuddy:byte-buddy-agent:1.18.12")
@@ -98,12 +98,6 @@ dependencies {
     // attached ahead of this one hands to the transformer chain, so the analyser is tested
     // against the real thing rather than a hand-written imitation of it.
     testImplementation("org.jacoco:org.jacoco.core:0.8.13")
-}
-
-protobuf {
-    protoc {
-        artifact = "com.google.protobuf:protoc:3.25.5"
-    }
 }
 
 kotlin {
@@ -343,10 +337,10 @@ tasks.shadowJar {
     finalizedBy(verifyAgentJar)
 }
 
-// Scala default-getter resolution (ADR 0023) is proven against real scalac output, compiled by
-// the two Scala fixture modules below, `$DefaultImpls` marking (ADR 0026) against kotlinc
-// output under -jvm-default=disable, compiled by the third, and the forwarder table (ADR 0035)
-// against kotlinc output under class-based SAM conversion, compiled by the fourth. None is a
+// Scala default-getter resolution is proven against real scalac output, compiled by the two
+// Scala fixture modules below, `$DefaultImpls` marking against kotlinc output under
+// -jvm-default=disable, compiled by the third, and the handler forwarder table against kotlinc
+// output under class-based SAM conversion, compiled by the fourth. None is a
 // test dependency, only a task dependency: putting one on the test classpath would let JUnit
 // discovery load these classes before install() wires up instrumentation, defeating the
 // fixture's purpose (see FixtureClassLoader). The output directory and runtime classpath are
@@ -482,7 +476,7 @@ val agentMainClass = "dev.otherlode.Agent"
 // silently overwriting the shaded agent jar with one missing the
 // Premain-Class manifest attribute and the relocated dependencies. Giving the
 // plain jar its own classifier keeps the two outputs apart without disabling
-// the task outright: disabling it previously broke `project(":")` consumers
+// the task outright: disabling it breaks `project(":")` consumers
 // (the demo module's compile classpath), which resolve a local project
 // dependency's default `apiElements`/`runtimeElements` variant back to this
 // task's output. Only shadowJar's output is ever meant to be distributed or
@@ -508,6 +502,14 @@ tasks.shadowJar {
     // Same rationale for protobuf-java: the target app may already carry its
     // own, differently-versioned copy on the classpath.
     relocate("com.google.protobuf", "dev.otherlode.shaded.protobuf")
+
+    // The wire module's classes, and the root's own in the same packages. A test classpath that
+    // carries the testkit carries the wire module too, possibly at another version, and the agent
+    // jar is appended behind it: unrelocated, the agent would link against that copy instead of
+    // its own.
+    relocate("dev.otherlode.export", "dev.otherlode.shaded.export")
+    relocate("dev.otherlode.proto", "dev.otherlode.shaded.proto")
+    relocate("dev.otherlode.registry.RouteTemplateNormalizer", "dev.otherlode.shaded.registry.RouteTemplateNormalizer")
 
     // Most of the agent itself is Kotlin, so kotlin-stdlib is unavoidably on this jar's own
     // classpath too. Left unrelocated, it collides exactly the same way ByteBuddy and protobuf

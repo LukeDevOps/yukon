@@ -29,8 +29,8 @@ private const val HANDLE_DESCRIPTOR = "(Lcom/sun/net/httpserver/HttpExchange;)V"
 private const val KOTLIN_HANDLERS = "dev.otherlode.instrumentation.endpoints.jdkhttpserver.fixture.KotlinHandlersKt"
 
 /**
- * Proves ADR 0035 against the real JDK `HttpServer` and the real lambda factory: an endpoint whose
- * handler is a hidden class joins to the method the lambda calls.
+ * Proves hidden-handler naming against the real JDK `HttpServer` and the real lambda factory: an
+ * endpoint whose handler is a hidden class joins to the method the lambda calls.
  *
  * The hook retransforms `java.lang.invoke.InnerClassLambdaMetafactory` for the whole JVM, and
  * the endpoint advice only weaves `ServerImpl` as it first loads. So this class needs a JVM of its

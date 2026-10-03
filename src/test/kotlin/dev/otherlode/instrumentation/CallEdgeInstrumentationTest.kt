@@ -16,12 +16,11 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Proves through the real pipeline that call edges and supertypes (ADR 0024) reach the manifest:
- * a METHOD probe carries its own in-scope call edges, a BRANCH probe carries none, and the class
- * gets its own [dev.otherlode.export.ClassLocation] record. Also proves the ADR 0034
- * facts on the same path: an edge's kind and captured count, a method's lambda body flag, and the
- * class's source file, body kind and source name. Also proves that a creation edge's interface
- * (ADR 0042) reaches the manifest.
+ * Proves through the real pipeline that call edges and supertypes reach the manifest: a METHOD
+ * probe carries its own in-scope call edges, a BRANCH probe carries none, and the class gets its
+ * own [dev.otherlode.export.ClassLocation] record. Also proves, on the same path, an edge's kind
+ * and captured count, a method's lambda body flag, and the class's source file, body kind and
+ * source name, and that a creation edge's interface reaches the manifest.
  */
 class CallEdgeInstrumentationTest {
     private var installedTransformer: ResettableClassFileTransformer? = null

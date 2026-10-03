@@ -9,10 +9,10 @@ import net.bytebuddy.asm.Advice;
 /**
  * Woven onto the exit of {@code HttpServerAttributesExtractor.onEnd}, the one point OpenTelemetry's
  * own HTTP server instrumentation calls once per server span, after every {@code
- * HttpServerRoute.update} source-priority call has already settled the final route. See ADR 0019
- * for why span end, not {@code HttpServerRoute.update} itself, is the read point: {@code update}
- * fires several times per request as higher-priority sources override lower ones, so no single
- * call to it knows the eventual winner.
+ * HttpServerRoute.update} source-priority call has already settled the final route. Span end,
+ * not {@code HttpServerRoute.update} itself, is the read point because {@code update} fires
+ * several times per request as higher-priority sources override lower ones, so no single call to
+ * it knows the eventual winner.
  *
  * <p>Compiled against the unshaded {@code opentelemetry-instrumentation-api} artifact, verified at
  * its oldest supported 2.x release, 2.0.0. {@link
@@ -25,11 +25,13 @@ import net.bytebuddy.asm.Advice;
  * <p>A route this bridge reads for an identity another endpoint module already owns is left
  * alone: {@link OtherlodeEndpoints#lookup} misses for a key no framework module ever bound, and {@link
  * OtherlodeEndpoints#recordDispatchIfUnowned} then refuses to bind it either, since an entry for that
- * identity already exists under a different framework name. The request goes uncounted here,
- * exactly as ADR 0019 requires. A key {@code recordDispatchIfUnowned} has already refused stays
- * unbound, so the same identity repeats this one map miss and one refusal on every later request
- * for it; that repeated cost is small and accepted rather than adding a sentinel binding to skip
- * it.
+ * identity already exists under a different framework name. The request goes uncounted here, so
+ * a request the owning module counted is never counted twice. A request the owner did not count,
+ * because it disabled itself or because a framework with no module of its own served the same
+ * identity, is lost; that is accepted. A key {@code recordDispatchIfUnowned} has already refused
+ * stays unbound, so the same identity repeats this one map miss and one refusal on every later
+ * request for it; that repeated cost is small and accepted rather than adding a sentinel binding to
+ * skip it.
  */
 public class OnEndAdvice {
     private static final String MODULE = "otel";

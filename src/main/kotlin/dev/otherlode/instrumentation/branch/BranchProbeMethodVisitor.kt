@@ -34,16 +34,21 @@ import net.bytebuddy.jar.asm.Opcodes
  * [BranchSiteAnalyzer]'s output. It returns [NO_SLOT] when the array has no room left, and the
  * site is then emitted exactly as it was, with no probe.
  *
- * [droppedOrdinals] names sites this method's analysis dropped (see ADR 0025), by their encounter
- * index among every tracked conditional and switch in this method, counted from zero. A dropped
+ * [droppedOrdinals] names sites this method's analysis dropped, by their encounter index among
+ * every tracked conditional and switch in this method, counted from zero. A dropped
  * site's ordinal is still counted here, in step with [BranchSiteAnalyzer], but it is emitted
  * unchanged with no call to [allocateSlots]: a dropped site never asked for a slot in the first
  * place, so it never counts against the mismatch check [BranchProbeAsmVisitorWrapper] runs.
  *
  * [throwingDefaultOrdinals] names, in the same numbering, the switches whose default only throws
- * an exception the compiler added (see ADR 0038). Such a switch asks for one slot per case and
- * none for its default, and its default edge, fillers included, goes straight to the original
- * default with no probe.
+ * an exception the compiler added. Such a switch asks for one slot per case and none for its
+ * default, and its default edge, fillers included, goes straight to the original default with no
+ * probe.
+ *
+ * [unprobedOutcomes] gives, in the same numbering, the conditionals with one outcome only a hash
+ * collision reaches, and that outcome's offset (see [BranchSite.unprobedOutcome]). Such a
+ * conditional asks for one slot, for its other outcome, and the unprobed edge goes straight to its
+ * target.
  */
 class BranchProbeMethodVisitor(
     methodVisitor: MethodVisitor,
@@ -51,6 +56,7 @@ class BranchProbeMethodVisitor(
     private val probeIndexBase: Int,
     private val droppedOrdinals: Set<Int> = emptySet(),
     private val throwingDefaultOrdinals: Set<Int> = emptySet(),
+    private val unprobedOutcomes: Map<Int, Int> = emptyMap(),
     private val allocateSlots: (outcomeCount: Int) -> Int,
 ) : MethodVisitor(Opcodes.ASM9, methodVisitor) {
     private var nextOrdinal = 0
@@ -63,22 +69,29 @@ class BranchProbeMethodVisitor(
             super.visitJumpInsn(opcode, label)
             return
         }
-        if (nextOrdinal++ in droppedOrdinals) {
+        val ordinal = nextOrdinal++
+        if (ordinal in droppedOrdinals) {
             super.visitJumpInsn(opcode, label)
             return
         }
-        val slot = allocateSlots(2)
+        val unprobed = unprobedOutcomes[ordinal]
+        val slot = allocateSlots(if (unprobed == null) 2 else 1)
         if (slot == NO_SLOT) {
             super.visitJumpInsn(opcode, label)
             return
         }
 
         val base = probeIndexBase + slot
+        if (unprobed == 0) {
+            super.visitJumpInsn(opcode, label)
+            emitProbeIncrement(base)
+            return
+        }
         val taken = Label()
         val continuation = Label()
 
         super.visitJumpInsn(opcode, taken)
-        emitProbeIncrement(base + 1)
+        if (unprobed == null) emitProbeIncrement(base + 1)
         super.visitJumpInsn(Opcodes.GOTO, continuation)
         super.visitLabel(taken)
         emitProbeIncrement(base)

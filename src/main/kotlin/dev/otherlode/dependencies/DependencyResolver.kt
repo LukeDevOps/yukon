@@ -13,7 +13,7 @@ import java.util.jar.JarFile
 import java.util.zip.ZipInputStream
 
 /**
- * Finds the dependency a loaded class came from, by its [ProtectionDomain]. See ADR 0030.
+ * Finds the dependency a loaded class came from, by its [ProtectionDomain].
  *
  * Two caches keep each location to one resolution per process. The first is keyed by the
  * protection domain in a [WeakHashMap]: `ProtectionDomain` does not override `equals`, so the key is
@@ -28,7 +28,7 @@ import java.util.zip.ZipInputStream
  * rules through [classifier]. A dependency whose identity is already registered, such
  * as an unpacked copy of a listed jar, maps to that record; any other is registered as discovered
  * by load. A directory, an unsupported scheme and a location that fails to resolve are not
- * dependencies; a failure is logged once at FINE, since this runs on every flush.
+ * dependencies; a failure is logged at DEBUG, once per location since the answer is cached.
  *
  * Every public call is synchronized, so the resolver is safe to share between threads.
  */

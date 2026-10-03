@@ -17,15 +17,18 @@ import net.bytebuddy.asm.Advice;
  * (a Java or Kotlin lambda or method reference) reports the method its lambda calls, as {@link
  * OtherlodeEndpoints#lambdaImplementation} recorded it, or null for all three fields when nothing was
  * recorded. A null class is still safe to attach: {@link OtherlodeEndpoints#attachHandler} is a no-op
- * for a null class, so it can never erase a real join a later {@code setHandler} call replaces
- * with a lambda that has no recorded method.
+ * for a null class.
+ *
+ * <p>The advice runs on exit, and only on a normal return. The JDK refuses a second handler with
+ * an {@code IllegalArgumentException} ("handler already set"), and a handler it refused must never
+ * become the join.
  */
 public class SetHandlerAdvice {
     private static final String MODULE = "jdk-httpserver";
     private static final String HANDLE_DESCRIPTOR = "(Lcom/sun/net/httpserver/HttpExchange;)V";
 
-    @Advice.OnMethodEnter(suppress = Throwable.class)
-    public static void onEnter(@Advice.This HttpContext context, @Advice.Argument(0) HttpHandler handler) {
+    @Advice.OnMethodExit(suppress = Throwable.class)
+    public static void onExit(@Advice.This HttpContext context, @Advice.Argument(0) HttpHandler handler) {
         try {
             if (handler == null) return;
             Object entry = OtherlodeEndpoints.lookup(MODULE, context);

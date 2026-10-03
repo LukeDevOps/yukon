@@ -1,12 +1,14 @@
 package dev.otherlode.testkit.junit5
 
 import org.junit.jupiter.api.extension.ExtensionContext
+import org.junit.jupiter.api.extension.ParameterContext
 import java.lang.reflect.Proxy
 import java.util.function.Function
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertFailsWith
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 /**
@@ -55,8 +57,8 @@ class OtherlodeExtensionStoreTest {
     }
 
     /**
-     * An agent attached without `includePackages` refuses to start and sends no heartbeat
-     * (ADR 0033), so the timeout names that option beside the flag and the flush interval.
+     * An agent attached without `includePackages` refuses to start and sends no heartbeat, so the
+     * timeout names that option beside the flag and the flush interval.
      */
     @Test
     fun `a startup timeout names includePackages, the javaagent flag and the flush interval`() {
@@ -69,6 +71,22 @@ class OtherlodeExtensionStoreTest {
         assertTrue("-javaagent:" in message, message)
         assertTrue("flushIntervalSeconds=1" in message, message)
         assertTrue("default flush interval is 60 seconds" in message, message)
+    }
+
+    /**
+     * Under `@TestInstance(PER_CLASS)` JUnit builds the test instance, and so resolves a
+     * constructor parameter, before it calls `beforeAll`.
+     */
+    @Test
+    fun `a parameter resolved before beforeAll starts the collector in the root store`() {
+        val parameterContext =
+            Proxy.newProxyInstance(ParameterContext::class.java.classLoader, arrayOf(ParameterContext::class.java)) { _, _, _ -> null }
+                as ParameterContext
+
+        val resolved = OtherlodeExtension().resolveParameter(parameterContext, fakeContext())
+
+        assertTrue(stored.isNotEmpty(), "resolveParameter must start the collector in the root store")
+        assertSame(OtherlodeExtension.collector(), resolved)
     }
 
     @Test

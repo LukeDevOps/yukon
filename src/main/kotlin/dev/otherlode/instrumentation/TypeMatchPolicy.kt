@@ -35,10 +35,10 @@ object TypeMatchPolicy {
      * the static scanner's pre-filter).
      *
      * An empty include list matches nothing, whatever the exclude list holds. The agent refuses to
-     * start without include rules (ADR 0033), and giving the empty list the same meaning here means
-     * no other path into this policy (a test harness, the testkit, an embedding of the agent) can
-     * reach "instrument everything" by accident. Exclusion always wins: a class matched by both
-     * lists is not included, and the agent's own package is never included.
+     * start without include rules, and giving the empty list the same meaning here means no other
+     * path into this policy (a test harness, the testkit, an embedding of the agent) can reach
+     * "instrument everything" by accident. Exclusion always wins: a class matched by both lists is
+     * not included, and the agent's own package is never included.
      */
     fun isIncluded(
         className: String,
@@ -88,13 +88,13 @@ object TypeMatchPolicy {
      *
      * A synthetic class whose [kotlinKind] is [KotlinKind.MULTIFILE_CLASS_PART] is not turned away.
      * kotlinc marks each part of a multi-file facade synthetic, but the part holds the code of one
-     * source file, and the facade holds only forwarders to it (ADR 0041). [kotlinKind] is read only
-     * for a synthetic class.
+     * source file, and the facade holds only forwarders to it. [kotlinKind] is read only for a
+     * synthetic class.
      *
      * [dev.otherlode.instrumentation.branch.BranchSiteAnalyzer] asks the same question
      * of a class it reads from bytes, and passes through a body class this turns away. Both call
      * this one function, so the class the agent never probes and the class the analyser passes
-     * through are always the same class. See ADR 0034.
+     * through are always the same class.
      */
     fun isTurnedAwayByShape(
         className: String,
@@ -117,7 +117,7 @@ object TypeMatchPolicy {
      * The kind kotlinc gives [typeDescription] in the `k` element of its `kotlin.Metadata`, by
      * [KotlinKind.ofMetadataKind]. [KotlinKind.NONE] when the class carries no such annotation. An
      * annotation whose `k` cannot be read counts as the element's default, the same as a missing
-     * one. See ADR 0041.
+     * one.
      */
     fun kotlinKindOf(typeDescription: TypeDescription): KotlinKind {
         val metadata =
@@ -143,8 +143,8 @@ object TypeMatchPolicy {
      * Spring 6 and 7 use `$$SpringCGLIB$$`, with `FastClass` appended for the two helper classes
      * that go with an enhanced configuration class; Spring 5.3 tags the same classes
      * `BySpringCGLIB$$` behind the generating class's simple name (`$$EnhancerBySpringCGLIB$$`,
-     * `$$FastClassBySpringCGLIB$$`). Both spellings were read out of `SpringNamingPolicy` and
-     * `DefaultNamingPolicy` in spring-core 5.3.39, 6.2.19 and 7.0.9 rather than recalled.
+     * `$$FastClassBySpringCGLIB$$`). Both spellings are from `SpringNamingPolicy` and
+     * `DefaultNamingPolicy` in spring-core 5.3.39, 6.2.19 and 7.0.9.
      *
      * javassist's `ProxyFactory` appends `_$$_jvst`, three hex digits from the generator's hash
      * code, `_` and a hex counter to the superclass's name. Read out of `ProxyFactory.nameGenerator`
@@ -244,17 +244,16 @@ object TypeMatchPolicy {
      * about it and a collector can never merge them into "never hit across the fleet"; it has no
      * `.class` file, so the static baseline scan cannot declare it and the blind-spot warning for
      * a class the scan missed fires on every one of them; and it carries no line numbers, so every
-     * row it produces points at line -1. Left in, one `@Bean`-bearing Spring configuration class
-     * put 274 of `demo-spring`'s 289 probes into three generated classes and took the demo's
-     * report from 4 never-hit probes to 230.
+     * row it produces points at line -1. One `@Bean`-bearing configuration class makes Spring
+     * generate three such classes.
      *
      * The rule is the generator's own naming, not the shape of the bytecode, because the
      * structural signals all collide with something real: Spring's CGLIB classes are neither
      * synthetic nor missing a `SourceFile` attribute (theirs reads `<generated>`), and the one
      * thing they do lack, line numbers, is exactly what a class compiled without debug info lacks
-     * too, which ADR 0026 keeps and labels rather than drops. A bare `$$` test is no good either:
+     * too, which the agent keeps and labels rather than drops. A bare `$$` test is no good either:
      * kotlinc puts `$$` in the name of a class it generates for a lambda passed to an inlined
-     * function, and that class holds the adopter's body. See ADR 0029.
+     * function, and that class holds the adopter's body.
      *
      * Spring's CGLIB and javassist are recognised by a marker anywhere in the name, Hibernate by a
      * suffix that makes up a whole part of the name, ByteBuddy and Mockito by a whole part with a
@@ -353,7 +352,7 @@ object TypeMatchPolicy {
      * for restricted suspension), kotlinc's own name for it. Such a class holds no code the
      * adopter wrote: its `invokeSuspend` runs only on resumption after a real suspension, so on a
      * function that never suspends it reads as never hit and, as a body class, roots a false
-     * unreached cluster. See ADR 0025.
+     * unreached cluster.
      *
      * A class extending `SuspendLambda` is not caught by this check: `SuspendLambda` itself extends
      * `ContinuationImpl`, but a suspend lambda's direct superclass is `SuspendLambda`, and it holds
@@ -403,8 +402,8 @@ object TypeMatchPolicy {
      * static methods, never synthetic.
      *
      * A method Hibernate's bytecode enhancement added ([isEnhancementMethod]) is left out the same
-     * way, though it is not synthetic. See ADR 0047. So are the `create` and `invoke` kotlinc gives
-     * a suspend lambda's class ([isSuspendLambdaEntry]). See ADR 0025.
+     * way, though it is not synthetic. So are the `create` and `invoke` kotlinc gives a suspend
+     * lambda's class ([isSuspendLambdaEntry]).
      */
     fun methodMatcher(isScalaClass: Boolean): ElementMatcher.Junction<MethodDescription> =
         not(isAbstract<MethodDescription>())
@@ -441,7 +440,7 @@ object TypeMatchPolicy {
      * `create` and is always started through `invoke`. Neither is probed or declared, and a call
      * to one is a pass-through. The name is enough: nothing can add a method to a Kotlin
      * lambda, and `SuspendLambda` is internal to the stdlib. [superClassName] is read only for
-     * those two names. See ADR 0025.
+     * those two names.
      */
     fun isSuspendLambdaEntry(
         name: String,
@@ -465,7 +464,7 @@ object TypeMatchPolicy {
      * Whether a method named [name] is one Hibernate's bytecode enhancement added to a class the
      * adopter wrote. Such a method is public and not synthetic, so only its name tells it apart; it
      * stands for nothing in the adopter's source and exists only when enhancement is on. The method
-     * tier leaves it out like a synthetic method, and a call to one is a pass-through. See ADR 0047.
+     * tier leaves it out like a synthetic method, and a call to one is a pass-through.
      */
     fun isEnhancementMethod(name: String): Boolean = name.startsWith(ENHANCEMENT_METHOD_PREFIX)
 
@@ -503,7 +502,7 @@ object TypeMatchPolicy {
      * also requires an `invokedynamic` in the method's own class to name it as the implementation,
      * except for Scala 3's lifted shape ([isScala3LiftedLambdaName]), whose creator is in
      * another class. A named method passed by reference passes that test and fails this one. The
-     * compiler fixtures pin each shape. See ADR 0034.
+     * compiler fixtures pin each shape.
      */
     fun isLambdaBodyName(name: String): Boolean =
         isJavacLambdaBodyName(name) || isScalacLambdaBodyName(name) || KOTLINC_LAMBDA_BODY_NAME.matches(name)
@@ -524,7 +523,7 @@ object TypeMatchPolicy {
      * and `SymDenotation.ensureNotPrivate` gives it this expanded name (`fullNameSeparated` in the
      * 3.3.4 compiler). The `invokedynamic` that creates it stays in the nested class, so a class
      * sees no call naming it. `$$_$` is the compiler's filler, not a name a person writes, so in a
-     * Scala class the name stands in for that call. See ADR 0034.
+     * Scala class the name stands in for that call.
      */
     fun isScala3LiftedLambdaName(name: String): Boolean = SCALA3_LIFTED_LAMBDA_NAME.matches(name)
 
@@ -543,8 +542,10 @@ object TypeMatchPolicy {
      * does not legally support [ElementType.TYPE]. Kotlin's compiler attaches
      * `@kotlin.jvm.JvmName` directly onto the class file for a `@file:JvmName`-annotated source
      * file, even though that annotation's own `@Target` only covers functions, properties, and
-     * files, not classes. See "Classes ByteBuddy can't safely redefine" in this project's
-     * `CLAUDE.md` for the full failure mode this exists to catch.
+     * files, not classes. The live type matcher turns such a class away, since a matched class is
+     * rebased and the rebase throws even when the transform changes nothing. The static scanner
+     * applies the same check, so the class lands in its unsafe bucket instead of being declared,
+     * which would read as never loaded.
      */
     fun unsafeAnnotation(typeDescription: TypeDescription): AnnotationDescription? =
         typeDescription.declaredAnnotations.firstOrNull { !it.isSupportedOn(ElementType.TYPE) }
